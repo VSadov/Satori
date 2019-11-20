@@ -50,7 +50,12 @@
           Condition="'$(SkipPrepareTest)' != 'true'"
           DependsOnTargets="$(BuildDependsOnTargets)">
 
-    <MSBuild Targets="Build"
+    <PropertyGroup>
+      <_preTestTargets>Build</_preTestTargets>
+      <_preTestTargets Condition="'$(SkipTestRestore)' == 'true'">Restore;Build</_preTestTargets>
+    </PropertyGroup>
+
+    <MSBuild Targets="$(_preTestTargets)"
              Projects="@(Project)"
              Properties="BuildConfiguration=$(BuildConfiguration);%(Project.AdditionalProperties)"
              BuildInParallel="true"
