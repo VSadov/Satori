@@ -37,7 +37,19 @@ namespace SslStress.Utils
             {
                 try
                 {
-                    await Task.Run(() => task(cts.Token));
+                    await Task.WhenAny(Task.Run(() => task(cts.Token)), PollToken());
+
+                    async Task PollToken()
+                    {
+                        while (!cts.IsCancellationRequested)
+                        {
+                            await Task.Delay(20);
+                        }
+
+                        await Task.Delay(10000);
+
+                        throw new Exception("Gave up on waiting");
+                    }
                 }
                 catch (Exception e)
                 {
