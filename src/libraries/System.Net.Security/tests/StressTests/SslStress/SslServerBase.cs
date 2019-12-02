@@ -37,7 +37,7 @@ namespace SslStress
             _config = config;
             _certificate = CreateSelfSignedCertificate();
             _listener = new TcpListener(config.ServerEndpoint) { ExclusiveAddressUse = (config.MaxConnections == 1) };
-            _serverTask = new Lazy<Task>(StartCore);
+            _serverTask = new Lazy<Task>(Task.Run(StartCore));
         }
 
         protected abstract Task HandleConnection(SslStream sslStream, TcpClient client, CancellationToken token);
@@ -125,12 +125,27 @@ namespace SslStress
             {
                 while (!token.IsCancellationRequested)
                 {
-                    if (_listener.Pending())
+                    Task task = await Task.WhenAny(TryAcceptTcpClient(), Task.Delay(5000));
+
+                    if (task is Task<TcpClient?> t)
                     {
-                        return await _listener.AcceptTcpClientAsync();
+                        var client = await t;
+                        if (client != null) return client;
+                    }
+                    else
+                    {
+                        throw new Exception("AcceptTcpClient timed out");
                     }
 
-                    await Task.Delay(20);
+                    async Task<TcpClient?> TryAcceptTcpClient()
+                    {
+                        if (_listener.Pending())
+                        {
+                            return await _listener.AcceptTcpClientAsync();
+                        }
+
+                        return null;
+                    }
                 }
 
                 token.ThrowIfCancellationRequested();
