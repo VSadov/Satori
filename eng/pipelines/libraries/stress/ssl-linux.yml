@@ -35,12 +35,8 @@ steps:
   lfs: false
 
 - bash: |
-    docker build -t $(sdkBaseImage) --build-arg CONFIGURATION=$(BUILD_CONFIGURATION) --build-arg BUILD_SCRIPT_NAME=$(buildScriptFileName) -f $(httpStressProject)corefx.Dockerfile .
-  displayName: Build Libraries
-
-- bash: |
     # we need to include the entire src/libraries folder in the build context due to Common/ dependencies
-    docker build -t $(sslStressImage) --build-arg SDK_BASE_IMAGE=$(sdkBaseImage) --build-arg CONFIGURATION=$(BUILD_CONFIGURATION) -f $(sslStressProject)/Dockerfile src/libraries
+    docker build -t $(sslStressImage) --build-arg CONFIGURATION=$(BUILD_CONFIGURATION) -f $(sslStressProject)/Dockerfile src/libraries
   displayName: Build SslStress
 
 - bash: |

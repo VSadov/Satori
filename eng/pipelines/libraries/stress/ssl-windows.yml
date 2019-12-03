@@ -35,18 +35,8 @@ steps:
   lfs: false
 
 - powershell: |
-    .\libraries.cmd -ci -c $(BUILD_CONFIGURATION)
-    docker build -t $(sdkBaseImage) `
-        --build-arg CONFIGURATION=$(BUILD_CONFIGURATION) `
-        --build-arg TESTHOST_LOCATION=. `
-        -f src/libraries/System.Net.Http/tests/StressTests/HttpStress/corefx.windows.Dockerfile `
-        artifacts/bin/testhost
-
-  displayName: Build Libraries
-
-- powershell: |
     # we need to include the entire src/libraries folder in the build context due to Common/ dependencies
-    docker build -t $(sslStressImage) --build-arg SDK_BASE_IMAGE=$(sdkBaseImage) --build-arg CONFIGURATION=$(BUILD_CONFIGURATION) -f $(sslStressProject)/windows.Dockerfile src/libraries
+    docker build -t $(sslStressImage) --build-arg CONFIGURATION=$(BUILD_CONFIGURATION) -f $(sslStressProject)/windows.Dockerfile src/libraries
   displayName: Build SslStress
 
 - powershell: |
