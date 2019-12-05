@@ -77,6 +77,25 @@ jobs:
       testGroup: outerloop
 
 #
+# Release library builds
+#
+- template: /eng/pipelines/common/platform-matrix.yml
+  parameters:
+    jobTemplate: /eng/pipelines/libraries/build-job.yml
+    buildConfig: Release
+    platforms:
+    - Linux_arm
+    - Linux_arm64
+    - OSX_x64
+    - Windows_NT_arm
+    - Windows_NT_arm64
+    - Windows_NT_x64
+    - Windows_NT_x86
+    jobParameters:
+      isOfficialBuild: false
+      liveCoreClrBuildConfig: checked
+
+#
 # Checked test builds
 #
 - template: /eng/pipelines/common/platform-matrix.yml
@@ -92,6 +111,8 @@ jobs:
     - Windows_NT_x64
     - Windows_NT_x86
     testGroup: outerloop
+    jobParameters:
+      liveLibrariesBuildConfig: Release
 
 #
 # Checked JIT test runs
@@ -130,25 +151,3 @@ jobs:
       testGroup: outerloop
       readyToRun: true
       displayNameArgs: R2R
-
-#
-# Crossgen-comparison jobs
-#
-- template: /eng/pipelines/common/platform-matrix.yml
-  parameters:
-    jobTemplate: /eng/pipelines/coreclr/templates/crossgen-comparison-job.yml
-    buildConfig: release
-    platforms:
-    - Linux_arm
-    helixQueueGroup: ci
-    helixQueuesTemplate: /eng/pipelines/coreclr/templates/helix-queues-setup.yml
-
-#
-# Formatting
-#
-- template: /eng/pipelines/common/platform-matrix.yml
-  parameters:
-    jobTemplate: /eng/pipelines/coreclr/templates/format-job.yml
-    platforms:
-    - Linux_x64
-    - Windows_NT_x64
