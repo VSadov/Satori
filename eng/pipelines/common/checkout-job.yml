@@ -1,5 +1,9 @@
 ### Check out job creating a git bundle and publishing it
 ### into an Azure artifact for reuse by the subsequent build and test execution phases.
+
+parameters:
+  paths: '' # object containing coreclr, libraries and installer include and exclude paths in an array form.
+
 jobs:
 - job: checkout
   displayName: Checkout
@@ -11,6 +15,22 @@ jobs:
     ${{ if ne(variables['System.TeamProject'], 'public') }}:
       name: Hosted Mac Internal
   
+  variables:
+    ${{ if ne(parameters.paths.coreclr.include[0], '') }}:
+      _coreclrIncludeArg: -coreclrinclude '${{ join('+', parameters.paths.coreclr.include ) }}'
+    ${{ if eq(parameters.paths.coreclr.include[0], '') }}:
+      _coreclrIncludeArg: ''
+      
+    ${{ if ne(parameters.paths.libraries.include[0], '') }}:
+      _librariesIncludeArg: -librariesinclude '${{ join('+', parameters.paths.libraries.include ) }}'
+    ${{ if eq(parameters.paths.libraries.include[0], '') }}:
+      _librariesIncludeArg: ''
+
+    ${{ if ne(parameters.paths.installer.include[0], '') }}:
+      _installerIncludeArg: -installerinclude '${{ join('+', parameters.paths.installer.include ) }}'
+    ${{ if eq(parameters.paths.installer.include[0], '') }}:
+      _installerIncludeArg: ''
+    
   steps:
   - checkout: self
     clean: true
@@ -22,3 +42,14 @@ jobs:
   - publish: $(Build.StagingDirectory)/Checkout.bundle
     artifact: Checkout_bundle
     displayName: Upload Checkout.bundle
+
+  - script: eng/pipelines/calculate-changed-paths.sh
+            -difftarget 'HEAD^1'
+            -coreclrexclude '${{ join('+', parameters.paths.coreclr.exclude ) }}'
+            $(_coreclrIncludeArg)              
+            -librariesexclude '${{ join('+', parameters.paths.libraries.exclude) }}'
+            $(_librariesIncludeArg)
+            -installerexclude '${{ join('+', parameters.paths.installer.exclude) }}'
+            $(_installerIncludeArg)
+    displayName: Set changed paths variables
+    name: SetPathVars
