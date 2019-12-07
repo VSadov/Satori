@@ -127,12 +127,18 @@ namespace System.Threading
                 double tlsMin = double.MaxValue;
                 for (int i = 0; i < CalibrationSampleCount; i++)
                 {
+                    Internal.Console.WriteLine($"ID: {calibrationSamples[i * 2]}  TLS: {calibrationSamples[i * 2 + 1]} ");
+
                     idMin = Math.Min(idMin, calibrationSamples[i * 2]);       //ID
                     tlsMin = Math.Min(tlsMin, calibrationSamples[i * 2 + 1]); //TLS
                 }
 
+                Internal.Console.WriteLine($"Iters: {iters}");
+
                 s_CalibrationSamples = null;
                 s_processorIdRefreshRate = Math.Min(MaxIdRefreshRate, (int)(idMin / tlsMin));
+
+                Internal.Console.WriteLine($"Refresh: {s_processorIdRefreshRate}");
             }
         }
 
@@ -183,7 +189,10 @@ namespace System.Threading
             }
 
             // Make sure the result was not negative, which would indicate "Not Supported"
-            return id >= 0;
+            // return id >= 0;
+
+            Internal.Console.WriteLine("########## VERY FAST #########");
+            return false;
         }
 
         // NoInlining is to make sure JIT does not CSE and to have a better perf proxy for TLS access.
