@@ -144,22 +144,27 @@ namespace System.Threading
 
         // If GetCurrentProcessorNumber takes any nontrivial time (compared to TLS access), return false.
         // Check more than once - to make sure it was not because TLS was delayed by GC or a context switch.
-        internal static bool SimpleProcessorNumberSpeedCheck()
+        internal static unsafe bool SimpleProcessorNumberSpeedCheck()
         {
             // NOTE: We do not check the frequency of the Stopwatch.
             //       If the resolution, precision or access time to the timer are inadequate for our measures here,
             //       the test will fail anyways.
 
-            // warm up the code paths.
-            int id = UninlinedThreadStatic() | Thread.GetCurrentProcessorNumber();
-            long oneMicrosecond = Stopwatch.Frequency / 1000000;
+            // default pretends to be a very long samples with default ratio
+            double minID = Stopwatch.Frequency * 50;  // 50 sec
+            double minTLS = Stopwatch.Frequency;      // 1 sec
 
-            // this loop should take < 50 usec. limit it to 100 usec just in case.
-            // If we are on slow hardware, we should calibrate anyways.
-            long limit = Stopwatch.Frequency / 10000 + Stopwatch.GetTimestamp();
+            // warm up the code paths.
+            if (Thread.GetCurrentProcessorNumber() < 0)
+                return false;
+
+            UninlinedThreadStatic();
+
+            long oneMicrosecond = Stopwatch.Frequency / 1000000;
             for (int i = 0; i < 10; i++)
             {
-                int iters = 1;
+                // we will measure at least 16 iterations and at least 1 microsecond
+                int iters = 16;
                 long t1 = 0;
                 // double the sample size until it is 1 usec.
                 while (t1 < oneMicrosecond)
@@ -168,25 +173,35 @@ namespace System.Threading
                     t1 = Stopwatch.GetTimestamp();
                     for (int j = 0; j < iters; j++)
                     {
-                        id = Thread.GetCurrentProcessorNumber();
+                        Thread.GetCurrentProcessorNumber();
                     }
                     t1 = Stopwatch.GetTimestamp() - t1;
                 }
 
-                // assuming TLS cannot be a lot slower than getting ID, this should take 1-2 usec
-                long t2 = Stopwatch.GetTimestamp();
-                for (int j = 0; j < iters; j++)
-                {
-                    UninlinedThreadStatic();
-                }
-                long t3 = Stopwatch.GetTimestamp();
+                minID = Math.Min(minID, (double)t1 / iters);
 
-                // if getting ID took longer than 3x TLS access, we should consider caching.
-                if (t3 > limit || (t3 - t2) * 3 < t1)
+                // we will measure at least 16 iterations and at least 1 microsecond
+                iters = 16;
+                t1 = 0;
+                // double the sample size until it is 1 usec.
+                while (t1 < oneMicrosecond)
                 {
-                    return false;
+                    iters *= 2;
+                    t1 = Stopwatch.GetTimestamp();
+                    for (int j = 0; j < iters; j++)
+                    {
+                        UninlinedThreadStatic();
+                    }
+                    t1 = Stopwatch.GetTimestamp() - t1;
                 }
+
+                minTLS = Math.Min(minTLS, (double)t1 / iters);
+
+                Internal.Console.WriteLine($"Iters: {iters}, minID: {minID}, minTLS: {minTLS}, Rate: {minID / minTLS}");
             }
+
+            if (minTLS * 3 < minID)
+                return false;
 
             // Make sure the result was not negative, which would indicate "Not Supported"
             // return id >= 0;
