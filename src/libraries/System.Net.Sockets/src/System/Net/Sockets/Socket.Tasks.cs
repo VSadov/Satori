@@ -923,9 +923,18 @@ namespace System.Net.Sockets
             {
                 Debug.Assert(Volatile.Read(ref _continuation) == null, $"Expected null continuation to indicate reserved for use");
 
-                if (socket.ConnectAsync(this))
+                try
                 {
-                    return new ValueTask(this, _token);
+                    if (socket.ConnectAsync(this))
+                    {
+                        return new ValueTask(this, _token);
+                    }
+                }
+                catch
+                {
+                    Release();
+
+                    throw;
                 }
 
                 SocketError error = SocketError;

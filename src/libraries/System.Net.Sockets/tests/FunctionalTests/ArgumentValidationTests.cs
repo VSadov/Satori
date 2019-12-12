@@ -1006,7 +1006,12 @@ namespace System.Net.Sockets.Tests
         public void BeginConnect_EndPoint_NullEndPoint_Throws_ArgumentNull()
         {
             Assert.Throws<ArgumentNullException>(() => GetSocket().BeginConnect((EndPoint)null, TheAsyncCallback, null));
-            Assert.Throws<ArgumentNullException>(() => { GetSocket().ConnectAsync((EndPoint)null); });
+        }
+
+        [Fact]
+        public async Task ConnectAsync_EndPoint_NullEndPoint_Throws_ArgumentNull()
+        {
+            await Assert.ThrowsAsync<ArgumentNullException>(() => GetSocket().ConnectAsync((EndPoint)null));
         }
 
         [Fact]
@@ -1091,21 +1096,36 @@ namespace System.Net.Sockets.Tests
         public void BeginConnect_IPAddress_AddressFamily_Throws_NotSupported()
         {
             Assert.Throws<NotSupportedException>(() => GetSocket(AddressFamily.InterNetwork).BeginConnect(IPAddress.IPv6Loopback, 1, TheAsyncCallback, null));
-            Assert.Throws<NotSupportedException>(() => { GetSocket(AddressFamily.InterNetwork).ConnectAsync(IPAddress.IPv6Loopback, 1); });
+        }
+
+        [Fact]
+        public async Task ConnectAsync_IPAddress_AddressFamily_Throws_NotSupported()
+        {
+            await Assert.ThrowsAsync<NotSupportedException>(() => GetSocket(AddressFamily.InterNetwork).ConnectAsync(IPAddress.IPv6Loopback, 1));
         }
 
         [Fact]
         public void BeginConnect_IPAddresses_NullIPAddresses_Throws_ArgumentNull()
         {
             Assert.Throws<ArgumentNullException>(() => GetSocket().BeginConnect((IPAddress[])null, 1, TheAsyncCallback, null));
-            Assert.Throws<ArgumentNullException>(() => { GetSocket().ConnectAsync((IPAddress[])null, 1); });
+        }
+
+        [Fact]
+        public async Task ConnectAsync_IPAddresses_NullIPAddresses_Throws_ArgumentNull()
+        {
+            await Assert.ThrowsAsync<ArgumentNullException>(() => GetSocket().ConnectAsync((IPAddress[])null, 1));
         }
 
         [Fact]
         public void BeginConnect_IPAddresses_EmptyIPAddresses_Throws_Argument()
         {
             AssertExtensions.Throws<ArgumentException>("addresses", () => GetSocket().BeginConnect(new IPAddress[0], 1, TheAsyncCallback, null));
-            AssertExtensions.Throws<ArgumentException>("addresses", () => { GetSocket().ConnectAsync(new IPAddress[0], 1); });
+        }
+
+        [Fact]
+        public async Task ConnectAsync_IPAddresses_EmptyIPAddresses_Throws_Argument()
+        {
+            await AssertExtensions.ThrowsAsync<ArgumentException>("addresses", () => GetSocket().ConnectAsync(new IPAddress[0], 1));
         }
 
         [Theory]
@@ -1114,24 +1134,35 @@ namespace System.Net.Sockets.Tests
         public void BeginConnect_IPAddresses_InvalidPort_Throws_ArgumentOutOfRange(int port)
         {
             Assert.Throws<ArgumentOutOfRangeException>(() => GetSocket().BeginConnect(new[] { IPAddress.Loopback }, port, TheAsyncCallback, null));
-            Assert.Throws<ArgumentOutOfRangeException>(() => { GetSocket().ConnectAsync(new[] { IPAddress.Loopback }, port); });
+        }
+
+        [Theory]
+        [InlineData(-1)]
+        [InlineData(65536)]
+        public async Task ConnectAsync_IPAddresses_InvalidPort_Throws_ArgumentOutOfRange(int port)
+        {
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => GetSocket().ConnectAsync(new[] { IPAddress.Loopback }, port));
         }
 
         [Fact]
-        public void BeginConnect_IPAddresses_ListeningSocket_Throws_InvalidOperation()
+        public async Task BeginConnect_IPAddresses_ListeningSocket_Throws_InvalidOperation()
         {
             using (var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
             {
                 socket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
                 socket.Listen(1);
-                Assert.Throws<InvalidOperationException>(() => socket.BeginConnect(new[] { IPAddress.Loopback }, 1, TheAsyncCallback, null));
+                await Assert.ThrowsAsync<InvalidOperationException>(() => socket.ConnectAsync(new[] { IPAddress.Loopback }, 1));
             }
+        }
 
+        [Fact]
+        public async Task ConnectAsync_IPAddresses_ListeningSocket_Throws_InvalidOperation()
+        {
             using (var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
             {
                 socket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
                 socket.Listen(1);
-                Assert.Throws<InvalidOperationException>(() => { socket.ConnectAsync(new[] { IPAddress.Loopback }, 1); });
+                await Assert.ThrowsAsync<InvalidOperationException>(() => socket.ConnectAsync(new[] { IPAddress.Loopback }, 1));
             }
         }
 
