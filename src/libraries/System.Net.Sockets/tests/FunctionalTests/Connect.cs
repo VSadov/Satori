@@ -91,8 +91,7 @@ namespace System.Net.Sockets.Tests
         [PlatformSpecific(~(TestPlatforms.OSX | TestPlatforms.FreeBSD))] // Not supported on BSD like OSes.
         public async Task ConnectGetsCanceledByDispose()
         {
-            bool usesApm = UsesApm ||
-                           (this is ConnectTask); // .NET Core ConnectAsync Task API is implemented using Apm
+            bool usesApm = UsesApm;
 
             // We try this a couple of times to deal with a timing race: if the Dispose happens
             // before the operation is started, we won't see a SocketException.
