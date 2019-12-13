@@ -122,10 +122,10 @@ namespace System.Net.Sockets
             // Use ValueTaskReceive so the AwaitableSocketAsyncEventArgs can be re-used later.
             AwaitableSocketAsyncEventArgs saea = LazyInitializer.EnsureInitialized(ref EventArgs.ValueTaskReceive, () => new AwaitableSocketAsyncEventArgs());
 
-            // We don't expect concurrent users while calling ConnectAsync.
             if (!saea.Reserve())
             {
-                throw new InvalidOperationException(SR.Format(SR.net_socketopinprogress));
+                saea = new AwaitableSocketAsyncEventArgs();
+                saea.Reserve();
             }
 
             saea.RemoteEndPoint = remoteEP;
@@ -145,14 +145,39 @@ namespace System.Net.Sockets
             {
                 throw new ArgumentException(SR.net_invalidAddressList, nameof(addresses));
             }
+
+            Exception lastException = null;
             foreach (var address in addresses)
             {
-                await ConnectAsync(address, port).ConfigureAwait(false);
+                try
+                {
+                    await ConnectAsync(address, port).ConfigureAwait(false);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    lastException = ex;
+                }
             }
+            Debug.Assert(lastException != null);
+            throw lastException;
         }
 
         internal Task ConnectAsync(string host, int port)
-            => ConnectAsync(new DnsEndPoint(host, port));
+        {
+            if (host == null)
+            {
+                throw new ArgumentNullException(nameof(host));
+            }
+
+            if (IPAddress.TryParse(host, out IPAddress parsedAddress))
+            {
+                return ConnectAsync(new IPEndPoint(parsedAddress, port));
+            }
+            {
+                return ConnectAsync(new DnsEndPoint(host, port));
+            }
+        }
 
         internal Task<int> ReceiveAsync(ArraySegment<byte> buffer, SocketFlags socketFlags, bool fromNetworkStream)
         {

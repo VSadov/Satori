@@ -91,8 +91,6 @@ namespace System.Net.Sockets.Tests
         [PlatformSpecific(~(TestPlatforms.OSX | TestPlatforms.FreeBSD))] // Not supported on BSD like OSes.
         public async Task ConnectGetsCanceledByDispose()
         {
-            bool usesApm = UsesApm;
-
             // We try this a couple of times to deal with a timing race: if the Dispose happens
             // before the operation is started, we won't see a SocketException.
             int msDelay = 100;
@@ -132,7 +130,7 @@ namespace System.Net.Sockets.Tests
                     disposedException = true;
                 }
 
-                if (usesApm)
+                if (UsesApm)
                 {
                     Assert.Null(localSocketError);
                     Assert.True(disposedException);
