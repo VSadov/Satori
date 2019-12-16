@@ -135,7 +135,7 @@ namespace System.Net.Sockets
         internal Task ConnectAsync(IPAddress address, int port)
             => ConnectAsync(new IPEndPoint(address, port));
 
-        internal async Task ConnectAsync(IPAddress[] addresses, int port)
+        internal Task ConnectAsync(IPAddress[] addresses, int port)
         {
             if (addresses == null)
             {
@@ -146,6 +146,11 @@ namespace System.Net.Sockets
                 throw new ArgumentException(SR.net_invalidAddressList, nameof(addresses));
             }
 
+            return DoConnectAsync(addresses, port);
+        }
+
+        private async Task DoConnectAsync(IPAddress[] addresses, int port)
+        {
             Exception lastException = null;
             foreach (IPAddress address in addresses)
             {
@@ -160,7 +165,7 @@ namespace System.Net.Sockets
                 }
             }
             Debug.Assert(lastException != null);
-            throw lastException;
+            ExceptionDispatchInfo.Throw(lastException);
         }
 
         internal Task ConnectAsync(string host, int port)
@@ -174,6 +179,7 @@ namespace System.Net.Sockets
             {
                 return ConnectAsync(new IPEndPoint(parsedAddress, port));
             }
+            else
             {
                 return ConnectAsync(new DnsEndPoint(host, port));
             }
@@ -958,7 +964,6 @@ namespace System.Net.Sockets
                 catch
                 {
                     Release();
-
                     throw;
                 }
 
