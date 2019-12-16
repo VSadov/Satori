@@ -147,7 +147,7 @@ namespace System.Net.Sockets
             }
 
             Exception lastException = null;
-            foreach (var address in addresses)
+            foreach (IPAddress address in addresses)
             {
                 try
                 {
