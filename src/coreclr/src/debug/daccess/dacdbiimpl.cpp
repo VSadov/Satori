@@ -5504,6 +5504,15 @@ IDacDbiInterface::DynamicMethodType DacDbiInterfaceImpl::IsILStubOrLCGMethod(VMP
     }
 }
 
+bool DacDbiInterfaceImpl::IsJitHelper(VMPTR_MethodDesc vmMethodDesc)
+{
+    DD_ENTER_MAY_THROW;
+
+    MethodDesc * pMD = vmMethodDesc.GetDacPtr();
+
+    return pMD->IsJitHelper();
+}
+
 //---------------------------------------------------------------------------------------
 //
 // Determine whether the specified thread is at a GC safe place.

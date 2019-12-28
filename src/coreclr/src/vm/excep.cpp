@@ -3518,7 +3518,9 @@ BOOL StackTraceInfo::AppendElement(BOOL bAllowAllocMem, UINT_PTR currentIP, UINT
     LOG((LF_EH, LL_INFO10000, "StackTraceInfo::AppendElement (%p), IP = %p, SP = %p, %s::%s\n", this, currentIP, currentSP, pFunc ? pFunc->m_pszDebugClassName : "", pFunc ? pFunc->m_pszDebugMethodName : "" ));
     BOOL bRetVal = FALSE;
 
-    if (pFunc != NULL && pFunc->IsILStub())
+    // TODO: WIP  is this actually the right place?
+    //       are there more places that should skip JIT helpers.
+    if (pFunc != NULL && (pFunc->IsILStub() || pFunc->IsJitHelper()))
         return FALSE;
 
     // Save this function in the stack trace array, which we only build on the first pass. We'll try to expand the

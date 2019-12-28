@@ -124,10 +124,12 @@ void CastCache::Initialize()
     CONTRACTL_END;
 
     MethodDesc* pMD = MscorlibBinder::GetMethod((BinderMethodID)(METHOD__CASTHELPERS__JIT_ISINSTANCEOFANY));
+    pMD->SetIsJitHelper();
     PCODE pDest = pMD->GetMultiCallableAddrOfCode();
     SetJitHelperFunction(CORINFO_HELP_ISINSTANCEOFANY, pDest);
 
     pMD = MscorlibBinder::GetMethod((BinderMethodID)(METHOD__CASTHELPERS__JIT_CHKCASTANY));
+    pMD->SetIsJitHelper();
     pDest = pMD->GetMultiCallableAddrOfCode();
     SetJitHelperFunction(CORINFO_HELP_CHKCASTANY, pDest);
 

@@ -1845,7 +1845,9 @@ protected:
 
         enum_flag2_IsEligibleForTieredCompilation = 0x20,
 
-        // unused                           = 0x40,
+        //       for most purposes these are regular managed methods.
+        //       We do not want this to appear in stack traces though.
+        enum_flag2_IsJitHelper              = 0x40, 
         // unused                           = 0x80,
     };
     BYTE        m_bFlags2;
@@ -1906,6 +1908,18 @@ public:
     {
         LIMITED_METHOD_CONTRACT;
         m_bFlags2 |= enum_flag2_IsJitIntrinsic;
+    }
+
+    inline BOOL IsJitHelper()
+    {
+        LIMITED_METHOD_DAC_CONTRACT;
+        return (m_bFlags2 & enum_flag2_IsJitHelper) != 0;
+    }
+
+    inline void SetIsJitHelper()
+    {
+        LIMITED_METHOD_CONTRACT;
+        m_bFlags2 |= enum_flag2_IsJitHelper;
     }
 
     static const SIZE_T s_ClassificationSizeTable[];
