@@ -1630,9 +1630,6 @@ public:
     virtual
     DynamicMethodType IsILStubOrLCGMethod(VMPTR_MethodDesc vmMethodDesc) = 0;
 
-    virtual
-    bool IsJitHelper(VMPTR_MethodDesc vmMethodDesc) = 0;
-
     //
     // Return a TargetBuffer for the raw vararg signature.
     // Also return the address of the first argument in the vararg signature.

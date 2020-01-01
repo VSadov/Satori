@@ -707,8 +707,7 @@ HRESULT CordbStackWalk::GetFrameWorker(ICorDebugFrame ** ppFrame)
         // modified method, but at least the error won't leak out to interfere with inspection
         // of the callstack as a whole.
         if (!frameData.v.fNoMetadata &&
-            pNativeCode->GetFunction()->IsNativeImpl() != CordbFunction::kNativeOnly &&
-            !pDAC->IsJitHelper(pNativeCode->GetVMNativeCodeMethodDescToken()))
+            pNativeCode->GetFunction()->IsNativeImpl() != CordbFunction::kNativeOnly)
         {
             pNativeCode->LoadNativeInfo();
 

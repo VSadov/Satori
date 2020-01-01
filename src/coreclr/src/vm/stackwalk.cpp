@@ -2207,7 +2207,14 @@ ProcessFuncletsForGCReporting:
                 }
 #endif // FEATURE_EH_FUNCLETS
 
+#ifdef DACCESS_COMPILE 
+                if (!m_crawl.pFunc->IsJitHelper())
+                {
+                    fStop = true;
+                }
+#else
                 fStop = true;
+#endif
                 break;
 
             case SFITER_FRAME_FUNCTION:

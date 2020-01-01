@@ -901,8 +901,6 @@ public:
     // Check if the given method is an IL stub or an LCD method.
     DynamicMethodType IsILStubOrLCGMethod(VMPTR_MethodDesc vmMethodDesc);
 
-    bool IsJitHelper(VMPTR_MethodDesc vmMethodDesc);
-
     // Return a TargetBuffer for the raw vararg signature.
     TargetBuffer GetVarArgSig(CORDB_ADDRESS   VASigCookieAddr,
                               CORDB_ADDRESS * pArgBase);
