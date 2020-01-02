@@ -11,7 +11,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
-
+using System.Runtime.CompilerServices;
 using Microsoft.Win32.SafeHandles;
 
 namespace Internal.Cryptography.Pal
@@ -411,6 +411,62 @@ namespace Internal.Cryptography.Pal
             }
         }
 
+        public bool GetPolicyData(out byte[] ApplicationCertPoliciesData, out byte[] CertPoliciesData, out byte[] CertPolicyMappingsData,
+                           out byte[] CertPolicyConstraintsData, out byte[] EnhancedKeyUsageData, out byte[] InhibitAnyPolicyExtensionData)
+        {
+
+            ApplicationCertPoliciesData = null;
+            CertPoliciesData = null;
+            CertPolicyMappingsData = null;
+            CertPolicyConstraintsData = null;
+            EnhancedKeyUsageData = null;
+            InhibitAnyPolicyExtensionData = null;
+
+            int extensionCount = Interop.Crypto.X509GetExtCount(_cert);
+
+            for (int i = 0; i < extensionCount; i++)
+            {
+                IntPtr ext = Interop.Crypto.X509GetExt(_cert, i);
+
+                Interop.Crypto.CheckValidOpenSslHandle(ext);
+
+                IntPtr oidPtr = Interop.Crypto.X509ExtensionGetOid(ext);
+
+                Interop.Crypto.CheckValidOpenSslHandle(oidPtr);
+
+                string oidValue = Interop.Crypto.GetOidValue(oidPtr);
+
+                IntPtr dataPtr = Interop.Crypto.X509ExtensionGetData(ext);
+
+                Interop.Crypto.CheckValidOpenSslHandle(dataPtr);
+
+                switch (oidValue)
+                {
+                    case Oids.ApplicationCertPolicies:
+                        ApplicationCertPoliciesData = Interop.Crypto.GetAsn1StringBytes(dataPtr);
+                        break;
+                    case Oids.CertPolicies:
+                        CertPoliciesData = Interop.Crypto.GetAsn1StringBytes(dataPtr);
+                        break;
+                    case Oids.CertPolicyMappings:
+                        CertPolicyMappingsData = Interop.Crypto.GetAsn1StringBytes(dataPtr);
+                        break;
+                    case Oids.CertPolicyConstraints:
+                       CertPolicyConstraintsData = Interop.Crypto.GetAsn1StringBytes(dataPtr);
+                       break;
+                    case Oids.EnhancedKeyUsage:
+                        EnhancedKeyUsageData = Interop.Crypto.GetAsn1StringBytes(dataPtr);
+                        break;
+                    case Oids.InhibitAnyPolicyExtension:
+                        InhibitAnyPolicyExtensionData = Interop.Crypto.GetAsn1StringBytes(dataPtr);
+                        break;
+                }
+            }
+
+            return true;
+        }
+
+       // [MethodImpl(MethodImplOptions.NoOptimization | MethodImplOptions.NoInlining)]
         public IEnumerable<X509Extension> Extensions
         {
             get
@@ -429,7 +485,8 @@ namespace Internal.Cryptography.Pal
                     Interop.Crypto.CheckValidOpenSslHandle(oidPtr);
 
                     string oidValue = Interop.Crypto.GetOidValue(oidPtr);
-                    Oid oid = new Oid(oidValue);
+                    //      Oid oid = new Oid(oidValue);
+                    //Oid oid = Oid.FromOidValue(oidValue, OidGroup.All);
 
                     IntPtr dataPtr = Interop.Crypto.X509ExtensionGetData(ext);
 
@@ -438,7 +495,7 @@ namespace Internal.Cryptography.Pal
                     byte[] extData = Interop.Crypto.GetAsn1StringBytes(dataPtr);
                     bool critical = Interop.Crypto.X509ExtensionGetCritical(ext);
 
-                    extensions[i] = new X509Extension(oid, extData, critical);
+                    extensions[i] = new X509Extension(oidValue, extData, critical);
                 }
 
                 return extensions;

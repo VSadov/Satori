@@ -7,6 +7,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Runtime.CompilerServices;
 
 namespace Internal.Cryptography
 {
@@ -60,6 +61,7 @@ namespace Internal.Cryptography
         //
         // Attempts to retrieve the friendly name for an OID. Returns null if not a known or valid OID.
         //
+        [MethodImpl(MethodImplOptions.NoOptimization | MethodImplOptions.NoInlining)]
         public static string ToOid(string friendlyName, OidGroup oidGroup, bool fallBackToAllGroups)
         {
             if (friendlyName == null)
@@ -68,7 +70,9 @@ namespace Internal.Cryptography
                 return null;
 
             string mappedOid;
-            bool shouldUseCache = ShouldUseCache(oidGroup);
+            //bool shouldUseCache = ShouldUseCache(oidGroup);
+
+            bool shouldUseCache = true;
 
             if (shouldUseCache)
             {

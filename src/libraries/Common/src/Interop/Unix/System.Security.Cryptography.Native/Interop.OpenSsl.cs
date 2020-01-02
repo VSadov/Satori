@@ -283,14 +283,17 @@ internal static partial class Interop
                 }
             }
 
-            sendCount = Crypto.BioCtrlPending(context.OutputBio);
-            if (sendCount > 0)
+            int pendingCount = Crypto.BioCtrlPending(context.OutputBio);
+            if (pendingCount > 0)
             {
-                sendBuf = new byte[sendCount];
+                //Console.WriteLine("BioCtrlPending got {0} {1}", pendingCount, context.GetHashCode());
+                //sendBuf = new byte[pendingCount+10];
+                sendBuf = ArrayPool<byte>.Shared.Rent(pendingCount);
+                //Console.WriteLine("Rented {0} bytes ({1}). asked for {2}", sendBuf.Length, sendBuf.GetHashCode(), send)
 
                 try
                 {
-                    sendCount = BioRead(context.OutputBio, sendBuf, sendCount);
+                    sendCount = BioRead(context.OutputBio, sendBuf, pendingCount);
                 }
                 catch (Exception) when (handshakeException != null)
                 {
@@ -298,6 +301,10 @@ internal static partial class Interop
                 }
                 finally
                 {
+                    if (sendCount != pendingCount)
+                    {
+                        Console.WriteLine("Was {0} but read only {1}", pendingCount, sendCount);
+                    }
                     if (sendCount <= 0)
                     {
                         // Make sure we clear out the error that is stored in the queue

@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
@@ -718,24 +719,44 @@ namespace System.Net.Security
         }
 
         //
-        internal ProtocolToken NextMessage(byte[] incoming, int offset, int count)
+        internal ProtocolToken NextMessage(byte[] incoming, int offset, int count, ProtocolToken message = null)
         {
             if (NetEventSource.IsEnabled)
                 NetEventSource.Enter(this);
 
             byte[] nextmsg = null;
-            SecurityStatusPal status = GenerateToken(incoming, offset, count, ref nextmsg);
-
+            int size = 0;
+            SecurityStatusPal status = GenerateToken(incoming, offset, count, ref nextmsg, ref size);
+            //Console.WriteLine("In NExtMessge got {0}", size);
             if (!_sslAuthenticationOptions.IsServer && status.ErrorCode == SecurityStatusPalErrorCode.CredentialsNeeded)
             {
                 if (NetEventSource.IsEnabled)
                     NetEventSource.Info(this, "NextMessage() returned SecurityStatusPal.CredentialsNeeded");
 
                 SetRefreshCredentialNeeded();
-                status = GenerateToken(incoming, offset, count, ref nextmsg);
+                status = GenerateToken(incoming, offset, count, ref nextmsg, ref size);
+            }
+            ProtocolToken token;
+
+            if (message == null)
+            {
+                 token = new ProtocolToken(nextmsg, size, status);
+
+            }
+            else
+            {
+                if (message.Payload != null)
+                {
+                    message.Reset();
+                }
+               token = message;
+               token.Status = status;
+               token.Payload = nextmsg;
+               token.Size = nextmsg == null ? 0 : size;
+               //token = new ProtocolToken(nextmsg, status);
             }
 
-            ProtocolToken token = new ProtocolToken(nextmsg, status);
+            //Console.WriteLine("Got token blen={0} size={1}", nextmsg?.Length, size);
 
             if (NetEventSource.IsEnabled)
             {
@@ -764,7 +785,7 @@ namespace System.Net.Security
             Return:
                 status - error information
         --*/
-        private SecurityStatusPal GenerateToken(byte[] input, int offset, int count, ref byte[] output)
+        private SecurityStatusPal GenerateToken(byte[] input, int offset, int count, ref byte[] output, ref int size)
         {
             if (NetEventSource.IsEnabled) NetEventSource.Enter(this, $"_refreshCredentialNeeded = {_refreshCredentialNeeded}");
 
@@ -780,7 +801,8 @@ namespace System.Net.Security
                 throw new ArgumentOutOfRangeException(nameof(count));
             }
 
-            byte[] result = Array.Empty<byte>();
+            //byte[] result = Array.Empty<byte>();
+            byte[] result = null;
             SecurityStatusPal status = default;
             bool cachedCreds = false;
             byte[] thumbPrint = null;
@@ -808,6 +830,7 @@ namespace System.Net.Security
                                       ref _securityContext,
                                       input, offset, count,
                                       ref result,
+                                      ref size,
                                       _sslAuthenticationOptions);
                     }
                     else
@@ -818,6 +841,7 @@ namespace System.Net.Security
                                        _sslAuthenticationOptions.TargetHost,
                                        input, offset, count,
                                        ref result,
+                                       ref size,
                                        _sslAuthenticationOptions);
                     }
                 } while (cachedCreds && _credentialsHandle == null);
@@ -840,16 +864,18 @@ namespace System.Net.Security
                     //
                     if (!cachedCreds && _securityContext != null && !_securityContext.IsInvalid && _credentialsHandle != null && !_credentialsHandle.IsInvalid)
                     {
-                        SslSessionsCache.CacheCredential(_credentialsHandle, thumbPrint, _sslAuthenticationOptions.EnabledSslProtocols, _sslAuthenticationOptions.IsServer, _sslAuthenticationOptions.EncryptionPolicy);
+                       //FURT WTF SslSessionsCache.CacheCredential(_credentialsHandle, thumbPrint, _sslAuthenticationOptions.EnabledSslProtocols, _sslAuthenticationOptions.IsServer, _sslAuthenticationOptions.EncryptionPolicy);
                     }
                 }
             }
 
             output = result;
+            //Console.WriteLine("GenerateToken blen={0} zie={1} ctx={2}", output?.Length, size, _securityContext?.GetHashCode());
             if (_negotiatedApplicationProtocol == default)
             {
                 // try to get ALPN info unless we already have it. (this function can be called multiple times)
                 byte[] alpnResult = SslStreamPal.GetNegotiatedApplicationProtocol(_securityContext);
+                //Console.WriteLine("ALPN? {0}", alpnResult?.Length);
                 _negotiatedApplicationProtocol = alpnResult == null ? default : new SslApplicationProtocol(alpnResult, false);
             }
 
@@ -1153,11 +1179,12 @@ namespace System.Net.Security
         private ProtocolToken GenerateAlertToken()
         {
             byte[] nextmsg = null;
+            int size = 0;
 
             SecurityStatusPal status;
-            status = GenerateToken(null, 0, 0, ref nextmsg);
+            status = GenerateToken(null, 0, 0, ref nextmsg, ref size);
 
-            ProtocolToken token = new ProtocolToken(nextmsg, status);
+            ProtocolToken token = new ProtocolToken(nextmsg, size, status);
 
             return token;
         }
@@ -1306,6 +1333,22 @@ namespace System.Net.Security
             Status = status;
             Payload = data;
             Size = data != null ? data.Length : 0;
+        }
+        internal ProtocolToken(byte[] data, int size, SecurityStatusPal status)
+        {
+            Status = status;
+            Payload = data;
+            Size = size;
+        }
+
+        internal void Reset()
+        {
+            if (Payload != null)
+            {
+                ArrayPool<byte>.Shared.Return(Payload);
+                Payload = null;
+            }
+            Size = 0;
         }
 
         internal Exception GetException()

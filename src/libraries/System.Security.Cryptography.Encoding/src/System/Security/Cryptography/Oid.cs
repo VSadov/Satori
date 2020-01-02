@@ -3,16 +3,35 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 
 using Internal.Cryptography;
+
+
+using System.Runtime.CompilerServices;
 
 namespace System.Security.Cryptography
 {
     public sealed class Oid
     {
+        private static ConcurrentDictionary<string, Oid>[] s_oidCache = new ConcurrentDictionary<string, Oid>[20];
+
+        static Oid() {
+            Console.WriteLine("Static contructor called");
+            //foreach (var group in OidGroup.GetNames())
+            foreach (var group in Enum.GetValues(typeof(OidGroup)))
+            {
+                s_oidCache[(int)group] = new ConcurrentDictionary<string, Oid>();
+               // Console.WriteLine("Got {0}", group);
+
+
+            }
+        }
+
         public Oid() { }
 
+        [MethodImpl(MethodImplOptions.NoOptimization | MethodImplOptions.NoInlining)]
         public Oid(string oid)
         {
             // If we were passed the friendly name, retrieve the value String.
@@ -60,11 +79,23 @@ namespace System.Security.Cryptography
             if (oidValue == null)
                 throw new ArgumentNullException(nameof(oidValue));
 
-            string friendlyName = OidLookup.ToFriendlyName(oidValue, group, fallBackToAllGroups: false);
-            if (friendlyName == null)
-                throw new CryptographicException(SR.Cryptography_Oid_InvalidValue);
+           // Oid oid =    //     private static readonly ConcurrentDictionary<string, string> s_lateBoundOidToFriendlyName =
+     //       new ConcurrentDictionary<string, string>();
 
-            return new Oid(oidValue, friendlyName, group);
+        //  if (  s_oidCache[(int)group].TryGetValue(oidValue, out Oid cachedOid))
+        //        return cachedOid;
+        //    }
+          string friendlyName = OidLookup.ToFriendlyName(oidValue, group, fallBackToAllGroups: false);
+            if (friendlyName == null)
+            {
+                //throw new CryptographicException(SR.Cryptography_Oid_InvalidValue);
+                friendlyName = oidValue;
+            }
+            //s_lateBoundOidToFriendlyName.Add
+            Oid oid = new Oid(oidValue, friendlyName, group);
+            s_oidCache[(int)group].TryAdd(oidValue, oid);
+
+            return oid;
         }
 
         public string Value

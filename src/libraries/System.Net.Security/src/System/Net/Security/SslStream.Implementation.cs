@@ -347,7 +347,7 @@ namespace System.Net.Security
         internal async Task ForceAuthenticationAsync(bool receiveFirst, byte[] buffer, CancellationToken cancellationToken)
         {
             _framing = Framing.Unknown;
-            ProtocolToken message;
+            ProtocolToken message = null;
             SslReadAsync adapter = new SslReadAsync(this, cancellationToken);
 
             if (!receiveFirst)
@@ -358,17 +358,20 @@ namespace System.Net.Security
                     // tracing done in NextMessage()
                     throw new AuthenticationException(SR.net_auth_SSPI, message.GetException());
                 }
-
-                await InnerStream.WriteAsync(message.Payload, cancellationToken).ConfigureAwait(false);
+                //WriteLine("Writing first {0} byes of data {1}", message.Size, _context.GetHashCode());
+                await InnerStream.WriteAsync(message.Payload, 0, message.Size, cancellationToken).ConfigureAwait(false);
+                message.Reset();
             }
 
             do
             {
-                message  = await ReceiveBlobAsync(adapter, buffer, cancellationToken).ConfigureAwait(false);
+                message = await ReceiveBlobAsync(adapter, buffer, message, cancellationToken).ConfigureAwait(false);
                 if (message.Size > 0)
                 {
                     // If there is message send it out even if call failed. It may contain TLS Alert.
-                    await InnerStream.WriteAsync(message.Payload, cancellationToken).ConfigureAwait(false);
+                    //Console.WriteLine("Writing second {0} bytes of data {1}", message.Size, _context.GetHashCode());
+                    await InnerStream.WriteAsync(message.Payload, 0, message.Size, cancellationToken).ConfigureAwait(false);
+                    message.Reset();
                 }
 
                 if (message.Failed)
@@ -495,7 +498,7 @@ namespace System.Net.Security
             SendBlob(buffer, readBytes + restBytes);
         }
 
-        private async ValueTask<ProtocolToken> ReceiveBlobAsync(SslReadAsync adapter, byte[] buffer, CancellationToken cancellationToken)
+        private async ValueTask<ProtocolToken> ReceiveBlobAsync(SslReadAsync adapter, byte[] buffer, ProtocolToken message, CancellationToken cancellationToken)
         {
             ResetReadBuffer();
             int readBytes = await FillBufferAsync(adapter, SecureChannel.ReadHeaderSize).ConfigureAwait(false);
@@ -527,10 +530,12 @@ namespace System.Net.Security
                 }
             }
 
-            ProtocolToken token = _context.NextMessage(_internalBuffer, _internalOffset, frameSize);
+            //Console.WriteLine("-------Procssing {0} of data {1} {2}", frameSize, _context.GetHashCode(), _context.IsServer);
+            //ProtocolToken token = _context.NextMessage(_internalBuffer, _internalOffset, frameSize);
+            message = _context.NextMessage(_internalBuffer, _internalOffset, frameSize, message);
             ConsumeBufferedBytes(frameSize);
 
-            return token;
+            return message;
         }
 
         //
