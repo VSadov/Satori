@@ -4,7 +4,7 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 
 add_definitions(-DPIC=1 -DOPENSSL_API_COMPAT=0x10100000L -D_CRT_SECURE_NO_WARNINGS)
-ADD_DEFINITIONS ( /MT )
+#ADD_DEFINITIONS ( /MT )
 
 if(CMAKE_STATIC_LIB_LINK)
    set(CMAKE_FIND_LIBRARY_SUFFIXES .a)
@@ -71,6 +71,9 @@ add_library(security.cryptography.native.openssl
 # Disable the "lib" prefix.
 set_target_properties(security.cryptography.native.openssl PROPERTIES PREFIX "")
 
+# Allow specification of arguments that should be passed to the linker
+SET_TARGET_PROPERTIES(security.cryptography.native.openssl PROPERTIES LINK_FLAGS ${__LinkArgs})
+
 target_link_libraries(security.cryptography.native.openssl
     ${OPENSSL_CRYPTO_LIBRARY}
     ${OPENSSL_SSL_LIBRARY}
@@ -97,5 +100,9 @@ function(install_library_and_symbols targetName)
 endfunction()
 
 
-install_library_and_symbols (security.cryptography.native.openssl)
+install (TARGETS security.cryptography.native.openssl DESTINATION .)
+install (FILES ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_BUILD_TYPE}/security.cryptography.native.openssl.pdb DESTINATION .)
+
+
+#install_library_and_symbols (security.cryptography.native.openssl)
 #install (TARGETS System.Security.Cryptography.Native.OpenSsl-Static DESTINATION .)

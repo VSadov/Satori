@@ -20,7 +20,7 @@ namespace System.Net.Security
 #endif
         private readonly SafeX509Handle _certificate;
 
-        public SafeFreeCertContext(SafeX509Handle certificate) : base(IntPtr.Zero, true)
+        public SafeFreeCertContext(SafeX509Handle certificate = null) : base(IntPtr.Zero, true)
         {
             // In certain scenarios (e.g. server querying for a client cert), the
             // input certificate may be invalid and this is OK
@@ -32,6 +32,12 @@ namespace System.Net.Security
                 _certificate = certificate;
                 handle = _certificate.DangerousGetHandle();
             }
+        }
+
+        // This must be ONLY called from this file.
+        internal void Set(IntPtr value)
+        {
+            this.handle = value;
         }
 
         public override bool IsInvalid

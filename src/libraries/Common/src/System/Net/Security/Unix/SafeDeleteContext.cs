@@ -16,7 +16,10 @@ namespace System.Net.Security
 #endif
         private SafeFreeCredentials _credential;
 
-        protected SafeDeleteContext(SafeFreeCredentials credential)
+        //internal SafeHandle _handle;
+        internal Interop.SspiCli.CredHandle _handle;
+
+        protected SafeDeleteContext(SafeFreeCredentials credential = null)
             : base(IntPtr.Zero, true)
         {
             Debug.Assert((null != credential), "Invalid credential passed to SafeDeleteContext");
@@ -41,6 +44,45 @@ namespace System.Net.Security
             _credential.DangerousRelease();
             _credential = null;
             return true;
+        }
+
+        internal static unsafe int CompleteAuthToken(
+            ref SafeDeleteSslContext refContext,
+            in SecurityBuffer inSecBuffer)
+        {
+            throw new PlatformNotSupportedException();
+        }
+
+        internal static unsafe int AcceptSecurityContext(
+            ref SafeFreeCredentials inCredentials,
+            ref SafeDeleteSslContext refContext,
+            Interop.SspiCli.ContextFlags inFlags,
+            Interop.SspiCli.Endianness endianness,
+            ReadOnlySpan<SecurityBuffer> inSecBuffers,
+            ref SecurityBuffer outSecBuffer,
+            ref Interop.SspiCli.ContextFlags outFlags)
+        {
+            throw new PlatformNotSupportedException();
+        }
+
+        internal static unsafe int InitializeSecurityContext(
+            ref SafeFreeCredentials inCredentials,
+            ref SafeDeleteSslContext refContext,
+            string targetName,
+            Interop.SspiCli.ContextFlags inFlags,
+            Interop.SspiCli.Endianness endianness,
+            ReadOnlySpan<SecurityBuffer> inSecBuffers,
+            ref SecurityBuffer outSecBuffer,
+            ref Interop.SspiCli.ContextFlags outFlags)
+        {
+            throw new PlatformNotSupportedException();
+        }
+
+        internal static unsafe int ApplyControlToken(
+            ref SafeDeleteContext refContext,
+            in SecurityBuffer inSecBuffer)
+        {
+            throw new PlatformNotSupportedException();
         }
     }
 }

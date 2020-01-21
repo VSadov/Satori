@@ -1,13 +1,19 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <AssemblyName>System.Net.Security</AssemblyName>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Configurations>$(NetCoreAppCurrent)-OSX-Debug;$(NetCoreAppCurrent)-OSX-Release;$(NetCoreAppCurrent)-Unix-Debug;$(NetCoreAppCurrent)-Unix-Release;$(NetCoreAppCurrent)-Windows_NT-Debug;$(NetCoreAppCurrent)-Windows_NT-Release</Configurations>
+    <Configurations>netcoreapp-OSX-Debug;netcoreapp-OSX-Release;netcoreapp-Unix-Debug;netcoreapp-Unix-Release;netcoreapp-Windows_NT-Debug;netcoreapp5.0-Windows_NT-Release</Configurations>
     <!-- This is needed so that code for TlsCipherSuite will have no namespace (causes compile errors) when used within T4 template  -->
     <DefineConstants>$(DefineConstants);PRODUCT</DefineConstants>
+    <NoWarn>$(NoWarn);BCL0015</NoWarn>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(TargetsOSX)' == 'true' ">
     <DefineConstants>$(DefineConstants);SYSNETSECURITY_NO_OPENSSL</DefineConstants>
+    <UseOpenSsl>false</UseOpenSsl>
+  </PropertyGroup>
+  <PropertyGroup>
+    <UseOpenSsl Condition=" '$(TargetsWindows)' == 'true' and $(OPENSSLDIR) == ''">false</UseOpenSsl>
+    <UseOpenSsl Condition="'$(UseOpenSsl)' == ''">true</UseOpenSsl>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="System\Net\CertificateValidationPal.cs" />
@@ -112,14 +118,14 @@
     </Compile>
     <None Include="System\Net\Security\TlsCipherSuiteNameParser.ttinclude" />
   </ItemGroup>
-  <ItemGroup Condition=" '$(TargetsUnix)' == 'true' ">
+  <ItemGroup Condition=" '$(TargetsUnix)' == 'true' or '$(UseOpenSsl)' == 'true' ">
     <Compile Include="System\Net\Security\TlsCipherSuiteData.Lookup.cs">
       <DesignTime>True</DesignTime>
       <AutoGen>True</AutoGen>
       <DependentUpon>TlsCipherSuiteData.Lookup.tt</DependentUpon>
     </Compile>
   </ItemGroup>
-  <ItemGroup Condition=" '$(TargetsUnix)' != 'true' ">
+  <ItemGroup Condition=" '$(TargetsUnix)' != 'true' or '$(UseOpenSsl)' == 'true' ">
     <None Include="System\Net\Security\TlsCipherSuiteData.Lookup.cs">
       <DesignTime>True</DesignTime>
       <AutoGen>True</AutoGen>
@@ -140,14 +146,30 @@
     <None Include="System\Net\Security\TlsCipherSuite.tt" />
     <None Include="System\Net\Security\TlsCipherSuiteData.Lookup.tt" />
   </ItemGroup>
-  <ItemGroup Condition=" '$(TargetsWindows)' == 'true'">
+  <ItemGroup Condition=" '$(TargetsWindows)' == 'true' and '$(UseOpenSsl)' != 'true' ">
     <Compile Include="System\Net\CertificateValidationPal.Windows.cs" />
     <Compile Include="System\Net\Security\CipherSuitesPolicyPal.Windows.cs" />
-    <Compile Include="System\Net\Security\NegotiateStreamPal.Windows.cs" />
-    <Compile Include="System\Net\Security\NetEventSource.Security.Windows.cs" />
     <Compile Include="System\Net\Security\SslStreamPal.Windows.cs" />
     <Compile Include="System\Net\Security\SslConnectionInfo.Windows.cs" />
     <Compile Include="System\Net\Security\StreamSizes.Windows.cs" />
+    <Compile Include="$(CommonPath)Interop\Windows\SspiCli\SecuritySafeHandles.cs">
+      <Link>Common\Interop\Windows\SspiCli\SecuritySafeHandles.cs</Link>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup Condition=" '$(TargetsWindows)' == 'true' and '$(UseOpenSsl)' == 'true' ">
+    <Compile Include="$(CommonPath)Interop\Windows\SspiCli\SslSafeHandles.cs">
+      <Link>Common\Interop\Windows\SspiCli\SslSafeHandles.cs</Link>
+    </Compile>
+    <Compile Include="$(CoreLibSharedDir)Interop\Windows\Interop.Errors.cs">
+      <Link>Interop\Windows\Interop.Errors.cs</Link>
+    </Compile>
+    <Compile Include="$(CoreLibSharedDir)Interop\Windows\Kernel32\Interop.FormatMessage.cs">
+      <Link>Interop\Windows\Kernel32\Interop.FormatMessage.cs</Link>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup Condition=" '$(TargetsWindows)' == 'true' ">
+    <Compile Include="System\Net\Security\NegotiateStreamPal.Windows.cs" />
+    <Compile Include="System\Net\Security\NetEventSource.Security.Windows.cs" />
     <Compile Include="$(CommonPath)System\Net\Security\SecurityBuffer.Windows.cs">
       <Link>Common\System\Net\Security\SecurityBuffer.Windows.cs</Link>
     </Compile>
@@ -231,18 +253,22 @@
     <Compile Include="$(CommonPath)System\Collections\Generic\BidirectionalDictionary.cs">
       <Link>Common\System\Collections\Generic\BidirectionalDictionary.cs</Link>
     </Compile>
+    <!--
     <Compile Include="$(CommonPath)Interop\Windows\SspiCli\SafeDeleteContext.cs">
       <Link>Common\Interop\Windows\SspiCli\SafeDeleteContext.cs</Link>
     </Compile>
+-->
     <Compile Include="$(CommonPath)Interop\Windows\SspiCli\SecurityPackageInfo.cs">
       <Link>Common\Interop\Windows\SspiCli\SecurityPackageInfo.cs</Link>
     </Compile>
     <Compile Include="$(CommonPath)Interop\Windows\SspiCli\SecurityPackageInfoClass.cs">
       <Link>Common\Interop\Windows\SspiCli\SecurityPackageInfoClass.cs</Link>
     </Compile>
+    <!--
     <Compile Include="$(CommonPath)Interop\Windows\SspiCli\SecuritySafeHandles.cs">
       <Link>Common\Interop\Windows\SspiCli\SecuritySafeHandles.cs</Link>
     </Compile>
+    -->
     <Compile Include="$(CommonPath)Interop\Windows\SspiCli\SSPIAuthType.cs">
       <Link>Common\Interop\Windows\SspiCli\SSPIAuthType.cs</Link>
     </Compile>
@@ -287,34 +313,36 @@
     <Compile Include="$(CommonPath)System\Net\ContextFlagsAdapterPal.Unix.cs">
       <Link>Common\System\Net\ContextFlagsAdapterPal.Unix.cs</Link>
     </Compile>
-    <Compile Include="$(CommonPath)System\Net\Http\TlsCertificateExtensions.cs">
-      <Link>Common\System\Net\Http\TlsCertificateExtensions.cs</Link>
-    </Compile>
     <Compile Include="$(CommonPath)System\Net\Security\NegotiateStreamPal.Unix.cs">
       <Link>Common\System\Net\Security\NegotiateStreamPal.Unix.cs</Link>
-    </Compile>
-    <Compile Include="$(CommonPath)System\Net\Security\Unix\SafeDeleteContext.cs">
-      <Link>Common\System\Net\Security\Unix\SafeDeleteContext.cs</Link>
     </Compile>
     <Compile Include="$(CommonPath)System\Net\Security\Unix\SafeDeleteNegoContext.cs">
       <Link>Common\System\Net\Security\Unix\SafeDeleteNegoContext.cs</Link>
     </Compile>
-    <Compile Include="$(CommonPath)System\Net\Security\Unix\SafeFreeCredentials.cs">
-      <Link>Common\System\Net\Security\Unix\SafeFreeCredentials.cs</Link>
-    </Compile>
     <Compile Include="$(CommonPath)System\Net\Security\Unix\SafeFreeNegoCredentials.cs">
       <Link>Common\System\Net\Security\Unix\SafeFreeNegoCredentials.cs</Link>
+    </Compile>
+    <Compile Include="System\Net\Security\NegotiateStreamPal.Unix.cs" />
+  </ItemGroup>
+  <ItemGroup Condition=" '$(TargetsUnix)' == 'true' or '$(UseOpenSsl)' == 'true' ">
+    <Compile Include="System\Net\Security\TlsCipherSuiteData.cs" />
+    <Compile Include="System\Net\Security\Pal.Managed\EndpointChannelBindingToken.cs" />
+    <Compile Include="System\Net\Security\Pal.Managed\SafeChannelBindingHandle.cs" />
+    <Compile Include="System\Net\Security\SslConnectionInfo.Unix.cs" />
+    <Compile Include="$(CommonPath)System\Net\Http\TlsCertificateExtensions.cs">
+      <Link>Common\System\Net\Http\TlsCertificateExtensions.cs</Link>
+    </Compile>
+    <Compile Include="$(CommonPath)System\Net\Security\Unix\SafeFreeCredentials.cs">
+      <Link>Common\System\Net\Security\Unix\SafeFreeCredentials.cs</Link>
     </Compile>
     <Compile Include="$(CommonPath)System\Net\Security\Unix\SecChannelBindings.cs">
       <Link>Common\System\Net\Security\Unix\SecChannelBindings.cs</Link>
     </Compile>
-    <Compile Include="System\Net\Security\NegotiateStreamPal.Unix.cs" />
-    <Compile Include="System\Net\Security\Pal.Managed\EndpointChannelBindingToken.cs" />
-    <Compile Include="System\Net\Security\Pal.Managed\SafeChannelBindingHandle.cs" />
-    <Compile Include="System\Net\Security\SslConnectionInfo.Unix.cs" />
-    <Compile Include="System\Net\Security\TlsCipherSuiteData.cs" />
+    <Compile Include="$(CommonPath)System\Net\Security\Unix\SafeDeleteContext.cs">
+      <Link>Common\System\Net\Security\Unix\SafeDeleteContext.cs</Link>
+    </Compile>
   </ItemGroup>
-  <ItemGroup Condition=" '$(TargetsUnix)' == 'true' and '$(TargetsOSX)' != 'true' ">
+  <ItemGroup Condition=" '$(UseOpenSsl)' == 'true' ">
     <Compile Include="System\Net\CertificateValidationPal.Unix.cs" />
     <Compile Include="System\Net\Security\CipherSuitesPolicyPal.Linux.cs" />
     <Compile Include="System\Net\Security\SslStreamPal.Unix.cs" />
@@ -464,8 +492,9 @@
     <Reference Include="System.Threading" />
     <Reference Include="System.Threading.Tasks" />
     <Reference Include="System.Threading.ThreadPool" />
+    <Reference Include="System.Console" />
   </ItemGroup>
-  <ItemGroup Condition="'$(TargetsUnix)' == 'true'">
+  <ItemGroup Condition="'$(TargetsUnix)' == 'true' or '$(UseOpenSsl)' == 'true'">
     <Reference Include="System.Console" Condition="'$(ConfigurationGroup)' == 'Debug'" />
     <Reference Include="System.Diagnostics.StackTrace" />
     <Reference Include="System.Security.Cryptography.Algorithms" />

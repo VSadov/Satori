@@ -56,6 +56,11 @@ namespace System.Net.Security
             }
         }
 
+        protected override bool ReleaseHandle()
+        {
+            return false;
+        }
+
         protected override void Dispose(bool disposing)
         {
             if (disposing)
@@ -68,6 +73,22 @@ namespace System.Net.Security
             }
 
             base.Dispose(disposing);
+        }
+
+        internal static int ApplyControlToken2(
+            ref SafeDeleteContext refContext,
+            in SecurityBuffer inSecBuffer)
+        {
+            throw new PlatformNotSupportedException();
+        }
+
+         public static int AcquireCredentialsHandle(
+            string package,
+            Interop.SspiCli.CredentialUse intent,
+            ref SafeSspiAuthDataHandle authdata,
+            out SafeFreeCredentials outCredential)
+        {
+            throw new PlatformNotSupportedException();
         }
     }
 }

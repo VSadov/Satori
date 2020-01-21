@@ -119,10 +119,12 @@
         </Compile>
         <Compile Include="$(CommonPath)Interop\Unix\System.Net.Security.Native\Interop.NetSecurityNative.IsNtlmInstalled.cs">
           <Link>Common\Interop\Unix\System.Net.Security.Native\Interop.NetSecurityNative.IsNtlmInstalled.cs</Link>
-        </Compile>
-        <Compile Include="$(CommonPath)Interop\Unix\Interop.Libraries.cs">
+  </Compile>
+  <!---
+	<Compile Include="$(CommonPath)Interop\Unix\Interop.Libraries.cs">
           <Link>Common\Interop\Unix\Interop.Libraries.cs</Link>
-        </Compile>
+	</Compile>
+-->
       </ItemGroup>
       <ItemGroup>
         <PackageReference Include="System.Net.TestData" Version="$(SystemNetTestDataVersion)" />

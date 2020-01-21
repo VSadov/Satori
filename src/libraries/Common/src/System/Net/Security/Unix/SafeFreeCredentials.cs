@@ -21,6 +21,32 @@ namespace System.Net.Security
         protected SafeFreeCredentials(IntPtr handle, bool ownsHandle) : base(handle, ownsHandle)
         {
         }
+
+        public static unsafe int AcquireCredentialsHandle(
+            string package,
+            Interop.SspiCli.CredentialUse intent,
+            ref SafeSspiAuthDataHandle authdata,
+            out SafeFreeCredentials outCredential)
+        {
+            throw new PlatformNotSupportedException();
+        }
+
+        public static unsafe int AcquireCredentialsHandle(
+            string package,
+            Interop.SspiCli.CredentialUse intent,
+            ref Interop.SspiCli.SCHANNEL_CRED authdata,
+            out SafeFreeCredentials outCredential)
+        {
+            throw new PlatformNotSupportedException();
+        }
+
+        public static unsafe int AcquireDefaultCredential(
+            string package,
+            Interop.SspiCli.CredentialUse intent,
+            out SafeFreeCredentials outCredential)
+        {
+            throw new PlatformNotSupportedException();
+        }
     }
 
     //
@@ -69,6 +95,14 @@ namespace System.Net.Security
 
             Target = null;
             return true;
+        }
+    }
+
+    internal sealed class SafeFreeContextBufferChannelBinding_SECURITY : SafeFreeContextBufferChannelBinding
+    {
+        protected override bool ReleaseHandle()
+        {
+            return Interop.SspiCli.FreeContextBuffer(handle) == 0;
         }
     }
 }
