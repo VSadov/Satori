@@ -276,7 +276,6 @@ namespace System.Net.Sockets
             // Called for connectionless protocols.
             SocketError socketError = SocketPal.Connect(handle, _socketAddress.Buffer, _socketAddress.Size);
             FinishOperationSync(socketError, 0, SocketFlags.None);
-            Debug.Assert(socketError != socketError.IOPending);
             return socketError;
         }
 
