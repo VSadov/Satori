@@ -3779,7 +3779,15 @@ namespace System.Net.Sockets
                 SocketError socketError = SocketError.Success;
                 try
                 {
-                    socketError = e.DoOperationConnect(this, _handle);
+                    if (CanUseConnectEx(endPointSnapshot))
+                    {
+                        socketError = e.DoOperationConnectEx(this, _handle);
+                    }
+                    else
+                    {
+                        // For connectionless protocols, Connect is not an I/O call.
+                        socketError = e.DoOperationConnect(this, _handle);
+                    }
                 }
                 catch
                 {

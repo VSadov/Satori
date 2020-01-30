@@ -95,6 +95,9 @@ namespace System.Net.Sockets
             CompletionCallback(0, SocketFlags.None, socketError);
         }
 
+        internal unsafe SocketError DoOperationConnectEx(Socket socket, SafeSocketHandle handle)
+            => DoOperationConnect(socket, handle);
+
         internal unsafe SocketError DoOperationConnect(Socket socket, SafeSocketHandle handle)
         {
             SocketError socketError = handle.AsyncContext.ConnectAsync(_socketAddress.Buffer, _socketAddress.Size, ConnectCompletionCallback);
