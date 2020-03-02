@@ -151,7 +151,7 @@ namespace System.Net.Sockets
 
         private async Task DoConnectAsync(IPAddress[] addresses, int port)
         {
-            Exception lastException = null;
+            Exception? lastException = null;
             foreach (IPAddress address in addresses)
             {
                 try
@@ -175,7 +175,7 @@ namespace System.Net.Sockets
                 throw new ArgumentNullException(nameof(host));
             }
 
-            if (IPAddress.TryParse(host, out IPAddress parsedAddress))
+            if (IPAddress.TryParse(host, out IPAddress? parsedAddress))
             {
                 return ConnectAsync(new IPEndPoint(parsedAddress, port));
             }
