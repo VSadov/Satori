@@ -11,10 +11,10 @@ Param(
   [switch]$allconfigurations,
   [switch]$coverage,
   [string]$testscope,
-  [string]$arch,
+  [string]$arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant(),
   [string]$subsetCategory,
   [string]$subset,
-  [ValidateSet("Debug","Release","Checked")][string]$runtimeConfiguration,
+  [ValidateSet("Debug","Release","Checked")][string]$runtimeConfiguration = "Debug",
   [ValidateSet("Debug","Release")][string]$librariesConfiguration,
   [Parameter(ValueFromRemainingArguments=$true)][String[]]$properties
 )
@@ -39,7 +39,7 @@ function Get-Help() {
   Write-Host "  -build                  Build all source projects (short: -b)"
   Write-Host "  -buildtests             Build all test projects"
   Write-Host "  -rebuild                Rebuild all source projects"
-  Write-Host "  -test                   Run all unit tests (short: -t)"
+  Write-Host "  -test                   Build and run tests (short: -t)"
   Write-Host "  -pack                   Package build outputs into NuGet packages"
   Write-Host "  -sign                   Sign build outputs"
   Write-Host "  -publish                Publish artifacts (e.g. symbols)"
@@ -102,6 +102,9 @@ if ($vs) {
   # Put our local dotnet.exe on PATH first so Visual Studio knows which one to use
   $env:PATH=($env:DOTNET_ROOT + ";" + $env:PATH);
 
+  # Respect the RuntimeConfiguration variable for building inside VS with different runtime configurations
+  $env:RUNTIMECONFIGURATION=$runtimeConfiguration
+
   # Launch Visual Studio with the locally defined environment variables
   ."$vs"
 
@@ -144,13 +147,15 @@ foreach ($argument in $PSBoundParameters.Keys)
     "configuration"        { $arguments += " -configuration $((Get-Culture).TextInfo.ToTitleCase($($PSBoundParameters[$argument])))" }
     "runtimeConfiguration" { $arguments += " /p:RuntimeConfiguration=$((Get-Culture).TextInfo.ToTitleCase($($PSBoundParameters[$argument])))" }
     "framework"            { $arguments += " /p:BuildTargetFramework=$($PSBoundParameters[$argument].ToLowerInvariant())" }
-    "os"                   { $arguments += " /p:OSGroup=$($PSBoundParameters[$argument])" }
+    "os"                   { $arguments += " /p:TargetOS=$($PSBoundParameters[$argument])" }
     "allconfigurations"    { $arguments += " /p:BuildAllConfigurations=true" }
-    "arch"                 { $arguments += " /p:ArchGroup=$($PSBoundParameters[$argument]) /p:TargetArchitecture=$($PSBoundParameters[$argument])" }
+    "arch"                 { $arch = $PSBoundParameters[$argument]; $arguments += " /p:ArchGroup=$arch /p:TargetArchitecture=$arch" }
     "properties"           { $arguments += " " + $properties }
     default                { $arguments += " /p:$argument=$($PSBoundParameters[$argument])" }
   }
 }
+
+$env:__DistroRid="win-$arch"
 
 Invoke-Expression "& `"$PSScriptRoot/common/build.ps1`" $arguments"
 exit $lastExitCode

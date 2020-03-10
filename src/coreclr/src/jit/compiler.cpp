@@ -3795,6 +3795,7 @@ _SetMinOpts:
         !opts.jitFlags->IsSet(JitFlags::JIT_FLAG_MIN_OPT) && !opts.compDbgCode)
     {
         info.compCompHnd->setMethodAttribs(info.compMethodHnd, CORINFO_FLG_SWITCHED_TO_MIN_OPT);
+        opts.jitFlags->Clear(JitFlags::JIT_FLAG_TIER1);
         compSwitchedToMinOpts = true;
     }
 
@@ -8652,10 +8653,6 @@ void cTreeFlags(Compiler* comp, GenTree* tree)
 
             case GT_INDEX:
 
-                if (tree->gtFlags & GTF_INX_REFARR_LAYOUT)
-                {
-                    chars += printf("[INX_REFARR_LAYOUT]");
-                }
                 if (tree->gtFlags & GTF_INX_STRING_LAYOUT)
                 {
                     chars += printf("[INX_STRING_LAYOUT]");
