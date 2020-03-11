@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -28,6 +29,18 @@ namespace System.Net.Sockets.Tests
                     Assert.True(client.Connected);
                 }
             }
+        }
+
+        [Theory]
+        [MemberData(nameof(Loopbacks))]
+        public async Task Connect_Udp_Success(IPAddress listenAt)
+        {
+            using Socket listener = new Socket(listenAt.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+            using Socket client = new Socket(listenAt.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+            listener.Bind(new IPEndPoint(listenAt, 0));
+
+            await ConnectAsync(client, new IPEndPoint(listenAt, ((IPEndPoint)listener.LocalEndPoint).Port));
+            Assert.True(client.Connected);
         }
 
         [OuterLoop]

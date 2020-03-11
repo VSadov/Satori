@@ -1168,6 +1168,13 @@ namespace System.Net.Sockets
         {
             try
             {
+                if (_currentSocket!.SocketType != SocketType.Stream)
+                {
+                    // With connectionless sockets, regular connect is used instead of ConnectEx,
+                    // attempting to set SO_UPDATE_CONNECT_CONTEXT will result in an error.
+                    return SocketError.Success;
+                }
+
                 // Update the socket context.
                 SocketError socketError = Interop.Winsock.setsockopt(
                     _currentSocket!.SafeHandle,
