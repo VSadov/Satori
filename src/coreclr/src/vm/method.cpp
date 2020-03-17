@@ -10,6 +10,7 @@
 // file:../../doc/BookOfTheRuntime/ClassLoader/MethodDescDesign.doc
 //
 
+#pragma optimize("", off)
 
 #include "common.h"
 #include "excep.h"

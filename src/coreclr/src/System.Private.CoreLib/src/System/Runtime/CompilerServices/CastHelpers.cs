@@ -511,7 +511,7 @@ namespace System.Runtime.CompilerServices
         [DebuggerHidden]
         [StackTraceHidden]
         [DebuggerStepThrough]
-        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+
         private static ref object? LdelemaRef(Array array, int index, void* type)
         {
             // this will throw appropriate exceptions if array is null or access is out of range.

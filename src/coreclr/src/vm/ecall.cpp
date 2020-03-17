@@ -6,7 +6,7 @@
 // Handles our private native calling interface.
 //
 
-
+#pragma optimize("", off)
 
 #include "common.h"
 
@@ -212,10 +212,17 @@ void ECall::PopulateManagedCastHelpers()
     SetJitHelperFunction(CORINFO_HELP_ARRADDR_ST, pDest);
 
     pMD = MscorlibBinder::GetMethod((BinderMethodID)(METHOD__CASTHELPERS__LDELEMAREF));
-    pMD->DoPrestub(NULL);
-    // This helper is marked AggressiveOptimization and its native code is in its final form.
+    // disable tiering to bypass quick-JIT if need to JIT
+    if (pMD->DetermineAndSetIsEligibleForTieredCompilation())
+    {
+        pMD->GetLoaderAllocator()->GetCallCountingManager()->DisableCallCounting(NativeCodeVersion(pMD));
+    }
+
+    PrepareCodeConfig config(NativeCodeVersion(pMD), false, true);
+    pDest = pMD->PrepareCode(&config);
+
     // Get the code directly to avoid PreStub indirection.
-    pDest = pMD->GetNativeCode();
+    // pDest = pMD->GetNativeCode();
     SetJitHelperFunction(CORINFO_HELP_LDELEMA_REF, pDest);
 #endif  //CROSSGEN_COMPILE
 }
