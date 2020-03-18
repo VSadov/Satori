@@ -140,7 +140,7 @@
           DependsOnTargets="
             FindDownloadedArtifacts;
             SignPackages;
-            CreateChecksums
+            CreateChecksums;
             PreparePublishToAzureBlobFeed;
             PreparePublishFilesToAzureBlobFeed">
     <Message Importance="High" Text="Complete!" />
