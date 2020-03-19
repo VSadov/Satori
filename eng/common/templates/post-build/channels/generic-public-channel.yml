@@ -136,7 +136,7 @@ stages:
           project: $(AzDOProjectName)
           pipeline: $(AzDOPipelineId)
           buildId: $(AzDOBuildId)
-          artifactName: PackageArtifacts/
+          artifactName: PackageArtifacts
           downloadPath: '$(Build.ArtifactStagingDirectory)'
 
       - task: NuGetToolInstaller@1
