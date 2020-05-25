@@ -456,6 +456,9 @@ VOID Object::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
         return;
     }
 
+    //TODO: Satori
+    return;
+
     if (g_fEEShutDown & ShutDown_Phase2)
     {
         // During second phase of shutdown the code below is not guaranteed to work.
@@ -1120,11 +1123,13 @@ OBJECTREF::OBJECTREF(Object *pObject)
 
 void OBJECTREF::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
 {
-    LIMITED_METHOD_CONTRACT;
-    if (m_asObj)
-    {
-        m_asObj->Validate(bDeep, bVerifyNextHeader, bVerifySyncBlock);
-    }
+    //TODO: Satori
+
+    //LIMITED_METHOD_CONTRACT;
+    //if (m_asObj)
+    //{
+    //    m_asObj->Validate(bDeep, bVerifyNextHeader, bVerifySyncBlock);
+    //}
 }
 
 //-------------------------------------------------------------
