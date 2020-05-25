@@ -473,7 +473,8 @@ typedef enum
 {
     GC_HEAP_INVALID = 0,
     GC_HEAP_WKS     = 1,
-    GC_HEAP_SVR     = 2
+    GC_HEAP_SVR     = 2,
+    GC_HEAP_SATORI  = 3
 } GCHeapType;
 
 typedef bool (* walk_fn)(Object*, void*);
