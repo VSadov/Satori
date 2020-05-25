@@ -464,6 +464,8 @@ VOID Object::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
     STATIC_CONTRACT_MODE_COOPERATIVE;
     STATIC_CONTRACT_CANNOT_TAKE_LOCK;
 
+    //TODO: Satori
+    return;
     if (g_fEEShutDown & ShutDown_Phase2)
     {
         // During second phase of shutdown the code below is not guaranteed to work.
@@ -1132,11 +1134,13 @@ OBJECTREF::OBJECTREF(Object *pObject)
 
 void OBJECTREF::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
 {
-    LIMITED_METHOD_CONTRACT;
-    if (m_asObj)
-    {
-        m_asObj->Validate(bDeep, bVerifyNextHeader, bVerifySyncBlock);
-    }
+    //TODO: Satori
+
+    //LIMITED_METHOD_CONTRACT;
+    //if (m_asObj)
+    //{
+    //    m_asObj->Validate(bDeep, bVerifyNextHeader, bVerifySyncBlock);
+    //}
 }
 
 //-------------------------------------------------------------
