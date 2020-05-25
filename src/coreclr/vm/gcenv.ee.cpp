@@ -1010,7 +1010,8 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         assert(g_card_table == nullptr);
         assert(g_lowest_address == nullptr);
         assert(g_highest_address == nullptr);
-        assert(args->card_table != nullptr);
+        //TODO: Satori
+        //assert(args->card_table != nullptr);
         assert(args->lowest_address != nullptr);
         assert(args->highest_address != nullptr);
         assert(args->ephemeral_low != nullptr);
@@ -1020,7 +1021,8 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         g_card_table = args->card_table;
 
 #ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
-        assert(g_card_bundle_table == nullptr);
+        //TODO: Satori
+        //assert(g_card_bundle_table == nullptr);
         g_card_bundle_table = args->card_bundle_table;
 #endif
 

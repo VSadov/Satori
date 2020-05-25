@@ -11,6 +11,7 @@
 #include "common.h"
 #include "gcenv.h"
 #include "gc.h"
+#include "satori/SatoriGCHeap.h"
 
 #ifdef BUILD_AS_STANDALONE
 #ifndef DLLEXPORT
@@ -100,6 +101,11 @@ GC_Initialize(
         g_gc_heap_type = GC_HEAP_SVR;
         heap = SVR::CreateGCHeap();
         SVR::PopulateDacVars(gcDacVars);
+    }
+    else if (true)
+    {
+        g_gc_heap_type = GC_HEAP_SATORI;
+        heap = new(nothrow) SatoriGCHeap();
     }
     else
 #endif
