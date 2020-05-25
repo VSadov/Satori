@@ -512,7 +512,8 @@ set(GC_SOURCES_WKS
     ../gc/gcload.cpp
     ../gc/gcbridge.cpp
     ../gc/softwarewritewatch.cpp
-    ../gc/handletablecache.cpp)
+    ../gc/handletablecache.cpp
+    ../gc/satori/SatoriGCHeap.cpp)
 
 set(GC_HEADERS_WKS
     ${GC_HEADERS_DAC_AND_WKS_COMMON}
@@ -521,7 +522,8 @@ set(GC_HEADERS_WKS
     ../gc/gcscan.h
     ../gc/gcbridge.h
     ../gc/gchandletableimpl.h
-    ../gc/softwarewritewatch.h)
+    ../gc/softwarewritewatch.h
+    ../gc/satori/SatoriGCHeap.h)
 
 if(FEATURE_EVENT_TRACE)
     list(APPEND VM_SOURCES_WKS
