@@ -24,7 +24,9 @@ set(GC_SOURCES
   gceesvr.cpp
   gceewks.cpp
   gcload.cpp
-  handletablecache.cpp)
+  handletablecache.cpp
+  satori/SatoriGCHeap.cpp
+)
 
 if(CLR_CMAKE_HOST_UNIX)
   add_subdirectory(unix)
@@ -87,7 +89,9 @@ if (CLR_CMAKE_TARGET_WIN32)
     handletablepriv.h
     objecthandle.h
     softwarewritewatch.h
-    vxsort/do_vxsort.h)
+    vxsort/do_vxsort.h
+    satori/SatoriGCHeap.h
+  )
 endif(CLR_CMAKE_TARGET_WIN32)
 
 if(CLR_CMAKE_HOST_WIN32)
