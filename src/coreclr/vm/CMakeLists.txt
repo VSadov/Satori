@@ -487,7 +487,8 @@ set(GC_SOURCES_WKS
     ../gc/gceewks.cpp
     ../gc/gcload.cpp
     ../gc/softwarewritewatch.cpp
-    ../gc/handletablecache.cpp)
+    ../gc/handletablecache.cpp
+    ../gc/satori/SatoriGCHeap.cpp)
 
 if (CLR_CMAKE_TARGET_ARCH_AMD64 AND CLR_CMAKE_TARGET_WIN32)
   set ( GC_SOURCES_WKS
@@ -510,7 +511,8 @@ set(GC_HEADERS_WKS
     ../gc/gcconfig.h
     ../gc/gcscan.h
     ../gc/gchandletableimpl.h
-    ../gc/softwarewritewatch.h)
+    ../gc/softwarewritewatch.h
+    ../gc/satori/SatoriGCHeap.h)
 
 if(FEATURE_EVENT_TRACE)
     list(APPEND VM_SOURCES_WKS
