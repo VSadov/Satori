@@ -192,6 +192,12 @@ void GCToEEInterface::DisablePreemptiveGC()
     pThread->DisablePreemptiveGC();
 }
 
+void GCToEEInterface::GcPoll()
+{
+    EnablePreemptiveGC();
+    DisablePreemptiveGC();
+}
+
 Thread* GCToEEInterface::GetThread()
 {
     return ::GetThread();

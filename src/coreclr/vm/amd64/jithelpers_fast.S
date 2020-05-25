@@ -5,6 +5,8 @@
 #include "unixasmmacros.inc"
 #include "asmconstants.h"
 
+#ifndef FEATURE_SATORI_GC
+
 // JIT_ByRefWriteBarrier has weird semantics, see usage in StubLinkerX86.cpp
 //
 // Entry:
@@ -212,6 +214,15 @@ LOCAL_LABEL(CheckCardTableByte_ByRefWriteBarrier):
         ret
 LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
 
+
+#else  //FEATURE_SATORI_GC      ##############################################################################
+
+// look in patchedcode.S
+
+#endif  // FEATURE_SATORI_GC
+
+
+
         // When JIT_WriteBarrier is copied into an allocated page,
         // helpers use this global variable to jump to it. This variable is set in InitThreadManager.
         .global C_FUNC(JIT_WriteBarrier_Loc)
@@ -228,8 +239,14 @@ LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
 // __declspec(naked) void F_CALL_CONV JIT_WriteBarrier_Callable(Object **dst, Object* val)
 .balign 16
 LEAF_ENTRY  JIT_WriteBarrier_Callable, _TEXT
-    // JIT_WriteBarrier(Object** dst, Object* src)
-    jmp     [rip + C_FUNC(JIT_WriteBarrier_Loc)]
+        // JIT_WriteBarrier(Object** dst, Object* src)
+
+        // this will be needed if JIT_WriteBarrier relocated/bashed
+        // also will need to update locations for checked and byref jit helpers
+        // jmp     [rip + C_FUNC(JIT_WriteBarrier_Loc)]
+
+        jmp     C_FUNC(JIT_WriteBarrier)
+
 LEAF_END JIT_WriteBarrier_Callable, _TEXT
 
 

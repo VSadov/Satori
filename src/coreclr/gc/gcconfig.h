@@ -147,7 +147,20 @@ public:
     INT_CONFIG   (GCDGen0GrowthPercent,      "GCDGen0GrowthPercent",      "System.GC.DGen0GrowthPercent",      0,                  "Specifies the percentage of the default growth factor")                                  \
     INT_CONFIG   (GCDGen0GrowthMinFactor,    "GCDGen0GrowthMinFactor",    "System.GC.DGen0GrowthMinFactor",    0,                  "Specifies the minimum growth factor in permil")                                          \
     INT_CONFIG   (GCDGen0GrowthMaxFactor,    "GCDGen0GrowthMaxFactor",    "System.GC.DGen0GrowthMaxFactor",    0,                  "Specifies the maximum growth factor in permil")                                          \
-    BOOL_CONFIG  (GCCacheSizeFromSysConf,    "GCCacheSizeFromSysConf",    NULL,                                false,              "Specifies using sysconf to retrieve the last level cache size for Unix.")
+    BOOL_CONFIG  (GCCacheSizeFromSysConf,    "GCCacheSizeFromSysConf",    NULL,                                false,              "Specifies using sysconf to retrieve the last level cache size for Unix.")                \
+/* FEATURE_SATORI_GC */                                                                                                                                                                                                      \
+    BOOL_CONFIG  (RelocatingInGen1,          "gcRelocatingGen1",          NULL,                                true,               "Specifies whether GC can relocate objects in Gen1 GC")                                   \
+    BOOL_CONFIG  (RelocatingInGen2,          "gcRelocatingGen2",          NULL,                                true,               "Specifies whether GC can relocate objects in Gen2 GC")                                   \
+    INT_CONFIG   (ParallelGC,                "gcParallel",                NULL,                                -1,                 "Specifies max number of addtional GC threads. 0 - no helpers, -1 - default")             \
+    BOOL_CONFIG  (Gen0GC,                    "gcGen0",                    NULL,                                true,               "Specifies whether Gen0 GC can be performed")                                             \
+    BOOL_CONFIG  (Gen1GC,                    "gcGen1",                    NULL,                                true,               "Specifies whether Gen1 GC can be performed")                                             \
+    BOOL_CONFIG  (UseTHP,                    "gcTHP",                     NULL,                                true,               "Specifies whether Transparent Huge Pages can be used. (Linux only)")                     \
+    BOOL_CONFIG  (TrimmigGC,                 "gcTrim",                    NULL,                                true,               "Specifies whether background trimming is enabled")                                       \
+    BOOL_CONFIG  (PacingGC,                  "gcPace",                    NULL,                                true,               "Specifies whether allocation pacing is enabled")                                         \
+    INT_CONFIG   (GCRate,                    "gcRate",                    NULL,                                -1,                 "Specifies soft min limit for time between GCs in milliseconds. -1 - default")            \
+    INT_CONFIG   (GCSpin,                    "gcSpin",                    NULL,                                -1,                 "Spin")                                                                                   \
+    INT_CONFIG   (Gen2Target,                "gcGen2Target",              NULL,                                -1,                 "Specifies target for Gen2 GC (in terms of % of the last known size)")                    \
+    INT_CONFIG   (Gen1Target,                "gcGen1Target",              NULL,                                -1,                 "Specifies target for Gen1 GC (in terms of % of the last known size)")                    \
 
 // This class is responsible for retreiving configuration information
 // for how the GC should operate.

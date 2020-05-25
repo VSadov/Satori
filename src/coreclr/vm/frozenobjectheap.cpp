@@ -28,14 +28,40 @@ Object* FrozenObjectHeapManager::TryAllocateObject(PTR_MethodTable type, size_t 
         THROWS;
         MODE_COOPERATIVE;
     }
-    CONTRACTL_END
+        CONTRACTL_END
 
 #ifndef FEATURE_BASICFREEZE
-    // GC is required to support frozen segments
-    return nullptr;
+        // GC is required to support frozen segments
+        return nullptr;
 #else // FEATURE_BASICFREEZE
 
     Object* obj = nullptr;
+
+#if FEATURE_SATORI_GC
+    // TODO: Satori does not have any size limitations here.
+    if (objectSize > FOH_COMMIT_SIZE)
+    {
+      // The current design doesn't allow objects larger than FOH_COMMIT_SIZE and
+      // since FrozenObjectHeap is just an optimization, let's not fill it with huge objects.
+      return nullptr;
+    }
+
+#if defined(_DEBUG) && defined(FEATURE_SATORI_EXTERNAL_OBJECTS)
+    // in debug use external objects once in a while - for coverage
+    if (objectSize % 16 != 0)
+#endif
+    {
+      obj = AllocateImmortalObject(type, objectSize);
+      if (initFunc != nullptr)
+      {
+        initFunc(obj, pParam);
+      }
+
+      return obj;
+    }
+#endif
+
+
     FrozenObjectSegment* curSeg = nullptr;
     uint8_t* curSegmentCurrent = nullptr;
     size_t curSegSizeCommitted = 0;

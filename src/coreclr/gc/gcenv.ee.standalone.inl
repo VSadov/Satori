@@ -36,6 +36,12 @@ inline void GCToEEInterface::RestartEE(bool bFinishedGC)
     g_theGCToCLR->RestartEE(bFinishedGC);
 }
 
+inline void GCToEEInterface::GcScanCurrentStackRoots(promote_func* fn, ScanContext* sc)
+{
+    assert(g_theGCToCLR != nullptr);
+    g_theGCToCLR->GcScanCurrentStackRoots(fn, sc);
+}
+
 inline void GCToEEInterface::GcScanRoots(promote_func* fn, int condemned, int max_gen, ScanContext* sc)
 {
     assert(g_theGCToCLR != nullptr);
@@ -121,6 +127,12 @@ inline void GCToEEInterface::DisablePreemptiveGC()
 {
     assert(g_theGCToCLR != nullptr);
     g_theGCToCLR->DisablePreemptiveGC();
+}
+
+inline void GCToEEInterface::GcPoll()
+{
+    assert(g_theGCToCLR != nullptr);
+    g_theGCToCLR->GcPoll();
 }
 
 inline Thread* GCToEEInterface::GetThread()

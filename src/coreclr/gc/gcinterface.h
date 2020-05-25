@@ -52,7 +52,11 @@ enum class WriteBarrierOp
     StompEphemeral,
     Initialize,
     SwitchToWriteWatch,
-    SwitchToNonWriteWatch
+    SwitchToNonWriteWatch,
+#if FEATURE_SATORI_GC
+    StartConcurrentMarkingSatori,
+    StopConcurrentMarkingSatori,
+#endif
 };
 
 // Arguments to GCToEEInterface::StompWriteBarrier
@@ -243,7 +247,11 @@ struct segment_info
 #define GC_PROFILING       //Turn on profiling
 #endif // PROFILING_SUPPORTED
 
+#if !defined(FEATURE_SATORI_GC)
 #define LARGE_OBJECT_SIZE ((size_t)(85000))
+#else
+#define LARGE_OBJECT_SIZE ((size_t)(32 * 1024))
+#endif
 
 // The minimum size of an object is three pointers wide: one for the syncblock,
 // one for the object header, and one for the first field in the object.
@@ -554,7 +562,8 @@ typedef enum
 {
     GC_HEAP_INVALID = 0,
     GC_HEAP_WKS     = 1,
-    GC_HEAP_SVR     = 2
+    GC_HEAP_SVR     = 2,
+    GC_HEAP_SATORI  = 3
 } GCHeapType;
 
 typedef bool (* walk_fn)(Object*, void*);
@@ -831,6 +840,8 @@ public:
 
     virtual size_t GetLastGCGenerationSize(int gen) PURE_VIRTUAL
 
+    virtual void BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteCount) PURE_VIRTUAL
+
     /*
     ===========================================================================
     Miscellaneous routines used by the VM.
@@ -1092,6 +1103,7 @@ enum GC_ALLOC_FLAGS
     GC_ALLOC_ZEROING_OPTIONAL   = 16,
     GC_ALLOC_LARGE_OBJECT_HEAP  = 32,
     GC_ALLOC_PINNED_OBJECT_HEAP = 64,
+    GC_ALLOC_IMMORTAL           = 128,
     GC_ALLOC_USER_OLD_HEAP      = GC_ALLOC_LARGE_OBJECT_HEAP | GC_ALLOC_PINNED_OBJECT_HEAP,
 };
 

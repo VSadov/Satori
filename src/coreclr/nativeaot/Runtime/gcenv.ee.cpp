@@ -91,6 +91,47 @@ void GCToEEInterface::BeforeGcScanRoots(int condemned, bool is_bgc, bool is_conc
 #endif
 }
 
+/*
+ * Scan current stack
+ */
+
+void GCToEEInterface::GcScanCurrentStackRoots(ScanFunc* fn, ScanContext* sc)
+{
+    Thread* pThread = ThreadStore::GetCurrentThread();
+    if (pThread->IsGCSpecial())
+        return;
+
+    InlinedThreadStaticRoot* pRoot = pThread->GetInlinedThreadStaticList();
+    while (pRoot != NULL)
+    {
+        STRESS_LOG2(LF_GC | LF_GCROOTS, LL_INFO100, "{ Scanning Thread's %p inline thread statics root %p. \n", pThread, pRoot);
+        EnumGcRef(&pRoot->m_threadStaticsBase, GCRK_Object, fn, sc);
+        pRoot = pRoot->m_next;
+    }
+
+    STRESS_LOG1(LF_GC | LF_GCROOTS, LL_INFO100, "{ Scanning Thread's %p thread statics root. \n", pThread);
+    EnumGcRef(pThread->GetThreadStaticStorage(), GCRK_Object, fn, sc);
+
+    STRESS_LOG1(LF_GC | LF_GCROOTS, LL_INFO100, "{ Starting scan of Thread %p\n", pThread);
+    sc->thread_under_crawl = pThread;
+#if defined(FEATURE_EVENT_TRACE) && !defined(DACCESS_COMPILE)
+    sc->dwEtwRootKind = kEtwGCRootKindStack;
+#endif
+
+    pThread->GcScanRoots(fn, sc);
+
+#if defined(FEATURE_EVENT_TRACE) && !defined(DACCESS_COMPILE)
+    sc->dwEtwRootKind = kEtwGCRootKindOther;
+#endif
+    STRESS_LOG1(LF_GC | LF_GCROOTS, LL_INFO100, "Ending scan of Thread %p }\n", pThread);
+
+    sc->thread_under_crawl = NULL;
+}
+
+/*
+ * Scan all stack roots
+ */
+
 void GCToEEInterface::GcScanRoots(ScanFunc* fn, int condemned, int max_gen, ScanContext* sc)
 {
     // STRESS_LOG1(LF_GCROOTS, LL_INFO10, "GCScan: Phase = %s\n", sc->promotion ? "promote" : "relocate");
@@ -162,6 +203,20 @@ void GCToEEInterface::AfterGcScanRoots(int condemned, int /*max_gen*/, ScanConte
         ObjCMarshalNative::AfterRefCountedHandleCallbacks();
     }
 #endif
+}
+
+void GCToEEInterface::GcPoll()
+{
+    if (ThreadStore::IsTrapThreadsRequested())
+    {
+        Thread* pThread = ThreadStore::GetCurrentThread();
+        assert(!pThread->IsGCSpecial());
+        assert(pThread->IsCurrentThreadInCooperativeMode());
+        assert(pThread != ThreadStore::GetSuspendingThread());
+
+        pThread->EnablePreemptiveMode();
+        pThread->DisablePreemptiveMode();
+    }
 }
 
 void GCToEEInterface::GcDone(int condemned)
@@ -475,6 +530,27 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         assert(!"should never be called without FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP");
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
         return;
+
+#if FEATURE_SATORI_GC
+    case WriteBarrierOp::StartConcurrentMarkingSatori:
+        g_write_watch_table = args->write_watch_table;
+        g_sw_ww_enabled_for_gc_heap = true;
+        if (!is_runtime_suspended)
+        {
+            // If runtime is not suspended, force all threads to see the changed state before
+            // observing future allocations.
+            PalFlushProcessWriteBuffers();
+        }
+
+        return;
+
+    case WriteBarrierOp::StopConcurrentMarkingSatori:
+        assert(args->is_runtime_suspended && "the runtime must be suspended here!");
+        g_write_watch_table = args->write_watch_table;
+        g_sw_ww_enabled_for_gc_heap = false;
+        return;
+#endif
+
     default:
         assert(!"Unknokwn WriteBarrierOp enum");
         return;
@@ -509,7 +585,9 @@ bool GCToEEInterface::EagerFinalized(Object* obj)
     // Eager finalization happens while scanning for unmarked finalizable objects
     // after marking strongly reachable and prior to marking dependent and long weak handles.
     // Managed code should not be running.
-    ASSERT(GCHeapUtilities::GetGCHeap()->IsGCInProgressHelper());
+
+    // threadlocal GC is also ok
+    // ASSERT(GCHeapUtilities::GetGCHeap()->IsGCInProgressHelper());
 
     // the lowermost 2 bits are reserved for storing additional info about the handle
     // we can use these bits because handle is at least 4 byte aligned

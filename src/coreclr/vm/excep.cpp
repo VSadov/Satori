@@ -5833,6 +5833,7 @@ EXTERN_C void JIT_StackProbe_End();
 EXTERN_C void JIT_WriteBarrier_End();
 EXTERN_C void JIT_CheckedWriteBarrier_End();
 EXTERN_C void JIT_ByRefWriteBarrier_End();
+
 #endif // TARGET_X86
 
 #if defined(TARGET_AMD64) && defined(_DEBUG)

@@ -3199,6 +3199,15 @@ public:
             if((val & ~3) != (size_t) ref || (val & 3) != 1)
                 return(true);
             // If the pointer lives in the GC heap, than it is protected, and thus valid.
+            //if (dac_cast<TADDR>(g_lowest_address) <= val && val < dac_cast<TADDR>(g_highest_address))
+            //    return(true);
+
+            // TODO: Satori
+            if (IsInHeapSatori((Object**)val))
+            {
+                return true;
+            }
+
             if (dac_cast<TADDR>(g_lowest_address) <= val && val < dac_cast<TADDR>(g_highest_address))
                 return(true);
             // Same for frozen segments
@@ -5587,7 +5596,12 @@ inline BOOL IsWriteBarrierCopyEnabled()
 #ifdef DACCESS_COMPILE
     return FALSE;
 #else // DACCESS_COMPILE
+#if FEATURE_SATORI_GC
+    // TODO: Satori Barrier relocation is used only on OSX/ARM64
+    return FALSE;
+#else
     return g_pConfig->IsWriteBarrierCopyEnabled();
+#endif // FEATURE_SATORI_GC
 #endif // DACCESS_COMPILE
 }
 

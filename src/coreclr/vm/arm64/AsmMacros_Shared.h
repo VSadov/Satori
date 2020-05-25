@@ -14,6 +14,14 @@
     IMPORT g_ephemeral_high
     IMPORT g_card_table
 
+#ifdef FEATURE_NATIVEAOT
+    ;; CPU feature flags returned by minipal_getcpufeatures (see minipal/cpufeatures.h)
+    IMPORT g_cpuFeatures
+#endif
+
+    ;; Bit position for ARM64IntrinsicConstants_Atomics (to be used with tbz/tbnz)
+ARM64_ATOMICS_FEATURE_FLAG_BIT EQU 6
+
 #ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
     IMPORT g_card_bundle_table
 #endif

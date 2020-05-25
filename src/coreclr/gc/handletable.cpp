@@ -20,6 +20,10 @@
 #include "objecthandle.h"
 #include "handletablepriv.h"
 
+#if FEATURE_SATORI_GC
+#include "../gc/satori/SatoriObject.h"
+#endif
+
 #if defined(ENABLE_PERF_COUNTERS) || defined(FEATURE_EVENT_TRACE)
 DWORD g_dwHandles = 0;
 #endif // ENABLE_PERF_COUNTERS || FEATURE_EVENT_TRACE
@@ -549,6 +553,7 @@ void HndLogSetEvent(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
 }
 
 #ifndef DACCESS_COMPILE
+
 /*
  * HndWriteBarrierWorker
  *
@@ -558,6 +563,10 @@ void HndLogSetEvent(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
 void HndWriteBarrierWorker(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
 {
     _ASSERTE (value != NULL);
+
+#if FEATURE_SATORI_GC
+    ((SatoriObject*)value)->EscapeCheckOnHandleCreation();
+#endif
 
     // find the write barrier for this handle
     uint8_t *barrier = (uint8_t *)((uintptr_t)handle & HANDLE_SEGMENT_ALIGN_MASK);

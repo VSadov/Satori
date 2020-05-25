@@ -34,6 +34,10 @@
 #include "runtimecallablewrapper.h"
 #endif // FEATURE_COMINTEROP
 
+#if FEATURE_SATORI_GC
+#include "../gc/satori/SatoriObject.h"
+#endif
+
 // Allocate 4K worth. Typically enough
 #define MAXSYNCBLOCK (0x1000-sizeof(void*))/sizeof(SyncBlock)
 #define SYNC_TABLE_INITIAL_SIZE 250
@@ -901,6 +905,11 @@ DWORD SyncBlockCache::NewSyncBlockSlot(Object *obj)
 
 
     CardTableSetBit (indexNewEntry);
+
+#if FEATURE_SATORI_GC
+    // effectively we are creating a weak handle to the obj
+    ((SatoriObject*)obj)->EscapeCheckOnHandleCreation();
+#endif
 
     // In debug builds the m_SyncBlock at indexNewEntry should already be null, since we should
     // start out with a null table and always null it out on delete.
@@ -2910,12 +2919,14 @@ void SyncBlock::SetEnCInfo(EnCSyncBlockInfo *pEnCInfo)
 #if defined(HOST_64BIT) && defined(_DEBUG)
 void ObjHeader::IllegalAlignPad()
 {
+#if !FEATURE_SATORI_GC
     WRAPPER_NO_CONTRACT;
 #ifdef LOGGING
     void** object = ((void**) this) + 1;
     STRESS_LOG1(LF_ASSERT, LL_ALWAYS, "\n\n******** Illegal ObjHeader m_alignpad not 0, m_alignpad value: %d\n", m_alignpad);
 #endif
     _ASSERTE(m_alignpad == 0);
+#endif //!FEATURE_SATORI_GC
 }
 #endif // HOST_64BIT && _DEBUG
 

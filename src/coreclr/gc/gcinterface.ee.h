@@ -216,6 +216,11 @@ public:
     virtual
     void GcScanRoots(promote_func* fn, int condemned, int max_gen, ScanContext* sc) PURE_VIRTUAL
 
+    // Performs a stack walk of current thread and invokes the given promote_func
+    // on all GC roots encountered on the stack.
+    virtual
+    void GcScanCurrentStackRoots(promote_func* fn, ScanContext* sc) = 0;
+
     // Callback from the GC informing the EE that it is preparing to start working.
     virtual
     void GcStartWork(int condemned, int max_gen) PURE_VIRTUAL
@@ -267,6 +272,10 @@ public:
     // Disables preemptive GC on the current thread.
     virtual
     void DisablePreemptiveGC() PURE_VIRTUAL
+
+    // If suspension is requiested suspends the current thread.
+    virtual
+    void GcPoll() = 0;
 
     // Gets the Thread instance for the current thread, or null if no thread
     // instance is associated with this thread.

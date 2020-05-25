@@ -454,6 +454,7 @@ namespace System.Tests
             }
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsPreciseGcSupported))]
         [InlineData(GCLargeObjectHeapCompactionMode.CompactOnce)]
         [InlineData(GCLargeObjectHeapCompactionMode.Default)]
@@ -472,6 +473,7 @@ namespace System.Tests
             }
         }
 
+        [ActiveIssue("Satori NYI")]
         [Theory]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [InlineData(GCLatencyMode.Batch)]
@@ -511,6 +513,7 @@ namespace System.Tests
         /// </summary>
         private const int NoGCRequestedBudget = 8192;
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [OuterLoop]
@@ -545,6 +548,7 @@ namespace System.Tests
 
         }
 
+        [ActiveIssue("Satori NYI")]
         [Fact]
         public static void GCNotificationNegTests()
         {
@@ -562,6 +566,7 @@ namespace System.Tests
             Assert.Throws<ArgumentOutOfRangeException>(() => GC.WaitForFullGCComplete(-2));
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalTheory(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [InlineData(true, -1)]
@@ -583,6 +588,7 @@ namespace System.Tests
                 }, approach.ToString(), timeout.ToString(), options).Dispose();
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [OuterLoop]
@@ -606,6 +612,7 @@ namespace System.Tests
             }
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [OuterLoop]
@@ -625,6 +632,7 @@ namespace System.Tests
                 }, options).Dispose();
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [OuterLoop]
@@ -641,6 +649,7 @@ namespace System.Tests
             }, options).Dispose();
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [OuterLoop]
@@ -657,6 +666,7 @@ namespace System.Tests
             }, options).Dispose();
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [OuterLoop]
@@ -673,6 +683,7 @@ namespace System.Tests
             }, options).Dispose();
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [OuterLoop]
@@ -689,6 +700,7 @@ namespace System.Tests
             }, options).Dispose();
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [OuterLoop]
@@ -710,6 +722,7 @@ namespace System.Tests
             }, options).Dispose();
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [OuterLoop]
@@ -725,6 +738,7 @@ namespace System.Tests
                 }, options).Dispose();
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [OuterLoop]
@@ -740,6 +754,7 @@ namespace System.Tests
             }, options).Dispose();
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [OuterLoop]
@@ -755,6 +770,7 @@ namespace System.Tests
             }, options).Dispose();
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [OuterLoop]
@@ -770,6 +786,7 @@ namespace System.Tests
             }, options).Dispose();
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalTheory(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [OuterLoop]
@@ -785,6 +802,7 @@ namespace System.Tests
             }, size.ToString(), options).Dispose();
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalTheory(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [OuterLoop]
@@ -869,6 +887,7 @@ namespace System.Tests
 
         private static bool IsNotArmProcessAndRemoteExecutorSupported => PlatformDetection.IsNotArmProcess && RemoteExecutor.IsSupported;
 
+        [ActiveIssue("Satori NYI")]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/73167", TestRuntimes.Mono)]
         [ConditionalFact(nameof(IsNotArmProcessAndRemoteExecutorSupported))] // [ActiveIssue("https://github.com/dotnet/runtime/issues/29434")]
         public static void GetGCMemoryInfo()

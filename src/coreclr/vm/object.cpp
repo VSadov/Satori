@@ -338,6 +338,8 @@ void SetObjectReferenceUnchecked(OBJECTREF *dst,OBJECTREF ref)
     STATIC_CONTRACT_MODE_COOPERATIVE;
     STATIC_CONTRACT_CANNOT_TAKE_LOCK;
 
+    CheckEscapeSatori((Object**)dst, OBJECTREFToObject(ref));
+
     // Assign value. We use casting to avoid going thru the overloaded
     // OBJECTREF= operator which in this case would trigger a false
     // write-barrier violation assert.
@@ -489,6 +491,10 @@ VOID Object::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
     STATIC_CONTRACT_FORBID_FAULT;
     STATIC_CONTRACT_MODE_COOPERATIVE;
     STATIC_CONTRACT_CANNOT_TAKE_LOCK;
+
+    //TODO: Satori
+    _ASSERTE(this->GetSize() > 0);
+    return;
 
     if (g_fEEShutDown & ShutDown_Phase2)
     {
@@ -1093,11 +1099,13 @@ OBJECTREF::OBJECTREF(Object *pObject)
 
 void OBJECTREF::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
 {
-    LIMITED_METHOD_CONTRACT;
-    if (m_asObj)
-    {
-        m_asObj->Validate(bDeep, bVerifyNextHeader, bVerifySyncBlock);
-    }
+    //TODO: Satori
+
+    //LIMITED_METHOD_CONTRACT;
+    //if (m_asObj)
+    //{
+    //    m_asObj->Validate(bDeep, bVerifyNextHeader, bVerifySyncBlock);
+    //}
 }
 
 //-------------------------------------------------------------
@@ -1306,8 +1314,12 @@ void* __cdecl GCSafeMemCpy(void * dest, const void * src, size_t len)
     STATIC_CONTRACT_GC_NOTRIGGER;
     STATIC_CONTRACT_FORBID_FAULT;
 
+#ifdef FEATURE_SATORI_GC
+    if (IsInHeapSatori((Object**)dest))
+#else
     if (!(((*(BYTE**)&dest) <  g_lowest_address ) ||
           ((*(BYTE**)&dest) >= g_highest_address)))
+#endif
     {
         Thread* pThread = GetThreadNULLOk();
 

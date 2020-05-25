@@ -23,7 +23,24 @@ set(GC_SOURCES
   gceewks.cpp
   gcload.cpp
   gcbridge.cpp
-  handletablecache.cpp)
+  handletablecache.cpp
+  satori/SatoriGC.cpp
+  satori/SatoriHandlePartitioner.cpp
+  satori/SatoriHeap.cpp
+  satori/SatoriPage.cpp
+  satori/SatoriRegion.cpp
+  satori/SatoriObject.cpp
+  satori/SatoriRegionQueue.cpp
+  satori/SatoriAllocator.cpp
+  satori/SatoriRecycler.cpp
+  satori/SatoriTrimmer.cpp
+  satori/SatoriFinalizationQueue.cpp
+  satori/SatoriAllocationContext.cpp
+  satori/SatoriUtil.cpp
+  satori/SatoriLock.cpp
+  satori/SatoriWorkList.cpp
+  satori/SatoriGate.cpp
+)
 
 if(CLR_CMAKE_HOST_UNIX)
   add_subdirectory(unix)
@@ -76,6 +93,26 @@ if (CLR_CMAKE_TARGET_WIN32)
     handletablepriv.h
     objecthandle.h
     softwarewritewatch.h
+    satori/SatoriGC.h
+    satori/SatoriHandlePartitioner.h
+    satori/SatoriHeap.h
+    satori/SatoriPage.h
+    satori/SatoriRegion.h
+    satori/SatoriRegion.inl
+    satori/SatoriObject.h
+    satori/SatoriObject.inl
+    satori/SatoriQueue.h
+    satori/SatoriRegionQueue.h
+    satori/SatoriAllocator.h
+    satori/SatoriRecycler.h
+    satori/SatoriTrimmer.h
+    satori/SatoriFinalizationQueue.h
+    satori/SatoriWorkChunk.h
+    satori/SatoriWorkList.h
+    satori/SatoriAllocationContext.h
+    satori/SatoriUtil.h
+    satori/SatoriLock.h
+    satori/SatoriGate.h
   )
 endif(CLR_CMAKE_TARGET_WIN32)
 
@@ -84,6 +121,7 @@ if(CLR_CMAKE_HOST_WIN32)
     ${STATIC_MT_CRT_LIB}
     ${STATIC_MT_VCRT_LIB}
     kernel32.lib
+    Synchronization.lib
     advapi32.lib)
 endif(CLR_CMAKE_HOST_WIN32)
 

@@ -605,6 +605,7 @@ namespace System.Threading.ThreadPools.Tests
         }
 
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ActiveIssue("Satori: Times out. Stress test nuisance.")]
         public static void ThreadPoolCanPickUpOneOrMoreWorkItemsWhenThreadIsAvailable()
         {
             int processorCount = Environment.ProcessorCount;

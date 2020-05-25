@@ -3339,12 +3339,13 @@ retry:
             dwEnd = minipal_lowres_ticks();
             if (dwEnd - dwStart >= millis)
             {
-                ret = WAIT_TIMEOUT;
-                goto WaitCompleted;
+                millis = 0;
             }
-
-            millis -= (DWORD)(dwEnd - dwStart);
-            dwStart = dwEnd;
+            else
+            {
+                millis -= (DWORD)(dwEnd - dwStart);
+                dwStart = dwEnd;
+            }
         }
         goto retry;
     }
@@ -3423,12 +3424,13 @@ retry:
                 dwEnd = minipal_lowres_ticks();
                 if (dwEnd - dwStart >= millis)
                 {
-                    ret = WAIT_TIMEOUT;
-                    goto WaitCompleted;
+                    millis = 0;
                 }
-
-                millis -= (DWORD)(dwEnd - dwStart);
-                dwStart = dwEnd;
+                else
+                {
+                    millis -= (DWORD)(dwEnd - dwStart);
+                    dwStart = dwEnd;
+                }
             }
             goto retry;
         }
@@ -3461,8 +3463,6 @@ retry:
             }
         }
     }
-
-WaitCompleted:
 
     _ASSERTE((ret != WAIT_TIMEOUT) || (millis != INFINITE));
 
@@ -3567,12 +3567,13 @@ retry:
             dwEnd = minipal_lowres_ticks();
             if (dwStart + millis <= dwEnd)
             {
-                ret = WAIT_TIMEOUT;
-                goto WaitCompleted;
+                millis = 0;
             }
-
-            millis -= (DWORD)(dwEnd - dwStart);
-            dwStart = dwEnd;
+            else
+            {
+                millis -= (DWORD)(dwEnd - dwStart);
+                dwStart = dwEnd;
+            }
         }
         //Retry case we don't want to signal again so only do the wait...
         ret = WaitForSingleObjectEx(pHandles[1],millis,TRUE);
@@ -3603,8 +3604,6 @@ retry:
                 break;
         }
     }
-
-WaitCompleted:
 
     //Check that the return state is valid
     _ASSERTE(WAIT_OBJECT_0 == ret  ||

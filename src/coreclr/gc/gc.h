@@ -102,7 +102,11 @@ class Object;
 class IGCHeapInternal;
 
 /* misc defines */
+#if !defined(FEATURE_SATORI_GC)
 #define LARGE_OBJECT_SIZE ((size_t)(85000))
+#else
+#define LARGE_OBJECT_SIZE ((size_t)(32 * 1024))
+#endif
 
 enum gc_generation_num
 {
@@ -339,7 +343,17 @@ inline bool IsServerHeap()
 {
 #ifdef FEATURE_SVR_GC
     assert(g_gc_heap_type != GC_HEAP_INVALID);
-    return g_gc_heap_type == GC_HEAP_SVR;
+    return g_gc_heap_type >= GC_HEAP_SVR;
+#else // FEATURE_SVR_GC
+    return false;
+#endif // FEATURE_SVR_GC
+}
+
+inline bool IsSatoriHeap()
+{
+#ifdef FEATURE_SATORI_GC
+    assert(g_gc_heap_type != GC_HEAP_INVALID);
+    return g_gc_heap_type == GC_HEAP_SATORI;
 #else // FEATURE_SVR_GC
     return false;
 #endif // FEATURE_SVR_GC

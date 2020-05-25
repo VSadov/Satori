@@ -72,6 +72,87 @@
         <ExcludeList Include="$(XunitTestBinBase)/GC/Regressions/Github/Runtime_76219/Runtime_76219/*">
             <Issue>https://github.com/dotnet/runtime/issues/78899</Issue>
         </ExcludeList>
+        
+      <ExcludeList Include="$(XunitTestBinBase)/GC/Scenarios/LeakWheel/leakwheel/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/Features/LOHCompaction/lohpin/*">
+        <Issue>Satori GC compaction</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/GC/Collect1/*">
+        <Issue>Satori GC expects object tenuring</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/GCSettings/InputValidation/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/GC/GetGCMemoryInfo/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>      
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/GC/Collect_Aggressive/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/GC/Collect_Aggressive_MultipleParameters/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/NoGCRegion/**">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/baseservices/RuntimeConfiguration/TestConfigTester/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/Refresh/**">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/GetGeneration/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+      
+      <ExcludeList Include="$(XunitTestBinBase)/JIT/Methodical/doublearray/**">
+        <Issue>Satori GC apis, LOH expectations</Issue>
+      </ExcludeList>
+
+      <ExcludeList Include="$(XunitTestBinBase)/baseservices/RuntimeConfiguration/TestConfig/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/unittest/getappdomainstaticaddress/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/gc/gcbasic/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/gc/nongcheap/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/gc/gc/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/tracing/tracevalidation/inducedgc/inducedgc/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/tracing/eventpipe/gcdump/gcdump/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/gc/gcallocate/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/gcheapenumeration/**">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/handles/handles/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/unittest/enumthreads/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+
+      <ExcludeList Include="$(XunitTestBinBase)/readytorun/coreroot_determinism/coreroot_determinism/*">
+        <Issue>Satori Unknown</Issue>
+      </ExcludeList>
+
+      <ExcludeList Include="$(XunitTestBinBase)/GC/Scenarios/FinalizeTimeout/FinalizeTimeout/*">
+        <Issue>Satori this times out in baseline</Issue>
+      </ExcludeList>
     </ItemGroup>
 
     <!-- All Unix targets on all runtimes -->

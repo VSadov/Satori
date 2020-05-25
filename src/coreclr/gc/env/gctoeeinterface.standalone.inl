@@ -19,9 +19,19 @@ namespace standalone
             ::GCToEEInterface::RestartEE(bFinishedGC);
         }
 
+        void GcScanCurrentStackRoots(promote_func* fn, ScanContext* sc)
+        {
+            ::GCToEEInterface::GcScanCurrentStackRoots(fn, sc);
+        }
+
         void GcScanRoots(promote_func* fn, int condemned, int max_gen, ScanContext* sc)
         {
             ::GCToEEInterface::GcScanRoots(fn, condemned, max_gen, sc);
+        }
+
+        void GcPoll()
+        {
+            ::GCToEEInterface::GcPoll();
         }
 
         void GcStartWork(int condemned, int max_gen)

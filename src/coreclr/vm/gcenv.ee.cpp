@@ -130,9 +130,11 @@ static void ScanStackRoots(Thread * pThread, promote_func* fn, ScanContext* sc)
     // Either we are in a concurrent situation (in which case the thread is unknown to
     // us), or we are performing a synchronous GC and we are the GC thread, holding
     // the threadstore lock.
+    // Or we are scanning our own stack, which is always ok.
 
     _ASSERTE(dbgOnly_IsSpecialEEThread() ||
                 GetThreadNULLOk() == NULL ||
+                GetThreadNULLOk() == sc->thread_under_crawl ||
                 // this is for background GC threads which always call this when EE is suspended.
                 IsGCSpecialThread() ||
                 (GetThread() == ThreadSuspend::GetSuspensionThread() && ThreadStore::HoldingThreadStore()));
@@ -284,6 +286,29 @@ static void ScanTailCallArgBufferRoots(Thread* pThread, promote_func* fn, ScanCo
             break;
         }
     }
+}
+
+void GCToEEInterface::GcScanCurrentStackRoots(promote_func* fn, ScanContext* sc)
+{
+    STRESS_LOG1(LF_GCROOTS, LL_INFO10, "GC Stack Scan: Promotion Phase = %d\n", sc->promotion);
+
+    Thread* pThread = GetThread();
+    sc->thread_under_crawl = pThread;
+    sc->concurrent = FALSE;
+
+    STRESS_LOG2(LF_GC | LF_GCROOTS, LL_INFO100, "{ Starting scan of Thread %p ID = %x\n", pThread, pThread->GetThreadId());
+
+#ifdef FEATURE_EVENT_TRACE
+    sc->dwEtwRootKind = kEtwGCRootKindStack;
+#endif // FEATURE_EVENT_TRACE
+    ScanStackRoots(pThread, fn, sc);
+    ScanTailCallArgBufferRoots(pThread, fn, sc);
+    ScanThreadStaticRoots(pThread, fn, sc);
+#ifdef FEATURE_EVENT_TRACE
+    sc->dwEtwRootKind = kEtwGCRootKindOther;
+#endif // FEATURE_EVENT_TRACE
+
+     STRESS_LOG2(LF_GC | LF_GCROOTS, LL_INFO100, "Ending scan of Thread %p ID = 0x%x }\n", pThread, pThread->GetThreadId());
 }
 
 void GCToEEInterface::GcScanRoots(promote_func* fn, int condemned, int max_gen, ScanContext* sc)
@@ -547,6 +572,28 @@ void GCToEEInterface::DisablePreemptiveGC()
     Thread* pThread = ::GetThreadNULLOk();
     if (pThread)
     {
+        pThread->DisablePreemptiveGC();
+    }
+}
+
+void GCToEEInterface::GcPoll()
+{
+    CONTRACTL{
+        THROWS;
+        GC_TRIGGERS;
+        MODE_COOPERATIVE;
+    }
+    CONTRACTL_END;
+
+    if (g_TrapReturningThreads)
+    {
+        Thread* pThread = ::GetThread();
+        _ASSERTE(!ThreadStore::HoldingThreadStore(pThread));
+#ifdef FEATURE_HIJACK
+        pThread->UnhijackThread();
+#endif // FEATURE_HIJACK
+
+        pThread->EnablePreemptiveGC();
         pThread->DisablePreemptiveGC();
     }
 }
@@ -1155,6 +1202,28 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         assert(!"should never be called without FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP");
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
         break;
+
+#if FEATURE_SATORI_GC
+    case WriteBarrierOp::StartConcurrentMarkingSatori:
+        g_write_watch_table = args->write_watch_table;
+        g_sw_ww_enabled_for_gc_heap = true;
+        stompWBCompleteActions |= ::SwitchToWriteWatchBarrier(is_runtime_suspended);
+        if (!is_runtime_suspended)
+        {
+            // If runtime is not suspended, force all threads to see the changed state before
+            // observing future allocations.
+            FlushProcessWriteBuffers();
+        }
+
+        return;
+
+    case WriteBarrierOp::StopConcurrentMarkingSatori:
+        assert(args->is_runtime_suspended && "the runtime must be suspended here!");
+        g_write_watch_table = args->write_watch_table;
+        g_sw_ww_enabled_for_gc_heap = false;
+        stompWBCompleteActions |= ::SwitchToNonWriteWatchBarrier(true);
+        return;
+#endif
 
     default:
         assert(!"unknown WriteBarrierOp enum");

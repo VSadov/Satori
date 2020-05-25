@@ -34,6 +34,12 @@
 #include "runtimecallablewrapper.h"
 #endif // FEATURE_COMINTEROP
 
+#if FEATURE_SATORI_GC
+#include "../gc/satori/SatoriObject.inl"
+#include "../gc/satori/SatoriRegion.inl"
+#include "../gc/satori/SatoriPage.h"
+#endif
+
 //========================================================================
 //
 //      ALLOCATION HELPERS
@@ -563,7 +569,11 @@ inline void LogAlloc(Object* object)
 template <class TObj>
 void PublishObjectAndNotify(TObj* &orObject, GC_ALLOC_FLAGS flags)
 {
+#if FEATURE_SATORI_GC
+    _ASSERTE(orObject->HasEmptySyncBlockInfo() || (flags & (GC_ALLOC_LARGE_OBJECT_HEAP | GC_ALLOC_PINNED_OBJECT_HEAP)));
+#else
     _ASSERTE(orObject->HasEmptySyncBlockInfo());
+#endif
 
     if (flags & GC_ALLOC_USER_OLD_HEAP)
     {
@@ -1327,6 +1337,44 @@ OBJECTREF TryAllocateFrozenObject(MethodTable* pObjMT)
     return ObjectToOBJECTREF(orObject);
 }
 
+Object* AllocateImmortalObject(MethodTable* pMT, size_t objectSize)
+{
+    CONTRACTL{
+        THROWS;
+        GC_TRIGGERS;
+        MODE_COOPERATIVE; // returns an objref without pinning it => cooperative
+        PRECONDITION(CheckPointer(pMT));
+        PRECONDITION(pMT->CheckInstanceActivated());
+    } CONTRACTL_END;
+
+    SetTypeHandleOnThreadForAlloc(TypeHandle(pMT));
+
+    GC_ALLOC_FLAGS flags = GC_ALLOC_IMMORTAL;
+    if (pMT->ContainsGCPointers())
+        flags |= GC_ALLOC_CONTAINS_REF;
+
+#ifdef FEATURE_64BIT_ALIGNMENT
+    if (pMT->RequiresAlign8())
+    {
+        // The last argument to the allocation, indicates whether the alignment should be "biased". This
+        // means that the object is allocated so that its header lies exactly between two 8-byte
+        // boundaries. This is required in cases where we need to mis-align the header in order to align
+        // the actual payload. Currently this is false for classes (where we apply padding to ensure the
+        // first field is aligned relative to the header) and true for boxed value types (where we can't
+        // do the same padding without introducing more complexity in type layout and unboxing stubs).
+        _ASSERTE(sizeof(Object) == 4);
+        flags |= GC_ALLOC_ALIGN8;
+        if (pMT->IsValueType())
+            flags |= GC_ALLOC_ALIGN8_BIAS;
+    }
+#endif // FEATURE_64BIT_ALIGNMENT
+
+    Object* orObject = (Object*)Alloc(objectSize, flags);
+    orObject->SetMethodTable(pMT);
+
+    return orObject;
+}
+
 //========================================================================
 //
 //      WRITE BARRIER HELPERS
@@ -1463,6 +1511,8 @@ extern "C" HCIMPL2_RAW(VOID, JIT_CheckedWriteBarrier, Object **dst, Object *ref)
     if (((BYTE*)dst < g_lowest_address) || ((BYTE*)dst >= g_highest_address))
         return;
 
+    TODO: Satori , is this dead code?
+
 #ifdef FEATURE_COUNT_GC_WRITE_BARRIERS
     CheckedAfterHeapFilter++;
 #endif
@@ -1555,12 +1605,12 @@ extern "C" HCIMPL2_RAW(VOID, JIT_WriteBarrier, Object **dst, Object *ref)
         if(*pCardByte != 0xFF)
         {
 #ifdef FEATURE_COUNT_GC_WRITE_BARRIERS
-            UncheckedAfterAlreadyDirtyFilter++;
+        UncheckedAfterAlreadyDirtyFilter++;
 #endif
-            *pCardByte = 0xFF;
+        *pCardByte = 0xFF;
 
 #ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
-            SetCardBundleByte((BYTE*)dst);
+        SetCardBundleByte((BYTE*)dst);
 #endif
         }
     }
@@ -1584,16 +1634,93 @@ extern "C" HCIMPL2_RAW(VOID, JIT_WriteBarrierEnsureNonHeapTarget, Object **dst, 
 }
 HCIMPLEND_RAW
 
+#include <optsmallperfcritical.h>
+
+#if FEATURE_SATORI_GC
+
+static const int PAGE_BITS = 30;
+static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
+
+// same as SatoriGC::PageForAddressChecked, just to avoid dependency on SatoriGC instance.
+SatoriPage* PageForAddressCheckedSatori(void* address)
+{
+    SatoriPage** pageMap = (SatoriPage**)g_card_table;
+    if ((uint8_t*)address <= (uint8_t*)g_highest_address)
+    {
+        size_t mapIndex = (size_t)address >> PAGE_BITS;
+        return pageMap[mapIndex];
+    }
+
+    return nullptr;
+}
+
+// same as SatoriGC::IsHeapPointer, just to avoid dependency on SatoriGC instance.
+bool IsInHeapSatori(void* ptr)
+{
+    return PageForAddressCheckedSatori(ptr) != nullptr;
+}
+
+void CheckEscapeSatori(Object** dst, Object* ref)
+{
+    SatoriObject* obj = (SatoriObject*)ref;
+    // TODO: Satori no nullcheck needed when external? (null is susbset of external)
+    if (!obj || obj->IsExternal())
+        return;
+
+    // we should be the owner of the region to care about escapes
+    SatoriRegion* region = obj->ContainingRegion();
+    if (region->IsEscapeTrackedByCurrentThread())
+    {
+        if ((((size_t)dst ^ (size_t)ref) < Satori::REGION_SIZE_GRANULARITY) &&
+            !(region->IsExposed((SatoriObject**)dst)))
+        {
+            // if assigning to the same region and location is not marked then
+            // this is a trivial local assignment and nothing needs escaping.
+            return;
+        }
+
+        region->EscapeRecursively(obj);
+    }
+}
+
+#endif
+
 // This function sets the card table with the granularity of 1 byte, to avoid ghost updates
 //    that could occur if multiple threads were trying to set different bits in the same card.
-
-#include <optsmallperfcritical.h>
 void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
 {
     STATIC_CONTRACT_MODE_COOPERATIVE;
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
 
+#if FEATURE_SATORI_GC
+
+    SatoriObject* obj = (SatoriObject*)OBJECTREFToObject(ref);
+    if (!obj || obj->IsExternal())
+        return;
+
+    // check for obj in the same region or in gen2
+    if ((((size_t)dst ^ (size_t)obj) < Satori::REGION_SIZE_GRANULARITY) ||
+        (obj->ContainingRegion()->Generation() == 2))
+    {
+        if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
+            return;
+    }
+
+    SatoriPage* page = PageForAddressCheckedSatori(dst);
+    if (!page)
+        return;
+
+    if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
+    {
+        page->SetCardForAddress((size_t)dst);
+        if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
+            return;
+    }
+
+    page->DirtyCardForAddressConcurrent((size_t)dst);
+
+#else
     // if the dst is outside of the heap (unboxed value classes) then we
     //      simply exit
     if (((BYTE*)dst < g_lowest_address) || ((BYTE*)dst >= g_highest_address))
@@ -1624,6 +1751,7 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
 #endif
         }
     }
+#endif
 }
 #include <optdefault.h>
 
@@ -1632,6 +1760,11 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref)
     STATIC_CONTRACT_MODE_COOPERATIVE;
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
+
+#if FEATURE_SATORI_GC
+    // this whole thing is unnecessary in Satori
+    __UNREACHABLE();
+#else
 
     *dst = ref;
 
@@ -1665,4 +1798,5 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref)
             }
         }
     }
+#endif
 }

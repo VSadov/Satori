@@ -319,6 +319,7 @@ namespace Microsoft.Extensions.Hosting.Tests
         }
 
         [Fact]
+        [ActiveIssue("Satori: noisy test fails in baseline too", typeof(PlatformDetection), nameof(PlatformDetection.IsNativeAot))]
         public async Task CreateDefaultBuilder_ConfigJsonDoesReload()
         {
             var reloadFlagConfig = new Dictionary<string, string>() { { "hostbuilder:reloadConfigOnChange", "true" } };

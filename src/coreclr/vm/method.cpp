@@ -1240,7 +1240,7 @@ ReturnKind MethodDesc::GetReturnKind()
 
     // Mark that we are performing a stackwalker like operation on the current thread.
     // This is necessary to allow the signature parsing functions to work without triggering any loads
-    StackWalkerWalkingThreadHolder threadStackWalking(GetThread());
+    StackWalkerWalkingThreadHolder threadStackWalking(GetThreadNULLOk());
 
     TypeHandle thValueType;
 

@@ -223,7 +223,7 @@ public:
     {
         WRAPPER_NO_CONTRACT;
 
-        return IsServerHeap() && g_SystemInfo.dwNumberOfProcessors >= 2;
+        return IsServerHeap() && g_SystemInfo.dwNumberOfProcessors >= 2 && g_heap_type != GC_HEAP_SATORI;
     }
 
     // Waits until a GC is complete, if the heap has been initialized.
@@ -242,7 +242,9 @@ public:
 
 #ifdef FEATURE_SVR_GC
         _ASSERTE(g_heap_type != GC_HEAP_INVALID);
-        return g_heap_type == GC_HEAP_SVR;
+
+        // TODO: Satori is closer to SVR than WKS, since there is threading. Need a better API though.
+        return g_heap_type > GC_HEAP_WKS;
 #else
         return false;
 #endif // FEATURE_SVR_GC
@@ -250,10 +252,14 @@ public:
 
     static bool UseThreadAllocationContexts()
     {
+#ifdef FEATURE_SATORI_GC
+        return true;
+#else
 #if (defined(TARGET_X86) || defined(TARGET_AMD64)) && !defined(TARGET_UNIX)
         return s_useThreadAllocationContexts;
 #else
         return true;
+#endif
 #endif
     }
 
@@ -265,7 +271,7 @@ public:
     {
         WRAPPER_NO_CONTRACT;
 
-        return g_sw_ww_enabled_for_gc_heap;
+        return VolatileLoadWithoutBarrier(&g_sw_ww_enabled_for_gc_heap);
     }
 
     // In accordance with the SoftwareWriteWatch scheme, marks a given address as

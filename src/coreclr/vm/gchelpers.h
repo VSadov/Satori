@@ -72,6 +72,8 @@ inline OBJECTREF AllocateObject(MethodTable *pMT
         );
 }
 
+Object* AllocateImmortalObject(MethodTable* pMT, size_t objectSize);
+
 extern int StompWriteBarrierEphemeral(bool isRuntimeSuspended);
 extern int StompWriteBarrierResize(bool isRuntimeSuspended, bool bReqUpperBoundsCheck);
 extern int SwitchToWriteWatchBarrier(bool isRuntimeSuspended);
@@ -87,6 +89,11 @@ extern void ThrowOutOfMemoryDimensionsExceeded();
 //========================================================================
 
 void ErectWriteBarrier(OBJECTREF* dst, OBJECTREF ref);
+
+#if FEATURE_SATORI_GC
+bool IsInHeapSatori(void* ptr);
+void CheckEscapeSatori(Object** dst, Object* ref);
+#endif
 
 void PublishFrozenObject(Object*& orObject);
 

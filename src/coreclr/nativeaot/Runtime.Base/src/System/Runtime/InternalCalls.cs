@@ -96,7 +96,7 @@ namespace System.Runtime
         // Fetch next object which needs finalization or return null if we've reached the end of the list.
         [RuntimeImport(RuntimeLibrary, "RhpGetNextFinalizableObject")]
         [MethodImpl(MethodImplOptions.InternalCall)]
-        internal static extern object RhpGetNextFinalizableObject();
+        internal static extern unsafe void RhpGetNextFinalizableObject(void* pResult);
 
         //
         // internalcalls for System.Runtime.InteropServices.GCHandle.
@@ -285,6 +285,9 @@ namespace System.Runtime
         // Indicate that the current round of finalizations is complete.
         [DllImport(RuntimeLibrary)]
         internal static extern void RhpSignalFinalizationComplete(uint fCount, int observedFullGcCount);
+
+        [DllImport(RuntimeLibrary)]
+        internal static extern ulong RhpGetTickCount64();
 
         // Enters a no GC region, possibly doing a blocking GC if there is not enough
         // memory available to satisfy the caller's request.
