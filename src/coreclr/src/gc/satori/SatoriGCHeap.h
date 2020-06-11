@@ -11,10 +11,17 @@
 #include "common.h"
 #include "../gc.h"
 
+class SatoriHeap;
+class SatoriAllocator;
+class SatoriRecycler;
+
 class SatoriGCHeap : public IGCHeapInternal
 {
 private:
-    int64_t m_perfCounterFrquency;
+    int64_t m_perfCounterFrequency;
+    SatoriHeap* m_heap;
+    SatoriAllocator* m_allocator;
+    SatoriRecycler* m_recycler;
 
     // what is the difference between these two?
     // should these be volatile
