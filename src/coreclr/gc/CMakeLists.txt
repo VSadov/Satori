@@ -26,6 +26,15 @@ set(GC_SOURCES
   gcload.cpp
   handletablecache.cpp
   satori/SatoriGCHeap.cpp
+  satori/SatoriHeap.cpp
+  satori/SatoriPage.cpp
+  satori/SatoriRegion.cpp
+  satori/SatoriRegionQueue.cpp
+  satori/SatoriAllocator.cpp
+  satori/SatoriRecycler.cpp
+  satori/SatoriAllocationContext.cpp
+  satori/SatoriUtil.cpp
+  satori/SatoriLock.cpp
 )
 
 if(CLR_CMAKE_HOST_UNIX)
@@ -91,6 +100,15 @@ if (CLR_CMAKE_TARGET_WIN32)
     softwarewritewatch.h
     vxsort/do_vxsort.h
     satori/SatoriGCHeap.h
+    satori/SatoriHeap.h
+    satori/SatoriPage.h
+    satori/SatoriRegion.h
+    satori/SatoriRegionQueue.h
+    satori/SatoriAllocator.h
+    satori/SatoriRecycler.h
+    satori/SatoriAllocationContext.h
+    satori/SatoriUtil.h
+    satori/SatoriLock.h
   )
 endif(CLR_CMAKE_TARGET_WIN32)
 
