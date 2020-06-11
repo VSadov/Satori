@@ -10,15 +10,11 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 
-//#include "../env/gcenv.structs.h"
-//#include "../env/gcenv.base.h"
-//#include "../env/gcenv.os.h"
-//#include "../env/gcenv.interlocked.h"
-//#include "../env/gcenv.interlocked.inl"
-//#include "../env/gcenv.object.h"
-//#include "../env/gcenv.sync.h"
+#include "SatoriUtil.h"
 
 #include "SatoriGCHeap.h"
+#include "SatoriAllocationContext.h"
+#include "SatoriHeap.h"
 
 bool SatoriGCHeap::IsValidSegmentSize(size_t size)
 {
@@ -180,7 +176,7 @@ uint64_t SatoriGCHeap::GetTotalAllocatedBytes()
 
 HRESULT SatoriGCHeap::GarbageCollect(int generation, bool low_memory_p, int mode)
 {
-    __UNREACHABLE();
+    // TODO: Satori
     return S_OK;
 }
 
@@ -234,8 +230,15 @@ void InitWriteBarrier()
 
 HRESULT SatoriGCHeap::Initialize()
 {
-    m_perfCounterFrquency = GCToOSInterface::QueryPerformanceFrequency();
+    m_perfCounterFrequency = GCToOSInterface::QueryPerformanceFrequency();
     InitWriteBarrier();
+    SatoriUtil::Initialize();
+    m_heap = SatoriHeap::Create();
+    if (m_heap == nullptr)
+    {
+        return E_OUTOFMEMORY;
+    }
+
     return S_OK;
 }
 
@@ -247,8 +250,9 @@ bool SatoriGCHeap::IsPromoted(Object* object)
 
 bool SatoriGCHeap::IsHeapPointer(void* object, bool small_heap_only)
 {
-    //TODO: Satori Alloc
-    return false;
+    return m_heap->IsHeapAddress((uint8_t*)object);
+
+    //TODO: Satori small_heap_only ?
 }
 
 unsigned SatoriGCHeap::GetCondemnedGeneration()
@@ -287,6 +291,8 @@ uint32_t SatoriGCHeap::WaitUntilGCComplete(bool bConsiderGCStart)
 
 void SatoriGCHeap::FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
 {
+    // this is only called when thread is terminating and about to clear its context.
+    ((SatoriAllocationContext*)acontext)->OnTerminateThread(m_heap);
 }
 
 size_t SatoriGCHeap::GetCurrentObjSize()
@@ -331,22 +337,12 @@ size_t SatoriGCHeap::GetLastGCDuration(int generation)
 size_t SatoriGCHeap::GetNow()
 {
     int64_t t = GCToOSInterface::QueryPerformanceCounter();
-    return (size_t)(t / (m_perfCounterFrquency / 1000));
-}
-
-inline size_t Align(size_t nbytes)
-{
-    return (nbytes + 7) & ~7;
+    return (size_t)(t / (m_perfCounterFrequency / 1000));
 }
 
 Object* SatoriGCHeap::Alloc(gc_alloc_context* acontext, size_t size, uint32_t flags)
 {
-    size_t objectSize = Align(size);
-    uint8_t* data = new uint8_t[objectSize];
-    memset(data, 0, objectSize);
-
-    // skip syncblock word
-    return (Object*)(data + sizeof(size_t));
+    return m_heap->Allocator()->Alloc((SatoriAllocationContext*)acontext, size, flags);
 }
 
 void SatoriGCHeap::PublishObject(uint8_t* obj)
