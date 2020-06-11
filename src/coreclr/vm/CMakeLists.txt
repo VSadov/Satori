@@ -488,7 +488,17 @@ set(GC_SOURCES_WKS
     ../gc/gcload.cpp
     ../gc/softwarewritewatch.cpp
     ../gc/handletablecache.cpp
-    ../gc/satori/SatoriGCHeap.cpp)
+    ../gc/satori/SatoriGCHeap.cpp
+    ../gc/satori/SatoriHeap.cpp
+    ../gc/satori/SatoriPage.cpp
+    ../gc/satori/SatoriRegion.cpp
+    ../gc/satori/SatoriRegionQueue.cpp
+    ../gc/satori/SatoriAllocator.cpp
+    ../gc/satori/SatoriRecycler.cpp
+    ../gc/satori/SatoriAllocationContext.cpp
+    ../gc/satori/SatoriUtil.cpp
+    ../gc/satori/SatoriLock.cpp
+    )
 
 if (CLR_CMAKE_TARGET_ARCH_AMD64 AND CLR_CMAKE_TARGET_WIN32)
   set ( GC_SOURCES_WKS
@@ -512,7 +522,17 @@ set(GC_HEADERS_WKS
     ../gc/gcscan.h
     ../gc/gchandletableimpl.h
     ../gc/softwarewritewatch.h
-    ../gc/satori/SatoriGCHeap.h)
+    ../gc/satori/SatoriGCHeap.h
+    ../gc/satori/SatoriHeap.h
+    ../gc/satori/SatoriPage.h
+    ../gc/satori/SatoriRegion.h
+    ../gc/satori/SatoriRegionQueue.h
+    ../gc/satori/SatoriAllocator.h
+    ../gc/satori/SatoriRecycler.h
+    ../gc/satori/SatoriAllocationContext.h
+    ../gc/satori/SatoriUtil.h
+    ../gc/satori/SatoriLock.h
+    )
 
 if(FEATURE_EVENT_TRACE)
     list(APPEND VM_SOURCES_WKS
