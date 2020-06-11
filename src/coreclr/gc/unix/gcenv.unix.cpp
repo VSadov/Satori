@@ -682,6 +682,28 @@ void* GCToOSInterface::VirtualReserve(size_t size, size_t alignment, uint32_t fl
     return VirtualReserveInner(size, alignment, flags);
 }
 
+void* GCToOSInterface::VirtualReserve(void* location, size_t size)
+{
+    void* pRetVal = mmap(location, size, PROT_NONE, MAP_ANON | MAP_PRIVATE , -1, 0);
+
+    if (pRetVal == MAP_FAILED)
+    {
+        return NULL;
+    }
+
+    if (pRetVal != location)
+    {
+        munmap(location, size);
+        return NULL;
+    }
+
+#ifdef MADV_DONTDUMP
+        // Do not include reserved memory in coredump.
+        madvise(pRetVal, size, MADV_DONTDUMP);
+#endif
+        return pRetVal;
+    }
+
 // Release virtual memory range previously reserved using VirtualReserve
 // Parameters:
 //  address - starting virtual address
