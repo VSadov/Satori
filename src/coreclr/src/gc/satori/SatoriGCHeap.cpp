@@ -45,7 +45,12 @@ void SatoriGCHeap::WaitUntilConcurrentGCComplete()
 
 bool SatoriGCHeap::IsConcurrentGCInProgress()
 {
-    return false;
+    // Satori may move thread local objects asyncronously,
+    // but noone should see that (that is the point).
+    //
+    // The only thing that may get to TL objects is object verification.
+    // Return "true" for now.
+    return true;
 }
 
 void SatoriGCHeap::TemporaryEnableConcurrentGC()
@@ -209,29 +214,9 @@ size_t SatoriGCHeap::GetLastGCGenerationSize(int gen)
     return 0;
 }
 
-void InitWriteBarrier()
-{
-    WriteBarrierParameters args = {};
-    args.operation = WriteBarrierOp::Initialize;
-    args.is_runtime_suspended = true;
-    args.requires_upper_bounds_check = false;
-    args.card_table = nullptr;
-
-#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
-    args.card_bundle_table = nullptr;
-#endif
-
-    args.lowest_address = (uint8_t*)-1;
-    args.highest_address = (uint8_t*)-1;
-    args.ephemeral_low = (uint8_t*)-1;
-    args.ephemeral_high = (uint8_t*)-1;
-    GCToEEInterface::StompWriteBarrier(&args);
-}
-
 HRESULT SatoriGCHeap::Initialize()
 {
     m_perfCounterFrequency = GCToOSInterface::QueryPerformanceFrequency();
-    InitWriteBarrier();
     SatoriUtil::Initialize();
     m_heap = SatoriHeap::Create();
     if (m_heap == nullptr)
