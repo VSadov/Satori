@@ -12,6 +12,43 @@
 
 #include "SatoriHeap.h"
 
+void InitWriteBarrier(uint8_t* segmentTable, size_t highest_address)
+{
+    WriteBarrierParameters args = {};
+    args.operation = WriteBarrierOp::Initialize;
+    args.is_runtime_suspended = true;
+    args.requires_upper_bounds_check = false;
+    args.card_table = (uint32_t*)segmentTable;
+
+#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
+    args.card_bundle_table = nullptr;
+#endif
+
+    args.lowest_address = (uint8_t*)1;
+    args.highest_address = (uint8_t*)highest_address;
+    args.ephemeral_low = (uint8_t*)-1;
+    args.ephemeral_high = (uint8_t*)-1;
+    GCToEEInterface::StompWriteBarrier(&args);
+}
+
+void UpdateWriteBarrier(uint8_t* segmentTable, size_t highest_address)
+{
+    WriteBarrierParameters args = {};
+    args.operation = WriteBarrierOp::StompResize;
+    args.is_runtime_suspended = false;
+    args.requires_upper_bounds_check = false;
+    args.card_table = (uint32_t*)segmentTable;
+
+#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
+    args.card_bundle_table = nullptr;
+#endif
+
+    args.lowest_address = (uint8_t*)1;
+    args.highest_address = (uint8_t*)highest_address;
+    args.ephemeral_low = (uint8_t*)-1;
+    args.ephemeral_high = (uint8_t*)-1;
+    GCToEEInterface::StompWriteBarrier(&args);
+}
 
 SatoriHeap* SatoriHeap::Create()
 {
@@ -35,6 +72,7 @@ SatoriHeap* SatoriHeap::Create()
     SatoriHeap* result = (SatoriHeap*)reserved;
     result->m_reservedMapSize = mapSize;
     result->m_committedMapSize = (int)(commitSize - ((size_t)&result->m_pageMap - (size_t)result));
+    InitWriteBarrier(result->m_pageMap, result->m_committedMapSize * Satori::PAGE_SIZE_GRANULARITY);
     result->m_mapLock.Initialize();
     result->m_nextPageIndex = 1;
 
@@ -56,6 +94,7 @@ bool SatoriHeap::CommitMoreMap(int currentlyCommitted)
         {
             // we did the commit
             m_committedMapSize = min(currentlyCommitted + (int)commitSize, m_reservedMapSize);
+            UpdateWriteBarrier(m_pageMap, m_committedMapSize * Satori::PAGE_SIZE_GRANULARITY);
         }
     }
 
@@ -78,17 +117,15 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
         newPage = SatoriPage::InitializeAt(pageAddress, Satori::PAGE_SIZE_GRANULARITY);
         if (newPage)
         {
-            // mark the map, before an object can be allocated in the new page and
-            // may be seen in a GC barrier
+            // SYNCRONIZATION:
+            // A page map update must be seen by all threads befeore seeing objects allocated
+            // in the new page or checked barriers may consider the objects not in the heap.
+            //
+            // If another thread checks if object is in heap, its read of the map element is dependent on object,
+            // therefore the read will happen after the object is obtained.
+            // Also the object must be published before other thread could see it, and publishing is a release.
+            // Thus an ordinary write is ok even for weak memory cases.
             m_pageMap[i] = 1;
-
-            // we also need to ensure that the other thread doing the barrier,
-            // reads the object before reading the updated map.
-            // on ARM this would require load fence in the barrier. We will do a processwide here instead.
-#if defined(HOST_ARM64) || defined(HOST_ARM)
-            GCToOSInterface::FlushProcessWriteBuffers();
-#endif
-
             // ensure the next is advanced to at least i + 1
             while ((nextPageIndex = m_nextPageIndex) < i + 1 &&
                 Interlocked::CompareExchange(&m_nextPageIndex, i + 1, nextPageIndex) != nextPageIndex);
