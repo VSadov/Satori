@@ -38,6 +38,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
         committed += toCommit;
     }
 
+    result->m_state = SatoriRegionState::allocating;
     result->m_end = address + regionSize;
     result->m_committed = min(committed, address + regionSize);
     result->m_zeroInitedAfter = min(max(zeroInitedAfter, address + sizeof(SatoriRegion)), result->End());
@@ -48,7 +49,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
 
     result->m_allocStart = (size_t)&result->m_firstObject;
     // +1 for syncblock
-    result->m_allocEnd = result->m_end + 1;
+    result->m_allocEnd = result->End() + 1;
 
     if (zeroInitedAfter > (size_t)&result->m_index)
     {
@@ -61,6 +62,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
 
 void SatoriRegion::MakeBlank()
 {
+    m_state = SatoriRegionState::allocating;
     m_allocStart = (size_t)&m_firstObject;
     // +1 for syncblock
     m_allocEnd = m_end + 1;
@@ -141,7 +143,7 @@ void SatoriRegion::Deactivate(SatoriHeap* heap)
         return;
     }
 
-    // TODO: VS: if can be splitd, split and return tail
+    // TODO: VS: if can be splitted, split and return tail
     heap->Recycler()->AddRegion(this);
 }
 
