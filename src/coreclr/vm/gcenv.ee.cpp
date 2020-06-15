@@ -1013,8 +1013,7 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         assert(g_card_table == nullptr);
         assert(g_lowest_address == nullptr);
         assert(g_highest_address == nullptr);
-        //TODO: Satori
-        //assert(args->card_table != nullptr);
+        assert(args->card_table != nullptr);
         assert(args->lowest_address != nullptr);
         assert(args->highest_address != nullptr);
         assert(args->ephemeral_low != nullptr);
