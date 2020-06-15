@@ -1134,6 +1134,8 @@ extern "C" HCIMPL2_RAW(VOID, JIT_CheckedWriteBarrier, Object **dst, Object *ref)
     if (((BYTE*)dst < g_lowest_address) || ((BYTE*)dst >= g_highest_address))
         return;
 
+    TODO: Satori , is this dead code?
+
 #ifdef FEATURE_COUNT_GC_WRITE_BARRIERS
     CheckedAfterHeapFilter++;
 #endif
@@ -1261,43 +1263,81 @@ HCIMPLEND_RAW
 // This function sets the card table with the granularity of 1 byte, to avoid ghost updates
 //    that could occur if multiple threads were trying to set different bits in the same card.
 
+
+static const int PAGE_BITS = 30;
+static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
+
 #include <optsmallperfcritical.h>
+
+bool IsInHeapSatori(Object** start)
+{
+    if ((uint8_t*)start > (uint8_t*)g_highest_address)
+    {
+        return false;
+    }
+
+    uint8_t* pages = (uint8_t*)g_card_table;
+    size_t page = (size_t)start >> PAGE_BITS;
+    return pages[page];
+}
+
+void CheckAndMarkEscapeSatori(Object** dst, Object* ref)
+{
+    if (ref && ((size_t)dst ^ (size_t)(ref)) >> 21)
+    {
+        // mark the escape byte
+        // TODO: VS, check if region is allocating?
+        if (!((int8_t*)ref)[-5])
+        {
+            ((int8_t*)ref)[-5] = (int8_t)0xFF;
+        }
+    }
+}
+
 void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
 {
     STATIC_CONTRACT_MODE_COOPERATIVE;
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
 
-    // if the dst is outside of the heap (unboxed value classes) then we
-    //      simply exit
-    if (((BYTE*)dst < g_lowest_address) || ((BYTE*)dst >= g_highest_address))
+    if (!IsInHeapSatori((Object**)dst))
+    {
         return;
-
-#ifdef WRITE_BARRIER_CHECK
-    updateGCShadow((Object**) dst, OBJECTREFToObject(ref));     // support debugging write barrier
-#endif
-
-#ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
-    if (GCHeapUtilities::SoftwareWriteWatchIsEnabled())
-    {
-        GCHeapUtilities::SoftwareWriteWatchSetDirty(dst, sizeof(*dst));
     }
-#endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 
-    if ((BYTE*) OBJECTREFToObject(ref) >= g_ephemeral_low && (BYTE*) OBJECTREFToObject(ref) < g_ephemeral_high)
-    {
-        // VolatileLoadWithoutBarrier() is used here to prevent fetch of g_card_table from being reordered
-        // with g_lowest/highest_address check above. See comment in StompWriteBarrier.
-        BYTE* pCardByte = (BYTE*)VolatileLoadWithoutBarrier(&g_card_table) + card_byte((BYTE *)dst);
-        if (*pCardByte != 0xFF)
-        {
-            *pCardByte = 0xFF;
+    CheckAndMarkEscapeSatori((Object**)dst, OBJECTREFToObject(ref));
 
-#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
-            SetCardBundleByte((BYTE*)dst);
-#endif
-        }
-    }
+    //TODO: Satori
+//    // if the dst is outside of the heap (unboxed value classes) then we
+//    //      simply exit
+//    if (((BYTE*)dst < g_lowest_address) || ((BYTE*)dst >= g_highest_address))
+//        return;
+//
+//#ifdef WRITE_BARRIER_CHECK
+//    updateGCShadow((Object**) dst, OBJECTREFToObject(ref));     // support debugging write barrier
+//#endif
+//
+//#ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+//    if (GCHeapUtilities::SoftwareWriteWatchIsEnabled())
+//    {
+//        GCHeapUtilities::SoftwareWriteWatchSetDirty(dst, sizeof(*dst));
+//    }
+//#endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+//
+//    if ((BYTE*) OBJECTREFToObject(ref) >= g_ephemeral_low && (BYTE*) OBJECTREFToObject(ref) < g_ephemeral_high)
+//    {
+//        // VolatileLoadWithoutBarrier() is used here to prevent fetch of g_card_table from being reordered
+//        // with g_lowest/highest_address check above. See comment in StompWriteBarrier.
+//        BYTE* pCardByte = (BYTE*)VolatileLoadWithoutBarrier(&g_card_table) + card_byte((BYTE *)dst);
+//        if (*pCardByte != 0xFF)
+//        {
+//            *pCardByte = 0xFF;
+//
+//#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
+//            SetCardBundleByte((BYTE*)dst);
+//#endif
+//        }
+//    }
 }
 #include <optdefault.h>
 
@@ -1362,15 +1402,15 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref)
 #pragma optimize("y", on)        // Small critical routines, don't put in EBP frame
 #endif //_MSC_VER && TARGET_X86
 
-void
-SetCardsAfterBulkCopy(Object **start, size_t len)
-{
-    // If the size is smaller than a pointer, no write barrier is required.
-    if (len >= sizeof(uintptr_t))
-    {
-        InlinedSetCardsAfterBulkCopyHelper(start, len);
-    }
-}
+//void
+//SetCardsAfterBulkCopy(Object **start, size_t len)
+//{
+//    // If the size is smaller than a pointer, no write barrier is required.
+//    if (len >= sizeof(uintptr_t))
+//    {
+//        InlinedSetCardsAfterBulkCopyHelper(start, len);
+//    }
+//}
 
 #if defined(_MSC_VER) && defined(TARGET_X86)
 #pragma optimize("", on)        // Go back to command line default optimizations
