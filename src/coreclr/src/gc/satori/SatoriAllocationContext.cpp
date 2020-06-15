@@ -16,16 +16,21 @@ class SatoriHeap;
 
 void SatoriAllocationContext::OnTerminateThread(SatoriHeap* heap)
 {
-     if (RegularRegion() != nullptr)
-     {
-         RegularRegion()->Deactivate(heap);
-         RegularRegion() = nullptr;
-     }
+    if (RegularRegion() != nullptr)
+    {
+        this->alloc_bytes -= this->alloc_limit - this->alloc_ptr;
 
-     if (LargeRegion() != nullptr)
-     {
-         LargeRegion()->Deactivate(heap);
-         LargeRegion() = nullptr;
-     }
-     //TODO: VS also maybe allocated bytes accounting?
+        //TODO: VS make parseable
+        //TODO: VS check for emptiness, mark, sweep, compact, slice, ...
+
+        RegularRegion()->Deactivate(heap);
+        RegularRegion() = nullptr;
+    }
+
+    if (LargeRegion() != nullptr)
+    {
+        //TODO: VS check for emptiness, mark, sweep, compact, slice, ...
+        LargeRegion()->Deactivate(heap);
+        LargeRegion() = nullptr;
+    }
  }
