@@ -1346,8 +1346,9 @@ void* __cdecl GCSafeMemCpy(void * dest, const void * src, size_t len)
     STATIC_CONTRACT_GC_NOTRIGGER;
     STATIC_CONTRACT_FORBID_FAULT;
 
-    if (!(((*(BYTE**)&dest) <  g_lowest_address ) ||
-          ((*(BYTE**)&dest) >= g_highest_address)))
+    if (IsInHeapSatori((Object**)dest))
+    //if (!(((*(BYTE**)&dest) <  g_lowest_address ) ||
+    //      ((*(BYTE**)&dest) >= g_highest_address)))
     {
         Thread* pThread = GetThreadNULLOk();
 

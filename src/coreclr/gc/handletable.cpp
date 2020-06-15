@@ -538,6 +538,16 @@ void HndLogSetEvent(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
 #endif
 }
 
+void MarkEscapeSatori(Object* ref)
+{
+    // mark the escape byte
+    // TODO: VS, check if region is allocating?
+    if (!((int8_t*)ref)[-5])
+    {
+        ((int8_t*)ref)[-5] = (int8_t)0xFF;
+    }
+}
+
 #ifndef DACCESS_COMPILE
 /*
  * HndWriteBarrierWorker
@@ -548,6 +558,8 @@ void HndLogSetEvent(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
 void HndWriteBarrierWorker(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
 {
     _ASSERTE (value != NULL);
+
+    MarkEscapeSatori(OBJECTREFToObject(value));
 
     // find the write barrier for this handle
     uint8_t *barrier = (uint8_t *)((uintptr_t)handle & HANDLE_SEGMENT_ALIGN_MASK);

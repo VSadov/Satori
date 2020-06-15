@@ -438,8 +438,10 @@ void InitializeStartupFlags()
     else
         g_IGCconcurrent = 0;
 
+    //TODO: Satori
+    // g_heap_type = ((flags & STARTUP_SERVER_GC) && GetCurrentProcessCpuCount() > 1) ? GC_HEAP_SVR : GC_HEAP_WKS;
+    g_heap_type = GC_HEAP_SATORI;
 
-    g_heap_type = ((flags & STARTUP_SERVER_GC) && GetCurrentProcessCpuCount() > 1) ? GC_HEAP_SVR : GC_HEAP_WKS;
     g_IGCHoardVM = (flags & STARTUP_HOARD_GC_VM) == 0 ? 0 : 1;
 }
 
