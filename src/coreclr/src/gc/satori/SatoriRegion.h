@@ -13,6 +13,12 @@
 #include "SatoriHeap.h"
 #include "SatoriUtil.h"
 
+enum class SatoriRegionState : int8_t
+{
+    allocating   = 0,
+    shared       = 1,
+};
+
 class SatoriRegion
 {
     friend class SatoriRegionQueue;
@@ -43,7 +49,7 @@ public:
 
     size_t Start()
     {
-        return (size_t)&m_end;
+        return (size_t)&m_state;
     }
 
     size_t End()
@@ -76,7 +82,14 @@ public:
         return (SatoriRegion*)(((size_t)obj) >> Satori::REGION_BITS);
     }
 
+    void Publish()
+    {
+        _ASSERTE(m_state == SatoriRegionState::allocating);
+        m_state = SatoriRegionState::shared;
+    }
+
 private:
+    SatoriRegionState m_state;
     // end is edge exclusive
     size_t m_end;
     size_t m_committed;
@@ -89,7 +102,8 @@ private:
 
     // active allocation may happen in the following range.
     // the range may not be parseable as sequence of objects
-    // NB: it is in terms of objects, if converting to size_t beware of sync blocks
+    // NB: the range is in terms of objects,
+    //     there is embedded off-by-one error for syncblocks
     size_t m_allocStart;
     size_t m_allocEnd;
 
