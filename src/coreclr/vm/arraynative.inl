@@ -324,10 +324,7 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
         InlinedBackwardGCSafeCopyHelper(dest, src, len);
     }
 
-    if (!notInHeap)
-    {
-        InlinedSetCardsAfterBulkCopyHelper((Object**)dest, len);
-    }
+    InlinedSetCardsAfterBulkCopyHelper((Object**)dest, (Object*)src, len);
 }
 
 #endif // !_ARRAYNATIVE_INL_

@@ -480,6 +480,16 @@ void GCLog (const char *fmt, ... );
 FILE* CreateLogFile(const GCConfigStringHolder& temp_logfile_name, bool is_config);
 #endif //TRACE_GC || GC_CONFIG_DRIVEN
 
+inline bool IsSatoriHeap()
+{
+#ifdef FEATURE_SATORI_GC
+    assert(g_gc_heap_type != GC_HEAP_INVALID);
+    return g_gc_heap_type == GC_HEAP_SATORI;
+#else // FEATURE_SVR_GC
+    return false;
+#endif // FEATURE_SVR_GC
+}
+
 void log_init_error_to_host (const char* format, ...);
 
 uint64_t GetHighPrecisionTimeStamp();
