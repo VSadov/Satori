@@ -344,6 +344,43 @@ LEAF_END_MARKED JIT_WriteBarrier_Bit_Region64, _TEXT
 
 endif
 
+ifdef FEATURE_SATORI_GC
+
+LEAF_ENTRY JIT_WriteBarrier_SATORI, _TEXT
+        align 8
+        mov     [rcx], rdx
+
+        mov     rax, rdx
+        xor     rax, rcx
+        shr     rax, 21
+        jnz     CrossRegion
+        REPRET                          ; assignment is within the same region
+
+    CrossRegion:
+        cmp     rdx, 0
+        je      Exit                    ; assigning null
+
+        mov     rax, rdx
+        and     rax, 0FFFFFFFFFFE00000h ; region
+        cmp     byte ptr [rax], 0       ; check status, 0 -> allocating
+
+        jne     EscapeChecked           ; object is not from allocating region
+                                        ; this is optimization, it is ok to mark, just noone cares
+                                        ; TODO: VS is this really an optimization?
+
+        cmp     byte ptr [rdx - 5], 00h 
+        jne     EscapeChecked           ; already escaped
+
+        ; mark the escape byte
+        mov     byte ptr [rdx - 5], 0FFh
+
+    EscapeChecked:
+        ; cross generational referencing would be recorded here
+    Exit:
+        ret
+LEAF_END_MARKED JIT_WriteBarrier_SATORI, _TEXT
+
+endif
 
 ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 

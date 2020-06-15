@@ -49,6 +49,7 @@ endif
 
 extern JIT_InternalThrow:proc
 
+ifndef FEATURE_SATORI_GC
 
 ; Mark start of the code region that we patch at runtime
 LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
@@ -482,6 +483,157 @@ LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
         mov     [rcx], rdx
         ret
 LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
+
+
+
+else
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; void JIT_CheckedWriteBarrier(Object** dst, Object* src)
+LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
+
+        ; When WRITE_BARRIER_CHECK is defined _NotInHeap will write the reference
+        ; but if it isn't then it will just return.
+        ;
+
+        ; See if this is in GCHeap
+        cmp     rcx, [g_highest_address]
+        jnb     NotInHeap
+
+        mov     rax, rcx
+        shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
+        add     rax, [g_card_table]
+        cmp     byte ptr [rax], 0
+        jnz     JIT_WriteBarrier
+
+    NotInHeap:
+        ; See comment above about possible AV
+        mov     [rcx], rdx
+        ret
+LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
+
+
+; Mark start of the code region that we patch at runtime
+LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
+        ret
+LEAF_END JIT_PatchedCodeStart, _TEXT
+
+; This is used by the mechanism to hold either the JIT_WriteBarrier_PreGrow
+; or JIT_WriteBarrier_PostGrow code (depending on the state of the GC). It _WILL_
+; change at runtime as the GC changes. Initially it should simply be a copy of the
+; larger of the two functions (JIT_WriteBarrier_PostGrow) to ensure we have created
+; enough space to copy that code in.
+LEAF_ENTRY JIT_WriteBarrier, _TEXT
+        align 16
+
+        mov     [rcx], rdx
+
+        mov     rax, rdx
+        xor     rax, rcx
+        shr     rax, 21
+        jnz     CrossRegion
+        REPRET                          ; assignment is within the same region
+
+    CrossRegion:
+        cmp     rdx, 0
+        je      Exit                    ; assigning null
+
+        mov     rax, rdx
+        and     rax, 0FFFFFFFFFFE00000h ; region
+        cmp     byte ptr [rax], 0       ; check status, 0 -> allocating
+
+        jne     EscapeChecked           ; object is not from allocating region
+                                        ; this is optimization, it is ok to mark, just noone cares
+                                        ; TODO: VS is this really an optimization?
+
+        cmp     byte ptr [rdx - 5], 00h 
+        jne     EscapeChecked           ; already escaped
+
+        ; mark the escape byte
+        mov     byte ptr [rdx - 5], 0FFh
+
+    EscapeChecked:
+        ; cross generational referencing would be recorded here
+    Exit:
+        ret
+
+    ; make sure this is bigger than any of the others
+    align 16
+        nop
+LEAF_END_MARKED JIT_WriteBarrier, _TEXT
+
+; Mark start of the code region that we patch at runtime
+LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
+        ret
+LEAF_END JIT_PatchedCodeLast, _TEXT
+
+; JIT_ByRefWriteBarrier has weird symantics, see usage in StubLinkerX86.cpp
+;
+; Entry:
+;   RDI - address of ref-field (assigned to)
+;   RSI - address of the data  (source)
+;   RCX is trashed
+;   RAX is trashed when FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP is defined
+; Exit:
+;   RDI, RSI are incremented by SIZEOF(LPVOID)
+LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
+        mov     rcx, [rsi]
+
+        ; do the assignment
+        mov     [rdi], rcx
+
+        ; See if this is in GCHeap
+        cmp     rdi, [g_highest_address]
+        jnb     Exit                    ; not in heap
+
+        mov     rax, rdi
+        shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
+        add     rax, [g_card_table]
+        cmp     byte ptr [rax], 0
+        je      Exit                    ; not in heap
+
+        ; check if this is a cross-region assignment (TODO: VS perhaps check before "in heap")
+        mov     rax, rdi
+        xor     rax, rcx
+        shr     rax, 21
+        jz      Exit                    ; assignment is within the same region
+
+    CrossRegion:
+        cmp     rcx, 0
+        je      Exit                    ; assigning null
+
+        mov     rax, rcx
+        and     rax, 0FFFFFFFFFFE00000h ; region
+        cmp     byte ptr [rax], 0       ; check status, 0 -> allocating
+
+        jne     EscapeChecked           ; object is not from allocating region
+                                        ; this is optimization, it is ok to mark, just noone cares
+                                        ; TODO: VS is this really an optimization?
+
+        cmp     byte ptr [rcx - 5], 00h 
+        jne     EscapeChecked           ; already escaped
+
+        ; mark the escape byte
+        mov     byte ptr [rcx - 5], 0FFh
+
+    EscapeChecked:
+        ; cross generational referencing would be recorded here
+
+    align 16
+    Exit:
+        ; Increment the registers before leaving
+        add     rdi, 8h
+        add     rsi, 8h
+        ret
+LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+endif
 
 ; The following helper will access ("probe") a word on each page of the stack
 ; starting with the page right beneath rsp down to the one pointed to by r11.
