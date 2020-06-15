@@ -50,6 +50,11 @@ EXTERN_C void JIT_WriteBarrier_SVR64_PatchLabel_CardBundleTable();
 EXTERN_C void JIT_WriteBarrier_SVR64_End();
 #endif // FEATURE_SVR_GC
 
+#ifdef FEATURE_SATORI_GC
+EXTERN_C void JIT_WriteBarrier_SATORI(Object** dst, Object* ref);
+EXTERN_C void JIT_WriteBarrier_SATORI_End();
+#endif // FEATURE_SATORI_GC
+
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 EXTERN_C void JIT_WriteBarrier_WriteWatch_PreGrow64(Object **dst, Object *ref);
 EXTERN_C void JIT_WriteBarrier_WriteWatch_PreGrow64_Patch_Label_WriteWatchTable();
@@ -214,6 +219,10 @@ PCODE WriteBarrierManager::GetCurrentWriteBarrierCode()
         case WRITE_BARRIER_SVR64:
             return GetEEFuncEntryPoint(JIT_WriteBarrier_SVR64);
 #endif // FEATURE_SVR_GC
+#ifdef FEATURE_SATORI_GC
+        case WRITE_BARRIER_SATORI:
+            return GetEEFuncEntryPoint(JIT_WriteBarrier_SATORI);
+#endif // FEATURE_SATORI_GC
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
         case WRITE_BARRIER_WRITE_WATCH_PREGROW64:
             return GetEEFuncEntryPoint(JIT_WriteBarrier_WriteWatch_PreGrow64);
@@ -246,6 +255,10 @@ size_t WriteBarrierManager::GetSpecificWriteBarrierSize(WriteBarrierType writeBa
         case WRITE_BARRIER_SVR64:
             return MARKED_FUNCTION_SIZE(JIT_WriteBarrier_SVR64);
 #endif // FEATURE_SVR_GC
+#ifdef FEATURE_SATORI_GC
+        case WRITE_BARRIER_SATORI:
+            return MARKED_FUNCTION_SIZE(JIT_WriteBarrier_SATORI);
+#endif // FEATURE_SATORI_GC
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
         case WRITE_BARRIER_WRITE_WATCH_PREGROW64:
             return MARKED_FUNCTION_SIZE(JIT_WriteBarrier_WriteWatch_PreGrow64);
@@ -300,6 +313,10 @@ int WriteBarrierManager::ChangeWriteBarrierTo(WriteBarrierType newWriteBarrier, 
 
     switch (newWriteBarrier)
     {
+#ifdef FEATURE_SATORI_GC
+        case WRITE_BARRIER_SATORI:
+            return stompWBCompleteActions;
+#endif
         case WRITE_BARRIER_PREGROW64:
         {
             m_pLowerBoundImmediate      = CALC_PATCH_LOCATION(JIT_WriteBarrier_PreGrow64, Patch_Label_Lower, 2);
@@ -435,11 +452,20 @@ void WriteBarrierManager::Initialize()
     // write barrier implementations.
     size_t cbWriteBarrierBuffer = GetSpecificWriteBarrierSize(WRITE_BARRIER_BUFFER);
 
+    //TODO: Satori
+#ifdef FEATURE_SATORI_GC
+    _ASSERTE_ALL_BUILDS("clr/src/VM/AMD64/JITinterfaceAMD64.cpp", cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_SATORI));
+
+#else
+
     _ASSERTE_ALL_BUILDS("clr/src/VM/AMD64/JITinterfaceAMD64.cpp", cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_PREGROW64));
     _ASSERTE_ALL_BUILDS("clr/src/VM/AMD64/JITinterfaceAMD64.cpp", cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_POSTGROW64));
 #ifdef FEATURE_SVR_GC
     _ASSERTE_ALL_BUILDS("clr/src/VM/AMD64/JITinterfaceAMD64.cpp", cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_SVR64));
 #endif // FEATURE_SVR_GC
+#ifdef FEATURE_SATORI_GC
+    _ASSERTE_ALL_BUILDS("clr/src/VM/AMD64/JITinterfaceAMD64.cpp", cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_SATORI));
+#endif // FEATURE_SATORI_GC
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
     _ASSERTE_ALL_BUILDS("clr/src/VM/AMD64/JITinterfaceAMD64.cpp", cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_WRITE_WATCH_PREGROW64));
     _ASSERTE_ALL_BUILDS("clr/src/VM/AMD64/JITinterfaceAMD64.cpp", cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_WRITE_WATCH_POSTGROW64));
@@ -447,6 +473,8 @@ void WriteBarrierManager::Initialize()
     _ASSERTE_ALL_BUILDS("clr/src/VM/AMD64/JITinterfaceAMD64.cpp", cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_WRITE_WATCH_SVR64));
 #endif // FEATURE_SVR_GC
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+
+#endif //FEATURE_SATORI_GC
 
 #if !defined(CODECOVERAGE)
     Validate();
@@ -476,7 +504,8 @@ bool WriteBarrierManager::NeedDifferentWriteBarrier(bool bReqUpperBoundsCheck, W
             }
 #endif
 
-            writeBarrierType = GCHeapUtilities::IsServerHeap() ? WRITE_BARRIER_SVR64 : WRITE_BARRIER_PREGROW64;
+            //TODO: Satori
+            writeBarrierType = GCHeapUtilities::IsServerHeap() ? WRITE_BARRIER_SATORI : WRITE_BARRIER_PREGROW64;
             continue;
 
         case WRITE_BARRIER_PREGROW64:
@@ -493,6 +522,11 @@ bool WriteBarrierManager::NeedDifferentWriteBarrier(bool bReqUpperBoundsCheck, W
         case WRITE_BARRIER_SVR64:
             break;
 #endif // FEATURE_SVR_GC
+
+#ifdef FEATURE_SATORI_GC
+        case WRITE_BARRIER_SATORI:
+            break;
+#endif // FEATURE_SATORI_GC
 
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
         case WRITE_BARRIER_WRITE_WATCH_PREGROW64:
@@ -578,6 +612,12 @@ int WriteBarrierManager::UpdateEphemeralBounds(bool isRuntimeSuspended)
         }
 #endif // FEATURE_SVR_GC
 
+#ifdef FEATURE_SATORI_GC
+        case WRITE_BARRIER_SATORI:
+        {
+            break;
+        }
+#endif
         default:
             UNREACHABLE_MSG("unexpected m_currentWriteBarrier in UpdateEphemeralBounds");
     }
