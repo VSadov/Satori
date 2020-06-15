@@ -12,6 +12,7 @@
 
 #include "SatoriHeap.h"
 #include "SatoriRecycler.h"
+#include "SatoriRegion.h"
 
 void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
@@ -21,6 +22,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 void SatoriRecycler::AddRegion(SatoriRegion* region)
 {
     // TODO: VS make end parsable?
+    region->Publish();
 
     // TODO: VS leak the region for now
 }
