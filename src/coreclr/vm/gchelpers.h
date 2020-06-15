@@ -67,7 +67,10 @@ extern void ThrowOutOfMemoryDimensionsExceeded();
 //========================================================================
 
 void ErectWriteBarrier(OBJECTREF* dst, OBJECTREF ref);
-void SetCardsAfterBulkCopy(Object **start, size_t len);
+bool IsInHeapSatori(Object** start);
+void CheckAndMarkEscapeSatori(Object** dst, Object* ref);
+
+//void SetCardsAfterBulkCopy(Object **start, size_t len);
 
 void PublishFrozenObject(Object*& orObject);
 
