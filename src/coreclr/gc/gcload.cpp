@@ -104,6 +104,7 @@ GC_Initialize(
     }
     else if (true)
     {
+        //TODO: Satori
         g_gc_heap_type = GC_HEAP_SATORI;
         heap = new(nothrow) SatoriGCHeap();
     }
