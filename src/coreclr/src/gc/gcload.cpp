@@ -12,7 +12,7 @@
 #include "common.h"
 #include "gcenv.h"
 #include "gc.h"
-#include "satori/SatoriGCHeap.h"
+#include "satori/SatoriGC.h"
 
 #ifdef BUILD_AS_STANDALONE
 #ifndef DLLEXPORT
@@ -107,7 +107,7 @@ GC_Initialize(
     {
         //TODO: Satori
         g_gc_heap_type = GC_HEAP_SATORI;
-        heap = new(nothrow) SatoriGCHeap();
+        heap = new(nothrow) SatoriGC();
     }
     else
 #endif
