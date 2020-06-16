@@ -36,7 +36,7 @@ namespace Satori
     static const int LARGE_OBJECT_THRESHOLD = 85000;
 
     // TODO: VS consider: in theory could be 2, but that would complicate walking.
-    static const size_t MIN_FREE_SIZE = 3;
+    static const size_t MIN_FREE_SIZE = 3 * sizeof(size_t);
 
     static const size_t MIN_REGULAR_ALLOC = 1 << 12;
 }

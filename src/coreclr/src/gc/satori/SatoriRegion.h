@@ -77,10 +77,19 @@ public:
         return m_allocEnd - m_allocStart;
     }
 
+    Object* FistObject()
+    {
+        return &m_firstObject;
+    }
+
     static SatoriRegion* RegionForObject(Object* obj)
     {
         return (SatoriRegion*)(((size_t)obj) >> Satori::REGION_BITS);
     }
+
+    Object* FindObject(size_t location);
+
+    void MarkThreadLocal();
 
     void Publish()
     {
@@ -114,6 +123,7 @@ private:
 
 private:
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
+    static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
     bool IsEmpty();
 };
 
