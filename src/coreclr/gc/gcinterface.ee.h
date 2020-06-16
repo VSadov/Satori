@@ -207,6 +207,11 @@ public:
     virtual
     void GcScanRoots(promote_func* fn, int condemned, int max_gen, ScanContext* sc) = 0;
 
+    // Performs a stack walk of current thread and invokes the given promote_func
+    // on all GC roots encountered on the stack.
+    virtual
+    void GcScanCurrentStackRoots(promote_func* fn, ScanContext* sc) = 0;
+
     // Callback from the GC informing the EE that it is preparing to start working.
     virtual
     void GcStartWork(int condemned, int max_gen) = 0;
