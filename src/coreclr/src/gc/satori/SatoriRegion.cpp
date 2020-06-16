@@ -9,6 +9,7 @@
 
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
+#include "../env/gcenv.ee.h"
 #include "SatoriGCHeap.h"
 #include "SatoriAllocator.h"
 #include "SatoriRecycler.h"
@@ -204,7 +205,7 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
     m_end = next->m_end;
     m_committed = next->m_committed;
     m_zeroInitedAfter = next->m_zeroInitedAfter;
-    m_allocEnd = next->m_allocEnd;
+m_allocEnd = next->m_allocEnd;
 }
 
 size_t SatoriRegion::Allocate(size_t size, bool ensureZeroInited)
@@ -295,4 +296,62 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool ensureZeroInited)
     size_t result = m_allocStart;
     m_zeroInitedAfter = max(m_zeroInitedAfter, allocEnd);
     return result;
+}
+
+Object* SatoriRegion::FindObject(size_t location)
+{
+    _ASSERTE(location >= (size_t)FistObject() && location <= End());
+
+    // TODO: VS use index
+    Object* current = FistObject();
+    Object* next = SatoriUtil::Next(current);
+    while ((size_t)next <= location)
+    {
+        current = next;
+        next = SatoriUtil::Next(current);
+    }
+
+    return SatoriUtil::IsFreeObject(current) ? nullptr : current;
+}
+
+void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
+{
+    SatoriRegion* region = (SatoriRegion*)sc->_unused1;
+    size_t location = (size_t)*ppObject;
+
+    if (location < (size_t)region->FistObject() || location > region->End())
+    {
+        return;
+    }
+
+    Object* obj;
+    if (flags & GC_CALL_INTERIOR)
+    {
+        obj = region->FindObject(location);
+        if (obj == nullptr)
+        {
+            return;
+        }
+    }
+    else
+    {
+        obj = (Object*)location;
+    }
+
+
+    if (flags & GC_CALL_PINNED)
+    {
+        // PinObject(obj);
+    }
+
+    // MarkObject(obj);
+};
+
+void SatoriRegion::MarkThreadLocal()
+{
+    ScanContext sc;
+    sc.promotion = TRUE;
+    sc._unused1 = this;
+
+    GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn, &sc);
 }
