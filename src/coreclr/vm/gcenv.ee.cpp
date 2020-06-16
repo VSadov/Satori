@@ -107,9 +107,11 @@ static void ScanStackRoots(Thread * pThread, promote_func* fn, ScanContext* sc)
     // Either we are in a concurrent situation (in which case the thread is unknown to
     // us), or we are performing a synchronous GC and we are the GC thread, holding
     // the threadstore lock.
+    // Or we are scanning our own stack, which is always ok.
 
     _ASSERTE(dbgOnly_IsSpecialEEThread() ||
                 GetThreadNULLOk() == NULL ||
+                GetThreadNULLOk() == sc->thread_under_crawl ||
                 // this is for background GC threads which always call this when EE is suspended.
                 IsGCSpecialThread() ||
                 (GetThread() == ThreadSuspend::GetSuspensionThread() && ThreadStore::HoldingThreadStore()));
@@ -247,6 +249,27 @@ static void ScanTailCallArgBufferRoots(Thread* pThread, promote_func* fn, ScanCo
             break;
         }
     }
+}
+
+void GCToEEInterface::GcScanCurrentStackRoots(promote_func* fn, ScanContext* sc)
+{
+    STRESS_LOG1(LF_GCROOTS, LL_INFO10, "GC Stack Scan: Promotion Phase = %d\n", sc->promotion);
+
+    Thread* pThread = GetThread();
+    sc->thread_under_crawl = pThread;
+    sc->concurrent = FALSE;
+
+    STRESS_LOG2(LF_GC | LF_GCROOTS, LL_INFO100, "{ Starting scan of Thread %p ID = %x\n", pThread, pThread->GetThreadId());
+
+#ifdef FEATURE_EVENT_TRACE
+    sc->dwEtwRootKind = kEtwGCRootKindStack;
+#endif // FEATURE_EVENT_TRACE
+    ScanStackRoots(pThread, fn, sc);
+    ScanTailCallArgBufferRoots(pThread, fn, sc);
+#ifdef FEATURE_EVENT_TRACE
+    sc->dwEtwRootKind = kEtwGCRootKindOther;
+#endif // FEATURE_EVENT_TRACE
+     STRESS_LOG2(LF_GC | LF_GCROOTS, LL_INFO100, "Ending scan of Thread %p ID = 0x%x }\n", pThread, pThread->GetThreadId());
 }
 
 void GCToEEInterface::GcScanRoots(promote_func* fn, int condemned, int max_gen, ScanContext* sc)
