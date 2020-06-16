@@ -2,11 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 //
-// SatoriGCHeap.h
+// SatoriGC.h
 //
 
-#ifndef __SATORI_GC_HEAP_H__
-#define __SATORI_GC_HEAP_H__
+#ifndef __SATORI_GC_H__
+#define __SATORI_GC_H__
 
 #include "common.h"
 #include "../gc.h"
@@ -15,7 +15,7 @@ class SatoriHeap;
 class SatoriAllocator;
 class SatoriRecycler;
 
-class SatoriGCHeap : public IGCHeapInternal
+class SatoriGC : public IGCHeapInternal
 {
 private:
     int64_t m_perfCounterFrequency;
