@@ -2,7 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 //
-// SatoriGCHeap.h
+// SatoriUtil.h
 //
 
 #ifndef __SATORI_UTIL_H__
@@ -35,23 +35,20 @@ namespace Satori
     // objects smaller than this go into regular region. A random big number.
     static const int LARGE_OBJECT_THRESHOLD = 85000;
 
-    // TODO: VS consider: in theory could be 2, but that would complicate walking.
+    // object starts are aligned to this
+    static const size_t OBJECT_ALIGNMENT = sizeof(size_t);
+
+    // in theory min size could be 2 heap words, but that would complicate walking.
     static const size_t MIN_FREE_SIZE = 3 * sizeof(size_t);
 
+    // when doing rgular allocation we clean this much memory
+    // if we do cleaning, and if available
     static const size_t MIN_REGULAR_ALLOC = 1 << 12;
 }
 
 class SatoriUtil
 {
-private:
-    static MethodTable* s_emptyObjectMt;
-
 public:
-    static void Initialize();
-
-    //TODO: VS Free vs. Empty
-    static void MakeFreeObject(Object* obj, size_t size);
-
     static size_t RoundDownPwr2(size_t value)
     {
         _ASSERTE(value > 0);
@@ -64,28 +61,6 @@ public:
         return (size_t)1 << highestBit;
     }
 
-    static size_t Size(Object* obj)
-    {
-        MethodTable* mt = obj->RawGetMethodTable();
-
-        size_t size = mt->GetBaseSize();
-        if (mt->HasComponentSize())
-        {
-            size += (size_t)((ArrayBase*)mt)->GetNumComponents() * mt->RawGetComponentSize();
-        }
-
-        return size;
-    }
-
-    static Object* Next(Object* obj)
-    {
-        return (Object*)((size_t)obj + Size(obj));
-    }
-
-    static bool SatoriUtil::IsFreeObject(Object* obj)
-    {
-        return obj->RawGetMethodTable() == s_emptyObjectMt;
-    }
 };
 
 #endif

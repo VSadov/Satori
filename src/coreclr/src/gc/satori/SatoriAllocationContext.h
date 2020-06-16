@@ -2,7 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 //
-// SatoriGCHeap.h
+// SatoriAllocationContext.h
 //
 
 #ifndef __SATORI_ALLOCATION_CONTEXT_H__
