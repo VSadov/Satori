@@ -25,10 +25,11 @@ set(GC_SOURCES
   gceewks.cpp
   gcload.cpp
   handletablecache.cpp
-  satori/SatoriGCHeap.cpp
+  satori/SatoriGC.cpp
   satori/SatoriHeap.cpp
   satori/SatoriPage.cpp
   satori/SatoriRegion.cpp
+  satori/SatoriObject.cpp
   satori/SatoriRegionQueue.cpp
   satori/SatoriAllocator.cpp
   satori/SatoriRecycler.cpp
@@ -102,11 +103,14 @@ if (CLR_CMAKE_TARGET_WIN32)
     handletablepriv.h
     objecthandle.h
     softwarewritewatch.h
+    satori/SatoriGC.h
     vxsort/do_vxsort.h
     satori/SatoriGCHeap.h
     satori/SatoriHeap.h
     satori/SatoriPage.h
     satori/SatoriRegion.h
+    satori/SatoriObject.h
+    satori/SatoriObject.inl
     satori/SatoriRegionQueue.h
     satori/SatoriAllocator.h
     satori/SatoriRecycler.h
