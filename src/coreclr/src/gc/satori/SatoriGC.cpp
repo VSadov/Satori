@@ -1,0 +1,451 @@
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
+//
+// SatoriGC.cpp
+//
+
+#include "common.h"
+
+#include "gcenv.h"
+#include "../env/gcenv.os.h"
+
+#include "SatoriObject.h"
+#include "SatoriGC.h"
+#include "SatoriAllocationContext.h"
+#include "SatoriHeap.h"
+
+bool SatoriGC::IsValidSegmentSize(size_t size)
+{
+    __UNREACHABLE();
+    return false;
+}
+
+bool SatoriGC::IsValidGen0MaxSize(size_t size)
+{
+    __UNREACHABLE();
+    return false;
+}
+
+size_t SatoriGC::GetValidSegmentSize(bool large_seg)
+{
+    __UNREACHABLE();
+    return 0;
+}
+
+void SatoriGC::SetReservedVMLimit(size_t vmlimit)
+{
+    __UNREACHABLE();
+}
+
+void SatoriGC::WaitUntilConcurrentGCComplete()
+{
+}
+
+bool SatoriGC::IsConcurrentGCInProgress()
+{
+    // Satori may move thread local objects asyncronously,
+    // but noone should see that (that is the point).
+    //
+    // The only thing that may get to TL objects is object verification.
+    // Return "true" for now.
+    return true;
+}
+
+void SatoriGC::TemporaryEnableConcurrentGC()
+{
+}
+
+void SatoriGC::TemporaryDisableConcurrentGC()
+{
+}
+
+bool SatoriGC::IsConcurrentGCEnabled()
+{
+    return false;
+}
+
+HRESULT SatoriGC::WaitUntilConcurrentGCCompleteAsync(int millisecondsTimeout)
+{
+    return S_OK;
+}
+
+void SatoriGC::SetFinalizeQueueForShutdown(bool fHasLock)
+{
+    __UNREACHABLE();
+}
+
+size_t SatoriGC::GetNumberOfFinalizable()
+{
+    __UNREACHABLE();
+    return 0;
+}
+
+bool SatoriGC::ShouldRestartFinalizerWatchDog()
+{
+    __UNREACHABLE();
+    return false;
+}
+
+Object* SatoriGC::GetNextFinalizable()
+{
+    return nullptr;
+}
+
+void SatoriGC::SetFinalizeRunOnShutdown(bool value)
+{
+    __UNREACHABLE();
+}
+
+void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* totalPhysicalMemoryBytes, uint64_t* lastRecordedMemLoadBytes, uint32_t* lastRecordedMemLoadPct, size_t* lastRecordedHeapSizeBytes, size_t* lastRecordedFragmentationBytes)
+{
+    __UNREACHABLE();
+}
+
+int SatoriGC::GetGcLatencyMode()
+{
+    return 0;
+}
+
+int SatoriGC::SetGcLatencyMode(int newLatencyMode)
+{
+    return 0;
+}
+
+int SatoriGC::GetLOHCompactionMode()
+{
+    return 0;
+}
+
+void SatoriGC::SetLOHCompactionMode(int newLOHCompactionMode)
+{
+}
+
+bool SatoriGC::RegisterForFullGCNotification(uint32_t gen2Percentage, uint32_t lohPercentage)
+{
+    return false;
+}
+
+bool SatoriGC::CancelFullGCNotification()
+{
+    return false;
+}
+
+int SatoriGC::WaitForFullGCApproach(int millisecondsTimeout)
+{
+    __UNREACHABLE();
+    return 0;
+}
+
+int SatoriGC::WaitForFullGCComplete(int millisecondsTimeout)
+{
+    __UNREACHABLE();
+    return 0;
+}
+
+unsigned SatoriGC::WhichGeneration(Object* obj)
+{
+    return 2;
+}
+
+int SatoriGC::CollectionCount(int generation, int get_bgc_fgc_coutn)
+{
+    __UNREACHABLE();
+    return 0;
+}
+
+int SatoriGC::StartNoGCRegion(uint64_t totalSize, bool lohSizeKnown, uint64_t lohSize, bool disallowFullBlockingGC)
+{
+    __UNREACHABLE();
+    return 0;
+}
+
+int SatoriGC::EndNoGCRegion()
+{
+    __UNREACHABLE();
+    return 0;
+}
+
+size_t SatoriGC::GetTotalBytesInUse()
+{
+    __UNREACHABLE();
+    return 0;
+}
+
+uint64_t SatoriGC::GetTotalAllocatedBytes()
+{
+    __UNREACHABLE();
+    return 0;
+}
+
+HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
+{
+    // TODO: Satori
+    return S_OK;
+}
+
+unsigned SatoriGC::GetMaxGeneration()
+{
+    __UNREACHABLE();
+    return 0;
+}
+
+void SatoriGC::SetFinalizationRun(Object* obj)
+{
+    //TODO: Satori Finalizers;
+}
+
+bool SatoriGC::RegisterForFinalization(int gen, Object* obj)
+{
+    __UNREACHABLE();
+    return false;
+}
+
+int SatoriGC::GetLastGCPercentTimeInGC()
+{
+    __UNREACHABLE();
+    return 0;
+}
+
+size_t SatoriGC::GetLastGCGenerationSize(int gen)
+{
+    __UNREACHABLE();
+    return 0;
+}
+
+HRESULT SatoriGC::Initialize()
+{
+    m_perfCounterFrequency = GCToOSInterface::QueryPerformanceFrequency();
+    SatoriObject::Initialize();
+    m_heap = SatoriHeap::Create();
+    if (m_heap == nullptr)
+    {
+        return E_OUTOFMEMORY;
+    }
+
+    return S_OK;
+}
+
+bool SatoriGC::IsPromoted(Object* object)
+{
+    __UNREACHABLE();
+    return false;
+}
+
+bool SatoriGC::IsHeapPointer(void* object, bool small_heap_only)
+{
+    return m_heap->IsHeapAddress((uint8_t*)object);
+
+    //TODO: Satori small_heap_only ?
+}
+
+unsigned SatoriGC::GetCondemnedGeneration()
+{
+    __UNREACHABLE();
+    return 0;
+}
+
+bool SatoriGC::IsGCInProgressHelper(bool bConsiderGCStart)
+{
+    return m_gcInProgress;
+}
+
+unsigned SatoriGC::GetGcCount()
+{
+    //TODO: Satori Collect
+    return 0;
+}
+
+bool SatoriGC::IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, int thread_number)
+{
+    __UNREACHABLE();
+    return false;
+}
+
+bool SatoriGC::IsEphemeral(Object* object)
+{
+    __UNREACHABLE();
+    return false;
+}
+
+uint32_t SatoriGC::WaitUntilGCComplete(bool bConsiderGCStart)
+{
+    return NOERROR;
+}
+
+void SatoriGC::FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
+{
+    // this is only called when thread is terminating and about to clear its context.
+    ((SatoriAllocationContext*)acontext)->OnTerminateThread(m_heap);
+}
+
+size_t SatoriGC::GetCurrentObjSize()
+{
+    __UNREACHABLE();
+    return 0;
+}
+
+void SatoriGC::SetGCInProgress(bool fInProgress)
+{
+    m_gcInProgress = fInProgress;
+}
+
+bool SatoriGC::RuntimeStructuresValid()
+{
+    return true;
+}
+
+void SatoriGC::SetSuspensionPending(bool fSuspensionPending)
+{
+    m_suspensionPending = fSuspensionPending;
+}
+
+void SatoriGC::SetYieldProcessorScalingFactor(float yieldProcessorScalingFactor)
+{
+}
+
+void SatoriGC::Shutdown()
+{
+}
+
+size_t SatoriGC::GetLastGCStartTime(int generation)
+{
+    return 0;
+}
+
+size_t SatoriGC::GetLastGCDuration(int generation)
+{
+    return 0;
+}
+
+size_t SatoriGC::GetNow()
+{
+    int64_t t = GCToOSInterface::QueryPerformanceCounter();
+    return (size_t)(t / (m_perfCounterFrequency / 1000));
+}
+
+Object* SatoriGC::Alloc(gc_alloc_context* acontext, size_t size, uint32_t flags)
+{
+    return m_heap->Allocator()->Alloc((SatoriAllocationContext*)acontext, size, flags);
+}
+
+void SatoriGC::PublishObject(uint8_t* obj)
+{
+}
+
+void SatoriGC::SetWaitForGCEvent()
+{
+}
+
+void SatoriGC::ResetWaitForGCEvent()
+{
+}
+
+bool SatoriGC::IsLargeObject(Object* pObj)
+{
+    return false;
+}
+
+void SatoriGC::ValidateObjectMember(Object* obj)
+{
+}
+
+Object* SatoriGC::NextObj(Object* object)
+{
+    return nullptr;
+}
+
+Object* SatoriGC::GetContainingObject(void* pInteriorPtr, bool fCollectedGenOnly)
+{
+    __UNREACHABLE();
+    return nullptr;
+}
+
+void SatoriGC::DiagWalkObject(Object* obj, walk_fn fn, void* context)
+{
+}
+
+void SatoriGC::DiagWalkObject2(Object* obj, walk_fn2 fn, void* context)
+{
+}
+
+void SatoriGC::DiagWalkHeap(walk_fn fn, void* context, int gen_number, bool walk_large_object_heap_p)
+{
+}
+
+void SatoriGC::DiagWalkSurvivorsWithType(void* gc_context, record_surv_fn fn, void* diag_context, walk_surv_type type, int gen_number)
+{
+}
+
+void SatoriGC::DiagWalkFinalizeQueue(void* gc_context, fq_walk_fn fn)
+{
+}
+
+void SatoriGC::DiagScanFinalizeQueue(fq_scan_fn fn, ScanContext* context)
+{
+}
+
+void SatoriGC::DiagScanHandles(handle_scan_fn fn, int gen_number, ScanContext* context)
+{
+}
+
+void SatoriGC::DiagScanDependentHandles(handle_scan_fn fn, int gen_number, ScanContext* context)
+{
+}
+
+void SatoriGC::DiagDescrGenerations(gen_walk_fn fn, void* context)
+{
+}
+
+void SatoriGC::DiagTraceGCSegments()
+{
+}
+
+bool SatoriGC::StressHeap(gc_alloc_context* acontext)
+{
+    return false;
+}
+
+segment_handle SatoriGC::RegisterFrozenSegment(segment_info* pseginfo)
+{
+    __UNREACHABLE();
+    return segment_handle();
+}
+
+void SatoriGC::UnregisterFrozenSegment(segment_handle seg)
+{
+    __UNREACHABLE();
+}
+
+bool SatoriGC::IsInFrozenSegment(Object* object)
+{
+    return false;
+}
+
+void SatoriGC::ControlEvents(GCEventKeyword keyword, GCEventLevel level)
+{
+}
+
+void SatoriGC::ControlPrivateEvents(GCEventKeyword keyword, GCEventLevel level)
+{
+}
+
+int SatoriGC::GetNumberOfHeaps()
+{
+    // TODO: Satori   we return the max degree of concurrency here
+    // return g_SystemInfo.dwNumberOfProcessors;
+    return 1;
+}
+
+int SatoriGC::GetHomeHeapNumber()
+{
+    // TODO: Satori   this is a number in [0, procNum) associated with thread
+    //                it is implementable, do 0 for now.
+    return 0;
+}
+
+size_t SatoriGC::GetPromotedBytes(int heap_index)
+{
+    __UNREACHABLE();
+    return 0;
+}
