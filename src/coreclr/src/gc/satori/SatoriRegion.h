@@ -2,7 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 //
-// SatoriGCHeap.h
+// SatoriRegion.h
 //
 
 #ifndef __SATORI_REGION_H__
@@ -12,6 +12,7 @@
 #include "../gc.h"
 #include "SatoriHeap.h"
 #include "SatoriUtil.h"
+#include "SatoriObject.h"
 
 enum class SatoriRegionState : int8_t
 {
@@ -77,19 +78,14 @@ public:
         return m_allocEnd - m_allocStart;
     }
 
-    Object* FistObject()
+    SatoriObject* FistObject()
     {
         return &m_firstObject;
     }
 
-    static SatoriRegion* RegionForObject(Object* obj)
-    {
-        return (SatoriRegion*)(((size_t)obj) >> Satori::REGION_BITS);
-    }
+    SatoriObject* FindObject(size_t location);
 
-    Object* FindObject(size_t location);
-
-    void MarkThreadLocal();
+    void ThreadLocalMark();
 
     void Publish()
     {
@@ -116,10 +112,10 @@ private:
     size_t m_allocStart;
     size_t m_allocEnd;
 
-    Object* m_index[Satori::INDEX_ITEMS];
+    SatoriObject* m_index[Satori::INDEX_ITEMS];
 
     size_t m_syncBlock;
-    Object m_firstObject;
+    SatoriObject m_firstObject;
 
 private:
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
