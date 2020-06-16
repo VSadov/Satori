@@ -2,7 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 //
-// SatoriGCHeap.h
+// SatoriRegionQueue.h
 //
 
 #ifndef __SATORI_REGION_QUEUE_H__
