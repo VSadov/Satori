@@ -15,9 +15,10 @@ public:
     static void RestartEE(bool bFinishedGC); //resume threads.
 
     //
-    // The GC roots enumeration callback
+    // The GC roots enumeration callbacks
     //
     static void GcScanRoots(promote_func* fn, int condemned, int max_gen, ScanContext* sc);
+    static void GcScanCurrentStackRoots(promote_func* fn, ScanContext* sc);
 
     //
     // Callbacks issues during GC that the execution engine can do its own bookeeping

@@ -30,6 +30,12 @@ inline void GCToEEInterface::RestartEE(bool bFinishedGC)
     g_theGCToCLR->RestartEE(bFinishedGC);
 }
 
+inline void GCToEEInterface::GcScanCurrentStackRoots(promote_func* fn, ScanContext* sc)
+{
+    assert(g_theGCToCLR != nullptr);
+    g_theGCToCLR->GcScanCurrentStackRoots(fn, sc);
+}
+
 inline void GCToEEInterface::GcScanRoots(promote_func* fn, int condemned, int max_gen, ScanContext* sc)
 {
     assert(g_theGCToCLR != nullptr);
