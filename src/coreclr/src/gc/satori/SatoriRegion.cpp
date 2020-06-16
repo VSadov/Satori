@@ -2,7 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 //
-// SatoriGCHeap.cpp
+// SatoriRegion.cpp
 //
 
 #include "common.h"
@@ -10,10 +10,12 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 #include "../env/gcenv.ee.h"
-#include "SatoriGCHeap.h"
+#include "SatoriGC.h"
 #include "SatoriAllocator.h"
 #include "SatoriRecycler.h"
 #include "SatoriUtil.h"
+#include "SatoriObject.h"
+#include "SatoriObject.inl"
 #include "SatoriRegion.h"
 
 SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t zeroInitedAfter)
@@ -126,7 +128,7 @@ void SatoriRegion::StopAllocating()
 {
     _ASSERTE(IsAllocating());
 
-    SatoriUtil::MakeFreeObject((Object*)m_allocStart, AllocSize());
+    SatoriObject::FormatAsFree(m_allocStart, AllocSize());
     // TODO: VS update index
     m_allocEnd = 0;
 }
@@ -151,7 +153,7 @@ void SatoriRegion::Deactivate(SatoriHeap* heap)
 bool SatoriRegion::IsEmpty()
 {
     _ASSERTE(!IsAllocating());
-    return (size_t)SatoriUtil::Next(&m_firstObject) > m_end;
+    return (size_t)m_firstObject.Next() > m_end;
 }
 
 void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextCommitted, size_t& nextZeroInitedAfter)
@@ -298,20 +300,20 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool ensureZeroInited)
     return result;
 }
 
-Object* SatoriRegion::FindObject(size_t location)
+SatoriObject* SatoriRegion::FindObject(size_t location)
 {
     _ASSERTE(location >= (size_t)FistObject() && location <= End());
 
     // TODO: VS use index
-    Object* current = FistObject();
-    Object* next = SatoriUtil::Next(current);
+    SatoriObject* current = FistObject();
+    SatoriObject* next = current->Next();
     while ((size_t)next <= location)
     {
         current = next;
-        next = SatoriUtil::Next(current);
+        next =current->Next();
     }
 
-    return SatoriUtil::IsFreeObject(current) ? nullptr : current;
+    return current->IsFree() ? nullptr : current;
 }
 
 void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
@@ -324,7 +326,7 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
         return;
     }
 
-    Object* obj;
+    SatoriObject* obj;
     if (flags & GC_CALL_INTERIOR)
     {
         obj = region->FindObject(location);
@@ -335,19 +337,20 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
     }
     else
     {
-        obj = (Object*)location;
+        obj = SatoriObject::At(location);
     }
-
 
     if (flags & GC_CALL_PINNED)
     {
-        // PinObject(obj);
+        obj->SetPinned();
     }
-
-    // MarkObject(obj);
+    else
+    {
+        obj->SetMarked();
+    }
 };
 
-void SatoriRegion::MarkThreadLocal()
+void SatoriRegion::ThreadLocalMark()
 {
     ScanContext sc;
     sc.promotion = TRUE;
