@@ -10,8 +10,7 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 
-#include "SatoriUtil.h"
-
+#include "SatoriObject.h"
 #include "SatoriGCHeap.h"
 #include "SatoriAllocationContext.h"
 #include "SatoriHeap.h"
@@ -217,7 +216,7 @@ size_t SatoriGCHeap::GetLastGCGenerationSize(int gen)
 HRESULT SatoriGCHeap::Initialize()
 {
     m_perfCounterFrequency = GCToOSInterface::QueryPerformanceFrequency();
-    SatoriUtil::Initialize();
+    SatoriObject::Initialize();
     m_heap = SatoriHeap::Create();
     if (m_heap == nullptr)
     {
