@@ -2,7 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 //
-// SatoriGCHeap.cpp
+// SatoriAllocator.cpp
 //
 
 #include "common.h"
@@ -11,6 +11,8 @@
 #include "SatoriUtil.h"
 
 #include "SatoriHeap.h"
+#include "SatoriObject.h"
+#include "SatoriObject.inl"
 #include "SatoriPage.h"
 #include "SatoriAllocator.h"
 #include "SatoriRegion.h"
@@ -118,13 +120,13 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 
     if (size < Satori::LARGE_OBJECT_THRESHOLD)
     {
-        return AllocSmall(context, size, flags);
+        return AllocRegular(context, size, flags);
     }
 
     return AllocLarge(context, size, flags);
 }
 
-Object* SatoriAllocator::AllocSmall(SatoriAllocationContext* context, size_t size, uint32_t flags)
+SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
     SatoriRegion* region = context->RegularRegion();
 
@@ -145,10 +147,9 @@ Object* SatoriAllocator::AllocSmall(SatoriAllocationContext* context, size_t siz
                 context->alloc_bytes += alloc;
                 context->alloc_limit += alloc;
 
-                Object* result = (Object*)context->alloc_ptr;
+                SatoriObject* result = SatoriObject::At((size_t)context->alloc_ptr);
                 context->alloc_ptr += size;
-                // clean syncblock.
-                ((size_t*)result)[-1] = 0;
+                result->CleanSyncBlock();
                 return result;
             }
         }
@@ -159,10 +160,10 @@ Object* SatoriAllocator::AllocSmall(SatoriAllocationContext* context, size_t siz
             context->alloc_bytes -= context->alloc_limit - context->alloc_ptr;
 
             _ASSERTE((size_t)context->alloc_ptr < region->End());
-            SatoriUtil::MakeFreeObject((Object*)context->alloc_ptr, region->End() - (size_t)context->alloc_ptr);
+            SatoriObject::FormatAsFree((size_t)context->alloc_ptr, region->End() - (size_t)context->alloc_ptr);
 
             // TODO: VS try compact current
-            region->MarkThreadLocal();
+            region->ThreadLocalMark();
 
             m_heap->Recycler()->AddRegion(region);
             context->alloc_ptr = context->alloc_limit = nullptr;
@@ -179,16 +180,16 @@ Object* SatoriAllocator::AllocSmall(SatoriAllocationContext* context, size_t siz
     }
 }
 
-Object* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags)
+SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
-    size_t result =  0;
+    size_t location =  0;
 
     // try large region first, if present
     SatoriRegion* region = context->LargeRegion();
     if (region)
     {
-        result = region->Allocate(size, true);
-        if (result)
+        location = region->Allocate(size, true);
+        if (location)
         {
             goto done;
         }
@@ -199,11 +200,11 @@ Object* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size_t siz
 
     if (regionSize == Satori::REGION_SIZE_GRANULARITY)
     {
-        result = region->Allocate(size, true);
+        location = region->Allocate(size, true);
     }
     else
     {
-        result = region->AllocateHuge(size, true);
+        location = region->AllocateHuge(size, true);
     }
 
     if (context->LargeRegion() == nullptr)
@@ -223,8 +224,8 @@ Object* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size_t siz
     }
 
 done:
-    // clean syncblock.
-    ((size_t*)result)[-1] = 0;
+    SatoriObject* result = SatoriObject::At(location);
+    result->CleanSyncBlock();
     context->alloc_bytes_uoh += size;
-    return (Object*)result;
+    return result;
 }
