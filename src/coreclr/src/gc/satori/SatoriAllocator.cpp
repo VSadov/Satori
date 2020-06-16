@@ -158,9 +158,11 @@ Object* SatoriAllocator::AllocSmall(SatoriAllocationContext* context, size_t siz
             // unclaim unused.
             context->alloc_bytes -= context->alloc_limit - context->alloc_ptr;
 
-            // make parsable?
+            _ASSERTE((size_t)context->alloc_ptr < region->End());
+            SatoriUtil::MakeFreeObject((Object*)context->alloc_ptr, region->End() - (size_t)context->alloc_ptr);
 
             // TODO: VS try compact current
+            region->MarkThreadLocal();
 
             m_heap->Recycler()->AddRegion(region);
             context->alloc_ptr = context->alloc_limit = nullptr;
