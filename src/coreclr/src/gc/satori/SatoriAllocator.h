@@ -2,7 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 //
-// SatoriGCHeap.h
+// SatoriAllocator.h
 //
 
 #ifndef __SATORI_ALLOCATOR_H__
@@ -16,6 +16,7 @@
 
 class SatoriHeap;
 class SatoriRegion;
+class SatoriObject;
 class SatoriAllocationContext;
 
 class SatoriAllocator
@@ -33,8 +34,8 @@ private:
     //TODO: VS embed
     SatoriRegionQueue* m_queues[Satori::BUCKET_COUNT];
 
-    Object* AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags);
-    Object* AllocSmall(SatoriAllocationContext* context, size_t size, uint32_t flags);
+    SatoriObject* AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags);
+    SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     static int SizeToBucket(size_t size)
     {
