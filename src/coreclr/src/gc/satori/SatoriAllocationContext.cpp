@@ -11,6 +11,7 @@
 
 #include "SatoriAllocationContext.h"
 #include "SatoriRegion.h"
+#include "SatoriRegion.inl"
 
 class SatoriHeap;
 
