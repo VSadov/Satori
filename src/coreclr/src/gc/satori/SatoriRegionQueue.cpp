@@ -10,11 +10,10 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 #include "SatoriRegionQueue.h"
-
 #include "SatoriLock.h"
 #include "SatoriUtil.h"
-
 #include "SatoriRegion.h"
+#include "SatoriRegion.inl"
 
 void SatoriRegionQueue::Push(SatoriRegion* region)
 {
