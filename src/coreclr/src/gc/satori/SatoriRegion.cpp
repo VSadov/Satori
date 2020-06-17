@@ -17,6 +17,7 @@
 #include "SatoriObject.h"
 #include "SatoriObject.inl"
 #include "SatoriRegion.h"
+#include "SatoriRegion.inl"
 
 SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t zeroInitedAfter)
 {

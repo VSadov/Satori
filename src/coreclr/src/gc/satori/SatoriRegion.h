@@ -43,55 +43,20 @@ public:
     size_t Allocate(size_t size, bool ensureZeroInited);
     size_t AllocateHuge(size_t size, bool ensureZeroInited);
 
-    bool IsAllocating()
-    {
-        return m_allocEnd != 0;
-    }
+    bool IsAllocating();
+    void Publish();
 
-    size_t Start()
-    {
-        return (size_t)&m_state;
-    }
-
-    size_t End()
-    {
-        return m_end;
-    }
-
-    size_t Size()
-    {
-        return End() - Start();
-    }
-
-    size_t AllocStart()
-    {
-        return m_allocStart;
-    }
-
-    size_t AllocEnd()
-    {
-        return m_allocEnd;
-    }
-
-    size_t AllocSize()
-    {
-        return m_allocEnd - m_allocStart;
-    }
-
-    SatoriObject* FistObject()
-    {
-        return &m_firstObject;
-    }
+    size_t Start();
+    size_t End();
+    size_t Size();
+    size_t AllocStart();
+    size_t AllocEnd();
+    size_t AllocSize();
+    SatoriObject* FistObject();
 
     SatoriObject* FindObject(size_t location);
 
     void ThreadLocalMark();
-
-    void Publish()
-    {
-        _ASSERTE(m_state == SatoriRegionState::allocating);
-        m_state = SatoriRegionState::shared;
-    }
 
 private:
     SatoriRegionState m_state;

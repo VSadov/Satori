@@ -16,6 +16,7 @@
 #include "SatoriPage.h"
 #include "SatoriAllocator.h"
 #include "SatoriRegion.h"
+#include "SatoriRegion.inl"
 #include "SatoriRegionQueue.h"
 #include "SatoriAllocationContext.h"
 
