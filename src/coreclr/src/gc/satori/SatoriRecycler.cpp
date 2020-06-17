@@ -13,6 +13,7 @@
 #include "SatoriHeap.h"
 #include "SatoriRecycler.h"
 #include "SatoriRegion.h"
+#include "SatoriRegion.inl"
 
 void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
