@@ -16,6 +16,7 @@
 #include "SatoriPage.h"
 #include "SatoriAllocator.h"
 #include "SatoriRegion.h"
+#include "SatoriRegion.inl"
 #include "SatoriRegionQueue.h"
 #include "SatoriAllocationContext.h"
 
@@ -109,7 +110,7 @@ void SatoriAllocator::AddRegion(SatoriRegion* region)
 
 Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
-    size = ALIGN_UP(size, sizeof(size_t));
+    size = ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
 
     if (context->alloc_ptr + size <= context->alloc_limit)
     {
@@ -135,17 +136,17 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
         if (region != nullptr &&
             region->AllocEnd() - (size_t)context->alloc_ptr > size + Satori::MIN_FREE_SIZE)
         {
-            size_t alloc = context->alloc_ptr + size - context->alloc_limit;
+            size_t moreSpace = context->alloc_ptr + size - context->alloc_limit;
             bool isZeroing = true;
-            if (isZeroing && alloc < Satori::MIN_REGULAR_ALLOC)
+            if (isZeroing && moreSpace < Satori::MIN_REGULAR_ALLOC)
             {
-                alloc = min(region->AllocEnd() - Satori::MIN_FREE_SIZE - (size_t)context->alloc_limit, alloc + Satori::MIN_REGULAR_ALLOC);
+                moreSpace = min(region->AllocEnd() - Satori::MIN_FREE_SIZE - (size_t)context->alloc_limit, Satori::MIN_REGULAR_ALLOC);
             }
 
-            if (region->Allocate(alloc, isZeroing))
+            if (region->Allocate(moreSpace, isZeroing))
             {
-                context->alloc_bytes += alloc;
-                context->alloc_limit += alloc;
+                context->alloc_bytes += moreSpace;
+                context->alloc_limit += moreSpace;
 
                 SatoriObject* result = SatoriObject::At((size_t)context->alloc_ptr);
                 context->alloc_ptr += size;
@@ -159,11 +160,32 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             // unclaim unused.
             context->alloc_bytes -= context->alloc_limit - context->alloc_ptr;
 
-            _ASSERTE((size_t)context->alloc_ptr < region->End());
-            SatoriObject::FormatAsFree((size_t)context->alloc_ptr, region->End() - (size_t)context->alloc_ptr);
+            size_t free = (size_t)context->alloc_ptr;
+            _ASSERTE(free = ALIGN_UP(free, Satori::OBJECT_ALIGNMENT));
 
-            // TODO: VS try compact current
+            if (free < region->AllocEnd())
+            {
+                _ASSERTE(region->AllocEnd() - free >= Satori::MIN_FREE_SIZE);
+                SatoriObject::FormatAsFree(free, region->AllocEnd() - free);
+            }
+            else
+            {
+                _ASSERTE(free == region->AllocEnd());
+            }
+
+            // try compact current
             region->ThreadLocalMark();
+            //TODO: VS check if can split and split (here, after marking)
+            region->ThreadLocalPlan();
+            region->ThreadLocalUpdatePointers();
+            // TODO: VS set the size large enough to be worth compacting for
+            size_t desiredFreeSpace = max(size, Satori::MIN_REGULAR_ALLOC * 10);
+            if (region->ThreadLocalCompact(desiredFreeSpace))
+            {
+                // we have enough free space in the region to continue
+                context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
+                continue;
+            }
 
             m_heap->Recycler()->AddRegion(region);
             context->alloc_ptr = context->alloc_limit = nullptr;
