@@ -11,12 +11,12 @@
 #include "common.h"
 #include "../gc.h"
 
-class SatoriGCHeap;
+class SatoriGC;
 class SatoriRegion;
 
 class SatoriObject : public Object
 {
-    friend SatoriGCHeap;
+    friend SatoriGC;
 
 public:
     SatoriObject() = delete;

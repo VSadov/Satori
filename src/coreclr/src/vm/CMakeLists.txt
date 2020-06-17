@@ -543,7 +543,7 @@ set(GC_SOURCES_WKS
     ../gc/gcload.cpp
     ../gc/softwarewritewatch.cpp
     ../gc/handletablecache.cpp
-    ../gc/satori/SatoriGCHeap.cpp
+    ../gc/satori/SatoriGC.cpp
     ../gc/satori/SatoriHeap.cpp
     ../gc/satori/SatoriPage.cpp
     ../gc/satori/SatoriObject.cpp
@@ -563,7 +563,7 @@ set(GC_HEADERS_WKS
     ../gc/gcscan.h
     ../gc/gchandletableimpl.h
     ../gc/softwarewritewatch.h
-    ../gc/satori/SatoriGCHeap.h
+    ../gc/satori/SatoriGC.h
     ../gc/satori/SatoriHeap.h
     ../gc/satori/SatoriPage.h
     ../gc/satori/SatoriRegion.h

@@ -10,7 +10,7 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 #include "../env/gcenv.ee.h"
-#include "SatoriGCHeap.h"
+#include "SatoriGC.h"
 #include "SatoriAllocator.h"
 #include "SatoriRecycler.h"
 #include "SatoriUtil.h"
