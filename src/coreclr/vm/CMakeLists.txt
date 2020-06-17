@@ -534,6 +534,7 @@ set(GC_HEADERS_WKS
     ../gc/satori/SatoriHeap.h
     ../gc/satori/SatoriPage.h
     ../gc/satori/SatoriRegion.h
+    ../gc/satori/SatoriRegion.inl
     ../gc/satori/SatoriObject.h
     ../gc/satori/SatoriObject.inl
     ../gc/satori/SatoriRegionQueue.h
