@@ -27,11 +27,12 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
     obj->CleanSyncBlock();
     obj->RawSetMethodTable(s_emptyObjectMt);
 
-    // Note: we allow empty objects to be more than 4Gb on 64bit and use the "pad" for higher bits.
+    // Note: we allow free objects to be more than 4Gb on 64bit and use the "pad" for higher bits.
 #if BIGENDIAN
 #error "This won't work on big endian platforms"
 #endif
-    ((size_t*)obj)[ArrayBase::GetOffsetOfNumComponents() / sizeof(size_t)] = size - sizeof(ArrayBase);
+    // deduct the size of Array header + syncblock
+    ((size_t*)obj)[ArrayBase::GetOffsetOfNumComponents() / sizeof(size_t)] = size - (sizeof(ArrayBase) + sizeof(size_t));
 
     return obj;
 }
