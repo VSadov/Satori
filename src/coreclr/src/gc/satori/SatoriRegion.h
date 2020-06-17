@@ -43,58 +43,29 @@ public:
     size_t Allocate(size_t size, bool ensureZeroInited);
     size_t AllocateHuge(size_t size, bool ensureZeroInited);
 
-    bool IsAllocating()
-    {
-        return m_allocEnd != 0;
-    }
+    bool IsAllocating();
+    void Publish();
 
-    size_t Start()
-    {
-        return (size_t)&m_state;
-    }
-
-    size_t End()
-    {
-        return m_end;
-    }
-
-    size_t Size()
-    {
-        return End() - Start();
-    }
-
-    size_t AllocStart()
-    {
-        return m_allocStart;
-    }
-
-    size_t AllocEnd()
-    {
-        return m_allocEnd;
-    }
-
-    size_t AllocSize()
-    {
-        return m_allocEnd - m_allocStart;
-    }
-
-    SatoriObject* FistObject()
-    {
-        return &m_firstObject;
-    }
+    size_t Start();
+    size_t End();
+    size_t Size();
+    size_t AllocStart();
+    size_t AllocEnd();
+    size_t AllocSize();
+    SatoriObject* FirstObject();
 
     SatoriObject* FindObject(size_t location);
 
     void ThreadLocalMark();
+    size_t ThreadLocalPlan();
+    void ThreadLocalUpdatePointers();
+    bool ThreadLocalCompact(size_t desiredFreeSpace);
 
-    void Publish()
-    {
-        _ASSERTE(m_state == SatoriRegionState::allocating);
-        m_state = SatoriRegionState::shared;
-    }
+    void Verify();
 
 private:
     SatoriRegionState m_state;
+    int32_t m_markStack;
     // end is edge exclusive
     size_t m_end;
     size_t m_committed;
@@ -120,7 +91,11 @@ private:
 private:
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+    static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
     bool IsEmpty();
+
+    void PushToMarkStack(SatoriObject* obj);
+    SatoriObject* PopFromMarkStack();
 };
 
 #endif
