@@ -60,6 +60,7 @@ public:
 
 private:
     SatoriRegionState m_state;
+    int32_t m_markStack;
     // end is edge exclusive
     size_t m_end;
     size_t m_committed;
@@ -86,6 +87,9 @@ private:
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
     bool IsEmpty();
+
+    void PushToMarkStack(SatoriObject* obj);
+    SatoriObject* PopFromMarkStack();
 };
 
 #endif

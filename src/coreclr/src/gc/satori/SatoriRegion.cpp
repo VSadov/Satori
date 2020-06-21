@@ -52,8 +52,9 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     result->m_containingQueue = nullptr;
 
     result->m_allocStart = (size_t)&result->m_firstObject;
-    // +1 for syncblock
-    result->m_allocEnd = result->End() + 1;
+    // Since the actual object data is shifted by 1 syncblock, a region could fit sizeof(size_t) more,
+    // but that would complicate math in few places so we would rather ignore 0.0001% space loss.
+    result->m_allocEnd = result->End();
 
     if (zeroInitedAfter > (size_t)&result->m_index)
     {
@@ -68,8 +69,7 @@ void SatoriRegion::MakeBlank()
 {
     m_state = SatoriRegionState::allocating;
     m_allocStart = (size_t)&m_firstObject;
-    // +1 for syncblock
-    m_allocEnd = m_end + 1;
+    m_allocEnd = End();
 
     if (m_zeroInitedAfter > (size_t)&m_index)
     {
@@ -104,7 +104,7 @@ bool SatoriRegion::ValidateBlank()
         return false;
     }
 
-    if (m_allocStart != (size_t)&m_firstObject || m_allocEnd != m_end + 1)
+    if (m_allocStart != (size_t)&m_firstObject || m_allocEnd != m_end)
     {
         return false;
     }
@@ -161,7 +161,7 @@ void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextC
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
     _ASSERTE(regionSize < this->Size());
-    _ASSERTE(m_allocEnd == m_end + 1);
+    _ASSERTE(m_allocEnd == m_end);
     _ASSERTE((size_t)m_allocStart < m_end - regionSize - Satori::MIN_FREE_SIZE);
 
     size_t newEnd = m_end - regionSize;
@@ -172,7 +172,7 @@ void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextC
     m_end = newEnd;
     m_committed = min(newEnd, m_committed);
     m_zeroInitedAfter = min(newEnd, m_zeroInitedAfter);
-    m_allocEnd = min(newEnd + 1, m_allocEnd);
+    m_allocEnd = min(newEnd, m_allocEnd);
 
     _ASSERTE(Size() >= Satori::REGION_SIZE_GRANULARITY);
     _ASSERTE(IsAllocating());
@@ -208,7 +208,7 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
     m_end = next->m_end;
     m_committed = next->m_committed;
     m_zeroInitedAfter = next->m_zeroInitedAfter;
-m_allocEnd = next->m_allocEnd;
+    m_allocEnd = next->m_allocEnd;
 }
 
 size_t SatoriRegion::Allocate(size_t size, bool ensureZeroInited)
@@ -305,16 +305,17 @@ SatoriObject* SatoriRegion::FindObject(size_t location)
 {
     _ASSERTE(location >= (size_t)FistObject() && location <= End());
 
-    // TODO: VS use index
-    SatoriObject* current = FistObject();
-    SatoriObject* next = current->Next();
-    while ((size_t)next <= location)
+    // TODO: VS use index to start
+    SatoriObject* obj = FistObject();
+    SatoriObject* next = obj->Next();
+
+    while (next->Start() < location)
     {
-        current = next;
-        next =current->Next();
+        obj = next;
+        next = next->Next();
     }
 
-    return current->IsFree() ? nullptr : current;
+    return obj->IsFree() ? nullptr : obj;
 }
 
 void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
@@ -351,11 +352,93 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
     }
 };
 
+void SatoriRegion::PushToMarkStack(SatoriObject* obj)
+{
+    _ASSERTE(obj->ContainingRegion() == this);
+
+    if (obj->GetNextInMarkStack())
+    {
+        // already in the stack
+        return;
+    }
+
+    obj->SetNextInMarkStack(m_markStack);
+    int32_t t = obj->GetNextInMarkStack();
+    ASSERT(t == m_markStack);
+    m_markStack = (int32_t)((size_t)obj - (size_t)this);
+}
+
+SatoriObject* SatoriRegion::PopFromMarkStack()
+{
+    if (m_markStack != 0)
+    {
+        SatoriObject* obj = (SatoriObject*)((size_t)this + m_markStack);
+        m_markStack = obj->GetNextInMarkStack();
+        obj->ClearNextInMarkStack();
+        return obj;
+    }
+
+    return nullptr;
+}
+
 void SatoriRegion::ThreadLocalMark()
 {
     ScanContext sc;
     sc.promotion = TRUE;
     sc._unused1 = this;
 
-    GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn, &sc);
+    GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn, &sc); 
+
+    for (SatoriObject* obj = FistObject(); obj->Start() < End(); obj = obj->Next())
+    {
+        if (obj->IsFree())
+        {
+            continue;
+        }
+
+        SatoriObject* o = obj;
+        _ASSERTE(!o->IsFree());
+
+        do
+        {
+            if (o->IsEscaped())
+            {
+                o->ForEachObjectRef(
+                    [=](SatoriObject** ref)
+                    {
+                        SatoriObject* child = *ref;
+                        if (child->ContainingRegion() == this && !child->IsEscaped())
+                        {
+                            child->SetEscaped();
+                            if (child->Start() < o->Start())
+                            {
+                                PushToMarkStack(child);
+                            }
+                        }
+                    }
+                );
+            }
+            else if (o->IsMarked())
+            {
+                o->ForEachObjectRef(
+                    [=](SatoriObject** ref)
+                    {
+                        SatoriObject* child = *ref;
+                        if (child->ContainingRegion() == this && !child->IsEscapedOrMarked())
+                        {
+                            child->SetMarked();
+                            if (child->Start() < o->Start())
+                            {
+                                PushToMarkStack(child);
+                            }
+                        }
+                    }
+                );
+            }
+
+            o = PopFromMarkStack();
+        }
+        while (o);
+    }
 }
+

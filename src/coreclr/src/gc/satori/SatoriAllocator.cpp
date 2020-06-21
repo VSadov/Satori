@@ -110,7 +110,7 @@ void SatoriAllocator::AddRegion(SatoriRegion* region)
 
 Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
-    size = ALIGN_UP(size, sizeof(size_t));
+    size = ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
 
     if (context->alloc_ptr + size <= context->alloc_limit)
     {
@@ -160,11 +160,24 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             // unclaim unused.
             context->alloc_bytes -= context->alloc_limit - context->alloc_ptr;
 
-            _ASSERTE((size_t)context->alloc_ptr < region->End());
-            SatoriObject::FormatAsFree((size_t)context->alloc_ptr, region->End() - (size_t)context->alloc_ptr);
+            size_t free = (size_t)context->alloc_ptr;
+            _ASSERTE(free = ALIGN_UP(free, Satori::OBJECT_ALIGNMENT));
 
+            if (free < region->AllocEnd())
+            {
+                _ASSERTE(region->AllocEnd() - free >= Satori::MIN_FREE_SIZE);
+                SatoriObject::FormatAsFree(free, region->AllocEnd() - free);
+            }
+            else
+            {
+                _ASSERTE(free == region->AllocEnd());
+            }
+
+            // for (int i = 0; i < 10; i++)
+            // {
             // TODO: VS try compact current
             region->ThreadLocalMark();
+            // }
 
             m_heap->Recycler()->AddRegion(region);
             context->alloc_ptr = context->alloc_limit = nullptr;

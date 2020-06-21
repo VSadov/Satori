@@ -26,6 +26,8 @@ public:
     static SatoriObject* FormatAsFree(size_t location, size_t size);
 
     SatoriRegion* ContainingRegion();
+    size_t Start();
+    size_t End();
     SatoriObject* Next();
 
     size_t Size();
@@ -37,10 +39,18 @@ public:
     void SetMarked();
     bool IsPinned();
     void SetPinned();
+    bool IsEscapedOrMarked();
+
+    int32_t GetNextInMarkStack();
+    void SetNextInMarkStack(int32_t);
+    void ClearNextInMarkStack();
 
     void CleanSyncBlock();
 
     void Validate();
+
+    template<typename F>
+    void ForEachObjectRef(F& lambda);
 
 private:
     static MethodTable* s_emptyObjectMt;
