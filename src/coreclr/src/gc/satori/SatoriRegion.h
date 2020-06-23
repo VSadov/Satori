@@ -58,6 +58,8 @@ public:
 
     void ThreadLocalMark();
 
+    size_t ThreadLocalPlan();
+
 private:
     SatoriRegionState m_state;
     int32_t m_markStack;

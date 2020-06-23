@@ -177,6 +177,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             // {
             // TODO: VS try compact current
             region->ThreadLocalMark();
+            region->ThreadLocalPlan();
             // }
 
             m_heap->Recycler()->AddRegion(region);

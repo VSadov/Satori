@@ -442,3 +442,137 @@ void SatoriRegion::ThreadLocalMark()
     }
 }
 
+size_t SatoriRegion::ThreadLocalPlan()
+{
+    // object can be in 3 states here:
+    //  - Free:
+    //      not marked or escaped (incl. free objects, which are never marked or escaped)
+    //
+    //  - Unmovable:
+    //      escaped or pinned
+    //
+    //  - Movable
+    //      marked, but not escaped or pinned
+    //
+    // we will slide left movable objects into free - as long as they fit.
+    //
+
+    size_t free_end = FistObject()->Start();
+    size_t free_start;
+    SatoriObject* moveable;
+
+    size_t free = 0;
+    size_t relocated = 0;
+
+    // free_start: skip EscapedOrMarked
+    for (free_start = free_end; free_start < End(); free_start = ((SatoriObject*)free_start)->End())
+    {
+        if (!((SatoriObject*)free_start)->IsEscapedOrMarked())
+        {
+            break;
+        }
+    }
+
+    // free_end: skip !EscapedOrMarked
+    for (free_end = free_start; free_end < End(); free_end = ((SatoriObject*)free_end)->End())
+    {
+        if (((SatoriObject*)free_end)->IsEscapedOrPinned())
+        {
+            break;
+        }
+    }
+
+    // format the gap as free
+    if (free_end > free_start)
+    {
+        free += free_end - free_start;
+        SatoriObject::FormatAsFree(free_start, free_end - free_start);
+    }
+
+    // moveable: skip unmarked or pinned
+    size_t moveableSize;
+    for (moveable = (SatoriObject*)free_end; moveable->Start() < End();  moveable = (SatoriObject*)(moveable->Start() + moveableSize))
+    {
+        moveableSize = moveable->Size();
+        if (!moveable->IsEscapedOrMarked())
+        {
+            free += moveableSize;
+        }
+        else if (!moveable->IsEscapedOrPinned())
+        {
+            // then it is only marked and thus movable
+            break;
+        }
+    }
+
+    if (moveable->Start() >= End())
+    {
+        // nothing left to move
+        return relocated;
+    }
+
+    while (true)
+    {
+        while (free_end - free_start >= moveableSize)
+        {
+            ASSERT(moveable->Start() >= free_start);
+            int32_t reloc = (int32_t)(moveable->Start() - free_start);
+            if (reloc != 0)
+            {
+                relocated += moveableSize;
+                moveable->SetReloc(reloc);
+            }
+
+            free_start += moveableSize;
+
+            // moveable: skip unmarked or pinned
+            while (true)
+            {
+                // moveable = moveable->Next();
+                moveable = (SatoriObject*)(moveable->Start() + moveableSize);
+                if (moveable->Start() >= End())
+                {
+                    // nothing left to move
+                    return relocated;
+                }
+
+                moveableSize = moveable->Size();
+                if (!moveable->IsEscapedOrMarked())
+                {
+                    free += moveableSize;
+                }
+                else if (!moveable->IsEscapedOrPinned())
+                {
+                    // then it is only marked and thus movable
+                    break;
+                }
+            }
+        }
+
+        // here we have something to move, but it does not fit the current gap.
+
+        // free_start: look for the next gap after free_end
+        for (free_start = free_end; free_start < End(); free_start = ((SatoriObject*)free_start)->End())
+        {
+            if (!((SatoriObject*)free_start)->IsEscapedOrMarked())
+            {
+                break;
+            }
+        }
+
+        // free_end: skip !EscapedOrPinned
+        for (free_end = free_start; free_end < End(); free_end = ((SatoriObject*)free_end)->End())
+        {
+            if (((SatoriObject*)free_end)->IsEscapedOrPinned())
+            {
+                break;
+            }
+        }
+
+        // format the gap as free
+        if (free_end > free_start)
+        {
+            SatoriObject::FormatAsFree(free_start, free_end - free_start);
+        }
+    }
+}

@@ -57,6 +57,16 @@ inline bool SatoriObject::IsFree()
     return RawGetMethodTable() == s_emptyObjectMt;
 }
 
+//
+// Implementation note on Escaped/Marked/Pinned -
+// We could use some kind of bitmap instead. We would only need 3bits or perhaps even 2 per object.
+// However on 64bit there is a plenty of unused bits in the pad of the syncblock, so we will use those.
+// On 32bit it may make more sense to use bitmaps.
+//
+// Same logic applies to mark overflow and relocation - we could use temporary maps,
+// but we will use unused bits instead.
+//
+
 inline bool SatoriObject::IsEscaped()
 {
     return ((int8_t*)this)[-5];
@@ -64,45 +74,57 @@ inline bool SatoriObject::IsEscaped()
 
 inline void SatoriObject::SetEscaped()
 {
-    ((int8_t*)this)[-5] = 1;
+    ((int8_t*)this)[-5] = (int8_t)0xFF;
 }
 
 inline bool SatoriObject::IsMarked()
 {
-    return !!(((int8_t*)this)[-6] & (1 << 7));
+    return (((int8_t*)this)[-6] & (1 << 7));
 }
 
 inline void SatoriObject::SetMarked()
 {
-    ((int8_t*)this)[-6] = (int8_t)(1 << 7);
+    ((int8_t*)this)[-6] |= (int8_t)(1 << 7);
 }
 
 inline bool SatoriObject::IsPinned()
 {
-    return !!(((int8_t*)this)[-6] & (1 << 6));
+    return (((int8_t*)this)[-6] & (1 << 6));
 }
 
 inline void SatoriObject::SetPinned()
 {
     // pinned is always marked
-    ((int8_t*)this)[-6] = (int8_t)(3 << 6);
+    ((int8_t*)this)[-6] |= (int8_t)(3 << 6);
 }
 
 inline bool SatoriObject::IsEscapedOrMarked()
 {
-    // TODO: VS more efficient
-    return IsEscaped() || IsMarked();
-    // return ((int32_t*)this)[-2] & (3 << 6);
+    // return IsEscaped() || IsMarked();
+    return ((int32_t*)this)[-2] & 0b1111'1100'0000'0000'0000'0000'0000'0000;
+}
+
+inline bool SatoriObject::IsEscapedOrPinned()
+{
+    // return IsEscaped() || IsPinned();
+    return ((int32_t*)this)[-2] & 0b1111'0100'0000'0000'0000'0000'0000'0000;
 }
 
 inline int32_t SatoriObject::GetNextInMarkStack()
 {
     // upper 10 bits are taken by escaped/marked/pinned
-    // but we only need REGION_BITS, since we are recording distance
+    // but we only need REGION_BITS, since we are recording distance within the region
     return ((int32_t*)this)[-2] & ((1 << Satori::REGION_BITS) - 1);
 }
 
 inline void SatoriObject::SetNextInMarkStack(int32_t next)
+{
+    ASSERT(GetNextInMarkStack() == 0);
+    ((int32_t*)this)[-2] |= next;
+}
+
+// TODO: VS same as SetNextInMarkStack
+inline void SatoriObject::SetReloc(int32_t next)
 {
     ASSERT(GetNextInMarkStack() == 0);
     ((int32_t*)this)[-2] |= next;

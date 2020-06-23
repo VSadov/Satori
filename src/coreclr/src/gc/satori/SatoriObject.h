@@ -40,10 +40,12 @@ public:
     bool IsPinned();
     void SetPinned();
     bool IsEscapedOrMarked();
+    bool IsEscapedOrPinned();
 
     int32_t GetNextInMarkStack();
     void SetNextInMarkStack(int32_t);
     void ClearNextInMarkStack();
+    void SetReloc(int32_t);
 
     void CleanSyncBlock();
 
