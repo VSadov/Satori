@@ -19,6 +19,10 @@
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
 
+#ifdef memcpy
+#undef memcpy
+#endif //memcpy
+
 SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t zeroInitedAfter)
 {
     _ASSERTE(zeroInitedAfter <= committed);
@@ -303,10 +307,10 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool ensureZeroInited)
 
 SatoriObject* SatoriRegion::FindObject(size_t location)
 {
-    _ASSERTE(location >= (size_t)FistObject() && location <= End());
+    _ASSERTE(location >= (size_t)FirstObject() && location <= End());
 
     // TODO: VS use index to start
-    SatoriObject* obj = FistObject();
+    SatoriObject* obj = FirstObject();
     SatoriObject* next = obj->Next();
 
     while (next->Start() < location)
@@ -323,32 +327,34 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
     SatoriRegion* region = (SatoriRegion*)sc->_unused1;
     size_t location = (size_t)*ppObject;
 
-    if (location < (size_t)region->FistObject() || location > region->End())
+    // ignore objects outside of the current region.
+    // this also rejects nulls.
+    if (location < (size_t)region->FirstObject() || location > region->End())
     {
         return;
     }
 
-    SatoriObject* obj;
+    SatoriObject* o;
     if (flags & GC_CALL_INTERIOR)
     {
-        obj = region->FindObject(location);
-        if (obj == nullptr)
+        o = region->FindObject(location);
+        if (o == nullptr)
         {
             return;
         }
     }
     else
     {
-        obj = SatoriObject::At(location);
+        o = SatoriObject::At(location);
     }
 
     if (flags & GC_CALL_PINNED)
     {
-        obj->SetPinned();
+        o->SetPinnedAndMarked();
     }
     else
     {
-        obj->SetMarked();
+        o->SetMarked();
     }
 };
 
@@ -387,9 +393,11 @@ void SatoriRegion::ThreadLocalMark()
     sc.promotion = TRUE;
     sc._unused1 = this;
 
+    Verify();
     GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn, &sc); 
 
-    for (SatoriObject* obj = FistObject(); obj->Start() < End(); obj = obj->Next())
+    Verify();
+    for (SatoriObject* obj = FirstObject(); obj->Start() < End(); obj = obj->Next())
     {
         if (obj->IsFree())
         {
@@ -440,6 +448,8 @@ void SatoriRegion::ThreadLocalMark()
         }
         while (o);
     }
+
+    Verify();
 }
 
 size_t SatoriRegion::ThreadLocalPlan()
@@ -457,50 +467,31 @@ size_t SatoriRegion::ThreadLocalPlan()
     // we will slide left movable objects into free - as long as they fit.
     //
 
-    size_t free_end = FistObject()->Start();
+    size_t free_end;
     size_t free_start;
     SatoriObject* moveable;
-
-    size_t free = 0;
     size_t relocated = 0;
+    size_t free = 0;
+    size_t moveableSize = 0;
 
-    // free_start: skip EscapedOrMarked
-    for (free_start = free_end; free_start < End(); free_start = ((SatoriObject*)free_start)->End())
-    {
-        if (!((SatoriObject*)free_start)->IsEscapedOrMarked())
-        {
-            break;
-        }
-    }
-
-    // free_end: skip !EscapedOrMarked
-    for (free_end = free_start; free_end < End(); free_end = ((SatoriObject*)free_end)->End())
-    {
-        if (((SatoriObject*)free_end)->IsEscapedOrPinned())
-        {
-            break;
-        }
-    }
-
-    // format the gap as free
-    if (free_end > free_start)
-    {
-        free += free_end - free_start;
-        SatoriObject::FormatAsFree(free_start, free_end - free_start);
-    }
-
-    // moveable: skip unmarked or pinned
-    size_t moveableSize;
-    for (moveable = (SatoriObject*)free_end; moveable->Start() < End();  moveable = (SatoriObject*)(moveable->Start() + moveableSize))
+    // moveable: starts at first movable and reachable, as long as there is any free space to slide in
+    for (moveable = FirstObject(); moveable->Start() < End(); moveable = (SatoriObject*)(moveable->Start() + moveableSize))
     {
         moveableSize = moveable->Size();
         if (!moveable->IsEscapedOrMarked())
         {
+            // This is not reachable.
+            if (free == 0)
+            {
+                // new gap from here
+                free_end = moveable->Start();
+            }
+
             free += moveableSize;
         }
-        else if (!moveable->IsEscapedOrPinned())
+        else if (!moveable->IsEscapedOrPinned() && free > 0)
         {
-            // then it is only marked and thus movable
+            // reachable and moveable and saw free space. we can move.
             break;
         }
     }
@@ -513,7 +504,32 @@ size_t SatoriRegion::ThreadLocalPlan()
 
     while (true)
     {
-        while (free_end - free_start >= moveableSize)
+        // free start: skip unmovables
+        for (free_start = free_end; free_start < End(); free_start = ((SatoriObject*)free_start)->End())
+        {
+            if (!((SatoriObject*)free_start)->IsEscapedOrPinned())
+            {
+                break;
+            }
+        }
+
+        if (free_start >= End())
+        {
+            // no more space could be found
+            return relocated;
+        }
+
+        // free end: skip untill next unmovable
+        for (free_end = free_start; free_end < End(); free_end = ((SatoriObject*)free_end)->End())
+        {
+            if (((SatoriObject*)free_end)->IsEscapedOrPinned())
+            {
+                break;
+            }
+        }
+
+        while (free_end - free_start >= moveableSize + Satori::MIN_FREE_SIZE ||
+                free_end - free_start == moveableSize)
         {
             ASSERT(moveable->Start() >= free_start);
             int32_t reloc = (int32_t)(moveable->Start() - free_start);
@@ -539,40 +555,202 @@ size_t SatoriRegion::ThreadLocalPlan()
                 moveableSize = moveable->Size();
                 if (!moveable->IsEscapedOrMarked())
                 {
+                    // this is not reachable.
                     free += moveableSize;
                 }
                 else if (!moveable->IsEscapedOrPinned())
                 {
-                    // then it is only marked and thus movable
+                    // reachable and moveable. we can move.
                     break;
                 }
             }
         }
 
-        // here we have something to move, but it does not fit the current gap.
+        // here we have something to move, but it does not fit in the current gap.
+        // we need to find another gap
+        // Note: gap will not cross over moveable, because moveables are valid gaps.
+    }
+}
 
-        // free_start: look for the next gap after free_end
-        for (free_start = free_end; free_start < End(); free_start = ((SatoriObject*)free_start)->End())
-        {
-            if (!((SatoriObject*)free_start)->IsEscapedOrMarked())
-            {
-                break;
-            }
-        }
+void SatoriRegion::UpdateFn(Object** ppObject, ScanContext* sc, uint32_t flags)
+{
+    SatoriRegion* region = (SatoriRegion*)sc->_unused1;
+    size_t location = (size_t)*ppObject;
 
-        // free_end: skip !EscapedOrPinned
-        for (free_end = free_start; free_end < End(); free_end = ((SatoriObject*)free_end)->End())
-        {
-            if (((SatoriObject*)free_end)->IsEscapedOrPinned())
-            {
-                break;
-            }
-        }
+    // ignore objects otside current region.
+    // this also rejects nulls.
+    if (location < (size_t)region->FirstObject() || location > region->End())
+    {
+        return;
+    }
 
-        // format the gap as free
-        if (free_end > free_start)
+    SatoriObject* o;
+    if (flags & GC_CALL_INTERIOR)
+    {
+        o = region->FindObject(location);
+        if (o == nullptr)
         {
-            SatoriObject::FormatAsFree(free_start, free_end - free_start);
+            return;
         }
     }
+    else
+    {
+        o = SatoriObject::At(location);
+    }
+
+    size_t reloc = o->GetReloc();
+    if (reloc)
+    {
+        *ppObject = (Object*)(((size_t)*ppObject) - reloc);
+        ASSERT(((SatoriObject*)(*ppObject))->ContainingRegion() == region);
+    }
+};
+
+void SatoriRegion::ThreadLocalUpdatePointers()
+{
+    ScanContext sc;
+    sc.promotion = FALSE;
+    sc._unused1 = this;
+
+    GCToEEInterface::GcScanCurrentStackRoots((promote_func*)UpdateFn, &sc);
+
+    for (SatoriObject* obj = FirstObject(); obj->Start() < End(); obj = obj->Next())
+    {
+        // we are not supposed to touch escaped objects
+        // we are not interested in unreachable ones
+        if (obj->IsEscaped() || !obj->IsMarked())
+        {
+            ASSERT(obj->GetReloc() == 0);
+            continue;
+        }
+
+        obj->ForEachObjectRef(
+            [=](SatoriObject** ppObject)
+            {
+                SatoriObject* o = *ppObject;
+                // ignore objects otside current region.
+                // this also rejects nulls.
+                if (o->Start() >= (size_t)this->FirstObject() && o->Start() < this->End())
+                {
+                    size_t reloc = o->GetReloc();
+                    if (reloc)
+                    {
+                        *ppObject = (SatoriObject*)(((size_t)*ppObject) - reloc);
+                        ASSERT(((SatoriObject*)(*ppObject))->ContainingRegion() == this);
+                    }
+                }
+            }
+        );
+    }
+}
+
+bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
+{
+    SatoriObject* s1;
+    SatoriObject* s2 = FirstObject();
+    SatoriObject* d1 = FirstObject();
+    SatoriObject* d2 = FirstObject();
+
+    bool foundFree = false;
+
+    // when d1 reaches the end everything is copied or swept
+    while(d1->Start() < End())
+    {
+        // find next relocatable object
+        int32_t reloc = 0;
+        for (s1 = s2; s1->Start() < End(); s1 = s1->Next())
+        {
+            reloc = s1->GetReloc();
+            if (reloc != 0)
+            {
+                break;
+            }
+        }
+
+        // sweep all objects up to the relocation target
+        size_t relocTarget = s1->Start() - reloc;
+        while (d1->Start() < relocTarget)
+        {
+            while (d2->Start() < relocTarget)
+            {
+                if (d2->IsEscapedOrMarked())
+                {
+                    break;
+                }
+
+                d2 = d2->Next();
+            }
+
+            if (d1 != d2)
+            {
+                size_t freeSpace = d2->Start() - d1->Start();
+                SatoriObject::FormatAsFree(d1->Start(), freeSpace);
+                if (!foundFree &&
+                    (freeSpace == desiredFreeSpace || freeSpace >= desiredFreeSpace + Satori::MIN_FREE_SIZE))
+                {
+                    this->m_allocStart = d1->Start();
+                    this->m_allocEnd = d2->Start();
+                    foundFree = true;
+                }
+            }
+            else
+            {
+                // clear Mark/Pinned, keep escaped, reloc should be 0, this object will stay around
+                d1->ClearPinnedAndMarked();
+            }
+
+            d1 = d1->Next();
+            d2 = d1;
+        }
+
+        // find the end of the run of relocatable objects with the same reloc distance (we can copy all at once)
+        for (s2 = s1; s2->Start() < End(); s2 = s2->Next())
+        {
+            if (reloc != s2->GetReloc())
+            {
+                break;
+            }
+
+            // clear mark and reloc. (escape should not be set, since we are relocating)
+            // pre-relocation copy of object need to clear the mark, so that the object could be swept if not overwritten.
+            // the relocated copy is not swept so clearing is also correct.
+            s2->ClearMarkCompactState();
+        }
+
+        // move d2 to the first object after the future end of the relocated run
+        // [d1, d2) will be the gap that the run is targeting, but it may not fill the whole gap.
+        // for our purposes the extra space is as good as a free object, we will move d1 to that
+        size_t relocTargetEnd = s2->Start() - reloc;
+        d1 = SatoriObject::At(relocTargetEnd);
+        while (d2->Start() < relocTargetEnd)
+        {
+            d2 = d2->Next();
+        }
+
+        if (reloc)
+        {
+            // copying objects with syncblocks, thus the src/dst adjustment
+            memcpy(
+                (void*)(relocTarget - sizeof(size_t)),
+                (void*)(s1->Start() - sizeof(size_t)),
+                s2->Start() - s1->Start());
+        }
+    }
+
+    return foundFree;
+}
+
+void SatoriRegion::Verify()
+{
+#ifdef _DEBUG
+    SatoriObject* obj = FirstObject();
+
+    while (obj->Start() < End())
+    {
+        ASSERT(obj->GetReloc() == 0);
+        obj = obj->Next();
+    }
+
+    ASSERT(obj->Start() == End());
+#endif
 }

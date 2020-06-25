@@ -52,13 +52,16 @@ public:
     size_t AllocStart();
     size_t AllocEnd();
     size_t AllocSize();
-    SatoriObject* FistObject();
+    SatoriObject* FirstObject();
 
     SatoriObject* FindObject(size_t location);
 
     void ThreadLocalMark();
-
     size_t ThreadLocalPlan();
+    void ThreadLocalUpdatePointers();
+    bool ThreadLocalCompact(size_t desiredFreeSpace);
+
+    void Verify();
 
 private:
     SatoriRegionState m_state;
@@ -88,6 +91,7 @@ private:
 private:
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+    static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
     bool IsEmpty();
 
     void PushToMarkStack(SatoriObject* obj);

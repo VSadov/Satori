@@ -15,13 +15,24 @@
 #include "SatoriUtil.h"
 #include "SatoriObject.h"
 
+inline size_t SizeOfFree(SatoriObject* free)
+{
+    // add the size of Array header + syncblock (see: FormatAsFree)
+    return ((size_t*)free)[ArrayBase::GetOffsetOfNumComponents() / sizeof(size_t)] + (sizeof(ArrayBase) + sizeof(size_t));
+}
+
 inline size_t SatoriObject::Size()
 {
     MethodTable* mt = RawGetMethodTable();
+    if (mt == s_emptyObjectMt)
+    {
+        return SizeOfFree(this);
+    }
+
     size_t size = mt->GetBaseSize();
     if (mt->HasComponentSize())
     {
-        size += ((size_t*)this)[ArrayBase::GetOffsetOfNumComponents() / sizeof(size_t)] * mt->RawGetComponentSize();
+        size += (size_t)((ArrayBase*)this)->GetNumComponents() * mt->RawGetComponentSize();
     }
 
     return ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
@@ -79,40 +90,45 @@ inline void SatoriObject::SetEscaped()
 
 inline bool SatoriObject::IsMarked()
 {
-    return (((int8_t*)this)[-6] & (1 << 7));
+    return (((int8_t*)this)[-6] & 0b10000000);
 }
 
 inline void SatoriObject::SetMarked()
 {
-    ((int8_t*)this)[-6] |= (int8_t)(1 << 7);
+    ((int8_t*)this)[-6] |= (int8_t)(0b10000000);
 }
 
 inline bool SatoriObject::IsPinned()
 {
-    return (((int8_t*)this)[-6] & (1 << 6));
+    return (((int8_t*)this)[-6] & 0b01000000);
 }
 
-inline void SatoriObject::SetPinned()
+inline void SatoriObject::SetPinnedAndMarked()
 {
-    // pinned is always marked
-    ((int8_t*)this)[-6] |= (int8_t)(3 << 6);
+    ((int8_t*)this)[-6] |= (int8_t)(0b11000000);
+}
+
+inline void SatoriObject::ClearPinnedAndMarked()
+{
+    ASSERT(GetReloc() == 0);
+    ((int8_t*)this)[-6] = 0;
 }
 
 inline bool SatoriObject::IsEscapedOrMarked()
 {
     // return IsEscaped() || IsMarked();
-    return ((int32_t*)this)[-2] & 0b1111'1100'0000'0000'0000'0000'0000'0000;
+    return ((int32_t*)this)[-2] & 0b11111111'10000000'00000000'00000000;
 }
 
 inline bool SatoriObject::IsEscapedOrPinned()
 {
     // return IsEscaped() || IsPinned();
-    return ((int32_t*)this)[-2] & 0b1111'0100'0000'0000'0000'0000'0000'0000;
+    return ((int32_t*)this)[-2] & 0b11111111'01000000'00000000'00000000;
 }
 
 inline int32_t SatoriObject::GetNextInMarkStack()
 {
-    // upper 10 bits are taken by escaped/marked/pinned
+    // upper 10 bits are taken by escaped byte and marked/pinned bits
     // but we only need REGION_BITS, since we are recording distance within the region
     return ((int32_t*)this)[-2] & ((1 << Satori::REGION_BITS) - 1);
 }
@@ -123,16 +139,30 @@ inline void SatoriObject::SetNextInMarkStack(int32_t next)
     ((int32_t*)this)[-2] |= next;
 }
 
-// TODO: VS same as SetNextInMarkStack
+// TODO: VS same as [Get|Set]NextInMarkStack
+
+inline int32_t SatoriObject::GetReloc()
+{
+    // upper 10 bits are taken by escaped/marked/pinned
+    // but we only need REGION_BITS, since we are recording distance within the region
+    return ((int32_t*)this)[-2] & ((1 << Satori::REGION_BITS) - 1);
+}
+
 inline void SatoriObject::SetReloc(int32_t next)
 {
-    ASSERT(GetNextInMarkStack() == 0);
+    ASSERT(GetReloc() == 0);
     ((int32_t*)this)[-2] |= next;
 }
 
 inline void SatoriObject::ClearNextInMarkStack()
 {
     ((int32_t*)this)[-2] &= ~((1 << Satori::REGION_BITS) - 1);
+}
+
+inline void SatoriObject::ClearMarkCompactState()
+{
+    ASSERT(!IsEscaped());
+    ((int32_t*)this)[-2] = 0;
 }
 
 inline void SatoriObject::CleanSyncBlock()
@@ -161,37 +191,42 @@ inline void SatoriObject::ForEachObjectRef(F& lambda)
 
         do
         {
-            SatoriObject** refPtr = (SatoriObject**)((size_t)this + cur->GetSeriesOffset());
-            SatoriObject** refPtrStop = (SatoriObject**)((size_t)refPtr + cur->GetSeriesSize() + size);
+            size_t refPtr = (size_t)this + cur->GetSeriesOffset();
+            size_t refPtrStop = refPtr + size + cur->GetSeriesSize();
 
-            do
+            // immediately check. this could be a zero-element array
+            // TODO: VS cant't use simple "while" here. Compiler bug?
+            if (refPtr < refPtrStop)
             {
-                lambda(refPtr);
-                refPtr++;
-            } while (refPtr < refPtrStop);
-
+                do
+                {
+                    lambda((SatoriObject**)refPtr);
+                    refPtr += sizeof(size_t);
+                } while (refPtr < refPtrStop);
+            }
             cur--;
         } while (cur >= last);
     }
     else
     {
         // repeating patern - array of structs
-        SatoriObject** refPtr = (SatoriObject**)((size_t)this + cur->GetSeriesOffset());
-        SatoriObject** end = (SatoriObject**)End();
+        size_t refPtr = (size_t)this + cur->GetSeriesOffset();
+        // End() is the next `this`, so we stop one synckblock earlier.
+        size_t end = End() - sizeof(size_t);
 
         while (refPtr < end)
         {
             for (ptrdiff_t i = 0; i > cnt; i--)
             {
                 val_serie_item item = cur->val_serie[i];
-                SatoriObject** srcPtrStop = refPtr + item.nptrs;
+                size_t refPtrStop = refPtr + item.nptrs * sizeof(size_t);
                 do
                 {
-                    lambda(refPtr);
-                    refPtr++;
-                } while (refPtr < srcPtrStop);
+                    lambda((SatoriObject**)refPtr);
+                    refPtr += sizeof(size_t);
+                } while (refPtr < refPtrStop);
 
-                refPtr = srcPtrStop + item.skip;
+                refPtr += item.skip;
             }
         }
     }

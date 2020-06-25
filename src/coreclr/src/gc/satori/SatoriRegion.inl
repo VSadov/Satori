@@ -50,7 +50,7 @@ inline size_t SatoriRegion::AllocSize()
     return m_allocEnd - m_allocStart;
 }
 
-inline SatoriObject* SatoriRegion::FistObject()
+inline SatoriObject* SatoriRegion::FirstObject()
 {
     return &m_firstObject;
 }

@@ -136,17 +136,17 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
         if (region != nullptr &&
             region->AllocEnd() - (size_t)context->alloc_ptr > size + Satori::MIN_FREE_SIZE)
         {
-            size_t alloc = context->alloc_ptr + size - context->alloc_limit;
+            size_t moreSpace = context->alloc_ptr + size - context->alloc_limit;
             bool isZeroing = true;
-            if (isZeroing && alloc < Satori::MIN_REGULAR_ALLOC)
+            if (isZeroing && moreSpace < Satori::MIN_REGULAR_ALLOC)
             {
-                alloc = min(region->AllocEnd() - Satori::MIN_FREE_SIZE - (size_t)context->alloc_limit, alloc + Satori::MIN_REGULAR_ALLOC);
+                moreSpace = min(region->AllocEnd() - Satori::MIN_FREE_SIZE - (size_t)context->alloc_limit, Satori::MIN_REGULAR_ALLOC);
             }
 
-            if (region->Allocate(alloc, isZeroing))
+            if (region->Allocate(moreSpace, isZeroing))
             {
-                context->alloc_bytes += alloc;
-                context->alloc_limit += alloc;
+                context->alloc_bytes += moreSpace;
+                context->alloc_limit += moreSpace;
 
                 SatoriObject* result = SatoriObject::At((size_t)context->alloc_ptr);
                 context->alloc_ptr += size;
@@ -173,12 +173,19 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                 _ASSERTE(free == region->AllocEnd());
             }
 
-            // for (int i = 0; i < 10; i++)
-            // {
-            // TODO: VS try compact current
+            // try compact current
             region->ThreadLocalMark();
+            //TODO: VS check if can split and split (here, after marking)
             region->ThreadLocalPlan();
-            // }
+            region->ThreadLocalUpdatePointers();
+            // TODO: VS set the size large enough to be worth compacting for
+            size_t desiredFreeSpace = max(size, Satori::MIN_REGULAR_ALLOC * 10);
+            if (region->ThreadLocalCompact(desiredFreeSpace))
+            {
+                // we have enough free space in the region to continue
+                context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
+                continue;
+            }
 
             m_heap->Recycler()->AddRegion(region);
             context->alloc_ptr = context->alloc_limit = nullptr;

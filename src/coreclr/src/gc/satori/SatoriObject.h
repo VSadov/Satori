@@ -38,13 +38,16 @@ public:
     bool IsMarked();
     void SetMarked();
     bool IsPinned();
-    void SetPinned();
+    void SetPinnedAndMarked();
+    void ClearPinnedAndMarked();
     bool IsEscapedOrMarked();
     bool IsEscapedOrPinned();
 
     int32_t GetNextInMarkStack();
     void SetNextInMarkStack(int32_t);
     void ClearNextInMarkStack();
+    void ClearMarkCompactState();
+    int32_t GetReloc();
     void SetReloc(int32_t);
 
     void CleanSyncBlock();
