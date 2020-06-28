@@ -467,7 +467,7 @@ size_t SatoriRegion::ThreadLocalPlan()
     // we will slide left movable objects into free - as long as they fit.
     //
 
-    size_t free_end;
+    size_t free_end = 0;
     size_t free_start;
     SatoriObject* moveable;
     size_t relocated = 0;
@@ -505,7 +505,7 @@ size_t SatoriRegion::ThreadLocalPlan()
     while (true)
     {
         // free start: skip unmovables
-        for (free_start = free_end; free_start < End(); free_start = ((SatoriObject*)free_start)->End())
+        for (free_start = free_end; free_start < End(); free_start+= ((SatoriObject*)free_start)->Size())
         {
             if (!((SatoriObject*)free_start)->IsEscapedOrPinned())
             {
@@ -520,7 +520,7 @@ size_t SatoriRegion::ThreadLocalPlan()
         }
 
         // free end: skip untill next unmovable
-        for (free_end = free_start; free_end < End(); free_end = ((SatoriObject*)free_end)->End())
+        for (free_end = free_start; free_end < End(); free_end += ((SatoriObject*)free_end)->Size())
         {
             if (((SatoriObject*)free_end)->IsEscapedOrPinned())
             {

@@ -15,27 +15,17 @@
 #include "SatoriUtil.h"
 #include "SatoriObject.h"
 
-inline size_t SizeOfFree(SatoriObject* free)
-{
-    // add the size of Array header + syncblock (see: FormatAsFree)
-    return ((size_t*)free)[ArrayBase::GetOffsetOfNumComponents() / sizeof(size_t)] + (sizeof(ArrayBase) + sizeof(size_t));
-}
-
 inline size_t SatoriObject::Size()
 {
     MethodTable* mt = RawGetMethodTable();
-    if (mt == s_emptyObjectMt)
-    {
-        return SizeOfFree(this);
-    }
-
     size_t size = mt->GetBaseSize();
     if (mt->HasComponentSize())
     {
         size += (size_t)((ArrayBase*)this)->GetNumComponents() * mt->RawGetComponentSize();
+        size = ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
     }
 
-    return ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
+    return size;
 }
 
 inline size_t SatoriObject::Start()
@@ -182,12 +172,21 @@ inline void SatoriObject::ForEachObjectRef(F& lambda)
     CGCDesc* map = CGCDesc::GetCGCDescFromMT(mt);
     CGCDescSeries* cur = map->GetHighestSeries();
 
+    // GetNumSeries is actually signed.
+    // Negative value means the pattern repeats -cnt times such as in a case of arrays
     ptrdiff_t cnt = (ptrdiff_t)map->GetNumSeries();
     if (cnt >= 0)
     {
-        // singular patterm. Either a regular type or an array of object references.
         CGCDescSeries* last = map->GetLowestSeries();
-        size_t size = Size();
+
+        // series size is offset by the object size
+        size_t size = mt->GetBaseSize();
+
+        // object arrays are handled here too, so need to compensate for that.
+        if (mt->HasComponentSize())
+        {
+            size += (size_t)((ArrayBase*)this)->GetNumComponents() * sizeof(size_t);
+        }
 
         do
         {
@@ -209,12 +208,10 @@ inline void SatoriObject::ForEachObjectRef(F& lambda)
     }
     else
     {
-        // repeating patern - array of structs
+        // repeating patern - an array
         size_t refPtr = (size_t)this + cur->GetSeriesOffset();
-        // End() is the next `this`, so we stop one synckblock earlier.
-        size_t end = End() - sizeof(size_t);
-
-        while (refPtr < end)
+        uint32_t componentNum = ((ArrayBase*)this)->GetNumComponents();
+        while (componentNum-- > 0)
         {
             for (ptrdiff_t i = 0; i > cnt; i--)
             {
