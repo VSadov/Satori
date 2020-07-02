@@ -19,6 +19,8 @@
 
 #include "objecthandle.h"
 #include "handletablepriv.h"
+#include "satori/SatoriObject.inl"
+#include "satori/SatoriRegion.inl"
 
 #if defined(ENABLE_PERF_COUNTERS) || defined(FEATURE_EVENT_TRACE)
 DWORD g_dwHandles = 0;
@@ -540,17 +542,25 @@ void HndLogSetEvent(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
 #endif
 }
 
+#ifndef DACCESS_COMPILE
+
 void MarkEscapeSatori(Object* ref)
 {
-    // mark the escape byte
-    // TODO: VS, check if region is allocating?
-    if (!((int8_t*)ref)[-5])
+#if FEATURE_SATORI_GC
+    SatoriObject* obj = (SatoriObject*)ref;
+    if (obj->ContainingRegion()->State() == SatoriRegionState::allocating)
     {
-        ((int8_t*)ref)[-5] = (int8_t)0xFF;
+        if (!obj->IsEscaped())
+        {
+            // an unescaped object in an allocating region -> the region is our threadlocal
+            // thus we can mark the object escape
+            // we use ordinary assignment, noone else should be marking this region.
+            obj->SetEscaped();
+        }
     }
+#endif
 }
 
-#ifndef DACCESS_COMPILE
 /*
  * HndWriteBarrierWorker
  *
