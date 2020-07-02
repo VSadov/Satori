@@ -361,18 +361,23 @@ LEAF_ENTRY JIT_WriteBarrier_SATORI, _TEXT
         je      Exit                    ; assigning null
 
         mov     rax, rdx
-        and     rax, 0FFFFFFFFFFE00000h ; region
+        and     rax, 0FFFFFFFFFFE00000h ;  region
         cmp     byte ptr [rax], 0       ; check status, 0 -> allocating
-
         jne     EscapeChecked           ; object is not from allocating region
-                                        ; this is optimization, it is ok to mark, just noone cares
-                                        ; TODO: VS is this really an optimization?
 
-        cmp     byte ptr [rdx - 5], 00h 
-        jne     EscapeChecked           ; already escaped
+        mov     r8, rdx
+        shr     r8, 3
+        and     r8d,03FFFFh
+        inc     r8
+        mov     r9, r8
+        and     r8d,03Fh
+        shr     r9, 6
+        mov     r10,qword ptr [rax+r9*8]
+        bt      r10,r8
+        jb      EscapeChecked           ; object is already marked as escaped
 
-        ; mark the escape byte
-        mov     byte ptr [rdx - 5], 0FFh
+        bts     r10,r8
+        mov     qword ptr [rax+r9*8], r10
 
     EscapeChecked:
         ; cross generational referencing would be recorded here
