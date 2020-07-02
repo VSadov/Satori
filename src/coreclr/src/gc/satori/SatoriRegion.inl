@@ -15,6 +15,11 @@
 #include "../env/gcenv.ee.h"
 #include "SatoriRegion.h"
 
+inline SatoriRegionState SatoriRegion::State()
+{
+    return m_state;
+}
+
 inline bool SatoriRegion::IsAllocating()
 {
     return m_allocEnd != 0;
