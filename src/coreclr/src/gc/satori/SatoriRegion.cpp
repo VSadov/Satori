@@ -467,8 +467,9 @@ size_t SatoriRegion::ThreadLocalPlan()
     // we will slide left movable objects into free - as long as they fit.
     //
 
-    size_t free_end = 0;
-    size_t free_start;
+    size_t dst_end = 0;
+    size_t dst_start;
+    size_t cur_free = 0;
     SatoriObject* moveable;
     size_t relocated = 0;
     size_t free = 0;
@@ -484,15 +485,28 @@ size_t SatoriRegion::ThreadLocalPlan()
             if (free == 0)
             {
                 // new gap from here
-                free_end = moveable->Start();
+                dst_end = moveable->Start();
             }
 
             free += moveableSize;
+            if (!cur_free)
+            {
+                cur_free = moveable->Start();
+            }
         }
-        else if (!moveable->IsEscapedOrPinned() && free > 0)
+        else
         {
-            // reachable and moveable and saw free space. we can move.
-            break;
+            if (cur_free)
+            {
+                SatoriObject::FormatAsFree(cur_free, moveable->Start() - cur_free);
+                cur_free = 0;
+            }
+
+            if (!moveable->IsEscapedOrPinned() && free > 0)
+            {
+                // reachable and moveable and saw free space. we can move.
+                break;
+            }
         }
     }
 
@@ -504,42 +518,42 @@ size_t SatoriRegion::ThreadLocalPlan()
 
     while (true)
     {
-        // free start: skip unmovables
-        for (free_start = free_end; free_start < End(); free_start+= ((SatoriObject*)free_start)->Size())
+        // dst start: skip unmovables
+        for (dst_start = dst_end; dst_start < End(); dst_start+= ((SatoriObject*)dst_start)->Size())
         {
-            if (!((SatoriObject*)free_start)->IsEscapedOrPinned())
+            if (!((SatoriObject*)dst_start)->IsEscapedOrPinned())
             {
                 break;
             }
         }
 
-        if (free_start >= End())
+        if (dst_start >= End())
         {
             // no more space could be found
             return relocated;
         }
 
-        // free end: skip untill next unmovable
-        for (free_end = free_start; free_end < End(); free_end += ((SatoriObject*)free_end)->Size())
+        // dst end: skip untill next unmovable
+        for (dst_end = dst_start; dst_end < End(); dst_end += ((SatoriObject*)dst_end)->Size())
         {
-            if (((SatoriObject*)free_end)->IsEscapedOrPinned())
+            if (((SatoriObject*)dst_end)->IsEscapedOrPinned())
             {
                 break;
             }
         }
 
-        while (free_end - free_start >= moveableSize + Satori::MIN_FREE_SIZE ||
-                free_end - free_start == moveableSize)
+        while (dst_end - dst_start >= moveableSize + Satori::MIN_FREE_SIZE ||
+                dst_end - dst_start == moveableSize)
         {
-            ASSERT(moveable->Start() >= free_start);
-            int32_t reloc = (int32_t)(moveable->Start() - free_start);
+            ASSERT(moveable->Start() >= dst_start);
+            int32_t reloc = (int32_t)(moveable->Start() - dst_start);
             if (reloc != 0)
             {
                 relocated += moveableSize;
                 moveable->SetReloc(reloc);
             }
 
-            free_start += moveableSize;
+            dst_start += moveableSize;
 
             // moveable: skip unmarked or pinned
             while (true)
@@ -557,11 +571,24 @@ size_t SatoriRegion::ThreadLocalPlan()
                 {
                     // this is not reachable.
                     free += moveableSize;
+                    if (!cur_free)
+                    {
+                        cur_free = moveable->Start();
+                    }
                 }
-                else if (!moveable->IsEscapedOrPinned())
+                else
                 {
-                    // reachable and moveable. we can move.
-                    break;
+                    if (cur_free)
+                    {
+                        SatoriObject::FormatAsFree(cur_free, moveable->Start() - cur_free);
+                        cur_free = 0;
+                    }
+
+                    if (!moveable->IsEscapedOrPinned())
+                    {
+                        // reachable and moveable. we can move.
+                        break;
+                    }
                 }
             }
         }
@@ -618,14 +645,14 @@ void SatoriRegion::ThreadLocalUpdatePointers()
     {
         // we are not supposed to touch escaped objects
         // we are not interested in unreachable ones
-        if (obj->IsEscaped() || !obj->IsMarked())
+        if (!obj->IsMarked() || obj->IsEscaped())
         {
             ASSERT(obj->GetReloc() == 0);
             continue;
         }
 
         obj->ForEachObjectRef(
-            [=](SatoriObject** ppObject)
+            [&](SatoriObject** ppObject)
             {
                 SatoriObject* o = *ppObject;
                 // ignore objects otside current region.
@@ -651,7 +678,7 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
     SatoriObject* d1 = FirstObject();
     SatoriObject* d2 = FirstObject();
 
-    bool foundFree = false;
+    size_t foundFree = 0;
 
     // when d1 reaches the end everything is copied or swept
     while(d1->Start() < End())
@@ -685,12 +712,11 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
             {
                 size_t freeSpace = d2->Start() - d1->Start();
                 SatoriObject::FormatAsFree(d1->Start(), freeSpace);
-                if (!foundFree &&
-                    (freeSpace == desiredFreeSpace || freeSpace >= desiredFreeSpace + Satori::MIN_FREE_SIZE))
+                if (freeSpace > foundFree)
                 {
                     this->m_allocStart = d1->Start();
                     this->m_allocEnd = d2->Start();
-                    foundFree = true;
+                    foundFree = freeSpace;
                 }
             }
             else
@@ -737,7 +763,7 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
         }
     }
 
-    return foundFree;
+    return (foundFree >= desiredFreeSpace + Satori::MIN_FREE_SIZE || foundFree == desiredFreeSpace);
 }
 
 void SatoriRegion::Verify()

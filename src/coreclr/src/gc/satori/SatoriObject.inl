@@ -15,7 +15,7 @@
 #include "SatoriUtil.h"
 #include "SatoriObject.h"
 
-inline size_t SatoriObject::Size()
+FORCEINLINE size_t SatoriObject::Size()
 {
     MethodTable* mt = RawGetMethodTable();
     size_t size = mt->GetBaseSize();
@@ -33,12 +33,12 @@ inline size_t SatoriObject::Start()
     return (size_t)this;
 }
 
-inline size_t SatoriObject::End()
+FORCEINLINE size_t SatoriObject::End()
 {
     return Start() + Size();
 }
 
-inline SatoriObject* SatoriObject::Next()
+FORCEINLINE SatoriObject* SatoriObject::Next()
 {
     return (SatoriObject*)End();
 }
@@ -80,22 +80,22 @@ inline void SatoriObject::SetEscaped()
 
 inline bool SatoriObject::IsMarked()
 {
-    return (((int8_t*)this)[-6] & 0b10000000);
+    return ((int8_t*)this)[-6] & 0b10000000;
 }
 
 inline void SatoriObject::SetMarked()
 {
-    ((int8_t*)this)[-6] |= (int8_t)(0b10000000);
+    ((int8_t*)this)[-6] |= (int8_t)0b10000000;
 }
 
 inline bool SatoriObject::IsPinned()
 {
-    return (((int8_t*)this)[-6] & 0b01000000);
+    return ((int8_t*)this)[-6] & 0b01000000;
 }
 
 inline void SatoriObject::SetPinnedAndMarked()
 {
-    ((int8_t*)this)[-6] |= (int8_t)(0b11000000);
+    ((int8_t*)this)[-6] |= (int8_t)0b11000000;
 }
 
 inline void SatoriObject::ClearPinnedAndMarked()
