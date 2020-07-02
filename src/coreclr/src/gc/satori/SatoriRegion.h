@@ -23,7 +23,7 @@ enum class SatoriRegionState : int8_t
 class SatoriRegion
 {
     friend class SatoriRegionQueue;
-
+    friend class SatoriObject;
 
 public:
     SatoriRegion() = delete;
@@ -64,26 +64,38 @@ public:
     void Verify();
 
 private:
-    SatoriRegionState m_state;
-    int32_t m_markStack;
-    // end is edge exclusive
-    size_t m_end;
-    size_t m_committed;
-    size_t m_zeroInitedAfter;
-    SatoriPage* m_containingPage;
+    union
+    {
+        // one bit per size_t
+        // first useful index is offsetof(m_firstObject) / sizeof(size_t) / 8
+        // TODO: VS we could save if virtually shifted the map by ~ 570 bytes
+        //       we will keep that for now. We may need that for card table or smth.
+        size_t bitmap[Satori::REGION_SIZE_GRANULARITY / sizeof(size_t) / sizeof(size_t) / 8];
 
-    SatoriRegion* m_prev;
-    SatoriRegion* m_next;
-    SatoriRegionQueue* m_containingQueue;
+        struct
+        {
+            SatoriRegionState m_state;
+            int32_t m_markStack;
+            // end is edge exclusive
+            size_t m_end;
+            size_t m_committed;
+            size_t m_zeroInitedAfter;
+            SatoriPage* m_containingPage;
 
-    // active allocation may happen in the following range.
-    // the range may not be parseable as sequence of objects
-    // NB: the range is in terms of objects,
-    //     there is embedded off-by-one error for syncblocks
-    size_t m_allocStart;
-    size_t m_allocEnd;
+            SatoriRegion* m_prev;
+            SatoriRegion* m_next;
+            SatoriRegionQueue* m_containingQueue;
 
-    SatoriObject* m_index[Satori::INDEX_ITEMS];
+            // active allocation may happen in the following range.
+            // the range may not be parseable as sequence of objects
+            // NB: the range is in terms of objects,
+            //     there is embedded off-by-one error for syncblocks
+            size_t m_allocStart;
+            size_t m_allocEnd;
+
+            SatoriObject* m_index[Satori::INDEX_ITEMS];
+        };
+    };
 
     size_t m_syncBlock;
     SatoriObject m_firstObject;

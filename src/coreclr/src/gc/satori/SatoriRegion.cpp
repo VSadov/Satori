@@ -397,6 +397,16 @@ void SatoriRegion::ThreadLocalMark()
     GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn, &sc); 
 
     Verify();
+
+    for (SatoriObject* obj = FirstObject(); obj->Start() < End(); obj = obj->Next())
+    {
+        if (obj->IsEscapedObj())
+        {
+            obj->SetEscaped();
+        }
+    }
+
+    Verify();
     for (SatoriObject* obj = FirstObject(); obj->Start() < End(); obj = obj->Next())
     {
         if (obj->IsFree())
@@ -411,6 +421,7 @@ void SatoriRegion::ThreadLocalMark()
         {
             if (o->IsEscaped())
             {
+                o->SetMarked();
                 o->ForEachObjectRef(
                     [=](SatoriObject** ref)
                     {
@@ -740,7 +751,7 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
             // clear mark and reloc. (escape should not be set, since we are relocating)
             // pre-relocation copy of object need to clear the mark, so that the object could be swept if not overwritten.
             // the relocated copy is not swept so clearing is also correct.
-            s2->ClearMarkCompactState();
+            s2->ClearMarkCompactStateForRelocation();
         }
 
         // move d2 to the first object after the future end of the relocated run
@@ -762,6 +773,8 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
                 s2->Start() - s1->Start());
         }
     }
+
+    Verify();
 
     return (foundFree >= desiredFreeSpace + Satori::MIN_FREE_SIZE || foundFree == desiredFreeSpace);
 }

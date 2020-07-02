@@ -33,20 +33,22 @@ public:
     size_t Size();
     bool IsFree();
 
-    bool IsEscaped();
-    void SetEscaped();
+    bool IsEscapedObj();
+
     bool IsMarked();
     void SetMarked();
     bool IsPinned();
     void SetPinnedAndMarked();
     void ClearPinnedAndMarked();
+    bool IsEscaped();
+    void SetEscaped();
     bool IsEscapedOrMarked();
     bool IsEscapedOrPinned();
 
     int32_t GetNextInMarkStack();
     void SetNextInMarkStack(int32_t);
     void ClearNextInMarkStack();
-    void ClearMarkCompactState();
+    void ClearMarkCompactStateForRelocation();
     int32_t GetReloc();
     void SetReloc(int32_t);
 
@@ -60,6 +62,10 @@ public:
 private:
     static MethodTable* s_emptyObjectMt;
     static void Initialize();
+
+    void SetBit(int offset);
+    void ClearBit(int offset);
+    bool CheckBit(int offset);
 };
 
 #endif
