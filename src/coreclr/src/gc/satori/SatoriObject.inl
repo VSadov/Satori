@@ -14,6 +14,7 @@
 
 #include "SatoriUtil.h"
 #include "SatoriObject.h"
+#include "SatoriRegion.h"
 
 FORCEINLINE size_t SatoriObject::Size()
 {
@@ -45,7 +46,7 @@ FORCEINLINE SatoriObject* SatoriObject::Next()
 
 inline SatoriRegion* SatoriObject::ContainingRegion()
 {
-    return (SatoriRegion*)ALIGN_DOWN((size_t)this, Satori::REGION_SIZE_GRANULARITY);
+    return (SatoriRegion*)((size_t)this & ~(Satori::REGION_SIZE_GRANULARITY - 1));
 }
 
 inline SatoriObject* SatoriObject::At(size_t location)
@@ -59,100 +60,132 @@ inline bool SatoriObject::IsFree()
 }
 
 //
-// Implementation note on Escaped/Marked/Pinned -
-// We could use some kind of bitmap instead. We would only need 3bits or perhaps even 2 per object.
-// However on 64bit there is a plenty of unused bits in the pad of the syncblock, so we will use those.
-// On 32bit it may make more sense to use bitmaps.
-//
-// Same logic applies to mark overflow and relocation - we could use temporary maps,
-// but we will use unused bits instead.
+// Implementation note on mark overflow and relocation - we could use temporary maps,
+// but we will use unused bits in the syncblock instead.
 //
 
-inline bool SatoriObject::IsEscaped()
+inline bool SatoriObject::IsEscapedObj()
 {
     return ((int8_t*)this)[-5];
 }
 
-inline void SatoriObject::SetEscaped()
+#ifndef HOST_64BIT
+
+fix the following for 32bit
+
+#endif
+
+inline void SatoriObject::SetBit(int offset)
 {
-    ((int8_t*)this)[-5] = (int8_t)0xFF;
+    size_t objOffset = Start() & (Satori::REGION_SIZE_GRANULARITY - 1);
+    size_t bitOffset = (objOffset >> 3) + offset;
+    size_t wordOffset = bitOffset >> 6;
+    size_t maskBit = bitOffset & 63;
+    size_t mask = (size_t)1 << maskBit;
+
+    ContainingRegion()->m_bitmap[wordOffset] |= mask;
+}
+
+inline void SatoriObject::ClearBit(int offset)
+{
+    size_t objOffset = Start() & (Satori::REGION_SIZE_GRANULARITY - 1);
+    size_t bitOffset = (objOffset >> 3) + offset;
+    size_t wordOffset = bitOffset >> 6;
+    size_t maskBit = bitOffset & 63;
+    size_t mask = (size_t)1 << maskBit;
+
+    ContainingRegion()->m_bitmap[wordOffset] &= ~mask;
+}
+
+inline bool SatoriObject::CheckBit(int offset)
+{
+    size_t objOffset = Start() & (Satori::REGION_SIZE_GRANULARITY - 1);
+    size_t bitOffset = (objOffset >> 3) + offset;
+    size_t wordOffset = bitOffset >> 6;
+    size_t maskBit = bitOffset & 63;
+    size_t mask = (size_t)1 << maskBit;
+
+    return ContainingRegion()->m_bitmap[wordOffset] & mask;
 }
 
 inline bool SatoriObject::IsMarked()
 {
-    return ((int8_t*)this)[-6] & 0b10000000;
+    return CheckBit(0);
 }
 
 inline void SatoriObject::SetMarked()
 {
-    ((int8_t*)this)[-6] |= (int8_t)0b10000000;
+    SetBit(0);
 }
 
 inline bool SatoriObject::IsPinned()
 {
-    return ((int8_t*)this)[-6] & 0b01000000;
+    return CheckBit(2);
 }
 
 inline void SatoriObject::SetPinnedAndMarked()
 {
-    ((int8_t*)this)[-6] |= (int8_t)0b11000000;
+    SetBit(0);
+    SetBit(2);
 }
 
 inline void SatoriObject::ClearPinnedAndMarked()
 {
     ASSERT(GetReloc() == 0);
-    ((int8_t*)this)[-6] = 0;
+    ClearBit(0);
+    ClearBit(2);
 }
 
-inline bool SatoriObject::IsEscapedOrMarked()
+inline bool SatoriObject::IsEscaped()
 {
-    // return IsEscaped() || IsMarked();
-    return ((int32_t*)this)[-2] & 0b11111111'10000000'00000000'00000000;
+    return CheckBit(1);
+}
+
+inline void SatoriObject::SetEscaped()
+{
+    SetBit(1);
 }
 
 inline bool SatoriObject::IsEscapedOrPinned()
 {
-    // return IsEscaped() || IsPinned();
-    return ((int32_t*)this)[-2] & 0b11111111'01000000'00000000'00000000;
+    return IsEscaped() || IsPinned();
 }
 
+// TODO: VS clear offset masking and consolidate to common impl.
 inline int32_t SatoriObject::GetNextInMarkStack()
 {
-    // upper 10 bits are taken by escaped byte and marked/pinned bits
-    // but we only need REGION_BITS, since we are recording distance within the region
-    return ((int32_t*)this)[-2] & ((1 << Satori::REGION_BITS) - 1);
+    return ((int32_t*)this)[-2];
 }
 
 inline void SatoriObject::SetNextInMarkStack(int32_t next)
 {
     ASSERT(GetNextInMarkStack() == 0);
-    ((int32_t*)this)[-2] |= next;
+    ((int32_t*)this)[-2] = next;
+}
+
+inline void SatoriObject::ClearNextInMarkStack()
+{
+    ((int32_t*)this)[-2] = 0;
 }
 
 // TODO: VS same as [Get|Set]NextInMarkStack
-
 inline int32_t SatoriObject::GetReloc()
 {
-    // upper 10 bits are taken by escaped/marked/pinned
-    // but we only need REGION_BITS, since we are recording distance within the region
-    return ((int32_t*)this)[-2] & ((1 << Satori::REGION_BITS) - 1);
+    return ((int32_t*)this)[-2];
 }
 
 inline void SatoriObject::SetReloc(int32_t next)
 {
     ASSERT(GetReloc() == 0);
-    ((int32_t*)this)[-2] |= next;
+    ((int32_t*)this)[-2] = next;
 }
 
-inline void SatoriObject::ClearNextInMarkStack()
-{
-    ((int32_t*)this)[-2] &= ~((1 << Satori::REGION_BITS) - 1);
-}
-
-inline void SatoriObject::ClearMarkCompactState()
+inline void SatoriObject::ClearMarkCompactStateForRelocation()
 {
     ASSERT(!IsEscaped());
     ((int32_t*)this)[-2] = 0;
+    ClearBit(0);
+    ClearBit(2);
 }
 
 inline void SatoriObject::CleanSyncBlock()
@@ -228,5 +261,4 @@ inline void SatoriObject::ForEachObjectRef(F& lambda)
         }
     }
 }
-
 #endif
