@@ -356,29 +356,28 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
     {
         o->SetMarked();
     }
+
+    region->PushToMarkStack(o);
 };
 
-void SatoriRegion::PushToMarkStack(SatoriObject* obj)
+inline void SatoriRegion::PushToMarkStack(SatoriObject* obj)
 {
     _ASSERTE(obj->ContainingRegion() == this);
 
-    if (obj->GetNextInMarkStack())
+    // already in the stack?
+    if (!obj->GetNextInMarkStack())
     {
-        // already in the stack
-        return;
+        obj->SetNextInMarkStack(m_markStack);
+        ASSERT(m_markStack == obj->GetNextInMarkStack());
+        m_markStack = (int32_t)(obj->Start() - this->Start());
     }
-
-    obj->SetNextInMarkStack(m_markStack);
-    int32_t t = obj->GetNextInMarkStack();
-    ASSERT(t == m_markStack);
-    m_markStack = (int32_t)((size_t)obj - (size_t)this);
 }
 
-SatoriObject* SatoriRegion::PopFromMarkStack()
+inline SatoriObject* SatoriRegion::PopFromMarkStack()
 {
     if (m_markStack != 0)
     {
-        SatoriObject* obj = (SatoriObject*)((size_t)this + m_markStack);
+        SatoriObject* obj = SatoriObject::At(this->Start() + m_markStack);
         m_markStack = obj->GetNextInMarkStack();
         obj->ClearNextInMarkStack();
         return obj;
@@ -387,66 +386,104 @@ SatoriObject* SatoriRegion::PopFromMarkStack()
     return nullptr;
 }
 
+SatoriObject* SatoriRegion::ObjectForBit(size_t bitmapIndex, int offset)
+{
+    size_t objOffset = (bitmapIndex * sizeof(size_t) * 8 + offset) * sizeof(size_t);
+    return SatoriObject::At(Start() + objOffset);
+}
+
 void SatoriRegion::ThreadLocalMark()
 {
+    Verify();
+
+    // since this region is thread-local, we have only two kinds of live roots:
+    //- those that are reachable from the current stack and
+    //- those that are reachable from outside of the region (escaped)
+
+    // mark escaped objects:
+    // for every set escape bit, set the corresponding mark bit and push the object to the gray stack
+    size_t bitmapIndex = BITMAP_START;
+    int markBitOffset = 0;
+    while (bitmapIndex < BITMAP_SIZE)
+    {
+        while (true)
+        {
+            DWORD step;
+            if (BitScanForward64(&step, m_bitmap[bitmapIndex] >> markBitOffset))
+            {
+                // got escaped object.
+                markBitOffset += step - 1;
+
+                // set the mark bit
+                m_bitmap[bitmapIndex + (markBitOffset >> 6)] |= ((size_t)1 << (markBitOffset & 63));
+
+                SatoriObject* obj = ObjectForBit(bitmapIndex, markBitOffset);
+                PushToMarkStack(obj);
+
+                // skip Marked, Escaped, Pinned bits
+                markBitOffset += 3;
+
+                // need to switch to next word?
+                if (markBitOffset >= 64)
+                {
+                    markBitOffset -= 64;
+                    break;
+                }
+            }
+            else
+            {
+                // no more bits here
+                markBitOffset = 0;
+                break;
+            }
+        }
+
+        bitmapIndex++;
+    }
+
+
+    // mark roots for the current stack
     ScanContext sc;
     sc.promotion = TRUE;
     sc._unused1 = this;
+    GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn, &sc);
 
-    Verify();
-    GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn, &sc); 
-
-    Verify();
-    for (SatoriObject* obj = FirstObject(); obj->Start() < End(); obj = obj->Next())
+    // now recursively mark all the objects reachable form the roots.
+    SatoriObject* o = PopFromMarkStack();
+    while (o)
     {
-        if (obj->IsFree())
+        ASSERT(o->IsMarked());
+        ASSERT(!o->IsFree());
+        if (o->IsEscaped())
         {
-            continue;
+            o->ForEachObjectRef(
+                [=](SatoriObject** ref)
+                {
+                    SatoriObject* child = *ref;
+                    if (child->ContainingRegion() == this && !child->IsEscaped())
+                    {
+                        child->SetMarked();
+                        child->SetEscaped();
+                        PushToMarkStack(child);
+                    }
+                }
+            );
         }
-
-        SatoriObject* o = obj;
-        _ASSERTE(!o->IsFree());
-
-        do
+        else
         {
-            if (o->IsEscaped())
-            {
-                o->ForEachObjectRef(
-                    [=](SatoriObject** ref)
+            o->ForEachObjectRef(
+                [=](SatoriObject** ref)
+                {
+                    SatoriObject* child = *ref;
+                    if (child->ContainingRegion() == this && !child->IsMarked())
                     {
-                        SatoriObject* child = *ref;
-                        if (child->ContainingRegion() == this && !child->IsEscaped())
-                        {
-                            child->SetEscaped();
-                            if (child->Start() < o->Start())
-                            {
-                                PushToMarkStack(child);
-                            }
-                        }
+                        child->SetMarked();
+                        PushToMarkStack(child);
                     }
-                );
-            }
-            else if (o->IsMarked())
-            {
-                o->ForEachObjectRef(
-                    [=](SatoriObject** ref)
-                    {
-                        SatoriObject* child = *ref;
-                        if (child->ContainingRegion() == this && !child->IsEscapedOrMarked())
-                        {
-                            child->SetMarked();
-                            if (child->Start() < o->Start())
-                            {
-                                PushToMarkStack(child);
-                            }
-                        }
-                    }
-                );
-            }
-
-            o = PopFromMarkStack();
+                }
+            );
         }
-        while (o);
+        o = PopFromMarkStack();
     }
 
     Verify();
@@ -479,7 +516,7 @@ size_t SatoriRegion::ThreadLocalPlan()
     for (moveable = FirstObject(); moveable->Start() < End(); moveable = (SatoriObject*)(moveable->Start() + moveableSize))
     {
         moveableSize = moveable->Size();
-        if (!moveable->IsEscapedOrMarked())
+        if (!moveable->IsMarked())
         {
             // This is not reachable.
             if (free == 0)
@@ -519,7 +556,7 @@ size_t SatoriRegion::ThreadLocalPlan()
     while (true)
     {
         // dst start: skip unmovables
-        for (dst_start = dst_end; dst_start < End(); dst_start+= ((SatoriObject*)dst_start)->Size())
+        for (dst_start = dst_end; dst_start < End(); dst_start += ((SatoriObject*)dst_start)->Size())
         {
             if (!((SatoriObject*)dst_start)->IsEscapedOrPinned())
             {
@@ -533,8 +570,8 @@ size_t SatoriRegion::ThreadLocalPlan()
             return relocated;
         }
 
-        // dst end: skip untill next unmovable
-        for (dst_end = dst_start; dst_end < End(); dst_end += ((SatoriObject*)dst_end)->Size())
+        // dst end: skip until next unmovable
+        for (dst_end = dst_start; dst_end < End(); dst_end = NextMarked((SatoriObject*)dst_end)->Start())
         {
             if (((SatoriObject*)dst_end)->IsEscapedOrPinned())
             {
@@ -543,7 +580,7 @@ size_t SatoriRegion::ThreadLocalPlan()
         }
 
         while (dst_end - dst_start >= moveableSize + Satori::MIN_FREE_SIZE ||
-                dst_end - dst_start == moveableSize)
+            dst_end - dst_start == moveableSize)
         {
             ASSERT(moveable->Start() >= dst_start);
             int32_t reloc = (int32_t)(moveable->Start() - dst_start);
@@ -558,37 +595,28 @@ size_t SatoriRegion::ThreadLocalPlan()
             // moveable: skip unmarked or pinned
             while (true)
             {
-                // moveable = moveable->Next();
-                moveable = (SatoriObject*)(moveable->Start() + moveableSize);
+                size_t lastMoveableEnd = moveable->Start() + moveableSize;
+                moveable = NextMarked(moveable);
+
+                size_t skipped = moveable->Start() - lastMoveableEnd;
+                if (skipped)
+                {
+                    free += skipped;
+                    SatoriObject::FormatAsFree(lastMoveableEnd, skipped);
+                }
+
                 if (moveable->Start() >= End())
                 {
                     // nothing left to move
+                    ASSERT(moveable->Start() == End());
                     return relocated;
                 }
 
                 moveableSize = moveable->Size();
-                if (!moveable->IsEscapedOrMarked())
+                if (!moveable->IsEscapedOrPinned())
                 {
-                    // this is not reachable.
-                    free += moveableSize;
-                    if (!cur_free)
-                    {
-                        cur_free = moveable->Start();
-                    }
-                }
-                else
-                {
-                    if (cur_free)
-                    {
-                        SatoriObject::FormatAsFree(cur_free, moveable->Start() - cur_free);
-                        cur_free = 0;
-                    }
-
-                    if (!moveable->IsEscapedOrPinned())
-                    {
-                        // reachable and moveable. we can move.
-                        break;
-                    }
+                    // reachable and moveable. we can move this.
+                    break;
                 }
             }
         }
@@ -635,40 +663,201 @@ void SatoriRegion::UpdateFn(Object** ppObject, ScanContext* sc, uint32_t flags)
 
 void SatoriRegion::ThreadLocalUpdatePointers()
 {
+    // update stack roots
     ScanContext sc;
     sc.promotion = FALSE;
     sc._unused1 = this;
-
     GCToEEInterface::GcScanCurrentStackRoots((promote_func*)UpdateFn, &sc);
 
-    for (SatoriObject* obj = FirstObject(); obj->Start() < End(); obj = obj->Next())
+    // go through all live objets and update what they reference.
+    size_t bitmapIndex = BITMAP_START;
+    int markBitOffset = 0;
+    while (bitmapIndex < BITMAP_SIZE)
     {
-        // we are not supposed to touch escaped objects
-        // we are not interested in unreachable ones
-        if (!obj->IsMarked() || obj->IsEscaped())
+        while (true)
         {
-            ASSERT(obj->GetReloc() == 0);
-            continue;
-        }
-
-        obj->ForEachObjectRef(
-            [&](SatoriObject** ppObject)
+            DWORD step;
+            if (BitScanForward64(&step, m_bitmap[bitmapIndex] >> markBitOffset))
             {
-                SatoriObject* o = *ppObject;
-                // ignore objects otside current region.
-                // this also rejects nulls.
-                if (o->Start() >= (size_t)this->FirstObject() && o->Start() < this->End())
+                // got reachable object.
+                markBitOffset += step;
+
+                // check if it is escaped. no need to touch those.
+                int escapedOffset = markBitOffset + 1;
+                bool escaped = m_bitmap[bitmapIndex + (escapedOffset >> 6)] & ((size_t)1 << (escapedOffset & 63));
+
+                if (escaped)
                 {
-                    size_t reloc = o->GetReloc();
-                    if (reloc)
-                    {
-                        *ppObject = (SatoriObject*)(((size_t)*ppObject) - reloc);
-                        ASSERT(((SatoriObject*)(*ppObject))->ContainingRegion() == this);
-                    }
+                    ASSERT(ObjectForBit(bitmapIndex, markBitOffset)->GetReloc() == 0);
+                }
+                else
+                {
+                    SatoriObject* obj = ObjectForBit(bitmapIndex, markBitOffset);
+                    obj->ForEachObjectRef(
+                        [&](SatoriObject** ppObject)
+                        {
+                            SatoriObject* o = *ppObject;
+                            // ignore objects otside current region, we are not relocating those.
+                            // (this also rejects nulls)
+                            if (o->Start() >= FirstObject()->Start() && o->Start() < this->End())
+                            {
+                                size_t reloc = o->GetReloc();
+                                if (reloc)
+                                {
+                                    *ppObject = (SatoriObject*)(((size_t)*ppObject) - reloc);
+                                    ASSERT(((SatoriObject*)(*ppObject))->ContainingRegion() == this);
+                                }
+                            }
+                        }
+                    );
+                }
+
+                // skip Marked, Escaped, Pinned bits
+                markBitOffset += 3;
+
+                // need to switch to next word?
+                if (markBitOffset >= 64)
+                {
+                    markBitOffset -= 64;
+                    break;
                 }
             }
-        );
+            else
+            {
+                // no more bits here
+                markBitOffset = 0;
+                break;
+            }
+        }
+
+        bitmapIndex++;
     }
+}
+
+SatoriObject* SatoriRegion::SkipToMovable(SatoriObject* after)
+{
+    size_t objOffset = after->Start() - Start();
+    size_t bitOffset = objOffset >> 3;
+    size_t bitmapIndex = bitOffset >> 6;
+    int markBitOffset = bitOffset & 63;
+
+    while (bitmapIndex < BITMAP_SIZE)
+    {
+        size_t chunk = m_bitmap[bitmapIndex];
+        if (chunk)
+        {
+            DWORD step;
+            while (BitScanForward64(&step, chunk >> markBitOffset))
+            {
+                // got reachable object
+                markBitOffset += step;
+
+                int escapedOffset = markBitOffset + 1;
+                bool escaped = m_bitmap[bitmapIndex + (escapedOffset >> 6)] & ((size_t)1 << (escapedOffset & 63));
+                if (!escaped)
+                {
+                    return ObjectForBit(bitmapIndex, markBitOffset);
+                }
+
+                // skip Marked, Escaped, Pinned bits
+                markBitOffset += 3;
+
+                // need to switch to next word?
+                if (markBitOffset >= 64)
+                {
+                    markBitOffset -= 64;
+                    goto nextWithOffset;
+                }
+            }
+        }
+
+        markBitOffset = 0;
+
+    nextWithOffset:
+        bitmapIndex++;
+    }
+
+    return SatoriObject::At(End());
+}
+
+SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* after, size_t upTo)
+{
+    size_t objOffset = after->Start() - Start();
+    size_t bitOffset = objOffset >> 3;
+    size_t bitmapIndex = bitOffset >> 6;
+    int markBitOffset = bitOffset & 63;
+
+    DWORD offset;
+    if (BitScanForward64(&offset, m_bitmap[bitmapIndex] >> markBitOffset))
+    {
+        // got reachable object.
+        markBitOffset += offset;
+    }
+    else
+    {
+        size_t limit = (upTo - Start()) >> 9;
+        while (bitmapIndex < limit)
+        {
+            bitmapIndex++;
+            if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
+            {
+                // got reachable object.
+                markBitOffset = offset;
+                break;
+            }
+        }
+    }
+
+    SatoriObject* result = ObjectForBit(bitmapIndex, markBitOffset);
+    if (result->Start() > upTo)
+    {
+        result = SatoriObject::At(upTo);
+    }
+
+    ASSERT(result->Start() <= upTo);
+    return result;
+}
+
+SatoriObject* SatoriRegion::NextMarked(SatoriObject* after)
+{
+    size_t objOffset = after->Start() - Start() + Satori::MIN_FREE_SIZE;
+    size_t bitOffset = objOffset >> 3;
+    size_t bitmapIndex = bitOffset >> 6;
+    int markBitOffset = bitOffset & 63;
+
+    DWORD offset;
+    if (BitScanForward64(&offset, m_bitmap[bitmapIndex] >> markBitOffset))
+    {
+        // got reachable object.
+        markBitOffset += offset;
+    }
+    else
+    {
+        markBitOffset = 0;
+        while (bitmapIndex < BITMAP_SIZE)
+        {
+            bitmapIndex++;
+            if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
+            {
+                // got reachable object.
+                markBitOffset = offset;
+                break;
+            }
+        }
+    }
+
+    SatoriObject* result = ObjectForBit(bitmapIndex, markBitOffset);
+
+    //do
+    //{
+    //    after = after-> Next();
+    //    ASSERT(after->GetReloc() == 0 || after->IsMarked());
+    //}
+    //while (after->Start() < End() && !after->IsMarked());
+
+    //ASSERT(result->Start() == after->Start());
+
+    return result;
 }
 
 bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
@@ -681,13 +870,14 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
     size_t foundFree = 0;
 
     // when d1 reaches the end everything is copied or swept
-    while(d1->Start() < End())
+    while (d1->Start() < End())
     {
         // find next relocatable object
         int32_t reloc = 0;
         for (s1 = s2; s1->Start() < End(); s1 = s1->Next())
         {
             reloc = s1->GetReloc();
+            ASSERT(reloc >= 0);
             if (reloc != 0)
             {
                 break;
@@ -698,19 +888,13 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
         size_t relocTarget = s1->Start() - reloc;
         while (d1->Start() < relocTarget)
         {
-            while (d2->Start() < relocTarget)
-            {
-                if (d2->IsEscapedOrMarked())
-                {
-                    break;
-                }
-
-                d2 = d2->Next();
-            }
+            ASSERT(d1->Start() <= d2->Start());
+            d2 = SkipUnmarked(d2, relocTarget);
 
             if (d1 != d2)
             {
                 size_t freeSpace = d2->Start() - d1->Start();
+                ASSERT(freeSpace < 2097152);
                 SatoriObject::FormatAsFree(d1->Start(), freeSpace);
                 if (freeSpace > foundFree)
                 {
@@ -740,7 +924,7 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
             // clear mark and reloc. (escape should not be set, since we are relocating)
             // pre-relocation copy of object need to clear the mark, so that the object could be swept if not overwritten.
             // the relocated copy is not swept so clearing is also correct.
-            s2->ClearMarkCompactState();
+            s2->ClearMarkCompactStateForRelocation();
         }
 
         // move d2 to the first object after the future end of the relocated run
@@ -762,6 +946,8 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
                 s2->Start() - s1->Start());
         }
     }
+
+    Verify();
 
     return (foundFree >= desiredFreeSpace + Satori::MIN_FREE_SIZE || foundFree == desiredFreeSpace);
 }
