@@ -71,35 +71,35 @@ inline bool SatoriObject::IsEscapedObj()
 
 inline void SatoriObject::SetBit(int offset)
 {
-    size_t objOffset = Start() - ContainingRegion()->Start() + offset;
-    size_t bitOffset = objOffset / sizeof(size_t);
+    size_t objOffset = Start() - ContainingRegion()->Start();
+    size_t bitOffset = objOffset / sizeof(size_t) + offset;
     size_t wordOffset = bitOffset / (sizeof(size_t) * 8);
     size_t maskBit = bitOffset % (sizeof(size_t) * 8);
     size_t mask = (size_t)1 << maskBit;
 
-    ContainingRegion()->bitmap[wordOffset] |= mask;
+    ContainingRegion()->m_bitmap[wordOffset] |= mask;
 }
 
 inline void SatoriObject::ClearBit(int offset)
 {
-    size_t objOffset = Start() - ContainingRegion()->Start() + offset;
-    size_t bitOffset = objOffset / sizeof(size_t);
+    size_t objOffset = Start() - ContainingRegion()->Start();
+    size_t bitOffset = objOffset / sizeof(size_t) + offset;
     size_t wordOffset = bitOffset / (sizeof(size_t) * 8);
     size_t maskBit = bitOffset % (sizeof(size_t) * 8);
     size_t mask = (size_t)1 << maskBit;
 
-    ContainingRegion()->bitmap[wordOffset] &= ~mask;
+    ContainingRegion()->m_bitmap[wordOffset] &= ~mask;
 }
 
 inline bool SatoriObject::CheckBit(int offset)
 {
-    size_t objOffset = Start() - ContainingRegion()->Start() + offset;
-    size_t bitOffset = objOffset / sizeof(size_t);
+    size_t objOffset = Start() - ContainingRegion()->Start();
+    size_t bitOffset = objOffset / sizeof(size_t) + offset;
     size_t wordOffset = bitOffset / (sizeof(size_t) * 8);
     size_t maskBit = bitOffset % (sizeof(size_t) * 8);
     size_t mask = (size_t)1 << maskBit;
 
-    return ContainingRegion()->bitmap[wordOffset] & mask;
+    return ContainingRegion()->m_bitmap[wordOffset] & mask;
 }
 
 inline bool SatoriObject::IsMarked()
@@ -138,12 +138,6 @@ inline bool SatoriObject::IsEscaped()
 inline void SatoriObject::SetEscaped()
 {
     SetBit(1);
-}
-
-// TODO: VS delete this escaped should be all marked
-inline bool SatoriObject::IsEscapedOrMarked()
-{
-    return IsEscaped() || IsMarked();
 }
 
 inline bool SatoriObject::IsEscapedOrPinned()

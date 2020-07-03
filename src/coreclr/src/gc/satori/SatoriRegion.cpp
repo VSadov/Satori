@@ -356,6 +356,8 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
     {
         o->SetMarked();
     }
+
+    region->PushToMarkStack(o);
 };
 
 void SatoriRegion::PushToMarkStack(SatoriObject* obj)
@@ -387,17 +389,15 @@ SatoriObject* SatoriRegion::PopFromMarkStack()
     return nullptr;
 }
 
+SatoriObject* SatoriRegion::ObjectForBit(int mapIndex, int offset)
+{
+    size_t objOffset = (mapIndex * sizeof(size_t) * 8 + offset) * sizeof(size_t);
+    return SatoriObject::At(Start() + objOffset);
+}
+
 void SatoriRegion::ThreadLocalMark()
 {
-    ScanContext sc;
-    sc.promotion = TRUE;
-    sc._unused1 = this;
-
     Verify();
-    GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn, &sc); 
-
-    Verify();
-
     for (SatoriObject* obj = FirstObject(); obj->Start() < End(); obj = obj->Next())
     {
         if (obj->IsEscapedObj())
@@ -406,58 +406,82 @@ void SatoriRegion::ThreadLocalMark()
         }
     }
 
-    Verify();
-    for (SatoriObject* obj = FirstObject(); obj->Start() < End(); obj = obj->Next())
+    // since this region is thread-local, we have only two kinds of live roots:
+    //- those that are reachable from the current stack and
+    //- those that are reachable from outside of the region (escaped)
+
+    // mark escaped objects:
+    // for every set escape bit, set the corresponding mark bit and push the object to the gray stack
+    for (int i = BITMAP_START; i < BITMAP_SIZE; i++)
     {
-        if (obj->IsFree())
+        size_t chunk = m_bitmap[i];
+        if (chunk)
         {
-            continue;
-        }
-
-        SatoriObject* o = obj;
-        _ASSERTE(!o->IsFree());
-
-        do
-        {
-            if (o->IsEscaped())
+            // scan for escape bits and push corresponding objects to the gray stack
+            for (int j = 0; j < sizeof(size_t) * 8; j++)
             {
-                o->SetMarked();
-                o->ForEachObjectRef(
-                    [=](SatoriObject** ref)
-                    {
-                        SatoriObject* child = *ref;
-                        if (child->ContainingRegion() == this && !child->IsEscaped())
-                        {
-                            child->SetEscaped();
-                            if (child->Start() < o->Start())
-                            {
-                                PushToMarkStack(child);
-                            }
-                        }
-                    }
-                );
-            }
-            else if (o->IsMarked())
-            {
-                o->ForEachObjectRef(
-                    [=](SatoriObject** ref)
-                    {
-                        SatoriObject* child = *ref;
-                        if (child->ContainingRegion() == this && !child->IsEscapedOrMarked())
-                        {
-                            child->SetMarked();
-                            if (child->Start() < o->Start())
-                            {
-                                PushToMarkStack(child);
-                            }
-                        }
-                    }
-                );
+                if (chunk & ((size_t)1 << j))
+                {
+                    // j-1 because j is the escape bit.
+                    SatoriObject* obj = ObjectForBit(i, j - 1);
+                    PushToMarkStack(obj);
+                }
             }
 
-            o = PopFromMarkStack();
+            // if the lowest bit set, its corresponding mark bit is in the previous chunk, handle that
+            if (chunk & 1)
+            {
+                ASSERT(i > 0);
+                m_bitmap[i - 1] |= (size_t)1 << (sizeof(size_t) * 8 - 1);
+            }
+
+            // set the mark bits which are -1 from the escape bits.
+            m_bitmap[i] |= chunk >> 1;
         }
-        while (o);
+    }
+
+    // mark roots for the current stack
+    ScanContext sc;
+    sc.promotion = TRUE;
+    sc._unused1 = this;
+    GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn, &sc);
+
+    // now recursively mark all the objects reachable form the roots.
+    SatoriObject* o = PopFromMarkStack();
+    while (o)
+    {
+        ASSERT(o->IsMarked());
+        ASSERT(!o->IsFree());
+        if (o->IsEscaped())
+        {
+            o->ForEachObjectRef(
+                [=](SatoriObject** ref)
+                {
+                    SatoriObject* child = *ref;
+                    if (child->ContainingRegion() == this && !child->IsEscaped())
+                    {
+                        child->SetMarked();
+                        child->SetEscaped();
+                        PushToMarkStack(child);
+                    }
+                }
+            );
+        }
+        else
+        {
+            o->ForEachObjectRef(
+                [=](SatoriObject** ref)
+                {
+                    SatoriObject* child = *ref;
+                    if (child->ContainingRegion() == this && !child->IsMarked())
+                    {
+                        child->SetMarked();
+                        PushToMarkStack(child);
+                    }
+                }
+            );
+        }
+        o = PopFromMarkStack();
     }
 
     Verify();
@@ -490,7 +514,7 @@ size_t SatoriRegion::ThreadLocalPlan()
     for (moveable = FirstObject(); moveable->Start() < End(); moveable = (SatoriObject*)(moveable->Start() + moveableSize))
     {
         moveableSize = moveable->Size();
-        if (!moveable->IsEscapedOrMarked())
+        if (!moveable->IsMarked())
         {
             // This is not reachable.
             if (free == 0)
@@ -578,7 +602,7 @@ size_t SatoriRegion::ThreadLocalPlan()
                 }
 
                 moveableSize = moveable->Size();
-                if (!moveable->IsEscapedOrMarked())
+                if (!moveable->IsMarked())
                 {
                     // this is not reachable.
                     free += moveableSize;
@@ -711,7 +735,7 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
         {
             while (d2->Start() < relocTarget)
             {
-                if (d2->IsEscapedOrMarked())
+                if (d2->IsMarked())
                 {
                     break;
                 }

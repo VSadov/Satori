@@ -42,7 +42,6 @@ public:
     void ClearPinnedAndMarked();
     bool IsEscaped();
     void SetEscaped();
-    bool IsEscapedOrMarked();
     bool IsEscapedOrPinned();
 
     int32_t GetNextInMarkStack();

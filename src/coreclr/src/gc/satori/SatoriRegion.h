@@ -64,13 +64,15 @@ public:
     void Verify();
 
 private:
+    // one bit per size_t
+    // first useful index is offsetof(m_firstObject) / sizeof(size_t) / 8
+    // TODO: VS we could save some space by virtually shifting the map by a few bytes not taken by region state
+    //       we will keep that for now. We may need that for card table or smth.
+    static const int BITMAP_SIZE = Satori::REGION_SIZE_GRANULARITY / sizeof(size_t) / sizeof(size_t) / 8;
+    static const int BITMAP_START = BITMAP_SIZE / sizeof(size_t) / 8;
     union
     {
-        // one bit per size_t
-        // first useful index is offsetof(m_firstObject) / sizeof(size_t) / 8
-        // TODO: VS we could save if virtually shifted the map by ~ 570 bytes
-        //       we will keep that for now. We may need that for card table or smth.
-        size_t bitmap[Satori::REGION_SIZE_GRANULARITY / sizeof(size_t) / sizeof(size_t) / 8];
+       size_t m_bitmap[BITMAP_SIZE];
 
         struct
         {
@@ -108,6 +110,7 @@ private:
 
     void PushToMarkStack(SatoriObject* obj);
     SatoriObject* PopFromMarkStack();
+    SatoriObject* ObjectForBit(int mapIndex, int offset);
 };
 
 #endif
