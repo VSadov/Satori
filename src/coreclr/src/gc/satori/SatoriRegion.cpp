@@ -763,6 +763,7 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
         for (s1 = s2; s1->Start() < End(); s1 = s1->Next())
         {
             reloc = s1->GetReloc();
+            ASSERT(reloc >= 0);
             if (reloc != 0)
             {
                 break;
