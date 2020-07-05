@@ -398,13 +398,6 @@ SatoriObject* SatoriRegion::ObjectForBit(int mapIndex, int offset)
 void SatoriRegion::ThreadLocalMark()
 {
     Verify();
-    for (SatoriObject* obj = FirstObject(); obj->Start() < End(); obj = obj->Next())
-    {
-        if (obj->IsEscapedObj())
-        {
-            obj->SetEscaped();
-        }
-    }
 
     // since this region is thread-local, we have only two kinds of live roots:
     //- those that are reachable from the current stack and

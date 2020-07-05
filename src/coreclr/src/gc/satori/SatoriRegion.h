@@ -45,6 +45,7 @@ public:
 
     bool IsAllocating();
     void Publish();
+    SatoriRegionState State();
 
     size_t Start();
     size_t End();
