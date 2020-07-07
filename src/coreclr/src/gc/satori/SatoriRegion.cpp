@@ -368,7 +368,7 @@ inline void SatoriRegion::PushToMarkStack(SatoriObject* obj)
     if (!obj->GetNextInMarkStack())
     {
         obj->SetNextInMarkStack(m_markStack);
-        ASSERT(m_markStack = obj->GetNextInMarkStack());
+        ASSERT(m_markStack == obj->GetNextInMarkStack());
         m_markStack = (int32_t)(obj->Start() - this->Start());
     }
 }
@@ -840,7 +840,7 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
     {
         // find next relocatable object
         int32_t reloc = 0;
-        for (s1 = SkipToMovable(s2); s1->Start() < End(); s1 = SkipToMovable(s1->Next()))
+        for (s1 = s2; s1->Start() < End(); s1 = s1->Next())
         {
             reloc = s1->GetReloc();
             ASSERT(reloc >= 0);
