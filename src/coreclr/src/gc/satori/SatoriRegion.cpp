@@ -570,8 +570,8 @@ size_t SatoriRegion::ThreadLocalPlan()
             return relocated;
         }
 
-        // dst end: skip untill next unmovable
-        for (dst_end = dst_start; dst_end < End(); dst_end += ((SatoriObject*)dst_end)->Size())
+        // dst end: skip until next unmovable
+        for (dst_end = dst_start; dst_end < End(); dst_end = NextMarked((SatoriObject*)dst_end)->Start())
         {
             if (((SatoriObject*)dst_end)->IsEscapedOrPinned())
             {
@@ -595,8 +595,16 @@ size_t SatoriRegion::ThreadLocalPlan()
             // moveable: skip unmarked or pinned
             while (true)
             {
-                // moveable = moveable->Next();
-                moveable = (SatoriObject*)(moveable->Start() + moveableSize);
+                size_t lastMoveableEnd = moveable->Start() + moveableSize;
+                moveable = NextMarked(moveable);
+
+                size_t skipped = moveable->Start() - lastMoveableEnd;
+                if (skipped)
+                {
+                    free += skipped;
+                    SatoriObject::FormatAsFree(lastMoveableEnd, skipped);
+                }
+
                 if (moveable->Start() >= End())
                 {
                     // nothing left to move
@@ -604,28 +612,10 @@ size_t SatoriRegion::ThreadLocalPlan()
                 }
 
                 moveableSize = moveable->Size();
-                if (!moveable->IsMarked())
+                if (!moveable->IsEscapedOrPinned())
                 {
-                    // this is not reachable.
-                    free += moveableSize;
-                    if (!cur_free)
-                    {
-                        cur_free = moveable->Start();
-                    }
-                }
-                else
-                {
-                    if (cur_free)
-                    {
-                        SatoriObject::FormatAsFree(cur_free, moveable->Start() - cur_free);
-                        cur_free = 0;
-                    }
-
-                    if (!moveable->IsEscapedOrPinned())
-                    {
-                        // reachable and moveable. we can move.
-                        break;
-                    }
+                    // reachable and moveable. we can move this.
+                    break;
                 }
             }
         }
@@ -824,6 +814,36 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* after, size_t upTo)
 
     ASSERT(result->Start() <= upTo);
     return result;
+}
+
+SatoriObject* SatoriRegion::NextMarked(SatoriObject* after)
+{
+    size_t objOffset = after->Start() - Start() + Satori::MIN_FREE_SIZE;
+    size_t bitOffset = objOffset >> 3;
+    size_t bitmapIndex = bitOffset >> 6;
+    int markBitOffset = bitOffset & 63;
+
+    DWORD offset;
+    if (BitScanForward64(&offset, m_bitmap[bitmapIndex] >> markBitOffset))
+    {
+        // got reachable object.
+        markBitOffset += offset;
+    }
+    else
+    {
+        markBitOffset = 0;
+        while (++bitmapIndex < BITMAP_SIZE)
+        {
+            if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
+            {
+                // got reachable object.
+                markBitOffset = offset;
+                break;
+            }
+        }
+    }
+
+    return ObjectForBit(bitmapIndex, markBitOffset);
 }
 
 bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
