@@ -608,6 +608,7 @@ size_t SatoriRegion::ThreadLocalPlan()
                 if (moveable->Start() >= End())
                 {
                     // nothing left to move
+                    ASSERT(moveable->Start() == End());
                     return relocated;
                 }
 
@@ -781,7 +782,7 @@ SatoriObject* SatoriRegion::SkipToMovable(SatoriObject* after)
 
 SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* after, size_t upTo)
 {
-    size_t objOffset = after->Start() & (Satori::REGION_SIZE_GRANULARITY - 1);
+    size_t objOffset = after->Start() - Start();
     size_t bitOffset = objOffset >> 3;
     size_t bitmapIndex = bitOffset >> 6;
     int markBitOffset = bitOffset & 63;
@@ -795,8 +796,9 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* after, size_t upTo)
     else
     {
         size_t limit = (upTo - Start()) >> 9;
-        while (++bitmapIndex <= limit)
+        while (bitmapIndex < limit)
         {
+            bitmapIndex++;
             if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
             {
                 // got reachable object.
@@ -832,8 +834,9 @@ SatoriObject* SatoriRegion::NextMarked(SatoriObject* after)
     else
     {
         markBitOffset = 0;
-        while (++bitmapIndex < BITMAP_SIZE)
+        while (bitmapIndex < BITMAP_SIZE)
         {
+            bitmapIndex++;
             if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
             {
                 // got reachable object.
@@ -843,7 +846,18 @@ SatoriObject* SatoriRegion::NextMarked(SatoriObject* after)
         }
     }
 
-    return ObjectForBit(bitmapIndex, markBitOffset);
+    SatoriObject* result = ObjectForBit(bitmapIndex, markBitOffset);
+
+    //do
+    //{
+    //    after = after-> Next();
+    //    ASSERT(after->GetReloc() == 0 || after->IsMarked());
+    //}
+    //while (after->Start() < End() && !after->IsMarked());
+
+    //ASSERT(result->Start() == after->Start());
+
+    return result;
 }
 
 bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)

@@ -76,7 +76,8 @@ private:
     static const int BITMAP_START = BITMAP_SIZE / sizeof(size_t) / 8;
     union
     {
-       size_t m_bitmap[BITMAP_SIZE];
+        // +1 to include End()
+        size_t m_bitmap[BITMAP_SIZE + 1];
 
         struct
         {
