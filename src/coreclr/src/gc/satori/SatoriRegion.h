@@ -60,6 +60,8 @@ public:
     void ThreadLocalMark();
     size_t ThreadLocalPlan();
     void ThreadLocalUpdatePointers();
+    SatoriObject* SkipToMovable(SatoriObject* from);
+    SatoriObject* SkipUnmarked(SatoriObject* after, size_t upTo);
     bool ThreadLocalCompact(size_t desiredFreeSpace);
 
     void Verify();
@@ -111,7 +113,7 @@ private:
 
     void PushToMarkStack(SatoriObject* obj);
     SatoriObject* PopFromMarkStack();
-    SatoriObject* ObjectForBit(int mapIndex, int offset);
+    SatoriObject* ObjectForBit(size_t bitmapIndex, int offset);
 };
 
 #endif

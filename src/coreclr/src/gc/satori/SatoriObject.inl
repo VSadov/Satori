@@ -77,38 +77,35 @@ fix the following for 32bit
 
 inline void SatoriObject::SetBit(int offset)
 {
-    SatoriRegion* region = ContainingRegion();
-    size_t objOffset = Start() - region->Start();
+    size_t objOffset = Start() & (Satori::REGION_SIZE_GRANULARITY - 1);
     size_t bitOffset = (objOffset >> 3) + offset;
     size_t wordOffset = bitOffset >> 6;
     size_t maskBit = bitOffset & 63;
     size_t mask = (size_t)1 << maskBit;
 
-    region->m_bitmap[wordOffset] |= mask;
+    ContainingRegion()->m_bitmap[wordOffset] |= mask;
 }
 
 inline void SatoriObject::ClearBit(int offset)
 {
-    SatoriRegion* region = ContainingRegion();
-    size_t objOffset = Start() - region->Start();
+    size_t objOffset = Start() & (Satori::REGION_SIZE_GRANULARITY - 1);
     size_t bitOffset = (objOffset >> 3) + offset;
     size_t wordOffset = bitOffset >> 6;
     size_t maskBit = bitOffset & 63;
     size_t mask = (size_t)1 << maskBit;
 
-    region->m_bitmap[wordOffset] &= ~mask;
+    ContainingRegion()->m_bitmap[wordOffset] &= ~mask;
 }
 
 inline bool SatoriObject::CheckBit(int offset)
 {
-    SatoriRegion* region = ContainingRegion();
-    size_t objOffset = Start() - region->Start();
+    size_t objOffset = Start() & (Satori::REGION_SIZE_GRANULARITY - 1);
     size_t bitOffset = (objOffset >> 3) + offset;
     size_t wordOffset = bitOffset >> 6;
     size_t maskBit = bitOffset & 63;
     size_t mask = (size_t)1 << maskBit;
 
-    return region->m_bitmap[wordOffset] & mask;
+    return ContainingRegion()->m_bitmap[wordOffset] & mask;
 }
 
 inline bool SatoriObject::IsMarked()
