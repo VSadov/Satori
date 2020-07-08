@@ -43,7 +43,8 @@ namespace Satori
 
     // when doing rgular allocation we clean this much memory
     // if we do cleaning, and if available
-    static const size_t MIN_REGULAR_ALLOC = 1 << 12;
+    // TODO: VS should this be a constant or be 1/2 L0 ?
+    static const size_t MIN_REGULAR_ALLOC = 16 << 10;
 }
 
 class SatoriUtil
