@@ -34,6 +34,9 @@
 #include "runtimecallablewrapper.h"
 #endif // FEATURE_COMINTEROP
 
+#include "../gc/satori/SatoriObject.inl"
+#include "../gc/satori/SatoriRegion.inl"
+
 //========================================================================
 //
 //      ALLOCATION HELPERS
@@ -1316,15 +1319,22 @@ bool IsInHeapSatori(Object** start)
 
 void CheckAndMarkEscapeSatori(Object** dst, Object* ref)
 {
+#if FEATURE_SATORI_GC
     if (ref && ((size_t)dst ^ (size_t)(ref)) >> 21)
     {
-        // mark the escape byte
-        // TODO: VS, check if region is allocating?
-        if (!((int8_t*)ref)[-5])
+        SatoriObject* obj = (SatoriObject*)ref;
+        if (obj->ContainingRegion()->State() == SatoriRegionState::allocating)
         {
-            ((int8_t*)ref)[-5] = (int8_t)0xFF;
+            if (!obj->IsEscaped())
+            {
+                // an unescaped object in an allocating region -> the region is our threadlocal
+                // thus we can mark the object escape
+                // we use ordinary assignment, noone else should be marking this region.
+                obj->SetEscaped();
+            }
         }
     }
+#endif
 }
 
 void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
