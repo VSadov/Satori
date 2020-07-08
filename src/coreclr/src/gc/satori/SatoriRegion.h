@@ -60,8 +60,7 @@ public:
     void ThreadLocalMark();
     size_t ThreadLocalPlan();
     void ThreadLocalUpdatePointers();
-    SatoriObject* SkipToMovable(SatoriObject* from);
-    SatoriObject* SkipUnmarked(SatoriObject* after, size_t upTo);
+    SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
     SatoriObject* NextMarked(SatoriObject* after);
     bool ThreadLocalCompact(size_t desiredFreeSpace);
 
