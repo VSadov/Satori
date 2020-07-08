@@ -144,9 +144,24 @@ inline void SatoriObject::SetEscaped()
 inline bool SatoriObject::IsEscapedOrPinned()
 {
     return IsEscaped() || IsPinned();
+
+    //TODO: VS the following is not faster
+    /*size_t objOffset = Start() & (Satori::REGION_SIZE_GRANULARITY - 1);
+    size_t bitOffset = (objOffset >> 3) + 1;
+    size_t wordOffset = bitOffset >> 6;
+    size_t maskBit = bitOffset & 63;
+    size_t mask = (size_t)3 << maskBit;
+
+    bool result = ContainingRegion()->m_bitmap[wordOffset] & mask;
+    if (maskBit == 63)
+    {
+        result |= ContainingRegion()->m_bitmap[wordOffset + 1] & 1;
+    }
+
+    return result;*/
 }
 
-// TODO: VS clear offset masking and consolidate to common impl.
+// TODO: VS consolidate to common impl.
 inline int32_t SatoriObject::GetNextInMarkStack()
 {
     return ((int32_t*)this)[-2];

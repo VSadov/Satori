@@ -674,18 +674,17 @@ void SatoriRegion::ThreadLocalUpdatePointers()
     int markBitOffset = 0;
     while (bitmapIndex < BITMAP_SIZE)
     {
-        while (true)
+        size_t chunk = m_bitmap[bitmapIndex];
+        if (chunk)
         {
             DWORD step;
-            if (BitScanForward64(&step, m_bitmap[bitmapIndex] >> markBitOffset))
+            while (BitScanForward64(&step, chunk >> markBitOffset))
             {
-                // got reachable object.
+                // got reachable object
                 markBitOffset += step;
 
-                // check if it is escaped. no need to touch those.
                 int escapedOffset = markBitOffset + 1;
                 bool escaped = m_bitmap[bitmapIndex + (escapedOffset >> 6)] & ((size_t)1 << (escapedOffset & 63));
-
                 if (escaped)
                 {
                     ASSERT(ObjectForBit(bitmapIndex, markBitOffset)->GetReloc() == 0);
@@ -699,7 +698,7 @@ void SatoriRegion::ThreadLocalUpdatePointers()
                             SatoriObject* o = *ppObject;
                             // ignore objects otside current region, we are not relocating those.
                             // (this also rejects nulls)
-                            if (o->Start() >= FirstObject()->Start() && o->Start() < this->End())
+                            if (o->ContainingRegion() == this)
                             {
                                 size_t reloc = o->GetReloc();
                                 if (reloc)
@@ -719,53 +718,6 @@ void SatoriRegion::ThreadLocalUpdatePointers()
                 if (markBitOffset >= 64)
                 {
                     markBitOffset -= 64;
-                    break;
-                }
-            }
-            else
-            {
-                // no more bits here
-                markBitOffset = 0;
-                break;
-            }
-        }
-
-        bitmapIndex++;
-    }
-}
-
-SatoriObject* SatoriRegion::SkipToMovable(SatoriObject* after)
-{
-    size_t objOffset = after->Start() - Start();
-    size_t bitOffset = objOffset >> 3;
-    size_t bitmapIndex = bitOffset >> 6;
-    int markBitOffset = bitOffset & 63;
-
-    while (bitmapIndex < BITMAP_SIZE)
-    {
-        size_t chunk = m_bitmap[bitmapIndex];
-        if (chunk)
-        {
-            DWORD step;
-            while (BitScanForward64(&step, chunk >> markBitOffset))
-            {
-                // got reachable object
-                markBitOffset += step;
-
-                int escapedOffset = markBitOffset + 1;
-                bool escaped = m_bitmap[bitmapIndex + (escapedOffset >> 6)] & ((size_t)1 << (escapedOffset & 63));
-                if (!escaped)
-                {
-                    return ObjectForBit(bitmapIndex, markBitOffset);
-                }
-
-                // skip Marked, Escaped, Pinned bits
-                markBitOffset += 3;
-
-                // need to switch to next word?
-                if (markBitOffset >= 64)
-                {
-                    markBitOffset -= 64;
                     goto nextWithOffset;
                 }
             }
@@ -776,13 +728,11 @@ SatoriObject* SatoriRegion::SkipToMovable(SatoriObject* after)
     nextWithOffset:
         bitmapIndex++;
     }
-
-    return SatoriObject::At(End());
 }
 
-SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* after, size_t upTo)
+SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
 {
-    size_t objOffset = after->Start() - Start();
+    size_t objOffset = from->Start() - Start();
     size_t bitOffset = objOffset >> 3;
     size_t bitmapIndex = bitOffset >> 6;
     int markBitOffset = bitOffset & 63;
