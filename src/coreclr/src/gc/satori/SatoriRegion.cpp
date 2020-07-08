@@ -894,7 +894,7 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
             if (d1 != d2)
             {
                 size_t freeSpace = d2->Start() - d1->Start();
-                ASSERT(freeSpace < 2097152);
+                ASSERT(freeSpace < 0x200000);
                 SatoriObject::FormatAsFree(d1->Start(), freeSpace);
                 if (freeSpace > foundFree)
                 {

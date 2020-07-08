@@ -64,11 +64,6 @@ inline bool SatoriObject::IsFree()
 // but we will use unused bits in the syncblock instead.
 //
 
-inline bool SatoriObject::IsEscapedObj()
-{
-    return ((int8_t*)this)[-5];
-}
-
 #ifndef HOST_64BIT
 
 fix the following for 32bit

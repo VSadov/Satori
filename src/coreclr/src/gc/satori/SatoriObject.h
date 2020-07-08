@@ -33,8 +33,6 @@ public:
     size_t Size();
     bool IsFree();
 
-    bool IsEscapedObj();
-
     bool IsMarked();
     void SetMarked();
     bool IsPinned();
