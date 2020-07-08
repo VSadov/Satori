@@ -178,8 +178,13 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             //TODO: VS check if can split and split (here, after marking)
             region->ThreadLocalPlan();
             region->ThreadLocalUpdatePointers();
-            // TODO: VS set the size large enough to be worth compacting for
-            size_t desiredFreeSpace = max(size, Satori::MIN_REGULAR_ALLOC * 10);
+            // TODO: VS heuristic needed
+            //       when there is 10% "sediment" we want to release this to recycler
+            //       the rate may be different and consider fragmentation, escaped, and marked values
+            //       also need to release this _after_ using it since work is done here already
+            //       may also try smoothing, although unlikely.
+            //       All this can be tuned once full GC works.
+            size_t desiredFreeSpace = max(size, Satori::REGION_SIZE_GRANULARITY * 1 / 10);
             if (region->ThreadLocalCompact(desiredFreeSpace))
             {
                 // we have enough free space in the region to continue
