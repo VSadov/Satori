@@ -23,7 +23,11 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 void SatoriRecycler::AddRegion(SatoriRegion* region)
 {
     // TODO: VS make end parsable?
-    region->Publish();
 
+    // TODO: VS verify
+
+    region->Publish();
     // TODO: VS leak the region for now
+
+    // TODO: VS for now count and once have 5, lets mark.
 }
