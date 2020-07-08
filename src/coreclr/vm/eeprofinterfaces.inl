@@ -11,6 +11,9 @@
 
 // ======================================================================================
 
+#ifndef __EEPROFINTERFACES_INL__
+#define __EEPROFINTERFACES_INL__
+
 #ifndef DACCESS_COMPILE
 
 FORCEINLINE BOOL TrackAllocations()
@@ -40,4 +43,5 @@ FORCEINLINE BOOL TrackPinnedAllocations()
 #endif // PROFILING_SUPPORTED
 }
 
+#endif
 #endif
