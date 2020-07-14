@@ -179,7 +179,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             region->ThreadLocalPlan();
             region->ThreadLocalUpdatePointers();
             // TODO: VS set the size large enough to be worth compacting for
-            size_t desiredFreeSpace = max(size, Satori::MIN_REGULAR_ALLOC * 10);
+            size_t desiredFreeSpace = max(size, Satori::REGION_SIZE_GRANULARITY * 1 / 10);
             if (region->ThreadLocalCompact(desiredFreeSpace))
             {
                 // we have enough free space in the region to continue

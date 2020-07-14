@@ -420,6 +420,22 @@ void SatoriRegion::ThreadLocalMark()
                 SatoriObject* obj = ObjectForBit(bitmapIndex, markBitOffset);
                 PushToMarkStack(obj);
 
+                //obj->ForEachObjectRef(
+                //    [=](SatoriObject** ref)
+                //    {
+                //        SatoriObject* child = *ref;
+                //        if (child->ContainingRegion() == this && !child->IsEscaped())
+                //        {
+                //            child->SetEscaped();
+                //            if (child->Start() < obj->Start())
+                //            {
+                //                child->SetMarked();
+                //                PushToMarkStack(child);
+                //            }
+                //        }
+                //    }
+                //);
+
                 // skip Marked, Escaped, Pinned bits
                 markBitOffset += 3;
 
@@ -506,51 +522,45 @@ size_t SatoriRegion::ThreadLocalPlan()
 
     size_t dst_end = 0;
     size_t dst_start;
-    size_t cur_free = 0;
     SatoriObject* moveable;
     size_t relocated = 0;
     size_t free = 0;
     size_t moveableSize = 0;
 
     // moveable: starts at first movable and reachable, as long as there is any free space to slide in
-    for (moveable = FirstObject(); moveable->Start() < End(); moveable = (SatoriObject*)(moveable->Start() + moveableSize))
+    size_t lastMarkedEnd = FirstObject()->Start();
+    moveable = SkipUnmarked(FirstObject(), End());
+    while (true)
     {
-        moveableSize = moveable->Size();
-        if (!moveable->IsMarked())
+        size_t skipped = moveable->Start() - lastMarkedEnd;
+        if (skipped)
         {
-            // This is not reachable.
             if (free == 0)
             {
                 // new gap from here
-                dst_end = moveable->Start();
+                dst_end = lastMarkedEnd;
             }
 
-            free += moveableSize;
-            if (!cur_free)
-            {
-                cur_free = moveable->Start();
-            }
+            free += skipped;
+            SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
         }
-        else
+
+        if (moveable->Start() >= End())
         {
-            if (cur_free)
-            {
-                SatoriObject::FormatAsFree(cur_free, moveable->Start() - cur_free);
-                cur_free = 0;
-            }
-
-            if (!moveable->IsEscapedOrPinned() && free > 0)
-            {
-                // reachable and moveable and saw free space. we can move.
-                break;
-            }
+            // nothing left to move
+            ASSERT(moveable->Start() == End());
+            return relocated;
         }
-    }
 
-    if (moveable->Start() >= End())
-    {
-        // nothing left to move
-        return relocated;
+        moveableSize = moveable->Size();
+        if (!moveable->IsEscapedOrPinned() && free > 0)
+        {
+            // reachable and moveable and saw free space. we can move this one.
+            break;
+        }
+
+        lastMarkedEnd = moveable->Start() + moveableSize;
+        moveable = NextMarked(moveable);
     }
 
     while (true)
@@ -571,6 +581,7 @@ size_t SatoriRegion::ThreadLocalPlan()
         }
 
         // dst end: skip until next unmovable
+        // TODO: VS NextEscapedOrPinned
         for (dst_end = dst_start; dst_end < End(); dst_end = NextMarked((SatoriObject*)dst_end)->Start())
         {
             if (((SatoriObject*)dst_end)->IsEscapedOrPinned())
@@ -595,14 +606,14 @@ size_t SatoriRegion::ThreadLocalPlan()
             // moveable: skip unmarked or pinned
             while (true)
             {
-                size_t lastMoveableEnd = moveable->Start() + moveableSize;
+                lastMarkedEnd = moveable->Start() + moveableSize;
                 moveable = NextMarked(moveable);
 
-                size_t skipped = moveable->Start() - lastMoveableEnd;
+                size_t skipped = moveable->Start() - lastMarkedEnd;
                 if (skipped)
                 {
                     free += skipped;
-                    SatoriObject::FormatAsFree(lastMoveableEnd, skipped);
+                    SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
                 }
 
                 if (moveable->Start() >= End())
