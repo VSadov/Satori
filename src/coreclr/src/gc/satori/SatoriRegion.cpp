@@ -835,6 +835,7 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
     {
         // find next relocatable object
         int32_t reloc = 0;
+        // "Next" is slightly better here than "NextMarked" because we coalesce unmarked objs when planning.
         for (s1 = s2; s1->Start() < End(); s1 = s1->Next())
         {
             reloc = s1->GetReloc();
