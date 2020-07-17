@@ -365,7 +365,7 @@ inline void SatoriRegion::PushToMarkStack(SatoriObject* obj)
     _ASSERTE(obj->ContainingRegion() == this);
 
     // already in the stack?
-    if (!obj->GetNextInMarkStack())
+    if (!obj->GetNextInMarkStack() && obj->RawGetMethodTable()->ContainsPointers())
     {
         obj->SetNextInMarkStack(m_markStack);
         ASSERT(m_markStack == obj->GetNextInMarkStack());
@@ -419,22 +419,6 @@ void SatoriRegion::ThreadLocalMark()
 
                 SatoriObject* obj = ObjectForBit(bitmapIndex, markBitOffset);
                 PushToMarkStack(obj);
-
-                //obj->ForEachObjectRef(
-                //    [=](SatoriObject** ref)
-                //    {
-                //        SatoriObject* child = *ref;
-                //        if (child->ContainingRegion() == this && !child->IsEscaped())
-                //        {
-                //            child->SetEscaped();
-                //            if (child->Start() < obj->Start())
-                //            {
-                //                child->SetMarked();
-                //                PushToMarkStack(child);
-                //            }
-                //        }
-                //    }
-                //);
 
                 // skip Marked, Escaped, Pinned bits
                 markBitOffset += 3;
