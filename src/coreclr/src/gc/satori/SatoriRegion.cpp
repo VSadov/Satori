@@ -356,8 +356,6 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
     {
         o->SetMarked();
     }
-
-    region->PushToMarkStack(o);
 };
 
 inline void SatoriRegion::PushToMarkStack(SatoriObject* obj)
@@ -401,44 +399,17 @@ void SatoriRegion::ThreadLocalMark()
     //- those that are reachable from outside of the region (escaped)
 
     // mark escaped objects:
-    // for every set escape bit, set the corresponding mark bit and push the object to the gray stack
-    size_t bitmapIndex = BITMAP_START;
-    int markBitOffset = 0;
-    while (bitmapIndex < BITMAP_SIZE)
+    // for every set escape bit, set the corresponding mark bit
+    size_t currentChunk = m_bitmap[BITMAP_START];
+    for (size_t bitmapIndex = BITMAP_START; bitmapIndex < BITMAP_SIZE; bitmapIndex++)
     {
-        while (true)
+        size_t nextChunk = m_bitmap[bitmapIndex + 1];
+        currentChunk = currentChunk | (currentChunk >> 1) | nextChunk << 63;
+        if (currentChunk)
         {
-            DWORD step;
-            if (BitScanForward64(&step, m_bitmap[bitmapIndex] >> markBitOffset))
-            {
-                // got escaped object.
-                markBitOffset += step - 1;
-
-                // set the mark bit
-                m_bitmap[bitmapIndex + (markBitOffset >> 6)] |= ((size_t)1 << (markBitOffset & 63));
-
-                SatoriObject* obj = ObjectForBit(bitmapIndex, markBitOffset);
-                PushToMarkStack(obj);
-
-                // skip Marked, Escaped, Pinned bits
-                markBitOffset += 3;
-
-                // need to switch to next word?
-                if (markBitOffset >= 64)
-                {
-                    markBitOffset -= 64;
-                    break;
-                }
-            }
-            else
-            {
-                // no more bits here
-                markBitOffset = 0;
-                break;
-            }
+            m_bitmap[bitmapIndex] = currentChunk;
         }
-
-        bitmapIndex++;
+        currentChunk = nextChunk;
     }
 
 
@@ -448,43 +419,54 @@ void SatoriRegion::ThreadLocalMark()
     sc._unused1 = this;
     GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn, &sc);
 
-    // now recursively mark all the objects reachable form the roots.
-    SatoriObject* o = PopFromMarkStack();
-    while (o)
+    // now  mark all the objects reachable form the roots.
+    SatoriObject* beforeFirst = (SatoriObject*)(FirstObject()->Start() - Satori::MIN_FREE_SIZE);
+    for (SatoriObject* obj = NextMarked(beforeFirst); obj->Start() < End(); obj = NextMarked(obj))
     {
-        ASSERT(o->IsMarked());
-        ASSERT(!o->IsFree());
-        if (o->IsEscaped())
+        SatoriObject* o = obj;
+        while (o)
         {
-            o->ForEachObjectRef(
-                [=](SatoriObject** ref)
-                {
-                    SatoriObject* child = *ref;
-                    if (child->ContainingRegion() == this && !child->IsEscaped())
+            ASSERT(o->IsMarked());
+            ASSERT(!o->IsFree());
+            if (o->IsEscaped())
+            {
+                o->ForEachObjectRef(
+                    [=](SatoriObject** ref)
                     {
-                        child->SetMarked();
-                        child->SetEscaped();
-                        PushToMarkStack(child);
+                        SatoriObject* child = *ref;
+                        if (child->ContainingRegion() == this && !child->IsEscaped())
+                        {
+                            child->SetMarked();
+                            child->SetEscaped();
+                            if (child->Start() < obj->Start())
+                            {
+                                PushToMarkStack(child);
+                            }
+                        }
                     }
-                }
-            );
-        }
-        else
-        {
-            o->ForEachObjectRef(
-                [=](SatoriObject** ref)
-                {
-                    SatoriObject* child = *ref;
-                    if (child->ContainingRegion() == this && !child->IsMarked())
+                );
+            }
+            else
+            {
+                o->ForEachObjectRef(
+                    [=](SatoriObject** ref)
                     {
-                        child->SetMarked();
-                        PushToMarkStack(child);
+                        SatoriObject* child = *ref;
+                        if (child->ContainingRegion() == this && !child->IsMarked())
+                        {
+                            child->SetMarked();
+                            if (child->Start() < obj->Start())
+                            {
+                                PushToMarkStack(child);
+                            }
+                        }
                     }
-                }
-            );
+                );
+            }
+            o = PopFromMarkStack();
         }
-        o = PopFromMarkStack();
     }
+
 
     Verify();
 }
