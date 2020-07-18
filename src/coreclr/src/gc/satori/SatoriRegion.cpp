@@ -419,52 +419,83 @@ void SatoriRegion::ThreadLocalMark()
     sc._unused1 = this;
     GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn, &sc);
 
-    // now  mark all the objects reachable form the roots.
-    SatoriObject* beforeFirst = (SatoriObject*)(FirstObject()->Start() - Satori::MIN_FREE_SIZE);
-    for (SatoriObject* obj = NextMarked(beforeFirst); obj->Start() < End(); obj = NextMarked(obj))
+    // go through all live objets and update what they reference.
+    size_t bitmapIndex = BITMAP_START;
+    int markBitOffset = 0;
+    while (bitmapIndex < BITMAP_SIZE)
     {
-        SatoriObject* o = obj;
-        while (o)
+        size_t chunk = m_bitmap[bitmapIndex];
+        if (chunk)
         {
-            ASSERT(o->IsMarked());
-            ASSERT(!o->IsFree());
-            if (o->IsEscaped())
+            DWORD step;
+            while (BitScanForward64(&step, chunk >> markBitOffset))
             {
-                o->ForEachObjectRef(
-                    [=](SatoriObject** ref)
+                // got reachable object
+                markBitOffset += step;
+
+                SatoriObject* obj = ObjectForBit(bitmapIndex, markBitOffset);
+
+                SatoriObject* o = obj;
+                while (o)
+                {
+                    ASSERT(o->IsMarked());
+                    ASSERT(!o->IsFree());
+                    if (o->IsEscaped())
                     {
-                        SatoriObject* child = *ref;
-                        if (child->ContainingRegion() == this && !child->IsEscaped())
-                        {
-                            child->SetMarked();
-                            child->SetEscaped();
-                            if (child->Start() < obj->Start())
+                        o->ForEachObjectRef(
+                            [=](SatoriObject** ref)
                             {
-                                PushToMarkStack(child);
+                                SatoriObject* child = *ref;
+                                if (child->ContainingRegion() == this && !child->IsEscaped())
+                                {
+                                    child->SetMarked();
+                                    child->SetEscaped();
+                                    if (child->Start() < obj->Start())
+                                    {
+                                        PushToMarkStack(child);
+                                    }
+                                }
                             }
-                        }
+                        );
                     }
-                );
-            }
-            else
-            {
-                o->ForEachObjectRef(
-                    [=](SatoriObject** ref)
+                    else
                     {
-                        SatoriObject* child = *ref;
-                        if (child->ContainingRegion() == this && !child->IsMarked())
-                        {
-                            child->SetMarked();
-                            if (child->Start() < obj->Start())
+                        o->ForEachObjectRef(
+                            [=](SatoriObject** ref)
                             {
-                                PushToMarkStack(child);
+                                SatoriObject* child = *ref;
+                                if (child->ContainingRegion() == this && !child->IsMarked())
+                                {
+                                    child->SetMarked();
+                                    if (child->Start() < obj->Start())
+                                    {
+                                        PushToMarkStack(child);
+                                    }
+                                }
                             }
-                        }
+                        );
                     }
-                );
+                    o = PopFromMarkStack();
+                }
+
+                // skip Marked, Escaped, Pinned bits
+                markBitOffset += 3;
+
+                // need to switch to next word?
+                if (markBitOffset >= 64)
+                {
+                    markBitOffset -= 64;
+                    goto nextWithOffset;
+                }
+
+                chunk = m_bitmap[bitmapIndex];
             }
-            o = PopFromMarkStack();
         }
+
+        markBitOffset = 0;
+
+    nextWithOffset:
+        bitmapIndex++;
     }
 
 
