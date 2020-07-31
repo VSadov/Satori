@@ -90,7 +90,7 @@ private:
 
             SatoriRegion* m_prev;
             SatoriRegion* m_next;
-            SatoriRegionQueue* m_containingQueue;
+            SatoriQueue<SatoriRegion>* m_containingQueue;
 
             // active allocation may happen in the following range.
             // the range may not be parseable as sequence of objects
