@@ -10,43 +10,15 @@
 
 #include "common.h"
 #include "../gc.h"
-#include "SatoriLock.h"
+#include "SatoriQueue.h"
 
 class SatoriRegion;
 
-class SatoriRegionQueue
+class SatoriRegionQueue : public SatoriQueue<SatoriRegion>
 {
 public:
-    SatoriRegion* TryPop();
     SatoriRegion* TryPop(size_t regionSize, SatoriRegion* &putBack);
-
-    bool TryRemove(SatoriRegion* region);
     SatoriRegion* TryRemove(size_t regionSize, SatoriRegion*& putBack);
-
-    void Push(SatoriRegion* region);
-    void Enqueue(SatoriRegion* region);
-    bool Contains(SatoriRegion* region);
-
-    SatoriRegionQueue() :
-        m_lock(), m_head(), m_tail()
-    {
-        m_lock.Initialize();
-    };
-
-    bool CanPop()
-    {
-        return m_head != nullptr;
-    }
-
-    bool CanDequeue()
-    {
-        return m_tail != nullptr;
-    }
-
-private:
-    SatoriLock m_lock;
-    SatoriRegion* m_head;
-    SatoriRegion* m_tail;
 };
 
 #endif
