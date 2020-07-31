@@ -555,6 +555,7 @@ set(GC_HEADERS_WKS
     ../gc/satori/SatoriRegion.inl
     ../gc/satori/SatoriObject.h
     ../gc/satori/SatoriObject.inl
+    ../gc/satori/SatoriQueue.h
     ../gc/satori/SatoriRegionQueue.h
     ../gc/satori/SatoriAllocator.h
     ../gc/satori/SatoriRecycler.h
