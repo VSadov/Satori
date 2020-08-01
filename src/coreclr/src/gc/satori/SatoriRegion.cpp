@@ -18,6 +18,7 @@
 #include "SatoriObject.inl"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
+#include "SatoriQueue.h"
 
 #ifdef memcpy
 #undef memcpy
