@@ -534,6 +534,8 @@ set(GC_HEADERS_WKS
     ../gc/satori/SatoriRegionQueue.h
     ../gc/satori/SatoriAllocator.h
     ../gc/satori/SatoriRecycler.h
+    ../gc/satori/SatoriMarkChunk.h
+    ../gc/satori/SatoriMarkChunkQueue.h
     ../gc/satori/SatoriAllocationContext.h
     ../gc/satori/SatoriUtil.h
     ../gc/satori/SatoriLock.h
