@@ -45,6 +45,9 @@ namespace Satori
     // if we do cleaning, and if available
     // TODO: VS should this be a constant or be 1/2 L0 ?
     static const size_t MIN_REGULAR_ALLOC = 16 << 10;
+
+    // 8K for now, we can fiddle with size a bit later
+    const static size_t MARK_CHUNK_SIZE = 8 * 1024;
 }
 
 class SatoriUtil
