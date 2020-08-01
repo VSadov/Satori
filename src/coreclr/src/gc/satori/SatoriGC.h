@@ -40,12 +40,8 @@ public:
     virtual void TemporaryDisableConcurrentGC() override;
     virtual bool IsConcurrentGCEnabled() override;
     virtual HRESULT WaitUntilConcurrentGCCompleteAsync(int millisecondsTimeout) override;
-    virtual void SetFinalizeQueueForShutdown(bool fHasLock) override;
     virtual size_t GetNumberOfFinalizable() override;
-    virtual bool ShouldRestartFinalizerWatchDog() override;
     virtual Object* GetNextFinalizable() override;
-    virtual void SetFinalizeRunOnShutdown(bool value) override;
-    virtual void GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* totalPhysicalMemoryBytes, uint64_t* lastRecordedMemLoadBytes, uint32_t* lastRecordedMemLoadPct, size_t* lastRecordedHeapSizeBytes, size_t* lastRecordedFragmentationBytes) override;
     virtual int GetGcLatencyMode() override;
     virtual int SetGcLatencyMode(int newLatencyMode) override;
     virtual int GetLOHCompactionMode() override;
@@ -114,6 +110,10 @@ public:
     virtual int GetNumberOfHeaps() override;
     virtual int GetHomeHeapNumber() override;
     virtual size_t GetPromotedBytes(int heap_index) override;
+
+    // Inherited via IGCHeapInternal
+    virtual void GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* totalAvailableMemoryBytes, uint64_t* lastRecordedMemLoadBytes, uint64_t* lastRecordedHeapSizeBytes, uint64_t* lastRecordedFragmentationBytes, uint64_t* totalCommittedBytes, uint64_t* promotedBytes, uint64_t* pinnedObjectCount, uint64_t* finalizationPendingCount, uint64_t* index, uint32_t* generation, uint32_t* pauseTimePct, bool* isCompaction, bool* isConcurrent, uint64_t* genInfoRaw, uint64_t* pauseInfoRaw, int kind) override;
+    virtual uint32_t GetMemoryLoad() override;
 };
 
 #endif
