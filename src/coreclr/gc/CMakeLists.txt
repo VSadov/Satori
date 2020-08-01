@@ -90,7 +90,6 @@ if (CLR_CMAKE_TARGET_WIN32)
     objecthandle.h
     softwarewritewatch.h
     satori/SatoriGC.h
-    satori/SatoriGCHeap.h
     satori/SatoriHeap.h
     satori/SatoriPage.h
     satori/SatoriRegion.h
