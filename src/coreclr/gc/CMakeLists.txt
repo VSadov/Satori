@@ -101,7 +101,6 @@ if (CLR_CMAKE_TARGET_WIN32)
     softwarewritewatch.h
     satori/SatoriGC.h
     vxsort/do_vxsort.h
-    satori/SatoriGCHeap.h
     satori/SatoriHeap.h
     satori/SatoriPage.h
     satori/SatoriRegion.h
