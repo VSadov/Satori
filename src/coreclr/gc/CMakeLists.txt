@@ -111,6 +111,8 @@ if (CLR_CMAKE_TARGET_WIN32)
     satori/SatoriRegionQueue.h
     satori/SatoriAllocator.h
     satori/SatoriRecycler.h
+    satori/SatoriMarkChunk.h
+    satori/SatoriMarkChunkQueue.h
     satori/SatoriAllocationContext.h
     satori/SatoriUtil.h
     satori/SatoriLock.h
