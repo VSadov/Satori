@@ -14,10 +14,29 @@
 #include "SatoriRecycler.h"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
+#include "SatoriMarkChunk.h"
 
 void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
     m_heap = heap;
+
+    m_regions = new SatoriRegionQueue();
+    m_work_list = new SatoriMarkChunkQueue();
+    m_free_list = new SatoriMarkChunkQueue();
+
+    SatoriRegion* region = m_heap->Allocator()->GetRegion(Satori::REGION_SIZE_GRANULARITY);
+
+    while (true)
+    {
+        size_t mem = region->Allocate(Satori::MARK_CHUNK_SIZE, /*ensureZeroInited*/ false);
+        if (!mem)
+        {
+            break;
+        }
+
+        SatoriMarkChunk* chunk = SatoriMarkChunk::InitializeAt(mem);
+        m_free_list->Push(chunk);
+    }
 }
 
 void SatoriRecycler::AddRegion(SatoriRegion* region)
