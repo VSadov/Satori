@@ -10,6 +10,8 @@
 
 #include "common.h"
 #include "../gc.h"
+#include "SatoriRegionQueue.h"
+#include "SatoriMarkChunkQueue.h"
 
 class SatoriHeap;
 class SatoriRegion;
@@ -22,6 +24,10 @@ public:
 
 private:
     SatoriHeap* m_heap;
+
+    SatoriRegionQueue* m_regions;
+    SatoriMarkChunkQueue* m_work_list;
+    SatoriMarkChunkQueue* m_free_list;
 };
 
 #endif
