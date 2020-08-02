@@ -64,6 +64,8 @@ public:
     SatoriObject* NextMarked(SatoriObject* after);
     bool ThreadLocalCompact(size_t desiredFreeSpace);
 
+    void CleanMarks();
+
     void Verify();
 
 private:
