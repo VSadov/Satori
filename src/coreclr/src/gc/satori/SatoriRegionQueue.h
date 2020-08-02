@@ -17,8 +17,8 @@ class SatoriRegion;
 class SatoriRegionQueue : public SatoriQueue<SatoriRegion>
 {
 public:
-    SatoriRegion* TryPop(size_t regionSize, SatoriRegion* &putBack);
-    SatoriRegion* TryRemove(size_t regionSize, SatoriRegion*& putBack);
+    SatoriRegion* TryPopWithSize(size_t regionSize, SatoriRegion* &putBack);
+    SatoriRegion* TryRemoveWithSize(size_t regionSize, SatoriRegion*& putBack);
 };
 
 #endif
