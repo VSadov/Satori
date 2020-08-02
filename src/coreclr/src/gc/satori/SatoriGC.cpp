@@ -237,7 +237,25 @@ unsigned SatoriGC::GetGcCount()
 
 bool SatoriGC::IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, int thread_number)
 {
-    __UNREACHABLE();
+    // TODO: VS should prefer when running on the same core as recorded in alloc region, if present.
+    //       negative thread_number could indicate "do not care"
+    //       also need to assign numbers to threads when scanning.
+    //       at very least there is dependency on 0 being unique.
+    while (true)
+    {
+        int threadScanCount = acontext->alloc_count;
+        int currentScanCount = m_heap->Recycler()->GetScanCount();
+        if (threadScanCount >= currentScanCount)
+        {
+            break;
+        }
+
+        if (Interlocked::CompareExchange(&acontext->alloc_count, currentScanCount, threadScanCount) == threadScanCount)
+        {
+            return true;
+        }
+    }
+
     return false;
 }
 

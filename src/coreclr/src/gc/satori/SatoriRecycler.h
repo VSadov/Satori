@@ -18,16 +18,34 @@ class SatoriRegion;
 
 class SatoriRecycler
 {
+    friend class MarkContext;
+
 public:
     void Initialize(SatoriHeap* heap);
     void AddRegion(SatoriRegion* region);
 
+    int GetScanCount();
+
 private:
     SatoriHeap* m_heap;
 
-    SatoriRegionQueue* m_regions;
-    SatoriMarkChunkQueue* m_work_list;
-    SatoriMarkChunkQueue* m_free_list;
+    // used to ensure each thread is scanned once per scan round.
+    int m_scanCount;
+
+    SatoriRegionQueue* m_allRegions;
+    SatoriRegionQueue* m_stayingRegions;
+    SatoriRegionQueue* m_relocatingRegions;
+
+    SatoriMarkChunkQueue* m_workList;
+    SatoriMarkChunkQueue* m_freeList;
+
+    void Collect();
+    static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+    void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
+    void MarkOwnStack();
+    void MarkOtherStacks();
+    void IncrementScanCount();
+    void DrainMarkQueues();
 };
 
 #endif
