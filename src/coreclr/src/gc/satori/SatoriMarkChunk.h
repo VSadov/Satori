@@ -50,6 +50,11 @@ public:
             nullptr;
     }
 
+    size_t Count()
+    {
+        return m_top;
+    }
+
 private:
     size_t m_top;
 
