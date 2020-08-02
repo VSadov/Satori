@@ -15,7 +15,7 @@
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
 
-SatoriRegion* SatoriRegionQueue::TryPop(size_t regionSize, SatoriRegion*& putBack)
+SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*& putBack)
 {
     m_lock.Enter();
 
@@ -78,7 +78,7 @@ SatoriRegion* SatoriRegionQueue::TryPop(size_t regionSize, SatoriRegion*& putBac
     return result;
 }
 
-SatoriRegion* SatoriRegionQueue::TryRemove(size_t regionSize, SatoriRegion*& putBack)
+SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegion*& putBack)
 {
     m_lock.Enter();
 
