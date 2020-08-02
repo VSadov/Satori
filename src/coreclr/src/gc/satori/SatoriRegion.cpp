@@ -908,6 +908,11 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
     return (foundFree >= desiredFreeSpace + Satori::MIN_FREE_SIZE || foundFree == desiredFreeSpace);
 }
 
+void SatoriRegion::CleanMarks()
+{
+    ZeroMemory(&m_bitmap[BITMAP_START], (BITMAP_SIZE - BITMAP_START) * sizeof(size_t));
+}
+
 void SatoriRegion::Verify()
 {
 #ifdef _DEBUG

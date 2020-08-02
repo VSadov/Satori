@@ -1221,7 +1221,7 @@ void SystemDomain::LazyInitGlobalStringLiteralMap()
 
     _ASSERTE(GCHeapUtilities::IsGCInProgress() &&
              GCHeapUtilities::IsServerHeap()   &&
-             IsGCSpecialThread());
+             (IsGCSpecialThread() || !GetThread()->PreemptiveGCDisabled()));
 
     SystemDomain* sysDomain = SystemDomain::System();
     if (sysDomain)
@@ -4589,7 +4589,7 @@ void AppDomain::EnumStaticGCRefs(promote_func* fn, ScanContext* sc)
 
     _ASSERTE(GCHeapUtilities::IsGCInProgress() &&
              GCHeapUtilities::IsServerHeap()   &&
-             IsGCSpecialThread());
+            (IsGCSpecialThread() || !GetThread()->PreemptiveGCDisabled()));
 
     if (m_pPinnedHeapHandleTable != nullptr)
     {
