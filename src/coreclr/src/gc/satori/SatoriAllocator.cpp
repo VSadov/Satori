@@ -37,7 +37,7 @@ tryAgain:
     SatoriRegion* putBack = nullptr;
 
     int bucket = SizeToBucket(regionSize);
-    SatoriRegion* region = m_queues[bucket]->TryRemove(regionSize, putBack);
+    SatoriRegion* region = m_queues[bucket]->TryRemoveWithSize(regionSize, putBack);
     if (region)
     {
         if (putBack)
@@ -50,7 +50,7 @@ tryAgain:
 
     while (++bucket < Satori::BUCKET_COUNT)
     {
-        region = m_queues[bucket]->TryPop(regionSize, putBack);
+        region = m_queues[bucket]->TryPopWithSize(regionSize, putBack);
         if (region)
         {
             if (putBack)
@@ -184,7 +184,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             //       also need to release this _after_ using it since work is done here already
             //       may also try smoothing, although unlikely.
             //       All this can be tuned once full GC works.
-            size_t desiredFreeSpace = max(size, Satori::REGION_SIZE_GRANULARITY * 1 / 10);
+            size_t desiredFreeSpace = max(size, Satori::REGION_SIZE_GRANULARITY * 9 / 10);
             if (region->ThreadLocalCompact(desiredFreeSpace))
             {
                 // we have enough free space in the region to continue
