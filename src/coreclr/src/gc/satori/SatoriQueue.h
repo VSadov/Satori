@@ -18,12 +18,12 @@ class SatoriQueue
 public:
 
     SatoriQueue() :
-        m_lock(), m_head(), m_tail()
+        m_lock(), m_head(), m_tail(), m_count()
     {
         m_lock.Initialize();
     };
 
-    void Push(T* item)
+    int Push(T* item)
     {
         SatoriLockHolder<SatoriLock> holder(&m_lock);
         item->m_containingQueue = this;
@@ -38,6 +38,8 @@ public:
             m_head->m_prev = item;
             m_head = item;
         }
+
+        return ++m_count;
     }
 
     T* TryPop()
@@ -51,6 +53,7 @@ public:
                 return nullptr;
             }
 
+            m_count--;
             result->m_containingQueue = nullptr;
             m_head = result->m_next;
             if (m_head == nullptr)
@@ -72,6 +75,7 @@ public:
     void Enqueue(T* item)
     {
         SatoriLockHolder<SatoriLock> holder(&m_lock);
+        m_count++;
         item->m_containingQueue = this;
         if (m_tail == nullptr)
         {
@@ -95,6 +99,7 @@ public:
                 return false;
             }
 
+            m_count--;
             item->m_containingQueue = nullptr;
             if (item->m_prev == nullptr)
             {
@@ -125,20 +130,16 @@ public:
         return item->m_containingQueue == this;
     }
 
-    bool CanPop()
+    int Count()
     {
-        return m_head != nullptr;
-    }
-
-    bool CanDequeue()
-    {
-        return m_tail != nullptr;
+        return m_count;
     }
 
 protected:
     SatoriLock m_lock;
     T* m_head;
     T* m_tail;
+    int m_count;
 };
 
 #endif
