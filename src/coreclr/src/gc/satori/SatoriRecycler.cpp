@@ -11,16 +11,20 @@
 #include "../env/gcenv.os.h"
 
 #include "SatoriHeap.h"
+#include "SatoriPage.h"
 #include "SatoriRecycler.h"
 #include "SatoriObject.h"
 #include "SatoriObject.inl"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
 #include "SatoriMarkChunk.h"
+#include "SatoriAllocationContext.h"
+#include "../gcscan.h"
 
 void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
     m_heap = heap;
+    m_suspensionLock.Initialize();
 
     m_allRegions = new SatoriRegionQueue();
     m_stayingRegions = new SatoriRegionQueue();
@@ -44,7 +48,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     }
 }
 
-void SatoriRecycler::AddRegion(SatoriRegion* region)
+void SatoriRecycler::AddRegion(SatoriRegion* region, bool forGc)
 {
     // TODO: VS make end parsable?
 
@@ -54,7 +58,7 @@ void SatoriRecycler::AddRegion(SatoriRegion* region)
     region->Publish();
 
     int count = m_allRegions->Push(region);
-    if (count > 10)
+    if (!forGc && count - m_baseCount > 10)
     {
         Collect();
     }
@@ -62,75 +66,116 @@ void SatoriRecycler::AddRegion(SatoriRegion* region)
 
 void SatoriRecycler::Collect()
 {
-    // mark own stack into work queues
-    IncrementScanCount();
-    MarkOwnStack();
-
-    // TODO: VS perhaps drain queues as a part of MarkOwnStack? - to give other threads chance to self-mark?
-    //       thread marking is fast though, so it may not help a lot.
-
-    // TODO: VS we should not be calling Suspend from multiple threads for the same collect event.
-    //       Perhaps lock and send other threads away, they will suspend soon enough.
-
-    // stop other threads. (except this one, it shoud not be considered a cooperative thread while it is busy doing GC).
     bool wasCoop = GCToEEInterface::EnablePreemptiveGC();
     _ASSERTE(wasCoop);
-    GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
 
-    // TODO: VS this also scans statics. Do we want this?
-    MarkOtherStacks();
-
-    // drain queues
-    DrainMarkQueues();
-
-    // mark handles to queues
-
-    // while have work
-    // {
-    //     drain queues
-    //     mark through SATB cards   (could be due to overflow)
-    // }
-
-    // all marked here 
-
-    // TODO: VS can't know live size without scanning all live objects. We need to scan at least live ones.
-    // Then we could as well coalesce gaps and thread to buckets.
-    // What to do with finalizables?
-
-    // plan regions:
-    // 0% - return to recycler
-    // > 80%   go to stayers   (scan for finalizable one day, if occupancy reduced and has finalizable, this can be done after releasing VM.)
-    // > 50% or with pins - targets, sweep and thread gaps, slice and release free tails, add to queues,   need buckets similar to allocator, should regs have buckets?
-    //   targets go to stayers too.
-    //
-    // rest - add to move sources
-    SatoriRegion* curReg;
-    while (curReg = m_allRegions->TryPop())
     {
-        m_stayingRegions->Push(curReg);
+        SatoriLockHolder<SatoriLock> holder(&m_suspensionLock);
+        if (m_allRegions->Count() - m_baseCount <= 10)
+        {
+            goto exit;
+        }
+
+        // stop other threads.
+        GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
+
+        // deactivate all stacks
+        DeactivateAllStacks();
+
+        // mark own stack into work queues
+        IncrementScanCount();
+        MarkOwnStack();
+
+        // TODO: VS perhaps drain queues as a part of MarkOwnStack? - to give other threads chance to self-mark?
+        //       thread marking is fast though, so it may not help a lot.
+
+        // TODO: VS this also scans statics. Do we want this?
+        MarkOtherStacks();
+
+        // drain queues
+        DrainMarkQueues();
+
+        // mark handles to queues
+        MarkHandles();
+
+        while (m_workList->Count() > 0)
+        {
+            DrainMarkQueues();
+            //mark through SATB cards   (could be due to overflow)
+        }
+
+        // all marked here 
+
+        // TODO: VS
+        //       DH initial scan (could be a part of loop above?)
+        //       sync
+        WeakPtrScan(true);
+        //       sync
+        //       scan finalize queue
+        //       scan DH again     (why no sync before?)
+        //       sync 
+        WeakPtrScan(false);
+        WeakPtrScanBySingleThread();
+
+        // TODO: VS can't know live size without scanning all live objects. We need to scan at least live ones.
+        // Then we could as well coalesce gaps and thread to buckets.
+        // What to do with finalizables?
+
+        // plan regions:
+        // 0% - return to recycler
+        // > 80%   go to stayers   (scan for finalizable one day, if occupancy reduced and has finalizable, this can be done after releasing VM.)
+        // > 50% or with pins - targets, sweep and thread gaps, slice and release free tails, add to queues,   need buckets similar to allocator, should regs have buckets?
+        //   targets go to stayers too.
+        //
+        // rest - add to move sources
+        SatoriRegion* curReg;
+        while (curReg = m_allRegions->TryPop())
+        {
+            if (curReg->NothingMarked())
+            {
+                curReg->MakeBlank();
+                m_heap->Allocator()->AddRegion(curReg);
+            }
+            else
+            {
+                m_stayingRegions->Push(curReg);
+            }
+        }
+
+        // once no more regs in queue
+        // go through sources and relocate to destinations,
+        // grab empties if no space, add to stayers and use as if gotten from free buckets.
+        // if no space at all, put the reg to stayers. (scan for finalizable one day)
+
+        // go through roots and update refs
+
+        // go through stayers, update refs  (need to care about relocated in stayers, could happen if no space)
+        while (curReg = m_stayingRegions->TryPop())
+        {
+            curReg->CleanMarks();
+            m_allRegions->Push(curReg);
+        }
     }
 
-    // once no more regs in queue
-    // go through sources and relocate to destinations,
-    // grab empties if no space, add to stayers and use as if gotten from free buckets.
-    // if no space at all, put the reg to stayers. (scan for finalizable one day)
-
-    // go through roots and update refs
-
-    // go through stayers, update refs  (need to care about relocated in stayers, could happen if no space)
-    while (curReg = m_stayingRegions->TryPop())
-    {
-        curReg->CleanMarks();
-        m_allRegions->Push(curReg);
-    }
+    m_baseCount = m_allRegions->Count();
 
     // restart VM
     GCToEEInterface::RestartEE(true);
 
-    // return source regs to allocator.
-
+ exit:
     // become coop again (note - could block here, it is ok)
     GCToEEInterface::DisablePreemptiveGC();
+}
+
+void SatoriRecycler::DeactivateFn(gc_alloc_context* gcContext, void* param)
+{
+    SatoriAllocationContext* context = (SatoriAllocationContext*)gcContext;
+    context->Deactivate((SatoriHeap*)param, /* forGc */ true);
+}
+
+void SatoriRecycler::DeactivateAllStacks()
+{
+    GCToEEInterface::GcEnumAllocContexts(DeactivateFn, this->m_heap);
 }
 
 class MarkContext
@@ -187,14 +232,31 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
         return;
     }
 
+#ifdef DEBUG_DestroyedHandleValue
+    // we can race with destroy handle during concurrent scan
+    if (location == (size_t)DEBUG_DestroyedHandleValue)
+        return;
+#endif //DEBUG_DestroyedHandleValue
+
     SatoriObject* o = SatoriObject::At(location);
     if (flags & GC_CALL_INTERIOR)
     {
-        o = o->ContainingRegion()->FindObject(location);
+        MarkContext* context = (MarkContext*)sc->_unused1;
+
+        //TODO: VS put heap directly on context.
+        //TODO: VS need ObjectForAddressChecked
+        o = context->m_recycler->m_heap->ObjectForAddress(location);
         if (o == nullptr)
         {
+            //TODO: VS when this could happen? matching orig GC?
             return;
         }
+    }
+
+    if (o->ContainingRegion()->IsThreadLocal())
+    {
+        // do not mark thread local regions.
+        return;
     }
 
     if (!o->IsMarked())
@@ -204,6 +266,10 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
 
         MarkContext* context = (MarkContext*)sc->_unused1;
         // TODO: VS we do not need to push if card is marked, we will have to revisit anyways.
+
+        // TODO: VS test card setting. for now this is unused.
+        context->m_recycler->m_heap->SetCardForAddress(location);
+
         context->PushToMarkQueues(o);
     }
 
@@ -250,7 +316,7 @@ void SatoriRecycler::MarkOwnStack()
 
 void SatoriRecycler::MarkOtherStacks()
 {
-    // mark roots for the current stack
+    // mark roots for all stacks
     ScanContext sc;
     sc.promotion = TRUE;
 
@@ -278,6 +344,20 @@ void SatoriRecycler::IncrementScanCount()
 inline int SatoriRecycler::GetScanCount()
 {
     return m_scanCount;
+}
+
+void SatoriRecycler::WaitOnSuspension()
+{
+    bool wasCoop = GCToEEInterface::EnablePreemptiveGC();
+
+    {
+        SatoriLockHolder<SatoriLock> holder(&m_suspensionLock);
+    }
+
+    if (wasCoop)
+    {
+        GCToEEInterface::DisablePreemptiveGC();
+    }
 }
 
 void SatoriRecycler::DrainMarkQueues()
@@ -328,4 +408,51 @@ void SatoriRecycler::DrainMarkQueues()
         _ASSERTE(dstChunk->Count() == 0);
         m_freeList->Push(dstChunk);
     }
+}
+
+void SatoriRecycler::MarkHandles()
+{
+    // mark roots for the current stack
+    ScanContext sc;
+    sc.promotion = TRUE;
+    sc.thread_number = 0;
+
+    MarkContext c = MarkContext(this);
+    sc._unused1 = &c;
+
+    // concurrent, per thread/heap
+    // relies on thread_number to select handle buckets and specialcases #0
+    GCScan::GcScanHandles(MarkFn, 2, 2, &sc);
+
+    if (c.m_markChunk != nullptr)
+    {
+        m_workList->Push(c.m_markChunk);
+    }
+}
+
+void SatoriRecycler::WeakPtrScan(bool isShort)
+{
+    // mark roots for the current stack
+    ScanContext sc;
+    sc.promotion = TRUE;
+    sc.thread_number = 0;
+
+    // concurrent, per thread/heap
+    // relies on thread_number to select handle buckets and specialcases #0
+    // null out the target of short weakref that were not promoted.
+    if (isShort)
+    {
+        GCScan::GcShortWeakPtrScan(nullptr, 2, 2, &sc);
+    }
+    else
+    {
+        GCScan::GcWeakPtrScan(nullptr, 2, 2, &sc);
+    }
+}
+
+void SatoriRecycler::WeakPtrScanBySingleThread()
+{
+    // scan for deleted entries in the syncblk cache
+    // does not use a context, so we pass nullptr
+    GCScan::GcWeakPtrScanBySingleThread(2, 2, nullptr);
 }
