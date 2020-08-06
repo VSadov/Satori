@@ -22,15 +22,22 @@ class SatoriRecycler
 
 public:
     void Initialize(SatoriHeap* heap);
-    void AddRegion(SatoriRegion* region);
+    void AddRegion(SatoriRegion* region, bool forGc);
 
     int GetScanCount();
+
+    void WaitOnSuspension();
 
 private:
     SatoriHeap* m_heap;
 
+    // this is to ensure that only one thread suspends VM and to block all others on it.
+    SatoriLock m_suspensionLock;
+
     // used to ensure each thread is scanned once per scan round.
     int m_scanCount;
+
+    int m_baseCount;
 
     SatoriRegionQueue* m_allRegions;
     SatoriRegionQueue* m_stayingRegions;
@@ -39,13 +46,19 @@ private:
     SatoriMarkChunkQueue* m_workList;
     SatoriMarkChunkQueue* m_freeList;
 
-    void Collect();
+    static void DeactivateFn(gc_alloc_context* context, void* param);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+
+    void Collect();
+    void DeactivateAllStacks();
     void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
     void MarkOwnStack();
     void MarkOtherStacks();
     void IncrementScanCount();
     void DrainMarkQueues();
+    void MarkHandles();
+    void WeakPtrScan(bool isShort);
+    void WeakPtrScanBySingleThread();
 };
 
 #endif
