@@ -34,7 +34,7 @@ public:
 
     bool TryPush(SatoriObject* obj)
     {
-        if (m_top < Satori::MARK_CHUNK_SIZE - sizeof(SatoriMarkChunk))
+        if (m_top < (Satori::MARK_CHUNK_SIZE - sizeof(SatoriMarkChunk)) / sizeof(SatoriObject*))
         {
             m_data[m_top++] = obj;
             return true;
