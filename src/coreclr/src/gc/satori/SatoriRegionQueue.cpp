@@ -40,12 +40,12 @@ SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*
     {
         // inplace case
         // split "size" and return as a new region
-        size_t nextStart, nextCommitted, nextZeroInitedAfter;
-        result->SplitCore(regionSize, nextStart, nextCommitted, nextZeroInitedAfter);
+        size_t nextStart, nextCommitted, nextUsed;
+        result->SplitCore(regionSize, nextStart, nextCommitted, nextUsed);
         _ASSERTE(result->ValidateBlank());
         m_lock.Leave();
 
-        result = SatoriRegion::InitializeAt(result->m_containingPage, nextStart, regionSize, nextCommitted, nextZeroInitedAfter);
+        result = SatoriRegion::InitializeAt(result->m_containingPage, nextStart, regionSize, nextCommitted, nextUsed);
         _ASSERTE(result->ValidateBlank());
         putBack = nullptr;
     }
@@ -105,12 +105,12 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
     {
         // inplace case
         // split "size" and return as a new region
-        size_t nextStart, nextCommitted, nextZeroInitedAfter;
-        result->SplitCore(regionSize, nextStart, nextCommitted, nextZeroInitedAfter);
+        size_t nextStart, nextCommitted, nextUsed;
+        result->SplitCore(regionSize, nextStart, nextCommitted, nextUsed);
         _ASSERTE(result->ValidateBlank());
         m_lock.Leave();
 
-        result = SatoriRegion::InitializeAt(result->m_containingPage, nextStart, regionSize, nextCommitted, nextZeroInitedAfter);
+        result = SatoriRegion::InitializeAt(result->m_containingPage, nextStart, regionSize, nextCommitted, nextUsed);
         _ASSERTE(result->ValidateBlank());
         putBack = nullptr;
     }

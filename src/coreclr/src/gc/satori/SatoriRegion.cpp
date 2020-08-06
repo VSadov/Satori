@@ -19,6 +19,7 @@
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
 #include "SatoriQueue.h"
+#include "SatoriPage.h"
 
 #ifdef memcpy
 #undef memcpy
@@ -28,13 +29,13 @@
 // #pragma optimize("gty", on)
 #endif
 
-SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t zeroInitedAfter)
+SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used)
 {
-    _ASSERTE(zeroInitedAfter <= committed);
+    _ASSERTE(used <= committed);
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
 
     committed = max(address, committed);
-    zeroInitedAfter = max(address, zeroInitedAfter);
+    used = max(address + sizeof(SatoriRegion), used);
 
     SatoriRegion* result = (SatoriRegion*)address;
 
@@ -51,10 +52,10 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
         committed += toCommit;
     }
 
-    result->m_state = SatoriRegionState::allocating;
+    result->m_ownerThreadTag = 0;
     result->m_end = address + regionSize;
     result->m_committed = min(committed, address + regionSize);
-    result->m_zeroInitedAfter = min(max(zeroInitedAfter, address + sizeof(SatoriRegion)), result->End());
+    result->m_used = min(used, address + regionSize);
     result->m_containingPage = containingPage;
 
     result->m_next = result->m_prev = nullptr;
@@ -64,88 +65,101 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     // Since the actual object data is shifted by 1 syncblock, a region could fit sizeof(size_t) more,
     // but that would complicate math in few places so we would rather ignore 0.0001% space loss.
     result->m_allocEnd = result->End();
+    result->m_occupancy = 0;
 
-    if (zeroInitedAfter > (size_t)&result->m_index)
+    if (used > (size_t)&result->m_index)
     {
         ZeroMemory(&result->m_index, offsetof(SatoriRegion, m_syncBlock) - offsetof(SatoriRegion, m_index));
     }
 
-    result->m_containingPage->RegionAdded(address);
+    result->m_containingPage->RegionInitialized(result);
     return result;
 }
 
 void SatoriRegion::MakeBlank()
 {
-    m_state = SatoriRegionState::allocating;
+    m_ownerThreadTag = 0;
     m_allocStart = (size_t)&m_firstObject;
     m_allocEnd = End();
+    m_occupancy = 0;
 
-    if (m_zeroInitedAfter > (size_t)&m_index)
+    //clear index
+    if (m_used > (size_t)&m_index)
     {
         ZeroMemory(&m_index, offsetof(SatoriRegion, m_syncBlock) - offsetof(SatoriRegion, m_index));
     }
+
+#ifdef _DEBUG
+    memset(&m_syncBlock, 0xFE, m_used - (size_t)&m_syncBlock);
+#endif
 }
 
 bool SatoriRegion::ValidateBlank()
 {
     if (!IsAllocating())
     {
+        _ASSERTE(false);
         return false;
     }
 
     if (Start() < m_containingPage->RegionsStart() || End() > m_containingPage->End())
     {
+        _ASSERTE(false);
         return false;
     }
 
     if (Size() % Satori::REGION_SIZE_GRANULARITY != 0)
     {
+        _ASSERTE(false);
         return false;
     }
 
     if (m_committed > End() || m_committed < Start() + sizeof(SatoriRegion))
     {
+        _ASSERTE(false);
         return false;
     }
 
-    if (m_zeroInitedAfter > m_committed || m_zeroInitedAfter < Start() + sizeof(SatoriRegion))
+    if (m_used > m_committed || m_used < Start() + sizeof(SatoriRegion))
     {
+        _ASSERTE(false);
         return false;
     }
 
     if (m_allocStart != (size_t)&m_firstObject || m_allocEnd != m_end)
     {
+        _ASSERTE(false);
         return false;
     }
 
     for (int i = 0; i < Satori::INDEX_ITEMS; i += Satori::INDEX_ITEMS / 4)
     {
+        _ASSERTE(m_index[i] == nullptr);
         if (m_index[i] != nullptr)
         {
             return false;
         }
     }
 
-    if (m_syncBlock != 0)
-    {
-        return false;
-    }
-
     return true;
 }
 
-void SatoriRegion::StopAllocating()
+void SatoriRegion::StopAllocating(size_t allocPtr)
 {
     _ASSERTE(IsAllocating());
 
-    SatoriObject::FormatAsFree(m_allocStart, AllocSize());
+    // make parseable
+    size_t freeAfter = allocPtr ? allocPtr : m_allocStart;
+    m_used = max(m_used, freeAfter + Satori::MIN_FREE_SIZE);
+    SatoriObject::FormatAsFree(freeAfter, m_allocEnd - freeAfter);
+
     // TODO: VS update index
-    m_allocEnd = 0;
+    m_allocStart = m_allocEnd = 0;
 }
 
-void SatoriRegion::Deactivate(SatoriHeap* heap)
+void SatoriRegion::Deactivate(SatoriHeap* heap, size_t allocPtr, bool forGc)
 {
-    StopAllocating();
+    StopAllocating(allocPtr);
 
     // TODO: VS local collect (leaves it parsable \w updated index)
 
@@ -157,7 +171,7 @@ void SatoriRegion::Deactivate(SatoriHeap* heap)
     }
 
     // TODO: VS: if can be splitted, split and return tail
-    heap->Recycler()->AddRegion(this);
+    heap->Recycler()->AddRegion(this, forGc);
 }
 
 bool SatoriRegion::IsEmpty()
@@ -166,7 +180,7 @@ bool SatoriRegion::IsEmpty()
     return (size_t)m_firstObject.Next() > m_end;
 }
 
-void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextCommitted, size_t& nextZeroInitedAfter)
+void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextCommitted, size_t& nextUsed)
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
     _ASSERTE(regionSize < this->Size());
@@ -176,11 +190,11 @@ void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextC
     size_t newEnd = m_end - regionSize;
     nextStart = newEnd;
     nextCommitted = m_committed;
-    nextZeroInitedAfter = m_zeroInitedAfter;
+    nextUsed = m_used;
 
     m_end = newEnd;
     m_committed = min(newEnd, m_committed);
-    m_zeroInitedAfter = min(newEnd, m_zeroInitedAfter);
+    m_used = min(newEnd, m_used);
     m_allocEnd = min(newEnd, m_allocEnd);
 
     _ASSERTE(Size() >= Satori::REGION_SIZE_GRANULARITY);
@@ -189,11 +203,11 @@ void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextC
 
 SatoriRegion* SatoriRegion::Split(size_t regionSize)
 {
-    size_t nextStart, nextCommitted, nextZeroInitedAfter;
-    SplitCore(regionSize, nextStart, nextCommitted, nextZeroInitedAfter);
+    size_t nextStart, nextCommitted, nextUsed;
+    SplitCore(regionSize, nextStart, nextCommitted, nextUsed);
 
     // format the rest as a new region
-    SatoriRegion* result = InitializeAt(m_containingPage, nextStart, regionSize, nextCommitted, nextZeroInitedAfter);
+    SatoriRegion* result = InitializeAt(m_containingPage, nextStart, regionSize, nextCommitted, nextUsed);
     _ASSERTE(result->ValidateBlank());
     return result;
 }
@@ -212,25 +226,28 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
     _ASSERTE(next->m_containingPage == m_containingPage);
     _ASSERTE(CanCoalesce(next));
 
-    m_containingPage->RegionDestroyed((size_t)next);
-
     m_end = next->m_end;
     m_committed = next->m_committed;
-    m_zeroInitedAfter = next->m_zeroInitedAfter;
+    m_used = next->m_used;
     m_allocEnd = next->m_allocEnd;
+
+    m_containingPage->RegionInitialized(this);
 }
 
 size_t SatoriRegion::Allocate(size_t size, bool ensureZeroInited)
 {
     _ASSERTE(m_containingQueue == nullptr);
-    size_t allocStart = m_allocStart;
-    size_t allocEnd = m_allocStart + size;
-    if (allocEnd <= m_allocEnd - Satori::MIN_FREE_SIZE || allocEnd == m_allocEnd)
+
+    size_t chunkStart = m_allocStart;
+    size_t chunkEnd = chunkStart + size;
+    if (chunkEnd <= m_allocEnd - Satori::MIN_FREE_SIZE)
     {
-        if (allocEnd > m_committed)
+        // commit a bit more - in case we need to append a parseability terminator.
+        size_t ensureCommitted = chunkEnd + Satori::MIN_FREE_SIZE;
+        if (ensureCommitted > m_committed)
         {
             // TODO: VS commit quantum should be a static (ensure it is power of 2 and < 2Mb, otherwise committ whole pages)
-            size_t newComitted = ALIGN_UP(allocEnd, GCToOSInterface::GetPageSize());
+            size_t newComitted = ALIGN_UP(ensureCommitted, GCToOSInterface::GetPageSize());
             if (!GCToOSInterface::VirtualCommit((void*)m_committed, newComitted - m_committed))
             {
                 return 0;
@@ -241,19 +258,17 @@ size_t SatoriRegion::Allocate(size_t size, bool ensureZeroInited)
 
         if (ensureZeroInited)
         {
-            size_t zeroInitStart = allocStart;
-            size_t zeroInitEnd = min(m_zeroInitedAfter, allocEnd);
-            ptrdiff_t zeroInitCount = zeroInitEnd - zeroInitStart;
+            size_t zeroInitEnd = min(m_used, chunkEnd);
+            ptrdiff_t zeroInitCount = zeroInitEnd - chunkStart;
             if (zeroInitCount > 0)
             {
-                ZeroMemory((void*)zeroInitStart, zeroInitCount);
+                ZeroMemory((void*)chunkStart, zeroInitCount);
             }
         }
 
-        size_t result = m_allocStart;
-        m_allocStart = allocEnd;
-        m_zeroInitedAfter = max(m_zeroInitedAfter, allocEnd);
-        return result;
+        m_allocStart = chunkEnd;
+        m_used = max(m_used, chunkEnd);
+        return chunkStart;
     }
 
     return 0;
@@ -262,27 +277,27 @@ size_t SatoriRegion::Allocate(size_t size, bool ensureZeroInited)
 size_t SatoriRegion::AllocateHuge(size_t size, bool ensureZeroInited)
 {
     _ASSERTE(ValidateBlank());
-    _ASSERTE(AllocSize() >= size);
+    _ASSERTE(AllocRemaining() >= size);
 
-    size_t allocStart;
-    size_t allocEnd;
-    if (AllocSize() - size > Satori::LARGE_OBJECT_THRESHOLD)
+    size_t chunkStart;
+    size_t chunkEnd;
+    if (AllocRemaining() - size > Satori::LARGE_OBJECT_THRESHOLD)
     {
-        allocEnd = max(m_allocStart + size, m_committed);
-        allocStart = allocEnd - size;
+        chunkEnd = max(m_allocStart + size, m_committed);
+        chunkStart = chunkEnd - size;
     }
     else
     {
-        allocStart = m_allocStart;
-        allocEnd = m_allocStart + size;
+        chunkStart = m_allocStart;
+        chunkEnd = m_allocStart + size;
     }
 
-    _ASSERTE(allocEnd > Start() + Satori::REGION_SIZE_GRANULARITY);
+    _ASSERTE(chunkEnd > Start() + Satori::REGION_SIZE_GRANULARITY);
 
-    if (allocEnd > m_committed)
+    if (chunkEnd > m_committed)
     {
         // TODO: VS commit quantum should be a static (ensure it is power of 2 and < 2Mb, otherwise commit whole pages)
-        size_t newComitted = ALIGN_UP(allocEnd, GCToOSInterface::GetPageSize());
+        size_t newComitted = ALIGN_UP(chunkEnd, GCToOSInterface::GetPageSize());
         if (!GCToOSInterface::VirtualCommit((void*)m_committed, newComitted - m_committed))
         {
             return 0;
@@ -292,11 +307,11 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool ensureZeroInited)
     }
 
     // if did not allocate from start, there could be some fillable space before the obj.
-    m_allocEnd = allocStart;
+    m_allocEnd = chunkStart;
     if (ensureZeroInited)
     {
-        size_t zeroInitStart = allocStart;
-        size_t zeroInitEnd = min(m_zeroInitedAfter, allocEnd);
+        size_t zeroInitStart = chunkStart;
+        size_t zeroInitEnd = min(m_used, chunkEnd);
         ptrdiff_t zeroInitCount = zeroInitEnd - zeroInitStart;
         if (zeroInitCount > 0)
         {
@@ -306,7 +321,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool ensureZeroInited)
 
     //TODO: VS update index?
     size_t result = m_allocStart;
-    m_zeroInitedAfter = max(m_zeroInitedAfter, allocEnd);
+    m_used = max(m_used, chunkEnd);
     return result;
 }
 
@@ -815,6 +830,20 @@ SatoriObject* SatoriRegion::NextMarked(SatoriObject* after)
     return result;
 }
 
+bool SatoriRegion::NothingMarked()
+{
+    for (size_t bitmapIndex = BITMAP_START; bitmapIndex < BITMAP_SIZE; bitmapIndex++)
+    {
+        size_t chunk = m_bitmap[bitmapIndex];
+        if (chunk)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
 {
     SatoriObject* s1;
@@ -905,7 +934,9 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
 
     Verify();
 
-    return (foundFree >= desiredFreeSpace + Satori::MIN_FREE_SIZE || foundFree == desiredFreeSpace);
+    m_occupancy = Satori::REGION_SIZE_GRANULARITY - foundFree;
+
+    return (foundFree >= desiredFreeSpace + Satori::MIN_FREE_SIZE);
 }
 
 void SatoriRegion::CleanMarks()
@@ -916,11 +947,22 @@ void SatoriRegion::CleanMarks()
 void SatoriRegion::Verify()
 {
 #ifdef _DEBUG
+    for (size_t i = m_used; i < m_committed; i++)
+    {
+        _ASSERTE(*(uint8_t*)i == 0);
+    }
+
+    SatoriObject* prevPrevObj = nullptr;
+    SatoriObject* prevObj = nullptr;
     SatoriObject* obj = FirstObject();
 
     while (obj->Start() < End())
     {
         ASSERT(obj->GetReloc() == 0);
+        ASSERT((size_t)obj->RawGetMethodTable() > 10);
+
+        prevPrevObj = prevObj;
+        prevObj = obj;
         obj = obj->Next();
     }
 
