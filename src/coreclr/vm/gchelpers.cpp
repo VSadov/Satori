@@ -1272,6 +1272,7 @@ static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
 
 #include <optsmallperfcritical.h>
 
+// same as SatoriGC::IsHeapPointer, just to avoid dependency on SatoriGC class.
 bool IsInHeapSatori(Object** start)
 {
     if ((uint8_t*)start > (uint8_t*)g_highest_address)
@@ -1290,13 +1291,13 @@ void CheckAndMarkEscapeSatori(Object** dst, Object* ref)
     if (ref && ((size_t)dst ^ (size_t)(ref)) >> 21)
     {
         SatoriObject* obj = (SatoriObject*)ref;
-        if (obj->ContainingRegion()->State() == SatoriRegionState::allocating)
+        if (obj->ContainingRegion()->OwnedByCurrentThread())
         {
             if (!obj->IsEscaped())
             {
-                // an unescaped object in an allocating region -> the region is our threadlocal
-                // thus we can mark the object escape
-                // we use ordinary assignment, noone else should be marking this region.
+                // we are escaping an object from our thread local region
+                // we can mark the object escape with an ordinary assignment,
+                // noone else should be marking this region.
                 obj->SetEscaped();
             }
         }
