@@ -129,7 +129,7 @@ unsigned SatoriGC::WhichGeneration(Object* obj)
 
 int SatoriGC::CollectionCount(int generation, int get_bgc_fgc_coutn)
 {
-    __UNREACHABLE();
+    //TODO: VS this is implementable. We cna just count blocking GCs for now.
     return 0;
 }
 
@@ -165,8 +165,8 @@ HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
 
 unsigned SatoriGC::GetMaxGeneration()
 {
-    __UNREACHABLE();
-    return 0;
+    // TODO: VS we will probably have only 1 and 2.
+    return 2;
 }
 
 void SatoriGC::SetFinalizationRun(Object* obj)
@@ -205,23 +205,27 @@ HRESULT SatoriGC::Initialize()
     return S_OK;
 }
 
+// checks if obj is marked.
+// makes sense only during marking phases.
 bool SatoriGC::IsPromoted(Object* object)
 {
-    __UNREACHABLE();
-    return false;
+    _ASSERTE(m_heap->IsHeapAddress((size_t)object));
+
+    SatoriObject* o = (SatoriObject*)object;
+    return o->IsMarked();
 }
 
 bool SatoriGC::IsHeapPointer(void* object, bool small_heap_only)
 {
-    return m_heap->IsHeapAddress((uint8_t*)object);
+    return m_heap->IsHeapAddress((size_t)object);
 
     //TODO: Satori small_heap_only ?
 }
 
 unsigned SatoriGC::GetCondemnedGeneration()
 {
-    __UNREACHABLE();
-    return 0;
+    // TODO: VS, we will have 1 and 2, eventually
+    return 2;
 }
 
 bool SatoriGC::IsGCInProgressHelper(bool bConsiderGCStart)
@@ -267,13 +271,14 @@ bool SatoriGC::IsEphemeral(Object* object)
 
 uint32_t SatoriGC::WaitUntilGCComplete(bool bConsiderGCStart)
 {
+    m_heap->Recycler()->WaitOnSuspension();
     return NOERROR;
 }
 
 void SatoriGC::FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
 {
     // this is only called when thread is terminating and about to clear its context.
-    ((SatoriAllocationContext*)acontext)->OnTerminateThread(m_heap);
+    ((SatoriAllocationContext*)acontext)->Deactivate(m_heap, /* forGc */ false);
 }
 
 size_t SatoriGC::GetCurrentObjSize()
