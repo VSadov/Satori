@@ -22,8 +22,15 @@ public:
     static SatoriPage* InitializeAt(size_t address, size_t pageSize);
     SatoriRegion* MakeInitialRegion();
 
-    void RegionAdded(size_t address);
-    void RegionDestroyed(size_t address);
+    void RegionInitialized(SatoriRegion* region);
+    void RegionDestroyed(SatoriRegion* region);
+
+    SatoriRegion* RegionForAddress(size_t address);
+
+    size_t Start()
+    {
+        return (size_t)this;
+    }
 
     size_t End()
     {
@@ -35,10 +42,53 @@ public:
         return m_firstRegion;
     }
 
+    uint8_t* RegionMap()
+    {
+        return m_regionMap;
+    }
+
+    void SetCardForAddress(size_t address)
+    {
+        size_t offset = address - Start();
+        size_t cardByteOffset = offset / (128 * 8);
+
+        _ASSERTE(cardByteOffset / 8 > m_cardTableStart);
+        _ASSERTE(cardByteOffset / 8 < m_cardTableSize);
+
+        ((uint8_t*)this)[cardByteOffset] = 0xFF;
+
+        // TODO: VS dirty the region
+    }
+
 private:
-    size_t m_end;
-    size_t m_initialCommit;
-    size_t m_firstRegion;
+    union
+    {
+        // 1bit  - 128 bytes
+        // 1byte - 1k
+        // 2K    - 2Mb (region granularity)
+        // 1Mb   - 1Gb
+        // We can start card table at the beginning of the page for simplicity
+        // The first 2K+ cover the header, which includes the region map and the table itself
+        // so that space will be unused.
+        size_t m_cardTable[1];
+
+        // header (can be up to 2Kb for 1Gb page)
+        struct
+        {
+            size_t m_end;
+            size_t m_initialCommit;
+            size_t m_firstRegion;
+
+            // the following is useful when scanning/clearing cards
+            // it can be computed from the page size, but we have space, so we will store.
+            int m_cardTableSize;
+            int m_cardTableStart;
+
+            // 1byte per region
+            // 512 bytes per 1Gb
+            uint8_t m_regionMap[1];
+        };
+    };
 };
 
 #endif
