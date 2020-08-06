@@ -361,9 +361,10 @@ LEAF_ENTRY JIT_WriteBarrier_SATORI, _TEXT
         je      Exit                    ; assigning null
 
         mov     rax, rdx
-        and     rax, 0FFFFFFFFFFE00000h ;  region
-        cmp     byte ptr [rax], 0       ; check status, 0 -> allocating
-        jne     EscapeChecked           ; object is not from allocating region
+        and     rax, 0FFFFFFFFFFE00000h ; region
+        mov     r8,  gs:[58h]
+        cmp     qword ptr [rax], r8     ; check that we own the region
+        jne     EscapeChecked           ; not ours
 
         mov     r8, rdx
         shr     r8, 3
@@ -372,12 +373,10 @@ LEAF_ENTRY JIT_WriteBarrier_SATORI, _TEXT
         mov     r9, r8
         and     r8d,03Fh
         shr     r9, 6
-        mov     r10,qword ptr [rax+r9*8]
-        bt      r10,r8
+        bt      qword ptr [rax+r9*8], r8
         jb      EscapeChecked           ; object is already marked as escaped
 
-        bts     r10,r8
-        mov     qword ptr [rax+r9*8], r10
+        bts     qword ptr [rax+r9*8], r8
 
     EscapeChecked:
         ; cross generational referencing would be recorded here

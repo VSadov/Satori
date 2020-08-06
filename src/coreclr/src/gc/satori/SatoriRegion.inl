@@ -15,9 +15,14 @@
 #include "../env/gcenv.ee.h"
 #include "SatoriRegion.h"
 
-inline SatoriRegionState SatoriRegion::State()
+inline bool SatoriRegion::IsThreadLocal()
 {
-    return m_state;
+    return m_ownerThreadTag;
+}
+
+inline bool SatoriRegion::OwnedByCurrentThread()
+{
+    return m_ownerThreadTag == SatoriUtil::GetCurrentThreadTag();
 }
 
 inline bool SatoriRegion::IsAllocating()
@@ -27,7 +32,7 @@ inline bool SatoriRegion::IsAllocating()
 
 inline size_t SatoriRegion::Start()
 {
-    return (size_t)&m_state;
+    return (size_t)this;
 }
 
 inline size_t SatoriRegion::End()
@@ -45,14 +50,10 @@ inline size_t SatoriRegion::AllocStart()
     return m_allocStart;
 }
 
-inline size_t SatoriRegion::AllocEnd()
+inline size_t SatoriRegion::AllocRemaining()
 {
-    return m_allocEnd;
-}
-
-inline size_t SatoriRegion::AllocSize()
-{
-    return m_allocEnd - m_allocStart;
+    size_t limit = m_allocEnd - Satori::MIN_FREE_SIZE;
+    return m_allocStart >= limit ? 0 : limit - m_allocStart;
 }
 
 inline SatoriObject* SatoriRegion::FirstObject()
@@ -60,10 +61,15 @@ inline SatoriObject* SatoriRegion::FirstObject()
     return &m_firstObject;
 }
 
+inline size_t SatoriRegion::Occupancy()
+{
+    return m_occupancy;
+}
+
 inline void SatoriRegion::Publish()
 {
-    _ASSERTE(m_state == SatoriRegionState::allocating);
-    m_state = SatoriRegionState::shared;
+    _ASSERTE(m_ownerThreadTag != 0);
+    m_ownerThreadTag = 0;
 }
 
 #endif

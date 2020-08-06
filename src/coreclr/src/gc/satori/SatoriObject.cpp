@@ -21,6 +21,7 @@ void SatoriObject::Initialize()
 
 SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
 {
+    _ASSERTE(location == ALIGN_UP(location, Satori::OBJECT_ALIGNMENT));
     _ASSERTE(size >= sizeof(Object) + sizeof(size_t));
 
     SatoriObject* obj = SatoriObject::At(location);
@@ -33,6 +34,8 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
 #endif
     // deduct the size of Array header + syncblock
     ((size_t*)obj)[ArrayBase::GetOffsetOfNumComponents() / sizeof(size_t)] = size - (sizeof(ArrayBase) + sizeof(size_t));
+
+    _ASSERTE(obj->ContainingRegion()->m_used > location + ArrayBase::GetOffsetOfNumComponents() + sizeof(size_t));
 
     return obj;
 }
