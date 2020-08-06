@@ -548,13 +548,13 @@ void MarkEscapeSatori(Object* ref)
 {
 #if FEATURE_SATORI_GC
     SatoriObject* obj = (SatoriObject*)ref;
-    if (obj->ContainingRegion()->State() == SatoriRegionState::allocating)
+    if (obj->ContainingRegion()->OwnedByCurrentThread())
     {
         if (!obj->IsEscaped())
         {
-            // an unescaped object in an allocating region -> the region is our threadlocal
-            // thus we can mark the object escape
-            // we use ordinary assignment, noone else should be marking this region.
+            // we are escaping an object from our thread local region
+            // we can mark the object escape with an ordinary assignment,
+            // noone else should be marking this region.
             obj->SetEscaped();
         }
     }
