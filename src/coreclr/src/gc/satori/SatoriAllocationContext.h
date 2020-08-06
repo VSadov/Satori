@@ -27,7 +27,7 @@ public:
         return (SatoriRegion*&)this->gc_reserved_2;
     }
 
-    void OnTerminateThread(SatoriHeap* heap);
+    void Deactivate(SatoriHeap* heap, bool forGc);
 
 private:
 
