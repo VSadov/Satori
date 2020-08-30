@@ -19,6 +19,8 @@
 #include "SatoriRegion.inl"
 #include "SatoriRegionQueue.h"
 #include "SatoriAllocationContext.h"
+#include "SatoriMarkChunk.h"
+#include "SatoriMarkChunkQueue.h"
 
 void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
@@ -28,6 +30,8 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     {
         m_queues[i] = new SatoriRegionQueue();
     }
+
+    m_markChunks = new SatoriMarkChunkQueue();
 }
 
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
@@ -112,19 +116,31 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 {
     size = ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
 
+    SatoriObject* result;
+
     if (context->alloc_ptr + size <= context->alloc_limit)
     {
-        Object* result = (Object*)context->alloc_ptr;
+        result = (SatoriObject*)context->alloc_ptr;
         context->alloc_ptr += size;
-        return result;
     }
-
-    if (size < Satori::LARGE_OBJECT_THRESHOLD)
+    else if (size < Satori::LARGE_OBJECT_THRESHOLD)
     {
-        return AllocRegular(context, size, flags);
+        result = AllocRegular(context, size, flags);
+    }
+    else
+    {
+        result = AllocLarge(context, size, flags);
     }
 
-    return AllocLarge(context, size, flags);
+    if (flags & GC_ALLOC_FINALIZE)
+    {
+        if (!result->ContainingRegion()->RegisterForFinalization(result))
+        {
+            return nullptr;
+        }
+    }
+
+    return result;
 }
 
 SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags)
@@ -255,4 +271,44 @@ done:
     result->CleanSyncBlock();
     context->alloc_bytes_uoh += size;
     return result;
+}
+
+SatoriMarkChunk* SatoriAllocator::TryGetMarkChunk()
+{
+    SatoriMarkChunk* chunk = m_markChunks->TryPop();
+    while (!chunk && AddMoreMarkChunks())
+    {
+        chunk = m_markChunks->TryPop();
+    }
+
+    return chunk;
+}
+
+bool SatoriAllocator::AddMoreMarkChunks()
+{
+    SatoriRegion* region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
+
+    if (!region)
+    {
+        return false;
+    }
+
+    while (true)
+    {
+        size_t mem = region->Allocate(Satori::MARK_CHUNK_SIZE, /*ensureZeroInited*/ false);
+        if (!mem)
+        {
+            break;
+        }
+
+        SatoriMarkChunk* chunk = SatoriMarkChunk::InitializeAt(mem);
+        m_markChunks->Push(chunk);
+    }
+
+    return true;
+}
+
+void SatoriAllocator::ReturnMarkChunk(SatoriMarkChunk* chunk)
+{
+    m_markChunks->Push(chunk);
 }

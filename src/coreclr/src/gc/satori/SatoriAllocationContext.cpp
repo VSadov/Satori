@@ -27,8 +27,8 @@ void SatoriAllocationContext::Deactivate(SatoriHeap* heap, bool forGc)
     }
     else
     {
-        ASSERT(this->alloc_limit == nullptr);
-        ASSERT(this->alloc_ptr == nullptr);
+        _ASSERTE(this->alloc_limit == nullptr);
+        _ASSERTE(this->alloc_ptr == nullptr);
     }
 
     if (LargeRegion() != nullptr)
