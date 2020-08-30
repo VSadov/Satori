@@ -37,14 +37,21 @@ private:
     // used to ensure each thread is scanned once per scan round.
     int m_scanCount;
 
-    int m_baseCount;
+    // region count at the end of last GC, used in a crude GC triggering heuristic.
+    int m_prevRegionCount;
 
-    SatoriRegionQueue* m_allRegions;
+    SatoriRegionQueue* m_regularRegions;
+    SatoriRegionQueue* m_finalizationTrackingRegions;
+
+    // temporary store while processing finalizables
+    SatoriRegionQueue* m_finalizationScanCompleteRegions;
+    SatoriRegionQueue* m_finalizationPendingRegions;
+
+    // temporary store while planning
     SatoriRegionQueue* m_stayingRegions;
     SatoriRegionQueue* m_relocatingRegions;
 
     SatoriMarkChunkQueue* m_workList;
-    SatoriMarkChunkQueue* m_freeList;
 
     static void DeactivateFn(gc_alloc_context* context, void* param);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
@@ -59,6 +66,7 @@ private:
     void MarkHandles();
     void WeakPtrScan(bool isShort);
     void WeakPtrScanBySingleThread();
+    void ScanFinalizables();
 };
 
 #endif

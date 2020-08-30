@@ -12,7 +12,7 @@
 #include "SatoriPage.h"
 #include "SatoriRegion.h"
 
-SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize)
+SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap)
 {
     _ASSERTE(pageSize % Satori::PAGE_SIZE_GRANULARITY == 0);
 
@@ -46,6 +46,7 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize)
     _ASSERTE(cardTableStart * sizeof(size_t) > offsetof(SatoriPage, m_regionMap) + regionMapSize);
 
     result->m_cardTableStart = (int)cardTableStart;
+    result->m_heap = heap;
 
     return result;
 }
