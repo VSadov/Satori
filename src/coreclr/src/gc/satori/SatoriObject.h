@@ -42,6 +42,8 @@ public:
     void SetEscaped();
     bool IsEscapedOrPinned();
 
+    bool IsFinalizationSuppressed();
+
     int32_t GetNextInMarkStack();
     void SetNextInMarkStack(int32_t);
     void ClearNextInMarkStack();
