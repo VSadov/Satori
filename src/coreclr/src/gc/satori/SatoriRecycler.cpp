@@ -19,6 +19,7 @@
 #include "SatoriRegion.inl"
 #include "SatoriMarkChunk.h"
 #include "SatoriAllocationContext.h"
+#include "SatoriFinalizationQueue.h"
 #include "../gcscan.h"
 
 void SatoriRecycler::Initialize(SatoriHeap* heap)
@@ -26,26 +27,16 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_heap = heap;
     m_suspensionLock.Initialize();
 
-    m_allRegions = new SatoriRegionQueue();
+    m_regularRegions = new SatoriRegionQueue();
+    m_finalizationTrackingRegions = new SatoriRegionQueue();
+
+    m_finalizationScanCompleteRegions = new SatoriRegionQueue();
+    m_finalizationPendingRegions = new SatoriRegionQueue();
+
     m_stayingRegions = new SatoriRegionQueue();
     m_relocatingRegions = new SatoriRegionQueue();
 
     m_workList = new SatoriMarkChunkQueue();
-    m_freeList = new SatoriMarkChunkQueue();
-
-    SatoriRegion* region = m_heap->Allocator()->GetRegion(Satori::REGION_SIZE_GRANULARITY);
-
-    while (true)
-    {
-        size_t mem = region->Allocate(Satori::MARK_CHUNK_SIZE, /*ensureZeroInited*/ false);
-        if (!mem)
-        {
-            break;
-        }
-
-        SatoriMarkChunk* chunk = SatoriMarkChunk::InitializeAt(mem);
-        m_freeList->Push(chunk);
-    }
 }
 
 void SatoriRecycler::AddRegion(SatoriRegion* region, bool forGc)
@@ -57,8 +48,17 @@ void SatoriRecycler::AddRegion(SatoriRegion* region, bool forGc)
     // TODO: VS volatile?
     region->Publish();
 
-    int count = m_allRegions->Push(region);
-    if (!forGc && count - m_baseCount > 10)
+    if (region->HasFinalizables())
+    {
+        m_finalizationTrackingRegions->Push(region);
+    }
+    else
+    {
+        m_regularRegions->Push(region);
+    }
+
+    int count = m_finalizationTrackingRegions->Count() + m_regularRegions->Count();
+    if (!forGc && count - m_prevRegionCount > 10)
     {
         Collect();
     }
@@ -71,7 +71,8 @@ void SatoriRecycler::Collect()
 
     {
         SatoriLockHolder<SatoriLock> holder(&m_suspensionLock);
-        if (m_allRegions->Count() - m_baseCount <= 10)
+        int count = m_finalizationTrackingRegions->Count() + m_regularRegions->Count();
+        if (count - m_prevRegionCount <= 10)
         {
             goto exit;
         }
@@ -101,7 +102,7 @@ void SatoriRecycler::Collect()
         while (m_workList->Count() > 0)
         {
             DrainMarkQueues();
-            //mark through SATB cards   (could be due to overflow)
+            //mark through cards   (could be due to overflow)
         }
 
         // all marked here 
@@ -109,55 +110,66 @@ void SatoriRecycler::Collect()
         // TODO: VS
         //       DH initial scan (could be a part of loop above?)
         //       sync
-        WeakPtrScan(true);
+        WeakPtrScan(/*isShort*/ true);
         //       sync
-        //       scan finalize queue
+        ScanFinalizables();
+        DrainMarkQueues();
+
         //       scan DH again     (why no sync before?)
         //       sync 
-        WeakPtrScan(false);
+        WeakPtrScan(/*isShort*/ false);
         WeakPtrScanBySingleThread();
 
         // TODO: VS can't know live size without scanning all live objects. We need to scan at least live ones.
         // Then we could as well coalesce gaps and thread to buckets.
-        // What to do with finalizables?
 
         // plan regions:
         // 0% - return to recycler
-        // > 80%   go to stayers   (scan for finalizable one day, if occupancy reduced and has finalizable, this can be done after releasing VM.)
+        // > 80%   go to stayers
         // > 50% or with pins - targets, sweep and thread gaps, slice and release free tails, add to queues,   need buckets similar to allocator, should regs have buckets?
         //   targets go to stayers too.
         //
         // rest - add to move sources
-        SatoriRegion* curReg;
-        while (curReg = m_allRegions->TryPop())
-        {
-            if (curReg->NothingMarked())
-            {
-                curReg->MakeBlank();
-                m_heap->Allocator()->AddRegion(curReg);
-            }
-            else
-            {
-                m_stayingRegions->Push(curReg);
-            }
-        }
 
         // once no more regs in queue
         // go through sources and relocate to destinations,
         // grab empties if no space, add to stayers and use as if gotten from free buckets.
-        // if no space at all, put the reg to stayers. (scan for finalizable one day)
+        // if no space at all, put the reg to stayers.
 
         // go through roots and update refs
 
         // go through stayers, update refs  (need to care about relocated in stayers, could happen if no space)
-        while (curReg = m_stayingRegions->TryPop())
+
+
+        // TODO: VS do trivial sweep for now
+        auto SweepRegions = [&](SatoriRegionQueue* regions)
         {
-            curReg->CleanMarks();
-            m_allRegions->Push(curReg);
-        }
+            SatoriRegion* curReg;
+            while (curReg = regions->TryPop())
+            {
+                if (curReg->NothingMarked())
+                {
+                    curReg->MakeBlank();
+                    m_heap->Allocator()->AddRegion(curReg);
+                }
+                else
+                {
+                    m_stayingRegions->Push(curReg);
+                }
+            }
+
+            while (curReg = m_stayingRegions->TryPop())
+            {
+                curReg->CleanMarks();
+                regions->Push(curReg);
+            }
+        };
+
+        SweepRegions(m_regularRegions);
+        SweepRegions(m_finalizationTrackingRegions);
     }
 
-    m_baseCount = m_allRegions->Count();
+    m_prevRegionCount = m_finalizationTrackingRegions->Count() + m_regularRegions->Count();
 
     // restart VM
     GCToEEInterface::RestartEE(true);
@@ -211,16 +223,15 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriMarkChunk* &currentMarkChunk, Sa
         m_workList->Push(currentMarkChunk);
     }
 
-    currentMarkChunk = m_freeList->TryPop();
+    currentMarkChunk = m_heap->Allocator()->TryGetMarkChunk();
     if (currentMarkChunk)
     {
-        bool pushed = currentMarkChunk->TryPush(o);
-        _ASSERTE(pushed);
+        currentMarkChunk->Push(o);
     }
     else
     {
-        // TODO: VS mark card table
-        o->SetEscaped();
+        // TODO: VS handle mark overflow.
+        _ASSERTE(!"overflow");
     }
 }
 
@@ -367,9 +378,10 @@ void SatoriRecycler::DrainMarkQueues()
     while (srcChunk)
     {
         // drain srcChunk to dst chunk
-        SatoriObject* o;
-        while (o = srcChunk->TryPop())
+        while (srcChunk->Count() > 0)
         {
+            SatoriObject* o = srcChunk->Pop();
+            _ASSERTE(o->IsMarked());
             o->ForEachObjectRef(
                 [&](SatoriObject** ref)
                 {
@@ -398,7 +410,7 @@ void SatoriRecycler::DrainMarkQueues()
         }
         else
         {
-            m_freeList->Push(srcChunk);
+            m_heap->Allocator()->ReturnMarkChunk(srcChunk);
             srcChunk = m_workList->TryPop();
         }
     }
@@ -406,7 +418,7 @@ void SatoriRecycler::DrainMarkQueues()
     if (dstChunk)
     {
         _ASSERTE(dstChunk->Count() == 0);
-        m_freeList->Push(dstChunk);
+        m_heap->Allocator()->ReturnMarkChunk(dstChunk);
     }
 }
 
@@ -455,4 +467,138 @@ void SatoriRecycler::WeakPtrScanBySingleThread()
     // scan for deleted entries in the syncblk cache
     // does not use a context, so we pass nullptr
     GCScan::GcWeakPtrScanBySingleThread(2, 2, nullptr);
+}
+
+// can run concurrently, but not with mutator (since it may reregister for finalization) 
+void SatoriRecycler::ScanFinalizables()
+{
+    MarkContext c = MarkContext(this);
+
+    SatoriRegion* region;
+    while (region = m_finalizationTrackingRegions->TryPop())
+    {
+        bool hasPendingCF = false;
+
+        region->ForEachFinalizable(
+            [&](SatoriObject* finalizable)
+            {
+                _ASSERTE(((size_t)finalizable & Satori::FINALIZATION_PENDING) == 0);
+
+                // reachable finalizables are not iteresting in any state.
+                // finalizer can be suppressed and re-registered again without creating new trackers.
+                // (this is preexisting behavior)
+
+                if (!finalizable->IsMarked())
+                {
+                    // eager finalization does not respect suppression (preexisting behavior)
+                    if (GCToEEInterface::EagerFinalized(finalizable))
+                    {
+                        finalizable = nullptr;
+                    }
+                    else if (finalizable->IsFinalizationSuppressed())
+                    {
+                        // Reset the bit so it will be put back on the queue
+                        // if resurrected and re-registered.
+                        // NOTE: if finalizer could run only once until re-registered,
+                        //       unreachable + suppressed object would not be able to resurrect.
+                        //       however, re-registering multiple times may result in multiple finalizer runs.
+                        // (this is preexisting behavior)
+                        finalizable->GetHeader()->ClrBit(BIT_SBLK_FINALIZER_RUN);
+                        finalizable = nullptr;
+                    }
+                    else
+                    {
+                        // finalizable has just become unreachable
+                        if (finalizable->RawGetMethodTable()->HasCriticalFinalizer())
+                        {
+                            // can't schedule just yet, because CriticalFinalizables must go
+                            // after _all_  regular Finalizables scheduled in this GC
+                            hasPendingCF = true;
+                            (size_t&)finalizable |= Satori::FINALIZATION_PENDING;
+                        }
+                        else
+                        {
+                            if (m_heap->FinalizationQueue()->TryScheduleForFinalizationSingleThreaded(finalizable))
+                            {
+                                // this tracker has served its purpose.
+                                finalizable = nullptr;
+                            }
+                            else
+                            {
+                                _ASSERTE(!"handle overflow (just add the rest to pending?)");
+                            }
+                        }
+                    }
+                }
+
+                return finalizable;
+            }
+        );
+
+        if (hasPendingCF)
+        {
+            m_finalizationPendingRegions->Push(region);
+        }
+        else
+        {
+            m_finalizationScanCompleteRegions->Push(region);
+        }
+    }
+
+    while (region = m_finalizationPendingRegions->TryPop())
+    {
+        region->ForEachFinalizable(
+            [&](SatoriObject* finalizable)
+            {
+                if ((size_t)finalizable & Satori::FINALIZATION_PENDING)
+                {
+                    (size_t&)finalizable &= ~Satori::FINALIZATION_PENDING;
+
+                    if (m_heap->FinalizationQueue()->TryScheduleForFinalizationSingleThreaded(finalizable))
+                    {
+                        // this tracker has served its purpose.
+                        finalizable = nullptr;
+                    }
+                    else
+                    {
+                        _ASSERTE(!"handle overflow (short circuit the rest) NOTE: must mark all that did not schedule and unpend.");
+                    }
+                }
+
+                return finalizable;
+            }
+        );
+
+        m_finalizationScanCompleteRegions->Push(region);
+    }
+
+    _ASSERTE(m_finalizationTrackingRegions->Count() == 0);
+
+    // swap m_finalizationScanCompleteRegions and m_finalizationTrackingRegions
+    SatoriRegionQueue* tmp = m_finalizationTrackingRegions;
+    m_finalizationTrackingRegions = m_finalizationScanCompleteRegions;
+    m_finalizationScanCompleteRegions = tmp;
+
+    if (m_heap->FinalizationQueue()->HasItems())
+    {
+        // add finalization queue to mark list
+        m_heap->FinalizationQueue()->ForEachObjectRef(
+            [&](SatoriObject** ppObject)
+            {
+                SatoriObject* o = *ppObject;
+                if (!o->IsMarked())
+                {
+                    o->SetMarked();
+                    c.PushToMarkQueues(*ppObject);
+                }
+            }
+        );
+
+        GCToEEInterface::EnableFinalization(true);
+    }
+
+    if (c.m_markChunk != nullptr)
+    {
+        m_workList->Push(c.m_markChunk);
+    }
 }
