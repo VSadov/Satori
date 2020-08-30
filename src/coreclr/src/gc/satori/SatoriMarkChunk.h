@@ -32,9 +32,31 @@ public:
         return self;
     }
 
+    size_t Count()
+    {
+        return m_top;
+    }
+
+    bool HasSpace()
+    {
+        return m_top < (Satori::MARK_CHUNK_SIZE - sizeof(SatoriMarkChunk)) / sizeof(SatoriObject*);
+    }
+
+    void Push(SatoriObject* obj)
+    {
+        _ASSERTE(HasSpace());
+        m_data[m_top++] = obj;
+    }
+
+    SatoriObject* Pop()
+    {
+        _ASSERTE(Count() > 0);
+        return m_data[--m_top];
+    }
+
     bool TryPush(SatoriObject* obj)
     {
-        if (m_top < (Satori::MARK_CHUNK_SIZE - sizeof(SatoriMarkChunk)) / sizeof(SatoriObject*))
+        if (HasSpace())
         {
             m_data[m_top++] = obj;
             return true;
@@ -43,16 +65,41 @@ public:
         return false;
     }
 
-    SatoriObject* TryPop()
+    void SetNext(SatoriMarkChunk* next)
     {
-        return m_top ?
-            m_data[--m_top] :
-            nullptr;
+        _ASSERTE(m_containingQueue == nullptr);
+        m_next = next;
     }
 
-    size_t Count()
+    SatoriMarkChunk* Next()
     {
-        return m_top;
+        _ASSERTE(m_containingQueue == nullptr);
+        return m_next;
+    }
+
+    SatoriObject* &Item(size_t i)
+    {
+        _ASSERTE(i < m_top);
+        return m_data[i];
+    }
+
+    size_t Compact()
+    {
+        size_t from = 0;
+        while (from < m_top && m_data[from++]);
+
+        size_t to = from;
+        while (from < m_top)
+        {
+            if (m_data[from])
+            {
+                m_data[to++] = m_data[from];
+            }
+            from++;
+        }
+
+        m_top = to;
+        return to;
     }
 
 private:
