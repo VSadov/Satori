@@ -14,6 +14,8 @@
 #include "SatoriUtil.h"
 #include "SatoriObject.h"
 
+class SatoriAllocator;
+
 enum class SatoriRegionState : int8_t
 {
     allocating   = 0,
@@ -68,6 +70,12 @@ public:
     bool NothingMarked();
     bool ThreadLocalCompact(size_t desiredFreeSpace);
 
+    template<typename F>
+    void ForEachFinalizable(F& lambda);
+    bool RegisterForFinalization(SatoriObject* finalizable);
+    bool HasFinalizables();
+    bool& HasPendingFinalizables();
+
     void CleanMarks();
 
     void Verify();
@@ -103,6 +111,9 @@ private:
             SatoriRegion* m_prev;
             SatoriRegion* m_next;
             SatoriQueue<SatoriRegion>* m_containingQueue;
+            SatoriMarkChunk* m_finalizables;
+
+            bool m_hasPendingFinalizables;
 
             int32_t m_markStack;
 
@@ -128,9 +139,12 @@ private:
     static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
     bool IsEmpty();
 
+    SatoriAllocator* Allocator();
+
     void PushToMarkStack(SatoriObject* obj);
     SatoriObject* PopFromMarkStack();
     SatoriObject* ObjectForBit(size_t bitmapIndex, int offset);
+    void CompactFinalizables();
 };
 
 #endif
