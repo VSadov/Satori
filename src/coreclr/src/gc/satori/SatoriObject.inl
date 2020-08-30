@@ -125,7 +125,7 @@ inline void SatoriObject::SetPinned()
 
 inline void SatoriObject::ClearPinnedAndMarked()
 {
-    ASSERT(GetReloc() == 0);
+    _ASSERTE(GetReloc() == 0);
     ClearBit(0);
     ClearBit(2);
 }
@@ -160,6 +160,11 @@ inline bool SatoriObject::IsEscapedOrPinned()
     return result;*/
 }
 
+inline bool SatoriObject::IsFinalizationSuppressed()
+{
+    return GetHeader()->GetBits() & BIT_SBLK_FINALIZER_RUN;
+}
+
 // TODO: VS consolidate to common impl.
 inline int32_t SatoriObject::GetNextInMarkStack()
 {
@@ -168,7 +173,7 @@ inline int32_t SatoriObject::GetNextInMarkStack()
 
 inline void SatoriObject::SetNextInMarkStack(int32_t next)
 {
-    ASSERT(GetNextInMarkStack() == 0);
+    _ASSERTE(GetNextInMarkStack() == 0);
     ((int32_t*)this)[-2] = next;
 }
 
@@ -186,13 +191,13 @@ inline int32_t SatoriObject::GetReloc()
 
 inline void SatoriObject::SetReloc(int32_t next)
 {
-    ASSERT(GetReloc() == 0);
+    _ASSERTE(GetReloc() == 0);
     ((int32_t*)this)[-2] = next;
 }
 
 inline void SatoriObject::ClearMarkCompactStateForRelocation()
 {
-    ASSERT(!IsEscaped());
+    _ASSERTE(!IsEscaped());
     ((int32_t*)this)[-2] = 0;
     ClearBit(0);
     ClearBit(2);
