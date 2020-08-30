@@ -72,4 +72,49 @@ inline void SatoriRegion::Publish()
     m_ownerThreadTag = 0;
 }
 
+template<typename F>
+void SatoriRegion::ForEachFinalizable(F& lambda)
+{
+    size_t items = 0;
+    size_t nulls = 0;
+    SatoriMarkChunk* chunk = m_finalizables;
+    while (chunk)
+    {
+        items += chunk->Count();
+        for (size_t i = 0; i < chunk->Count(); i++)
+        {
+            SatoriObject* finalizable = chunk->Item(i);
+            if (finalizable == nullptr)
+            {
+                nulls++;
+                continue;
+            }
+
+            SatoriObject* newFinalizable = lambda(finalizable);
+            if (newFinalizable != finalizable)
+            {
+                chunk->Item(i) = newFinalizable;
+            }
+        }
+
+        chunk = chunk->Next();
+    }
+
+    //TODO: VS tune? this should not be frequent and list should be short, *2 seems ok.
+    if (nulls * 2 >= items)
+    {
+       CompactFinalizables();
+    }
+}
+
+inline bool SatoriRegion::HasFinalizables()
+{
+    return m_finalizables;
+}
+
+inline bool& SatoriRegion::HasPendingFinalizables()
+{
+    return m_hasPendingFinalizables;
+}
+
 #endif
