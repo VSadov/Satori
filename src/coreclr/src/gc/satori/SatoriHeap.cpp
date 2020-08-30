@@ -81,6 +81,7 @@ SatoriHeap* SatoriHeap::Create()
 
     result->m_allocator.Initialize(result);
     result->m_recycler.Initialize(result);
+    result->m_finalizationQueue.Initialize();
 
     return result;
 }
@@ -117,7 +118,7 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
         }
 
         size_t pageAddress = (size_t)i << Satori::PAGE_BITS;
-        newPage = SatoriPage::InitializeAt(pageAddress, Satori::PAGE_SIZE_GRANULARITY);
+        newPage = SatoriPage::InitializeAt(pageAddress, Satori::PAGE_SIZE_GRANULARITY, this);
         if (newPage)
         {
             // SYNCRONIZATION:
@@ -172,7 +173,7 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
         }
 
         size_t pageAddress = (size_t)i << Satori::PAGE_BITS;
-        SatoriPage* newPage = SatoriPage::InitializeAt(pageAddress, minSize);
+        SatoriPage* newPage = SatoriPage::InitializeAt(pageAddress, minSize, this);
         if (newPage)
         {
             // mark the map, before an object can be allocated in the new page and
