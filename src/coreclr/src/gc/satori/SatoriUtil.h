@@ -49,6 +49,9 @@ namespace Satori
 
     // 8K for now, we can fiddle with size a bit later
     const static size_t MARK_CHUNK_SIZE = 8 * 1024;
+
+    // address bits set to track finalizable that needs to be scheduled to F-queue
+    const static size_t FINALIZATION_PENDING = 1;
 }
 
 class SatoriUtil
