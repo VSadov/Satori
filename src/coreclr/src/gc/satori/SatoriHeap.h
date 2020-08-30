@@ -15,6 +15,7 @@
 #include "SatoriLock.h"
 #include "SatoriAllocator.h"
 #include "SatoriRecycler.h"
+#include "SatoriFinalizationQueue.h"
 
 class SatoriPage;
 class SatoriRegion;
@@ -41,6 +42,11 @@ public:
         return &m_recycler;
     }
 
+    SatoriFinalizationQueue* FinalizationQueue()
+    {
+        return &m_finalizationQueue;
+    }
+
     SatoriPage* PageForAddress(size_t address);
     SatoriRegion* RegionForAddress(size_t address);
     SatoriObject* ObjectForAddress(size_t address);
@@ -56,6 +62,7 @@ public:
 private:
     SatoriAllocator m_allocator;
     SatoriRecycler m_recycler;
+    SatoriFinalizationQueue m_finalizationQueue;
 
     int m_reservedMapSize;
     int m_committedMapSize;
