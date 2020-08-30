@@ -11,6 +11,7 @@
 #include "common.h"
 #include "../gc.h"
 
+class SatoriHeap;
 class SatoriRegion;
 
 class SatoriPage
@@ -19,7 +20,7 @@ public:
     SatoriPage() = delete;
     ~SatoriPage() = delete;
 
-    static SatoriPage* InitializeAt(size_t address, size_t pageSize);
+    static SatoriPage* InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap);
     SatoriRegion* MakeInitialRegion();
 
     void RegionInitialized(SatoriRegion* region);
@@ -45,6 +46,11 @@ public:
     uint8_t* RegionMap()
     {
         return m_regionMap;
+    }
+
+    SatoriHeap* Heap()
+    {
+        return m_heap;
     }
 
     void SetCardForAddress(size_t address)
@@ -78,6 +84,8 @@ private:
             size_t m_end;
             size_t m_initialCommit;
             size_t m_firstRegion;
+
+            SatoriHeap* m_heap;
 
             // the following is useful when scanning/clearing cards
             // it can be computed from the page size, but we have space, so we will store.
