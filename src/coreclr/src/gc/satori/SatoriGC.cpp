@@ -14,6 +14,7 @@
 #include "SatoriGC.h"
 #include "SatoriAllocationContext.h"
 #include "SatoriHeap.h"
+#include "SatoriRegion.h"
 
 bool SatoriGC::IsValidSegmentSize(size_t size)
 {
@@ -78,7 +79,7 @@ size_t SatoriGC::GetNumberOfFinalizable()
 
 Object* SatoriGC::GetNextFinalizable()
 {
-    return nullptr;
+    return m_heap->FinalizationQueue()->TryGetNextItem();
 }
 
 int SatoriGC::GetGcLatencyMode()
@@ -129,7 +130,7 @@ unsigned SatoriGC::WhichGeneration(Object* obj)
 
 int SatoriGC::CollectionCount(int generation, int get_bgc_fgc_coutn)
 {
-    //TODO: VS this is implementable. We cna just count blocking GCs for now.
+    //TODO: VS this is implementable. We can just count blocking GCs for now.
     return 0;
 }
 
@@ -171,13 +172,21 @@ unsigned SatoriGC::GetMaxGeneration()
 
 void SatoriGC::SetFinalizationRun(Object* obj)
 {
-    //TODO: Satori Finalizers;
+    obj->GetHeader()->SetBit(BIT_SBLK_FINALIZER_RUN);
 }
 
 bool SatoriGC::RegisterForFinalization(int gen, Object* obj)
 {
-    __UNREACHABLE();
-    return false;
+    if (obj->GetHeader()->GetBits() & BIT_SBLK_FINALIZER_RUN)
+    {
+        obj->GetHeader()->ClrBit(BIT_SBLK_FINALIZER_RUN);
+        return true;
+    }
+    else
+    {
+        SatoriObject* so = (SatoriObject*)obj;
+        return so->ContainingRegion()->RegisterForFinalization(so);
+    }
 }
 
 int SatoriGC::GetLastGCPercentTimeInGC()
@@ -271,6 +280,7 @@ bool SatoriGC::IsEphemeral(Object* object)
 
 uint32_t SatoriGC::WaitUntilGCComplete(bool bConsiderGCStart)
 {
+    // TODO: VS could do some help here?
     m_heap->Recycler()->WaitOnSuspension();
     return NOERROR;
 }

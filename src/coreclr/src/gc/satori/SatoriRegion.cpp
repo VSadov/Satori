@@ -20,6 +20,7 @@
 #include "SatoriRegion.inl"
 #include "SatoriQueue.h"
 #include "SatoriPage.h"
+#include "SatoriMarkChunk.h"
 
 #ifdef memcpy
 #undef memcpy
@@ -60,6 +61,8 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
 
     result->m_next = result->m_prev = nullptr;
     result->m_containingQueue = nullptr;
+    result->m_finalizables = nullptr;
+    result->m_hasPendingFinalizables = false;
 
     result->m_allocStart = (size_t)&result->m_firstObject;
     // Since the actual object data is shifted by 1 syncblock, a region could fit sizeof(size_t) more,
@@ -76,12 +79,28 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     return result;
 }
 
+SatoriAllocator* SatoriRegion::Allocator()
+{
+    return m_containingPage->Heap()->Allocator();
+}
+
 void SatoriRegion::MakeBlank()
 {
     m_ownerThreadTag = 0;
     m_allocStart = (size_t)&m_firstObject;
     m_allocEnd = End();
     m_occupancy = 0;
+
+    _ASSERT(!m_hasPendingFinalizables);
+    //TODO: VS HACK HACK HACK all finalizables should be untracked by now
+    while (m_finalizables)
+    {
+        SatoriMarkChunk* chunk = m_finalizables;
+        m_finalizables = m_finalizables->Next();
+
+        SatoriMarkChunk::InitializeAt((size_t)chunk);
+        Allocator()->ReturnMarkChunk(chunk);
+    }
 
     //clear index
     if (m_used > (size_t)&m_index)
@@ -139,6 +158,12 @@ bool SatoriRegion::ValidateBlank()
         {
             return false;
         }
+    }
+
+    if (m_finalizables)
+    {
+        _ASSERTE(false);
+        return false;
     }
 
     return true;
@@ -388,7 +413,7 @@ inline void SatoriRegion::PushToMarkStack(SatoriObject* obj)
     if (obj->RawGetMethodTable()->ContainsPointers())
     {
         obj->SetNextInMarkStack(m_markStack);
-        ASSERT(m_markStack == obj->GetNextInMarkStack());
+        _ASSERTE(m_markStack == obj->GetNextInMarkStack());
         m_markStack = (int32_t)(obj->Start() - this->Start());
     }
 }
@@ -415,6 +440,8 @@ SatoriObject* SatoriRegion::ObjectForBit(size_t bitmapIndex, int offset)
 void SatoriRegion::ThreadLocalMark()
 {
     Verify();
+
+    bool checkFinalizables = m_finalizables != nullptr;
 
     // since this region is thread-local, we have only two kinds of live roots:
     //- those that are reachable from the current stack and
@@ -465,9 +492,9 @@ void SatoriRegion::ThreadLocalMark()
     SatoriObject* o = PopFromMarkStack();
     while (o)
     {
-        ASSERT(o->IsMarked());
-        ASSERT(o->IsEscaped());
-        ASSERT(!o->IsFree());
+        _ASSERTE(o->IsMarked());
+        _ASSERTE(o->IsEscaped());
+        _ASSERTE(!o->IsFree());
         o->ForEachObjectRef(
             [this](SatoriObject** ref)
             {
@@ -491,11 +518,13 @@ void SatoriRegion::ThreadLocalMark()
 
     // now recursively mark all the objects reachable from stack roots.
     o = PopFromMarkStack();
+
+ propagateMarks:
     while (o)
     {
-        ASSERT(o->IsMarked());
-        ASSERT(!o->IsEscaped());
-        ASSERT(!o->IsFree());
+        _ASSERTE(o->IsMarked());
+        _ASSERTE(!o->IsEscaped());
+        _ASSERTE(!o->IsFree());
         o->ForEachObjectRef(
             [this](SatoriObject** ref)
             {
@@ -508,6 +537,51 @@ void SatoriRegion::ThreadLocalMark()
             }
         );
         o = PopFromMarkStack();
+    }
+
+    if (checkFinalizables)
+    {
+        // unreachable finalizables:
+        // - if finalized eagerly or suppressed -> drop from the list, this is garbage now.
+        // else
+        // - mark ref as finalizer pending to be queued after compaction.
+        // - mark obj as reachable
+        // - push to mark stack
+        // - re-trace to mark children that are now F-reachable
+        ForEachFinalizable(
+            [this](SatoriObject* finalizable)
+            {
+                _ASSERTE(((size_t)finalizable & Satori::FINALIZATION_PENDING) == 0);
+                if (!finalizable->IsMarked())
+                {
+                    // NOTE: if finalization is suppressed or runs eagerly, we do not need to track any longer.
+                    //       The object was never scheduled (or it'd be escaped) and now unreachable so noone can re-register it.
+                    if (finalizable->IsFinalizationSuppressed() ||
+                        GCToEEInterface::EagerFinalized(finalizable))
+                    {
+                        // stop tracking
+                        return (SatoriObject*)nullptr;
+                    }
+                    else
+                    {
+                        // keep alive
+                        finalizable->SetMarked();
+                        PushToMarkStack(finalizable);
+                        (size_t&)finalizable |= Satori::FINALIZATION_PENDING;
+                        HasPendingFinalizables() = true;
+                    }
+                }
+
+                return finalizable;
+            }
+        );
+
+        o = PopFromMarkStack();
+        if (o)
+        {
+            checkFinalizables = false;
+            goto propagateMarks;
+        }
     }
 
     Verify();
@@ -556,7 +630,7 @@ size_t SatoriRegion::ThreadLocalPlan()
         if (moveable->Start() >= End())
         {
             // nothing left to move
-            ASSERT(moveable->Start() == End());
+            _ASSERTE(moveable->Start() == End());
             return relocated;
         }
 
@@ -601,7 +675,7 @@ size_t SatoriRegion::ThreadLocalPlan()
         while (dst_end - dst_start >= moveableSize + Satori::MIN_FREE_SIZE ||
             dst_end - dst_start == moveableSize)
         {
-            ASSERT(moveable->Start() >= dst_start);
+            _ASSERTE(moveable->Start() >= dst_start);
             int32_t reloc = (int32_t)(moveable->Start() - dst_start);
             if (reloc != 0)
             {
@@ -627,7 +701,7 @@ size_t SatoriRegion::ThreadLocalPlan()
                 if (moveable->Start() >= End())
                 {
                     // nothing left to move
-                    ASSERT(moveable->Start() == End());
+                    _ASSERTE(moveable->Start() == End());
                     return relocated;
                 }
 
@@ -677,7 +751,7 @@ void SatoriRegion::UpdateFn(Object** ppObject, ScanContext* sc, uint32_t flags)
     if (reloc)
     {
         *ppObject = (Object*)(((size_t)*ppObject) - reloc);
-        ASSERT(((SatoriObject*)(*ppObject))->ContainingRegion() == region);
+        _ASSERTE(((SatoriObject*)(*ppObject))->ContainingRegion() == region);
     }
 };
 
@@ -707,7 +781,7 @@ void SatoriRegion::ThreadLocalUpdatePointers()
                 bool escaped = m_bitmap[bitmapIndex + (escapedOffset >> 6)] & ((size_t)1 << (escapedOffset & 63));
                 if (escaped)
                 {
-                    ASSERT(ObjectForBit(bitmapIndex, markBitOffset)->GetReloc() == 0);
+                    _ASSERTE(ObjectForBit(bitmapIndex, markBitOffset)->GetReloc() == 0);
                 }
                 else
                 {
@@ -723,8 +797,8 @@ void SatoriRegion::ThreadLocalUpdatePointers()
                                 size_t reloc = o->GetReloc();
                                 if (reloc)
                                 {
-                                    *ppObject = (SatoriObject*)(((size_t)*ppObject) - reloc);
-                                    ASSERT(((SatoriObject*)(*ppObject))->ContainingRegion() == this);
+                                    *ppObject = (SatoriObject*)((size_t)*ppObject - reloc);
+                                    _ASSERTE((*ppObject)->ContainingRegion() == this);
                                 }
                             }
                         }
@@ -747,6 +821,29 @@ void SatoriRegion::ThreadLocalUpdatePointers()
 
     nextWithOffset:
         bitmapIndex++;
+    }
+
+    // update finalizables if we have them
+    if (m_finalizables)
+    {
+        ForEachFinalizable(
+            [this](SatoriObject* finalizable)
+            {
+                // save the pending bit, will reapply back later
+                size_t finalizePending = (size_t)finalizable & Satori::FINALIZATION_PENDING;
+                (size_t&)finalizable &= ~Satori::FINALIZATION_PENDING;
+
+                size_t reloc = finalizable->GetReloc();
+                if (reloc)
+                {
+                    finalizable = (SatoriObject*)((size_t)finalizable - reloc);
+                    _ASSERTE(finalizable->ContainingRegion() == this);
+                }
+
+                (size_t&)finalizable |= finalizePending;
+                return finalizable;
+            }
+        );
     }
 }
 
@@ -784,7 +881,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
         result = SatoriObject::At(upTo);
     }
 
-    ASSERT(result->Start() <= upTo);
+    _ASSERTE(result->Start() <= upTo);
     return result;
 }
 
@@ -821,11 +918,11 @@ SatoriObject* SatoriRegion::NextMarked(SatoriObject* after)
     //do
     //{
     //    after = after-> Next();
-    //    ASSERT(after->GetReloc() == 0 || after->IsMarked());
+    //    _ASSERTE(after->GetReloc() == 0 || after->IsMarked());
     //}
     //while (after->Start() < End() && !after->IsMarked());
 
-    //ASSERT(result->Start() == after->Start());
+    //_ASSERTE(result->Start() == after->Start());
 
     return result;
 }
@@ -862,7 +959,7 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
         for (s1 = s2; s1->Start() < End(); s1 = s1->Next())
         {
             reloc = s1->GetReloc();
-            ASSERT(reloc >= 0);
+            _ASSERTE(reloc >= 0);
             if (reloc != 0)
             {
                 break;
@@ -873,13 +970,13 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
         size_t relocTarget = s1->Start() - reloc;
         while (d1->Start() < relocTarget)
         {
-            ASSERT(d1->Start() <= d2->Start());
+            _ASSERTE(d1->Start() <= d2->Start());
             d2 = SkipUnmarked(d2, relocTarget);
 
             if (d1 != d2)
             {
                 size_t freeSpace = d2->Start() - d1->Start();
-                ASSERT(freeSpace < 0x200000);
+                _ASSERTE(freeSpace < 0x200000);
                 SatoriObject::FormatAsFree(d1->Start(), freeSpace);
                 if (freeSpace > foundFree)
                 {
@@ -932,11 +1029,96 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
         }
     }
 
+    // schedule pending finalizables if we have them
+    if (HasPendingFinalizables())
+    {
+        HasPendingFinalizables() = false;
+
+        // TODO: VS do we have to pend CF after regular finalizables?
+        //       can it be observed?
+        ForEachFinalizable(
+            [this](SatoriObject* finalizable)
+            {
+                if ((size_t)finalizable & Satori::FINALIZATION_PENDING)
+                {
+                    (size_t&)finalizable &= ~Satori::FINALIZATION_PENDING;
+
+                    // set escaped bit, so we do not move this further.
+                    // even if we fail to schedule, this is ok.
+                    finalizable->SetEscaped();
+
+                    _ASSERTE(!finalizable->IsFinalizationSuppressed());
+                    if (m_containingPage->Heap()->FinalizationQueue()->TryScheduleForFinalization(finalizable))
+                    {
+                        // this tracker has served its purpose.
+                        finalizable = nullptr;
+                    }
+                }
+
+                return finalizable;
+            }
+        );
+
+        GCToEEInterface::EnableFinalization(true);
+    }
+
     Verify();
 
     m_occupancy = Satori::REGION_SIZE_GRANULARITY - foundFree;
 
     return (foundFree >= desiredFreeSpace + Satori::MIN_FREE_SIZE);
+}
+
+bool SatoriRegion::RegisterForFinalization(SatoriObject* finalizable)
+{
+    if (!m_finalizables || !m_finalizables->TryPush(finalizable))
+    {
+        SatoriMarkChunk* markChunk = Allocator()->TryGetMarkChunk();
+        if (!markChunk)
+        {
+            // OOM
+            return false;
+        }
+
+        markChunk->SetNext(m_finalizables);
+        m_finalizables = markChunk;
+        markChunk->Push(finalizable);
+    }
+
+    return true;
+}
+
+void SatoriRegion::CompactFinalizables()
+{
+    SatoriMarkChunk* oldFinalizables = m_finalizables;
+    m_finalizables = nullptr;
+
+    while (oldFinalizables)
+    {
+        SatoriMarkChunk* current = oldFinalizables;
+        oldFinalizables = oldFinalizables->Next();
+
+        if (m_finalizables)
+        {
+            while (m_finalizables->HasSpace() && current->Count())
+            {
+                SatoriObject* o = current->Pop();
+                if (o)
+                {
+                    m_finalizables->Push(o);
+                }
+            }
+        }
+
+        if (current->Count() > 0 && current->Compact() > 0)
+        {
+            current->SetNext(m_finalizables);
+            m_finalizables = current;
+            continue;
+        }
+
+        Allocator()->ReturnMarkChunk(current);
+    }
 }
 
 void SatoriRegion::CleanMarks()
@@ -958,14 +1140,14 @@ void SatoriRegion::Verify()
 
     while (obj->Start() < End())
     {
-        ASSERT(obj->GetReloc() == 0);
-        ASSERT((size_t)obj->RawGetMethodTable() > 10);
+        _ASSERTE(obj->GetReloc() == 0);
+        _ASSERTE((size_t)obj->RawGetMethodTable() > 10);
 
         prevPrevObj = prevObj;
         prevObj = obj;
         obj = obj->Next();
     }
 
-    ASSERT(obj->Start() == End());
+    _ASSERTE(obj->Start() == End());
 #endif
 }
