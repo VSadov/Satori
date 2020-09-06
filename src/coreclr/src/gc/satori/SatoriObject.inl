@@ -212,6 +212,16 @@ template<typename F>
 inline void SatoriObject::ForEachObjectRef(F& lambda)
 {
     MethodTable* mt = RawGetMethodTable();
+
+    if (mt->Collectible())
+    {
+        uint8_t* loaderAllocator = GCToEEInterface::GetLoaderAllocatorObjectForGC(this);
+        // NB: lambda my modify loaderAllocator for relocation, that is redundant, but ok.
+        //     actual accesses to loader are via a week handle, which will be updated
+        //     as necessary.
+        lambda((SatoriObject**)&loaderAllocator);
+    }
+
     if (!mt->ContainsPointers())
     {
         return;
