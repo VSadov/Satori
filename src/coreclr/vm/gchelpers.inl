@@ -34,13 +34,9 @@ const static size_t REGION_SIZE_GRANULARITY = 1 << REGION_BITS;
 
 FORCEINLINE void InlinedSetCardsAfterBulkCopyHelper(Object** dst, Object* src, size_t len)
 {
-    // TODO: VS dst can't be stack?
     _ASSERTE(IsInHeapSatori(dst));
-
-    for (int i = 0; i < len; i++)
-    {
-        CheckAndMarkEscapeSatori(&dst[i], &src[i]);
-    }
+    CheckAndMarkEscapeSatoriRange(dst, src, len);
+    // TODO: VS set cards
 }
 
 //TODO: Satori

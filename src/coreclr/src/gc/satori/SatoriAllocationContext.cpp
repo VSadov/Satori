@@ -19,11 +19,14 @@ void SatoriAllocationContext::Deactivate(SatoriHeap* heap, bool forGc)
 {
     if (RegularRegion() != nullptr)
     {
-        RegularRegion()->Deactivate(heap, (size_t)this->alloc_ptr, forGc);
+        SatoriRegion* region = RegularRegion();
+        size_t allocPtr = (size_t)this->alloc_ptr;
 
         this->alloc_bytes -= this->alloc_limit - this->alloc_ptr;
         this->alloc_limit = this->alloc_ptr = nullptr;
         RegularRegion() = nullptr;
+
+        region->Deactivate(heap, allocPtr, forGc);
     }
     else
     {
@@ -33,7 +36,9 @@ void SatoriAllocationContext::Deactivate(SatoriHeap* heap, bool forGc)
 
     if (LargeRegion() != nullptr)
     {
-        LargeRegion()->Deactivate(heap, /* allocPtr */ 0, forGc);
+        SatoriRegion* region = LargeRegion();
         LargeRegion() = nullptr;
+
+        region->Deactivate(heap, /* allocPtr */ 0, forGc);
     }
  }
