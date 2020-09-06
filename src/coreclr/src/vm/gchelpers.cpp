@@ -1328,7 +1328,7 @@ bool IsInHeapSatori(Object** start)
 void CheckAndMarkEscapeSatori(Object** dst, Object* ref)
 {
 #if FEATURE_SATORI_GC
-    if (ref && ((size_t)dst ^ (size_t)(ref)) >> 21)
+    if (ref && ((size_t)dst ^ (size_t)ref) >> 21)
     {
         SatoriObject* obj = (SatoriObject*)ref;
         if (obj->ContainingRegion()->OwnedByCurrentThread())
@@ -1340,6 +1340,35 @@ void CheckAndMarkEscapeSatori(Object** dst, Object* ref)
                 // noone else should be marking this region.
                 obj->SetEscaped();
             }
+        }
+    }
+#endif
+}
+
+void CheckAndMarkEscapeSatoriRange(Object** dst, Object* ref, size_t len)
+{
+#if FEATURE_SATORI_GC
+    if (((size_t)dst ^ (size_t)ref) >> 21)
+    {
+        if (((SatoriObject*)ref)->ContainingRegion()->OwnedByCurrentThread())
+        {
+            SatoriObject* containingObj = (SatoriObject*)GCHeapUtilities::GetGCHeap()->GetContainingObject(ref, false);
+
+            //TODO: VS escape only from ref to len
+
+            containingObj->ForEachObjectRef(
+                [](SatoriObject** ref)
+                {
+                    SatoriObject* child = *ref;
+                    // we are escaping an object from our thread local container
+                    // if it is not escaped aready, it is ours
+                    // we can mark the object escape with an ordinary assignment,
+                    if (!child->IsEscaped())
+                    {
+                        child->SetEscaped();
+                    }
+                }
+            );
         }
     }
 #endif
