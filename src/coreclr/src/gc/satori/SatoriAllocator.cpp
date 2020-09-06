@@ -238,6 +238,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
 
     size_t regionSize = ALIGN_UP(size + sizeof(SatoriRegion), Satori::REGION_SIZE_GRANULARITY);
     region = GetRegion(regionSize);
+    region->m_ownerThreadTag = SatoriUtil::GetCurrentThreadTag();
 
     if (regionSize == Satori::REGION_SIZE_GRANULARITY)
     {
@@ -250,7 +251,6 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
 
     if (context->LargeRegion() == nullptr)
     {
-        region->m_ownerThreadTag = SatoriUtil::GetCurrentThreadTag();
         context->LargeRegion() = region;
     }
     else
@@ -258,7 +258,6 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
         if (context->LargeRegion()->AllocRemaining() < region->AllocRemaining())
         {
             SatoriRegion* tmp = context->LargeRegion();
-            region->m_ownerThreadTag = SatoriUtil::GetCurrentThreadTag();
             context->LargeRegion() = region;
             region = tmp;
         }
