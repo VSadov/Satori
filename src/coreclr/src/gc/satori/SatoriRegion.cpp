@@ -410,7 +410,7 @@ inline void SatoriRegion::PushToMarkStack(SatoriObject* obj)
     _ASSERTE(obj->ContainingRegion() == this);
     _ASSERTE(!obj->GetNextInMarkStack());
 
-    if (obj->RawGetMethodTable()->ContainsPointers())
+    if (obj->RawGetMethodTable()->ContainsPointersOrCollectible())
     {
         obj->SetNextInMarkStack(m_markStack);
         _ASSERTE(m_markStack == obj->GetNextInMarkStack());

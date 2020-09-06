@@ -125,12 +125,14 @@ int SatoriGC::WaitForFullGCComplete(int millisecondsTimeout)
 
 unsigned SatoriGC::WhichGeneration(Object* obj)
 {
-    return 2;
+    //TODO: Satori update when have Gen1
+    SatoriObject* so = (SatoriObject*)obj;
+    return so->ContainingRegion()->IsThreadLocal() ? 0 : 2;
 }
 
 int SatoriGC::CollectionCount(int generation, int get_bgc_fgc_coutn)
 {
-    //TODO: VS this is implementable. We can just count blocking GCs for now.
+    //TODO: VS this is implementable. We can just count blocking GCs.
     return 0;
 }
 
@@ -160,13 +162,13 @@ uint64_t SatoriGC::GetTotalAllocatedBytes()
 
 HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
 {
-    // TODO: Satori
+    // TODO: VS this is implementable
     return S_OK;
 }
 
 unsigned SatoriGC::GetMaxGeneration()
 {
-    // TODO: VS we will probably have only 1 and 2.
+    // TODO: VS we will probably have only 0, 1 and 2.
     return 2;
 }
 
@@ -218,10 +220,13 @@ HRESULT SatoriGC::Initialize()
 // makes sense only during marking phases.
 bool SatoriGC::IsPromoted(Object* object)
 {
-    _ASSERTE(m_heap->IsHeapAddress((size_t)object));
+    // objects outside of the collected generation (including null) are considered marked.
+    // (existing behavior)
+    _ASSERTE(object == nullptr || m_heap->IsHeapAddress((size_t)object));
 
+    // TODO: VS, will need to adjust for Gen1
     SatoriObject* o = (SatoriObject*)object;
-    return o->IsMarked();
+    return o == nullptr || o->IsMarked();
 }
 
 bool SatoriGC::IsHeapPointer(void* object, bool small_heap_only)
@@ -233,7 +238,7 @@ bool SatoriGC::IsHeapPointer(void* object, bool small_heap_only)
 
 unsigned SatoriGC::GetCondemnedGeneration()
 {
-    // TODO: VS, we will have 1 and 2, eventually
+    // TODO: VS, will need to adjust for Gen1
     return 2;
 }
 
@@ -274,8 +279,7 @@ bool SatoriGC::IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, in
 
 bool SatoriGC::IsEphemeral(Object* object)
 {
-    __UNREACHABLE();
-    return false;
+    return WhichGeneration(object) != GetMaxGeneration();
 }
 
 uint32_t SatoriGC::WaitUntilGCComplete(bool bConsiderGCStart)
@@ -293,7 +297,7 @@ void SatoriGC::FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap
 
 size_t SatoriGC::GetCurrentObjSize()
 {
-    __UNREACHABLE();
+    //TODO: Satori this should be implementable
     return 0;
 }
 
@@ -369,8 +373,9 @@ Object* SatoriGC::NextObj(Object* object)
 
 Object* SatoriGC::GetContainingObject(void* pInteriorPtr, bool fCollectedGenOnly)
 {
-    __UNREACHABLE();
-    return nullptr;
+    return m_heap->ObjectForAddress((size_t)pInteriorPtr);
+
+    //TODO: Satori fCollectedGenOnly?
 }
 
 void SatoriGC::DiagWalkObject(Object* obj, walk_fn fn, void* context)
@@ -464,11 +469,27 @@ size_t SatoriGC::GetPromotedBytes(int heap_index)
 
 void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* totalAvailableMemoryBytes, uint64_t* lastRecordedMemLoadBytes, uint64_t* lastRecordedHeapSizeBytes, uint64_t* lastRecordedFragmentationBytes, uint64_t* totalCommittedBytes, uint64_t* promotedBytes, uint64_t* pinnedObjectCount, uint64_t* finalizationPendingCount, uint64_t* index, uint32_t* generation, uint32_t* pauseTimePct, bool* isCompaction, bool* isConcurrent, uint64_t* genInfoRaw, uint64_t* pauseInfoRaw, int kind)
 {
-    __UNREACHABLE();
+    // TODO: Satori some of this makes sense and implementable.
+    *highMemLoadThresholdBytes = (uint64_t)1 << 30;
+    *totalAvailableMemoryBytes = (uint64_t)1 << 31;
+    *lastRecordedMemLoadBytes = 0;
+    *lastRecordedHeapSizeBytes = 0;
+    *lastRecordedFragmentationBytes = 0;
+    *totalCommittedBytes = 0;
+    *promotedBytes = 0;
+    *pinnedObjectCount = 0;
+    *finalizationPendingCount = 0;
+    *index = 0;
+    *generation = 0;
+    *pauseTimePct = 0;
+    *isCompaction = 0;
+    *isConcurrent = 0;
+    *genInfoRaw = 0;
+    *pauseInfoRaw = 0;
 }
 
 uint32_t SatoriGC::GetMemoryLoad()
 {
-    __UNREACHABLE();
+    // TODO: Satori this should be implementable
     return 0;
 }
