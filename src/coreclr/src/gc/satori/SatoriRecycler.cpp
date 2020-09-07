@@ -96,26 +96,38 @@ void SatoriRecycler::Collect()
         // drain queues
         DrainMarkQueues();
 
-        // mark handles to queues
+        // mark handles
         MarkHandles();
 
         while (m_workList->Count() > 0)
         {
             DrainMarkQueues();
-            //mark through cards   (could be due to overflow)
+            //TODO: VS clean cards   (could be due to overflow)
         }
 
-        // all marked here 
+        // all strongly reachable objects are marked here 
 
-        // TODO: VS
-        //       DH initial scan (could be a part of loop above?)
+        DependentHandlesInitialScan();
+        while (m_workList->Count() > 0)
+        {
+            DrainMarkQueues();
+            //TODO: VS clean cards   (could be due to overflow)
+            DependentHandlesRescan();
+        }
+
         //       sync
         WeakPtrScan(/*isShort*/ true);
         //       sync
         ScanFinalizables();
-        DrainMarkQueues();
 
-        //       scan DH again     (why no sync before?)
+        // TODO: VS why no sync before?
+        while (m_workList->Count() > 0)
+        {
+            DrainMarkQueues();
+            //TODO: VS clean cards   (could be due to overflow)
+            DependentHandlesRescan();
+        }
+
         //       sync 
         WeakPtrScan(/*isShort*/ false);
         WeakPtrScanBySingleThread();
@@ -424,7 +436,6 @@ void SatoriRecycler::DrainMarkQueues()
 
 void SatoriRecycler::MarkHandles()
 {
-    // mark roots for the current stack
     ScanContext sc;
     sc.promotion = TRUE;
     sc.thread_number = 0;
@@ -444,7 +455,6 @@ void SatoriRecycler::MarkHandles()
 
 void SatoriRecycler::WeakPtrScan(bool isShort)
 {
-    // mark roots for the current stack
     ScanContext sc;
     sc.promotion = TRUE;
     sc.thread_number = 0;
@@ -595,6 +605,47 @@ void SatoriRecycler::ScanFinalizables()
         );
 
         GCToEEInterface::EnableFinalization(true);
+    }
+
+    if (c.m_markChunk != nullptr)
+    {
+        m_workList->Push(c.m_markChunk);
+    }
+}
+
+void SatoriRecycler::DependentHandlesInitialScan()
+{
+    ScanContext sc;
+    sc.promotion = TRUE;
+    sc.thread_number = 0;
+
+    MarkContext c = MarkContext(this);
+    sc._unused1 = &c;
+
+    // concurrent, per thread/heap
+    // relies on thread_number to select handle buckets and specialcases #0
+    GCScan::GcDhInitialScan(MarkFn, 2, 2, &sc);
+
+    if (c.m_markChunk != nullptr)
+    {
+        m_workList->Push(c.m_markChunk);
+    }
+}
+
+void SatoriRecycler::DependentHandlesRescan()
+{
+    ScanContext sc;
+    sc.promotion = TRUE;
+    sc.thread_number = 0;
+
+    MarkContext c = MarkContext(this);
+    sc._unused1 = &c;
+
+    // concurrent, per thread/heap
+    // relies on thread_number to select handle buckets and specialcases #0
+    if (GCScan::GcDhUnpromotedHandlesExist(&sc))
+    {
+        GCScan::GcDhReScan(&sc);
     }
 
     if (c.m_markChunk != nullptr)
