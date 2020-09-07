@@ -67,6 +67,9 @@ private:
     void WeakPtrScan(bool isShort);
     void WeakPtrScanBySingleThread();
     void ScanFinalizables();
+
+    void DependentHandlesInitialScan();
+    void DependentHandlesRescan();
 };
 
 #endif
