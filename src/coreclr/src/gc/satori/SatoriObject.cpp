@@ -23,12 +23,13 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
 {
     _ASSERTE(location == ALIGN_UP(location, Satori::OBJECT_ALIGNMENT));
     _ASSERTE(size >= sizeof(Object) + sizeof(size_t));
+    _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY);
 
     SatoriObject* obj = SatoriObject::At(location);
     obj->CleanSyncBlock();
     obj->RawSetMethodTable(s_emptyObjectMt);
 
-    // Note: we allow free objects to be more than 4Gb on 64bit and use the "pad" for higher bits.
+    //TODO: VS, if free space is never huge, we can use DWORD here and not care about endianness
 #if BIGENDIAN
 #error "This won't work on big endian platforms"
 #endif
@@ -40,7 +41,28 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
     return obj;
 }
 
-inline void SatoriObject::Validate()
+SatoriObject* SatoriObject::FormatAsFreeAfterHuge(size_t location, size_t size)
 {
-    //TODO: VS
+    _ASSERTE(location == ALIGN_UP(location, Satori::OBJECT_ALIGNMENT));
+    _ASSERTE(size >= sizeof(Object) + sizeof(size_t));
+    _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY);
+
+    SatoriObject* obj = SatoriObject::At(location);
+    obj->CleanSyncBlock();
+    obj->RawSetMethodTable(s_emptyObjectMt);
+
+    //TODO: VS, if free space is never huge, we can use DWORD here and not care about endianness
+#if BIGENDIAN
+#error "This won't work on big endian platforms"
+#endif
+    // deduct the size of Array header + syncblock
+    ((size_t*)obj)[ArrayBase::GetOffsetOfNumComponents() / sizeof(size_t)] = size - (sizeof(ArrayBase) + sizeof(size_t));
+
+    return obj;
+}
+
+void SatoriObject::Validate()
+{
+    _ASSERTE(this->GetReloc() == 0);
+    _ASSERTE(this->Size() >= Satori::MIN_FREE_SIZE);
 }
