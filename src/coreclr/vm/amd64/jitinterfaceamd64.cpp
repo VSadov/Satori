@@ -732,17 +732,18 @@ bool WriteBarrierManager::NeedDifferentWriteBarrier(bool bReqUpperBoundsCheck, b
             }
 #endif
 
-            //TODO: Satori
-            writeBarrierType = WRITE_BARRIER_SATORI;
-
-            //if (g_region_shr != 0)
-            //{
-            //    writeBarrierType = bUseBitwiseWriteBarrier ? WRITE_BARRIER_BIT_REGIONS64: WRITE_BARRIER_BYTE_REGIONS64;
-            //}
-            //else
-            //{
-            //    writeBarrierType = GCHeapUtilities::IsServerHeap() ? WRITE_BARRIER_SVR64 : WRITE_BARRIER_PREGROW64;
-            //}
+#ifdef FEATURE_SATORI_GC
+            writeBarrierType WRITE_BARRIER_SATORI :
+#else
+            if (g_region_shr != 0)
+            {
+                writeBarrierType = bUseBitwiseWriteBarrier ? WRITE_BARRIER_BIT_REGIONS64: WRITE_BARRIER_BYTE_REGIONS64;
+            }
+            else
+            {
+                writeBarrierType = GCHeapUtilities::IsServerHeap() ? WRITE_BARRIER_SVR64 : WRITE_BARRIER_PREGROW64;
+            }
+#endif // FEATURE_SATORI_GC
             continue;
 
         case WRITE_BARRIER_PREGROW64:

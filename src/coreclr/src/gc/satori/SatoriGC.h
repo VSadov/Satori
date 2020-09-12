@@ -26,6 +26,8 @@ private:
     bool    m_gcInProgress;
     bool    m_suspensionPending;
 
+    GCEvent* m_waitForGCEvent;
+
 public:
     // Inherited via IGCHeap
     virtual bool IsValidSegmentSize(size_t size) override;

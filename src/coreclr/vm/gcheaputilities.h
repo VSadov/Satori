@@ -98,7 +98,7 @@ public:
     {
         WRAPPER_NO_CONTRACT;
 
-        return IsServerHeap() && g_SystemInfo.dwNumberOfProcessors >= 2;
+        return IsServerHeap() && g_SystemInfo.dwNumberOfProcessors >= 2 && g_heap_type != GC_HEAP_SATORI;
     }
 
     // Waits until a GC is complete, if the heap has been initialized.
