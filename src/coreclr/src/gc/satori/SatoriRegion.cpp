@@ -10,6 +10,7 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 #include "../env/gcenv.ee.h"
+
 #include "SatoriGC.h"
 #include "SatoriAllocator.h"
 #include "SatoriRecycler.h"
@@ -35,16 +36,16 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     _ASSERTE(used <= committed);
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
 
-    committed = max(address, committed);
-    used = max(address + sizeof(SatoriRegion), used);
-
     SatoriRegion* result = (SatoriRegion*)address;
 
-    ptrdiff_t toCommit = address + sizeof(SatoriRegion) - committed;
+    committed = max(address, committed);
+    used = max(address, used);
+
+    // make sure the header is comitted
+    ptrdiff_t toCommit = (size_t)&result->m_syncBlock - committed;
     if (toCommit > 0)
     {
-        _ASSERTE(GCToOSInterface::GetPageSize() < Satori::REGION_SIZE_GRANULARITY);
-        toCommit = ALIGN_UP(toCommit, GCToOSInterface::GetPageSize());
+        toCommit = ALIGN_UP(toCommit, Satori::CommitGranularity());
 
         if (!GCToOSInterface::VirtualCommit((void*)committed, toCommit))
         {
@@ -53,27 +54,20 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
         committed += toCommit;
     }
 
-    result->m_ownerThreadTag = 0;
+    // clear the header if was used before
+    size_t zeroUpTo = min(used, (size_t)&result->m_syncBlock);
+    memset((void*)address, 0, zeroUpTo - address);
+
+    // consider the header dirty for the future zeroing.
+    used = max((size_t)&result->m_syncBlock, used);
+
     result->m_end = address + regionSize;
     result->m_committed = min(committed, address + regionSize);
     result->m_used = min(used, address + regionSize);
     result->m_containingPage = containingPage;
 
-    result->m_next = result->m_prev = nullptr;
-    result->m_containingQueue = nullptr;
-    result->m_finalizables = nullptr;
-    result->m_hasPendingFinalizables = false;
-
     result->m_allocStart = (size_t)&result->m_firstObject;
-    // Since the actual object data is shifted by 1 syncblock, a region could fit sizeof(size_t) more,
-    // but that would complicate math in few places so we would rather ignore 0.0001% space loss.
     result->m_allocEnd = result->End();
-    result->m_occupancy = 0;
-
-    if (used > (size_t)&result->m_index)
-    {
-        ZeroMemory(&result->m_index, offsetof(SatoriRegion, m_syncBlock) - offsetof(SatoriRegion, m_index));
-    }
 
     result->m_containingPage->RegionInitialized(result);
     return result;
@@ -90,6 +84,7 @@ void SatoriRegion::MakeBlank()
     m_allocStart = (size_t)&m_firstObject;
     m_allocEnd = End();
     m_occupancy = 0;
+    m_markStack = 0;
 
     _ASSERT(!m_hasPendingFinalizables);
     //TODO: VS HACK HACK HACK all finalizables should be untracked by now
@@ -101,6 +96,8 @@ void SatoriRegion::MakeBlank()
         SatoriMarkChunk::InitializeAt((size_t)chunk);
         Allocator()->ReturnMarkChunk(chunk);
     }
+
+    _ASSERTE(NothingMarked());
 
     //clear index
     if (m_used > (size_t)&m_index)
@@ -133,13 +130,13 @@ bool SatoriRegion::ValidateBlank()
         return false;
     }
 
-    if (m_committed > End() || m_committed < Start() + sizeof(SatoriRegion))
+    if (m_committed > End() || m_committed < (size_t)&m_syncBlock)
     {
         _ASSERTE(false);
         return false;
     }
 
-    if (m_used > m_committed || m_used < Start() + sizeof(SatoriRegion))
+    if (m_used > m_committed || m_used < (size_t)&m_syncBlock)
     {
         _ASSERTE(false);
         return false;
@@ -173,36 +170,26 @@ void SatoriRegion::StopAllocating(size_t allocPtr)
 {
     _ASSERTE(IsAllocating());
 
-    // make parseable
-    size_t freeAfter = allocPtr ? allocPtr : m_allocStart;
-    m_used = max(m_used, freeAfter + Satori::MIN_FREE_SIZE);
-    SatoriObject::FormatAsFree(freeAfter, m_allocEnd - freeAfter);
+    if (allocPtr)
+    {
+        _ASSERTE(allocPtr <= m_allocStart);
+        m_allocStart = allocPtr;
+    }
 
-    // TODO: VS update index
+    // make unused allocation span parseable
+    if (m_allocStart != m_allocEnd)
+    {
+        m_used = max(m_used, m_allocStart + Satori::MIN_FREE_SIZE);
+        SatoriObject::FormatAsFree(m_allocStart, m_allocEnd - m_allocStart);
+    }
+
     m_allocStart = m_allocEnd = 0;
 }
 
 void SatoriRegion::Deactivate(SatoriHeap* heap, size_t allocPtr, bool forGc)
 {
     StopAllocating(allocPtr);
-
-    // TODO: VS local collect (leaves it parsable \w updated index)
-
-    if (IsEmpty())
-    {
-        this->MakeBlank();
-        heap->Allocator()->ReturnRegion(this);
-        return;
-    }
-
-    // TODO: VS: if can be splitted, split and return tail
     heap->Recycler()->AddRegion(this, forGc);
-}
-
-bool SatoriRegion::IsEmpty()
-{
-    _ASSERTE(!IsAllocating());
-    return (size_t)m_firstObject.Next() > m_end;
 }
 
 void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextCommitted, size_t& nextUsed)
@@ -220,7 +207,7 @@ void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextC
     m_end = newEnd;
     m_committed = min(newEnd, m_committed);
     m_used = min(newEnd, m_used);
-    m_allocEnd = min(newEnd, m_allocEnd);
+    m_allocEnd = newEnd;
 
     _ASSERTE(Size() >= Satori::REGION_SIZE_GRANULARITY);
     _ASSERTE(IsAllocating());
@@ -271,8 +258,7 @@ size_t SatoriRegion::Allocate(size_t size, bool ensureZeroInited)
         size_t ensureCommitted = chunkEnd + Satori::MIN_FREE_SIZE;
         if (ensureCommitted > m_committed)
         {
-            // TODO: VS commit quantum should be a static (ensure it is power of 2 and < 2Mb, otherwise committ whole pages)
-            size_t newComitted = ALIGN_UP(ensureCommitted, GCToOSInterface::GetPageSize());
+            size_t newComitted = ALIGN_UP(ensureCommitted, Satori::CommitGranularity());
             if (!GCToOSInterface::VirtualCommit((void*)m_committed, newComitted - m_committed))
             {
                 return 0;
@@ -283,8 +269,8 @@ size_t SatoriRegion::Allocate(size_t size, bool ensureZeroInited)
 
         if (ensureZeroInited)
         {
-            size_t zeroInitEnd = min(m_used, chunkEnd);
-            ptrdiff_t zeroInitCount = zeroInitEnd - chunkStart;
+            size_t zeroUpTo = min(m_used, chunkEnd);
+            ptrdiff_t zeroInitCount = zeroUpTo - chunkStart;
             if (zeroInitCount > 0)
             {
                 ZeroMemory((void*)chunkStart, zeroInitCount);
@@ -303,26 +289,35 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool ensureZeroInited)
 {
     _ASSERTE(ValidateBlank());
     _ASSERTE(AllocRemaining() >= size);
+    _ASSERTE(m_allocEnd > Start() + Satori::REGION_SIZE_GRANULARITY);
 
     size_t chunkStart;
     size_t chunkEnd;
-    if (AllocRemaining() - size > Satori::LARGE_OBJECT_THRESHOLD)
+
+    // if we can have enough space in front for a large object without committing,
+    // put the object as far as possible without committing.
+    if (AllocStart() + Satori::LARGE_OBJECT_THRESHOLD + size + Satori::MIN_FREE_SIZE < m_committed)
     {
-        chunkEnd = max(m_allocStart + size, m_committed);
-        chunkStart = chunkEnd - size;
+        chunkStart = m_committed - Satori::MIN_FREE_SIZE - size;
+        // ensure enough space at start to be replacable with a free obj in the same tile.
+        chunkStart = min(chunkStart, Start() + Satori::REGION_SIZE_GRANULARITY - Satori::MIN_FREE_SIZE);
     }
     else
     {
         chunkStart = m_allocStart;
-        chunkEnd = m_allocStart + size;
     }
 
-    _ASSERTE(chunkEnd > Start() + Satori::REGION_SIZE_GRANULARITY);
+    chunkEnd = chunkStart + size;
 
-    if (chunkEnd > m_committed)
+    // huge allocation should cross the end of the first tile, but have enough space between
+    // to be replacable with a free obj without using the next tile.
+    _ASSERTE(chunkEnd > Start() + Satori::REGION_SIZE_GRANULARITY);
+    _ASSERTE(chunkStart <= Start() + Satori::REGION_SIZE_GRANULARITY - Satori::MIN_FREE_SIZE);
+
+    size_t ensureCommitted = chunkEnd + Satori::MIN_FREE_SIZE;
+    if (ensureCommitted > m_committed)
     {
-        // TODO: VS commit quantum should be a static (ensure it is power of 2 and < 2Mb, otherwise commit whole pages)
-        size_t newComitted = ALIGN_UP(chunkEnd, GCToOSInterface::GetPageSize());
+        size_t newComitted = ALIGN_UP(ensureCommitted, Satori::CommitGranularity());
         if (!GCToOSInterface::VirtualCommit((void*)m_committed, newComitted - m_committed))
         {
             return 0;
@@ -331,23 +326,27 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool ensureZeroInited)
         m_committed = newComitted;
     }
 
-    // if did not allocate from start, there could be some fillable space before the obj.
-    m_allocEnd = chunkStart;
     if (ensureZeroInited)
     {
         size_t zeroInitStart = chunkStart;
-        size_t zeroInitEnd = min(m_used, chunkEnd);
-        ptrdiff_t zeroInitCount = zeroInitEnd - zeroInitStart;
+        size_t zeroUpTo = min(m_used, chunkEnd);
+        ptrdiff_t zeroInitCount = zeroUpTo - zeroInitStart;
         if (zeroInitCount > 0)
         {
             ZeroMemory((void*)zeroInitStart, zeroInitCount);
         }
     }
 
-    //TODO: VS update index?
-    size_t result = m_allocStart;
-    m_used = max(m_used, chunkEnd);
-    return result;
+    // if did not allocate from start, there could be some fillable space before the obj.
+    m_allocEnd = chunkStart;
+
+    // space after chunkEnd is a waste, no normal object can start there.
+    // just make a free gap there for parseability.
+    m_used = max(m_used, chunkEnd + Satori::MIN_FREE_SIZE);
+    SatoriObject::FormatAsFreeAfterHuge(chunkEnd, End() - chunkEnd);
+
+    _ASSERTE(m_allocEnd < Start() + Satori::REGION_SIZE_GRANULARITY);
+    return chunkStart;
 }
 
 SatoriObject* SatoriRegion::FindObject(size_t location)
@@ -976,7 +975,6 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
             if (d1 != d2)
             {
                 size_t freeSpace = d2->Start() - d1->Start();
-                _ASSERTE(freeSpace < 0x200000);
                 SatoriObject::FormatAsFree(d1->Start(), freeSpace);
                 if (freeSpace > foundFree)
                 {
@@ -1140,8 +1138,16 @@ void SatoriRegion::Verify()
 
     while (obj->Start() < End())
     {
-        _ASSERTE(obj->GetReloc() == 0);
-        _ASSERTE((size_t)obj->RawGetMethodTable() > 10);
+        obj->Validate();
+
+        if (obj->Start() - Start() > Satori::REGION_SIZE_GRANULARITY)
+        {
+            _ASSERTE(obj->IsFree());
+        }
+        else
+        {
+            _ASSERTE(!obj->IsMarked());
+        }
 
         prevPrevObj = prevObj;
         prevObj = obj;
