@@ -446,8 +446,6 @@ LEAF_END JIT_PatchedCodeStart, _TEXT
 ; larger of the two functions (JIT_WriteBarrier_PostGrow) to ensure we have created
 ; enough space to copy that code in.
 LEAF_ENTRY JIT_WriteBarrier, _TEXT
-        align 16
-
         mov     [rcx], rdx
 
         mov     rax, rdx
@@ -462,7 +460,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
 
         mov     rax, rdx
         and     rax, 0FFFFFFFFFFE00000h ; region
-        mov     r8, gs:[58h]
+        mov     r8,  gs:[58h]
         cmp     qword ptr [rax], r8     ; check that we own the region
         jne     EscapeChecked           ; not ours
 
