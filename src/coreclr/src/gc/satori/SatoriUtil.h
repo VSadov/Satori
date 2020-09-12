@@ -12,7 +12,7 @@
 #include "../gc.h"
 
 
-//TODO: VS rename move somwhere
+//TODO: VS rename move somewhere
 namespace Satori
 {
     // page granularity is 1 Gb, but they can be bigger
@@ -21,9 +21,8 @@ namespace Satori
     static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
 
     // regions are aligned at 2 Mb
-    // (TODO: VS our commit unit must be powerof 2. must be <= 2 Mb?, otherwise large mode?)
-    // objects can be larger than that and straddle multiple region tiles.
-    // the additional "tail" tiles cannot have object starts though (makes finding region for obj easier).
+    // objects can be larger than that and straddle multiple region "tiles".
+    // all real objects start in the first tile though to allow for fixed size of the metadata.
     const static int REGION_BITS = 21;
     const static size_t REGION_SIZE_GRANULARITY = 1 << REGION_BITS;
 
@@ -52,6 +51,15 @@ namespace Satori
 
     // address bits set to track finalizable that needs to be scheduled to F-queue
     const static size_t FINALIZATION_PENDING = 1;
+
+    // TODO: VS move to something like SatoriConfig, MIN_REGULAR_ALLOC too. These are not constants.
+    static size_t CommitGranularity()
+    {
+        // we can support sizes that are binary fractions of REGION_SIZE_GRANULARITY.
+        // we can also support 1G
+        // TODO: VS this can be configured or computed at start up, but cannot change dynamically.
+        return 4096;
+    }
 }
 
 class SatoriUtil
