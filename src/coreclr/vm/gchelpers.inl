@@ -32,11 +32,13 @@ static const int card_byte_shift = 10;
 const static int REGION_BITS = 21;
 const static size_t REGION_SIZE_GRANULARITY = 1 << REGION_BITS;
 
-FORCEINLINE void InlinedSetCardsAfterBulkCopyHelper(Object** dst, Object* src, size_t len)
+FORCEINLINE void InlinedSetCardsAfterBulkCopyHelper(void* dst, void* src, size_t len)
 {
-    _ASSERTE(IsInHeapSatori(dst));
-    CheckAndMarkEscapeSatoriRange(dst, src, len);
-    // TODO: VS set cards
+    if (IsInHeapSatori(dst))
+    {
+        CheckAndMarkEscapeSatoriRange(dst, src, len);
+        // TODO: VS set cards
+    }
 }
 
 //TODO: Satori
