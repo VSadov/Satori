@@ -319,7 +319,7 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
         InlinedBackwardGCSafeCopyHelper(dest, src, len);
     }
 
-    InlinedSetCardsAfterBulkCopyHelper((Object**)dest, (Object*)src, len);
+    InlinedSetCardsAfterBulkCopyHelper(dest, (void*)src, len);
 }
 
 #endif // !_ARRAYNATIVE_INL_
