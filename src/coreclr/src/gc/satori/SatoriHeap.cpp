@@ -6,10 +6,12 @@
 //
 
 #include "common.h"
+
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
-#include "SatoriUtil.h"
+#include "../env/gcenv.ee.h"
 
+#include "SatoriUtil.h"
 #include "SatoriHeap.h"
 #include "SatoriRegion.h"
 #include "SatoriObject.h"
@@ -64,7 +66,7 @@ SatoriHeap* SatoriHeap::Create()
 
     void* reserved = GCToOSInterface::VirtualReserve(rezerveSize, 0, VirtualReserveFlags::None);
 
-    size_t commitSize = min(GCToOSInterface::GetPageSize(), rezerveSize);
+    size_t commitSize = min(Satori::CommitGranularity(), rezerveSize);
     if (!GCToOSInterface::VirtualCommit(reserved, commitSize))
     {
         // failure
@@ -89,7 +91,7 @@ SatoriHeap* SatoriHeap::Create()
 bool SatoriHeap::CommitMoreMap(int currentlyCommitted)
 {
     void* commitFrom = &m_pageMap[currentlyCommitted];
-    size_t commitSize = GCToOSInterface::GetPageSize();
+    size_t commitSize = Satori::CommitGranularity();
 
     SatoriLockHolder<SatoriLock> holder(&m_mapLock);
     if (currentlyCommitted < m_committedMapSize)

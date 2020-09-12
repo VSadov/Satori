@@ -410,6 +410,9 @@ bool WriteBarrierManager::NeedDifferentWriteBarrier(bool bReqUpperBoundsCheck, b
                 break;
             }
 #endif
+#ifdef FEATURE_SATORI_GC
+            writeBarrierType WRITE_BARRIER_SATORI :
+#else
             if (g_region_shr != 0)
             {
                 writeBarrierType = bUseBitwiseWriteBarrier ? WRITE_BARRIER_BIT_REGIONS64: WRITE_BARRIER_BYTE_REGIONS64;
@@ -422,6 +425,7 @@ bool WriteBarrierManager::NeedDifferentWriteBarrier(bool bReqUpperBoundsCheck, b
                 writeBarrierType = WRITE_BARRIER_PREGROW64;
 #endif // FEATURE_SVR_GC
             }
+#endif // FEATURE_SATORI_GC
             continue;
 
         case WRITE_BARRIER_PREGROW64:
