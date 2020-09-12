@@ -26,7 +26,7 @@ public:
 
     int GetScanCount();
 
-    void WaitOnSuspension();
+    void Collect(bool force);
 
 private:
     SatoriHeap* m_heap;
@@ -39,6 +39,7 @@ private:
 
     // region count at the end of last GC, used in a crude GC triggering heuristic.
     int m_prevRegionCount;
+    int m_gcInProgress;
 
     SatoriRegionQueue* m_regularRegions;
     SatoriRegionQueue* m_finalizationTrackingRegions;
@@ -56,7 +57,6 @@ private:
     static void DeactivateFn(gc_alloc_context* context, void* param);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 
-    void Collect();
     void DeactivateAllStacks();
     void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
     void MarkOwnStack();
