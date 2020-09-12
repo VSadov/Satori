@@ -504,8 +504,13 @@ bool WriteBarrierManager::NeedDifferentWriteBarrier(bool bReqUpperBoundsCheck, W
             }
 #endif
 
-            //TODO: Satori
-            writeBarrierType = GCHeapUtilities::IsServerHeap() ? WRITE_BARRIER_SATORI : WRITE_BARRIER_PREGROW64;
+            writeBarrierType = 
+#ifdef FEATURE_SATORI_GC
+                g_heap_type == GC_HEAP_SATORI?
+                    WRITE_BARRIER_SATORI :
+#endif // FEATURE_SATORI_GC
+                    GCHeapUtilities::IsServerHeap() ? WRITE_BARRIER_SVR64 : WRITE_BARRIER_PREGROW64;
+
             continue;
 
         case WRITE_BARRIER_PREGROW64:

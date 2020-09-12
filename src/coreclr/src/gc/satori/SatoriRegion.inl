@@ -52,8 +52,9 @@ inline size_t SatoriRegion::AllocStart()
 
 inline size_t SatoriRegion::AllocRemaining()
 {
-    size_t limit = m_allocEnd - Satori::MIN_FREE_SIZE;
-    return m_allocStart >= limit ? 0 : limit - m_allocStart;
+    // reserve Satori::MIN_FREE_SIZE to be able to make the unused space parseable
+    ptrdiff_t diff = m_allocEnd - m_allocStart - Satori::MIN_FREE_SIZE;
+    return diff > 0 ? (size_t)diff : 0;
 }
 
 inline SatoriObject* SatoriRegion::FirstObject()

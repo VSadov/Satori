@@ -11,10 +11,12 @@
 #include "../env/gcenv.os.h"
 
 #include "SatoriObject.h"
+#include "SatoriObject.inl"
 #include "SatoriGC.h"
 #include "SatoriAllocationContext.h"
 #include "SatoriHeap.h"
 #include "SatoriRegion.h"
+#include "SatoriRegion.inl"
 
 bool SatoriGC::IsValidSegmentSize(size_t size)
 {
@@ -30,8 +32,8 @@ bool SatoriGC::IsValidGen0MaxSize(size_t size)
 
 size_t SatoriGC::GetValidSegmentSize(bool large_seg)
 {
-    __UNREACHABLE();
-    return 0;
+    // Satori has no concept of a segment. This may be close enough.
+    return Satori::REGION_SIZE_GRANULARITY;
 }
 
 void SatoriGC::SetReservedVMLimit(size_t vmlimit)
@@ -133,7 +135,7 @@ unsigned SatoriGC::WhichGeneration(Object* obj)
 int SatoriGC::CollectionCount(int generation, int get_bgc_fgc_coutn)
 {
     //TODO: VS this is implementable. We can just count blocking GCs.
-    return 0;
+    return m_heap->Recycler()->GetScanCount();
 }
 
 int SatoriGC::StartNoGCRegion(uint64_t totalSize, bool lohSizeKnown, uint64_t lohSize, bool disallowFullBlockingGC)
@@ -150,19 +152,24 @@ int SatoriGC::EndNoGCRegion()
 
 size_t SatoriGC::GetTotalBytesInUse()
 {
-    __UNREACHABLE();
-    return 0;
+    // bytes used by objects? What is GetCurrentObjSize then?
+
+    //TODO: VS
+    return Satori::REGION_SIZE_GRANULARITY * 10;
 }
 
 uint64_t SatoriGC::GetTotalAllocatedBytes()
 {
-    __UNREACHABLE();
-    return 0;
+    // monotonically increasing number ever produced by allocator. (only objects?)
+
+    //TODO: VS would need some kind of counter incremented when allocating from regions 
+    return Satori::REGION_SIZE_GRANULARITY * 10;
 }
 
 HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
 {
-    // TODO: VS this is implementable
+    // TODO: VS we do full GC for now.
+    m_heap->Recycler()->Collect(/*force*/ true);
     return S_OK;
 }
 
@@ -213,6 +220,17 @@ HRESULT SatoriGC::Initialize()
         return E_OUTOFMEMORY;
     }
 
+    m_waitForGCEvent = new (nothrow) GCEvent;
+    if (!m_waitForGCEvent)
+    {
+        return E_OUTOFMEMORY;
+    }
+
+    if (!m_waitForGCEvent->CreateManualEventNoThrow(TRUE))
+    {
+        return E_FAIL;
+    }
+
     return S_OK;
 }
 
@@ -259,6 +277,8 @@ bool SatoriGC::IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, in
     //       negative thread_number could indicate "do not care"
     //       also need to assign numbers to threads when scanning.
     //       at very least there is dependency on 0 being unique.
+
+    // for now we just return true if given context has not been scanned up to the current scan count. 
     while (true)
     {
         int threadScanCount = acontext->alloc_count;
@@ -284,8 +304,14 @@ bool SatoriGC::IsEphemeral(Object* object)
 
 uint32_t SatoriGC::WaitUntilGCComplete(bool bConsiderGCStart)
 {
-    // TODO: VS could do some help here?
-    m_heap->Recycler()->WaitOnSuspension();
+    //TODO: VS bConsiderGCStart used by threadpool to wait if GC is imminent.
+
+    if (m_gcInProgress)
+    {
+        _ASSERTE(m_waitForGCEvent->IsValid());
+        return m_waitForGCEvent->Wait(INFINITE, FALSE);
+    }
+
     return NOERROR;
 }
 
@@ -351,10 +377,12 @@ void SatoriGC::PublishObject(uint8_t* obj)
 
 void SatoriGC::SetWaitForGCEvent()
 {
+    m_waitForGCEvent->Set();
 }
 
 void SatoriGC::ResetWaitForGCEvent()
 {
+    m_waitForGCEvent->Reset();
 }
 
 bool SatoriGC::IsLargeObject(Object* pObj)
