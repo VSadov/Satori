@@ -25,7 +25,6 @@
 void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
     m_heap = heap;
-    m_suspensionLock.Initialize();
 
     m_regularRegions = new SatoriRegionQueue();
     m_finalizationTrackingRegions = new SatoriRegionQueue();
@@ -37,16 +36,19 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_relocatingRegions = new SatoriRegionQueue();
 
     m_workList = new SatoriMarkChunkQueue();
+    m_gcInProgress = 0;
 }
 
 void SatoriRecycler::AddRegion(SatoriRegion* region, bool forGc)
 {
-    // TODO: VS make end parsable?
+    _ASSERTE(region->AllocStart() == 0);
+    _ASSERTE(region->AllocRemaining() == 0);
 
-    // TODO: VS verify
+    region->Verify();
 
     // TODO: VS volatile?
     region->Publish();
+    region->CleanMarks();
 
     if (region->HasFinalizables())
     {
@@ -60,37 +62,38 @@ void SatoriRecycler::AddRegion(SatoriRegion* region, bool forGc)
     int count = m_finalizationTrackingRegions->Count() + m_regularRegions->Count();
     if (!forGc && count - m_prevRegionCount > 10)
     {
-        Collect();
+        if (!m_gcInProgress && Interlocked::CompareExchange(&m_gcInProgress, 1, 0) == 0)
+        {
+            Collect(/*force*/ false);
+        }
     }
 }
 
-void SatoriRecycler::Collect()
+void SatoriRecycler::Collect(bool force)
 {
     bool wasCoop = GCToEEInterface::EnablePreemptiveGC();
     _ASSERTE(wasCoop);
 
+    // stop other threads.
+    GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
+
+    // become coop again (it will not block since VM is done suspending)
+    GCToEEInterface::DisablePreemptiveGC();
+
+    int count = m_finalizationTrackingRegions->Count() + m_regularRegions->Count();
+    if (count - m_prevRegionCount > 10 || force)
     {
-        SatoriLockHolder<SatoriLock> holder(&m_suspensionLock);
-        int count = m_finalizationTrackingRegions->Count() + m_regularRegions->Count();
-        if (count - m_prevRegionCount <= 10)
-        {
-            goto exit;
-        }
-
-        // stop other threads.
-        GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
-
         // deactivate all stacks
         DeactivateAllStacks();
 
         // mark own stack into work queues
         IncrementScanCount();
+
         MarkOwnStack();
 
         // TODO: VS perhaps drain queues as a part of MarkOwnStack? - to give other threads chance to self-mark?
         //       thread marking is fast though, so it may not help a lot.
 
-        // TODO: VS this also scans statics. Do we want this?
         MarkOtherStacks();
 
         // drain queues
@@ -179,16 +182,13 @@ void SatoriRecycler::Collect()
 
         SweepRegions(m_regularRegions);
         SweepRegions(m_finalizationTrackingRegions);
+        m_prevRegionCount = m_finalizationTrackingRegions->Count() + m_regularRegions->Count();
     }
-
-    m_prevRegionCount = m_finalizationTrackingRegions->Count() + m_regularRegions->Count();
 
     // restart VM
     GCToEEInterface::RestartEE(true);
 
- exit:
-    // become coop again (note - could block here, it is ok)
-    GCToEEInterface::DisablePreemptiveGC();
+    m_gcInProgress = false;
 }
 
 void SatoriRecycler::DeactivateFn(gc_alloc_context* gcContext, void* param)
@@ -215,6 +215,7 @@ public:
 
     void PushToMarkQueues(SatoriObject* o)
     {
+        o->Validate();
         if (m_markChunk && m_markChunk->TryPush(o))
         {
             return;
@@ -279,6 +280,7 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     if (o->ContainingRegion()->IsThreadLocal())
     {
         // do not mark thread local regions.
+        _ASSERTE(!"thread local region is unexpected");
         return;
     }
 
@@ -291,7 +293,7 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
         // TODO: VS we do not need to push if card is marked, we will have to revisit anyways.
 
         // TODO: VS test card setting. for now this is unused.
-        context->m_recycler->m_heap->SetCardForAddress(location);
+        // context->m_recycler->m_heap->SetCardForAddress(location);
 
         context->PushToMarkQueues(o);
     }
@@ -364,23 +366,9 @@ void SatoriRecycler::IncrementScanCount()
 }
 
 // TODO: VS volatile?
-inline int SatoriRecycler::GetScanCount()
+int SatoriRecycler::GetScanCount()
 {
     return m_scanCount;
-}
-
-void SatoriRecycler::WaitOnSuspension()
-{
-    bool wasCoop = GCToEEInterface::EnablePreemptiveGC();
-
-    {
-        SatoriLockHolder<SatoriLock> holder(&m_suspensionLock);
-    }
-
-    if (wasCoop)
-    {
-        GCToEEInterface::DisablePreemptiveGC();
-    }
 }
 
 void SatoriRecycler::DrainMarkQueues()
@@ -401,6 +389,7 @@ void SatoriRecycler::DrainMarkQueues()
                     if (child && !child->IsMarked())
                     {
                         child->SetMarked();
+                        child->Validate();
                         if (!dstChunk || !dstChunk->TryPush(child))
                         {
                             this->PushToMarkQueuesSlow(dstChunk, child);
@@ -416,7 +405,6 @@ void SatoriRecycler::DrainMarkQueues()
         if (dstChunk && dstChunk->Count() > 0)
         {
             SatoriMarkChunk* tmp = srcChunk;
-            _ASSERTE(tmp->Count() == 0);
             srcChunk = dstChunk;
             dstChunk = tmp;
         }
