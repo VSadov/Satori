@@ -9,8 +9,10 @@
 
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
+
 #include "SatoriPage.h"
 #include "SatoriRegion.h"
+#include "SatoriRegion.inl"
 
 SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap)
 {
@@ -26,7 +28,7 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     size_t cardTableBytes = pageSize / (128 * 8);
 
     // commit size is the same as header size. We could commit more in the future.
-    size_t commitSize = ALIGN_UP(cardTableBytes, GCToOSInterface::GetPageSize());
+    size_t commitSize = ALIGN_UP(cardTableBytes, Satori::CommitGranularity());
     if (!GCToOSInterface::VirtualCommit((void*)address, commitSize))
     {
         GCToOSInterface::VirtualRelease((void*)address, pageSize);
@@ -60,6 +62,7 @@ SatoriRegion* SatoriPage::MakeInitialRegion()
 
 void SatoriPage::RegionInitialized(SatoriRegion* region)
 {
+    _ASSERTE((size_t)region > Start() && (size_t)region < End());
     size_t startIndex = (region->Start() - Start()) >> Satori::REGION_BITS;
     size_t mapCount = region->Size() >> Satori::REGION_BITS;
     RegionMap()[startIndex] = 1;
@@ -72,6 +75,7 @@ void SatoriPage::RegionInitialized(SatoriRegion* region)
 
 void SatoriPage::RegionDestroyed(SatoriRegion* region)
 {
+    _ASSERTE((size_t)region > Start() && (size_t)region < End());
     size_t startIndex = (region->Start() - Start()) >> Satori::REGION_BITS;
     size_t mapCount = region->Size() >> Satori::REGION_BITS;
     for (int i = 0; i < mapCount; i++)
@@ -83,11 +87,12 @@ void SatoriPage::RegionDestroyed(SatoriRegion* region)
 
 SatoriRegion* SatoriPage::RegionForAddress(size_t address)
 {
-    size_t mapIndex = address >> Satori::REGION_BITS;
+    _ASSERTE(address > Start() && address < End());
+    size_t mapIndex = (address - Start()) >> Satori::REGION_BITS;
     while (RegionMap()[mapIndex] > 1)
     {
         mapIndex -= ((size_t)1 << (RegionMap()[mapIndex] - 2));
     }
 
-    return (SatoriRegion*)(mapIndex << Satori::REGION_BITS);
+    return (SatoriRegion*)((mapIndex << Satori::REGION_BITS) + Start());
 }

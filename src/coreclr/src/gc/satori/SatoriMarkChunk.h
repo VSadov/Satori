@@ -88,7 +88,7 @@ public:
         size_t from = 0;
         while (from < m_top && m_data[from++]);
 
-        size_t to = from;
+        size_t to = from - 1;
         while (from < m_top)
         {
             if (m_data[from])
