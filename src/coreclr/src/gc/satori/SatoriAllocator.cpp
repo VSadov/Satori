@@ -154,7 +154,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             _ASSERTE((size_t)context->alloc_limit == region->AllocStart());
             size_t moreSpace = context->alloc_ptr + size - context->alloc_limit;
 
-            // try allocate contiguous
+            // try allocate more to form a contiguous chunk to fit size 
             size_t allocRemaining = region->AllocRemaining();
             if (moreSpace <= allocRemaining)
             {
@@ -174,13 +174,16 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                     result->CleanSyncBlock();
                     return result;
                 }
+                else
+                {
+                    //OOM
+                    return nullptr;
+                }
             }
 
             // unclaim unused.
             context->alloc_bytes -= context->alloc_limit - context->alloc_ptr;
-
-            size_t unused = (size_t)context->alloc_ptr;
-            region->StopAllocating(unused);
+            region->StopAllocating((size_t)context->alloc_ptr);
 
             // TODO: VS heuristic needed
             //       when there is 10% "sediment" we want to release this to recycler
@@ -189,19 +192,19 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             //       All this can be tuned once full GC works.
             if (region->Occupancy() < Satori::REGION_SIZE_GRANULARITY * 1 / 10)
             {
-                // try compact current
-                region->ThreadLocalMark();
-                //TODO: VS check if can split and split (here, after marking)
-                region->ThreadLocalPlan();
-                region->ThreadLocalUpdatePointers();
+                //// try compact current
+                //region->ThreadLocalMark();
+                ////TODO: VS check if can split and split (here, after marking)
+                //region->ThreadLocalPlan();
+                //region->ThreadLocalUpdatePointers();
 
-                size_t desiredFreeSpace = max(size, Satori::MIN_REGULAR_ALLOC);
-                if (region->ThreadLocalCompact(desiredFreeSpace))
-                {
-                    // we have enough free space in the region to continue
-                    context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
-                    continue;
-                }
+                //size_t desiredFreeSpace = max(size, Satori::MIN_REGULAR_ALLOC);
+                //if (region->ThreadLocalCompact(desiredFreeSpace))
+                //{
+                //    // we have enough free space in the region to continue
+                //    context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
+                //    continue;
+                //}
             }
 
             context->RegularRegion() = nullptr;
@@ -212,9 +215,11 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
         region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
         if (region == nullptr)
         {
+            //OOM
             return nullptr;
         }
 
+        _ASSERTE(region->NothingMarked());
         context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
         region->m_ownerThreadTag = SatoriUtil::GetCurrentThreadTag();
         context->RegularRegion() = region;
@@ -223,53 +228,61 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
 SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
-    size_t location =  0;
-
-    // try large region first, if present
     SatoriRegion* region = context->LargeRegion();
-    if (region)
+
+    while (true)
     {
-        location = region->Allocate(size, true);
-        if (location)
+        if (region)
         {
-            goto done;
+            size_t allocRemaining = region->AllocRemaining();
+            if (allocRemaining >= size)
+            {
+                size_t location = 0;
+                if (allocRemaining < Satori::REGION_SIZE_GRANULARITY)
+                {
+                    location = region->Allocate(size, true);
+                }
+                else
+                {
+                    location = region->AllocateHuge(size, true);
+                }
+
+                SatoriObject* result = SatoriObject::At(location);
+                if (result)
+                {
+                    result->CleanSyncBlock();
+                    context->alloc_bytes_uoh += size;
+                }
+                else
+                {
+                    // OOM
+                }
+
+                return result;
+            }
         }
-    }
 
-    size_t regionSize = ALIGN_UP(size + sizeof(SatoriRegion), Satori::REGION_SIZE_GRANULARITY);
-    region = GetRegion(regionSize);
-    region->m_ownerThreadTag = SatoriUtil::GetCurrentThreadTag();
+        // drop existing region into recycler
+        if (region)
+        {
+            region->StopAllocating(/* allocPtr */ 0);
+            context->LargeRegion() = nullptr;
+            m_heap->Recycler()->AddRegion(region, /* forGc */ false);
+        }
 
-    if (regionSize == Satori::REGION_SIZE_GRANULARITY)
-    {
-        location = region->Allocate(size, true);
-    }
-    else
-    {
-        location = region->AllocateHuge(size, true);
-    }
+        // get a new region appropriate for the size.
+        size_t regionSize = ALIGN_UP(size + sizeof(SatoriRegion) + Satori::MIN_FREE_SIZE, Satori::REGION_SIZE_GRANULARITY);
+        region = GetRegion(regionSize);
+        if (!region)
+        {
+            //OOM
+            return nullptr;
+        }
 
-    if (context->LargeRegion() == nullptr)
-    {
+        _ASSERTE(region->NothingMarked());
+        region->m_ownerThreadTag = SatoriUtil::GetCurrentThreadTag();
         context->LargeRegion() = region;
     }
-    else
-    {
-        if (context->LargeRegion()->AllocRemaining() < region->AllocRemaining())
-        {
-            SatoriRegion* tmp = context->LargeRegion();
-            context->LargeRegion() = region;
-            region = tmp;
-        }
-
-        m_heap->Recycler()->AddRegion(region, /* forGc */ false);
-    }
-
-done:
-    SatoriObject* result = SatoriObject::At(location);
-    result->CleanSyncBlock();
-    context->alloc_bytes_uoh += size;
-    return result;
 }
 
 SatoriMarkChunk* SatoriAllocator::TryGetMarkChunk()
@@ -280,13 +293,13 @@ SatoriMarkChunk* SatoriAllocator::TryGetMarkChunk()
         chunk = m_markChunks->TryPop();
     }
 
+    _ASSERTE(chunk->Count() == 0);
     return chunk;
 }
 
 bool SatoriAllocator::AddMoreMarkChunks()
 {
     SatoriRegion* region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
-
     if (!region)
     {
         return false;
@@ -309,5 +322,6 @@ bool SatoriAllocator::AddMoreMarkChunks()
 
 void SatoriAllocator::ReturnMarkChunk(SatoriMarkChunk* chunk)
 {
+    _ASSERTE(chunk->Count() == 0);
     m_markChunks->Push(chunk);
 }
