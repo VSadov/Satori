@@ -1643,6 +1643,10 @@ void InitializeGarbageCollector()
     g_pFreeObjectMethodTable->SetBaseSize(ARRAYBASE_BASESIZE);
     g_pFreeObjectMethodTable->SetComponentSize(1);
 
+#ifdef _DEBUG
+    g_pFreeObjectMethodTable->SetDebugClassName("__FreeObject");
+#endif
+
     hr = GCHeapUtilities::LoadAndInitialize();
     if (hr != S_OK)
     {
