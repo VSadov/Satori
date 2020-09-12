@@ -1306,15 +1306,15 @@ static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
 #include <optsmallperfcritical.h>
 
 // same as SatoriGC::IsHeapPointer, just to avoid dependency on SatoriGC class.
-bool IsInHeapSatori(Object** start)
+bool IsInHeapSatori(void* ptr)
 {
-    if ((uint8_t*)start > (uint8_t*)g_highest_address)
+    if ((uint8_t*)ptr > (uint8_t*)g_highest_address)
     {
         return false;
     }
 
     uint8_t* pages = (uint8_t*)g_card_table;
-    size_t page = (size_t)start >> PAGE_BITS;
+    size_t page = (size_t)ptr >> PAGE_BITS;
     return pages[page];
 }
 
@@ -1338,32 +1338,36 @@ void CheckAndMarkEscapeSatori(Object** dst, Object* ref)
 #endif
 }
 
-void CheckAndMarkEscapeSatoriRange(Object** dst, Object* ref, size_t len)
+void CheckAndMarkEscapeSatoriRange(void* dst, void* src, size_t len)
 {
 #if FEATURE_SATORI_GC
-    if (((size_t)dst ^ (size_t)ref) >> 21)
-    {
-        if (((SatoriObject*)ref)->ContainingRegion()->OwnedByCurrentThread())
-        {
-            SatoriObject* containingObj = (SatoriObject*)GCHeapUtilities::GetGCHeap()->GetContainingObject(ref, false);
-
-            //TODO: VS escape only from ref to len
-
-            containingObj->ForEachObjectRef(
-                [](SatoriObject** ref)
-                {
-                    SatoriObject* child = *ref;
-                    // we are escaping an object from our thread local container
-                    // if it is not escaped aready, it is ours
-                    // we can mark the object escape with an ordinary assignment,
-                    if (!child->IsEscaped())
-                    {
-                        child->SetEscaped();
-                    }
-                }
-            );
-        }
-    }
+    ////TODO: VS "same region" check may go to the outer helper, before IsInHeap check.
+    //if (((size_t)dst ^ (size_t)src) >> 21)
+    //{
+    //    //TODO: VS this is dangerous when gap is in front.
+    //    SatoriObject* srcObj = (SatoriObject*)GCHeapUtilities::GetGCHeap()->GetContainingObject(src, false);
+    //    if (srcObj)
+    //    {
+    //        SatoriRegion* srcRegion = srcObj->ContainingRegion();
+    //        if (srcRegion->OwnedByCurrentThread())
+    //        {
+    //            //TODO: VS escape only from ref to len
+    //            srcObj->ForEachObjectRef(
+    //                [&](SatoriObject** ref)
+    //                {
+    //                    SatoriObject* child = *ref;
+    //                    if (srcRegion == child->ContainingRegion() && !child->IsEscaped())
+    //                    {
+    //                        // we are escaping an object from our thread local region
+    //                        // we can mark the object escape with an ordinary assignment,
+    //                        // noone else should be marking this region.
+    //                        child->SetEscaped();
+    //                    }
+    //                }
+    //            );
+    //        }
+    //    }
+    //}
 #endif
 }
 
