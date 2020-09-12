@@ -27,14 +27,7 @@ SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*
     }
 
     _ASSERTE(result->ValidateBlank());
-
-    // TODO: VS  put back the assert when bucketized.
-    // _ASSERTE(result->Size() >= regionSize);
-    if (result->Size() < regionSize)
-    {
-        m_lock.Leave();
-        return nullptr;
-    }
+    _ASSERTE(result->Size() >= regionSize);
 
     if (result->Size() - SatoriUtil::RoundDownPwr2(result->Size()) > regionSize)
     {
