@@ -372,6 +372,7 @@ namespace System.Tests
             Assert.Equal(0, AppDomain.CurrentDomain.ReflectionOnlyGetAssemblies().Length);
         }
 
+        [ActiveIssue("Satori NYI")]
         [Fact]
         [PlatformSpecific(~TestPlatforms.Browser)] // Throws PNSE
         public void MonitoringIsEnabled()
