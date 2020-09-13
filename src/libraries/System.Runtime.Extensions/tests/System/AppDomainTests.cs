@@ -378,6 +378,7 @@ namespace System.Tests
             Assert.Equal(0, AppDomain.CurrentDomain.ReflectionOnlyGetAssemblies().Length);
         }
 
+        [ActiveIssue("Satori NYI")]
         [Fact]
         [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS, "Throws PNSE")]
         public void MonitoringIsEnabled()
