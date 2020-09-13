@@ -443,6 +443,7 @@ namespace System.Diagnostics.Tests
             Assert.Equal(RemotelyInvokable.SuccessExitCode, p.ExitCode);
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         public async Task WaitAsyncForSignal()
         {
@@ -492,6 +493,7 @@ namespace System.Diagnostics.Tests
             Assert.Equal(RemotelyInvokable.SuccessExitCode, p.ExitCode);
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         public void WaitChain()
         {
@@ -519,6 +521,7 @@ namespace System.Diagnostics.Tests
             Assert.Equal(RemoteExecutor.SuccessExitCode, root.ExitCode);
         }
 
+        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         public async Task WaitAsyncChain()
         {
