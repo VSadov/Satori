@@ -379,6 +379,7 @@ namespace System.Tests
             Assert.Equal(0, AppDomain.CurrentDomain.ReflectionOnlyGetAssemblies().Length);
         }
 
+        [ActiveIssue("Satori NYI")]
         [Fact]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/75302", typeof(PlatformDetection), nameof(PlatformDetection.IsNativeAot), nameof(PlatformDetection.IsArm64Process))]
         [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS, "Throws PNSE")]
