@@ -78,7 +78,7 @@ public:
 
     void CleanMarks();
 
-    void Verify();
+    void Verify(bool allowMarked = false);
 
 private:
     static const int BITMAP_SIZE = Satori::REGION_SIZE_GRANULARITY / sizeof(size_t) / sizeof(size_t) / 8;
