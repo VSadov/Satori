@@ -205,6 +205,12 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                 //    context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
                 //    continue;
                 //}
+
+                ////TODO: VS we should not start allocating if we have no space. This will change when we do free lists.
+                //if (region->IsAllocating())
+                //{
+                //    region->StopAllocating(0);
+                //}
             }
 
             context->RegularRegion() = nullptr;
