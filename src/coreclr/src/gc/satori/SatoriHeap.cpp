@@ -222,6 +222,17 @@ inline SatoriPage* SatoriHeap::PageForAddress(size_t address)
     return (SatoriPage *)(mapIndex << Satori::PAGE_BITS);
 }
 
+//TODO: VS unused?
+SatoriRegion* SatoriHeap::RegionForAddress(size_t address)
+{
+    if (IsHeapAddress(address))
+    {
+        return PageForAddress(address)->RegionForAddress(address);
+    }
+
+    return nullptr;
+}
+
 //TODO: VS optimize this, move to inl
 SatoriObject* SatoriHeap::ObjectForAddress(size_t address)
 {
