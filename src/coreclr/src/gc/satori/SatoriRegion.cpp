@@ -353,17 +353,23 @@ SatoriObject* SatoriRegion::FindObject(size_t location)
 {
     _ASSERTE(location >= (size_t)FirstObject() && location <= End());
 
-    // TODO: VS use index to start
-    SatoriObject* obj = FirstObject();
-    SatoriObject* next = obj->Next();
+    SatoriObject* obj = &m_firstObject;
+    if (IsAllocating() && location >= m_allocEnd)
+    {
+        obj = (SatoriObject*)m_allocEnd;
+    }
 
-    while (next->Start() < location)
+    // TODO: VS adjust obj using index and update index on the go 
+    SatoriObject* next = obj->Next();
+    while (next->Start() <= location)
     {
         obj = next;
         next = next->Next();
     }
 
-    return obj->IsFree() ? nullptr : obj;
+    _ASSERTE(!obj->IsFree());
+
+    return obj;
 }
 
 void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
@@ -583,7 +589,7 @@ void SatoriRegion::ThreadLocalMark()
         }
     }
 
-    Verify();
+    Verify(/*allowMarked*/ true);
 }
 
 size_t SatoriRegion::ThreadLocalPlan()
@@ -1124,7 +1130,7 @@ void SatoriRegion::CleanMarks()
     ZeroMemory(&m_bitmap[BITMAP_START], (BITMAP_SIZE - BITMAP_START) * sizeof(size_t));
 }
 
-void SatoriRegion::Verify()
+void SatoriRegion::Verify(bool allowMarked)
 {
 #ifdef _DEBUG
     for (size_t i = m_used; i < m_committed; i++)
@@ -1146,7 +1152,7 @@ void SatoriRegion::Verify()
         }
         else
         {
-            _ASSERTE(!obj->IsMarked());
+            _ASSERTE(allowMarked || !obj->IsMarked());
         }
 
         prevPrevObj = prevObj;
