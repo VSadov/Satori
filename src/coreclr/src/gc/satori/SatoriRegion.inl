@@ -67,9 +67,9 @@ inline size_t SatoriRegion::Occupancy()
     return m_occupancy;
 }
 
+//TODO: VS why do we have this?
 inline void SatoriRegion::Publish()
 {
-    _ASSERTE(m_ownerThreadTag != 0);
     m_ownerThreadTag = 0;
 }
 
@@ -95,6 +95,10 @@ void SatoriRegion::ForEachFinalizable(F& lambda)
             if (newFinalizable != finalizable)
             {
                 chunk->Item(i) = newFinalizable;
+                if (newFinalizable == nullptr)
+                {
+                    nulls++;
+                }
             }
         }
 
