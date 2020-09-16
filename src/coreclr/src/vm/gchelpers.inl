@@ -32,18 +32,15 @@ static const int card_byte_shift = 10;
 const static int REGION_BITS = 21;
 const static size_t REGION_SIZE_GRANULARITY = 1 << REGION_BITS;
 
-FORCEINLINE void InlinedSetCardsAfterBulkCopyHelper(void* dst, void* src, size_t len)
+FORCEINLINE void InlinedSetCardsAfterBulkCopyHelper(Object **start, size_t len)
 {
-    if (IsInHeapSatori(dst))
+    //TODO: Satori
+
+    if (IsInHeapSatori(start))
     {
-        CheckAndMarkEscapeSatoriRange(dst, src, len);
         // TODO: VS set cards
     }
-}
 
-//TODO: Satori
-//FORCEINLINE void InlinedSetCardsAfterBulkCopyHelper(Object **start, size_t len)
-//{
 //    // Check whether the writes were even into the heap. If not there's no card update required.
 //    // Also if the size is smaller than a pointer, no write barrier is required.
 //    _ASSERTE(len >= sizeof(uintptr_t));
@@ -116,6 +113,6 @@ FORCEINLINE void InlinedSetCardsAfterBulkCopyHelper(void* dst, void* src, size_t
 //    }
 //    while (bundleByteCount != 0);
 //#endif
-//}
+}
 
 #endif // !_GCHELPERS_INL_
