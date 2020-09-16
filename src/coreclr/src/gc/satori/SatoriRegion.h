@@ -40,7 +40,7 @@ public:
     bool CanCoalesce(SatoriRegion* other);
     void Coalesce(SatoriRegion* next);
 
-    void Deactivate(SatoriHeap* heap, size_t allocPtr, bool forGc);
+    void Deactivate(SatoriHeap* heap, size_t allocPtr);
 
     size_t AllocStart();
     size_t AllocRemaining();
@@ -65,10 +65,13 @@ public:
     void ThreadLocalMark();
     size_t ThreadLocalPlan();
     void ThreadLocalUpdatePointers();
+    SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
-    SatoriObject* NextMarked(SatoriObject* after);
     bool NothingMarked();
     bool ThreadLocalCompact(size_t desiredFreeSpace);
+
+    bool IsExposed(SatoriObject** location);
+    void EscapeRecursively(SatoriObject* obj);
 
     template<typename F>
     void ForEachFinalizable(F& lambda);
@@ -102,6 +105,7 @@ private:
             // just some thread-specific value that is easy to get.
             // TEB address could be used on Windows, for example
             size_t m_ownerThreadTag;
+            void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
 
             size_t m_end;
             size_t m_committed;
@@ -137,13 +141,16 @@ private:
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
     static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+    static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
 
     SatoriAllocator* Allocator();
 
     void PushToMarkStack(SatoriObject* obj);
     SatoriObject* PopFromMarkStack();
-    SatoriObject* ObjectForBit(size_t bitmapIndex, int offset);
+    SatoriObject* ObjectForMarkBit(size_t bitmapIndex, int offset);
     void CompactFinalizables();
+
+    void SetExposed(SatoriObject** location);
 };
 
 #endif
