@@ -306,7 +306,9 @@ int WriteBarrierManager::ChangeWriteBarrierTo(WriteBarrierType newWriteBarrier, 
 
     // the memcpy must come before the switch statment because the asserts inside the switch
     // are actually looking into the JIT_WriteBarrier buffer
-    memcpy(GetWriteBarrierCodeLocation((void*)JIT_WriteBarrier), (LPVOID)GetCurrentWriteBarrierCode(), GetCurrentWriteBarrierSize());
+
+    //TODO: Satori   we do not need to replace the barrier body for now
+    // memcpy(GetWriteBarrierCodeLocation((void*)JIT_WriteBarrier), (LPVOID)GetCurrentWriteBarrierCode(), GetCurrentWriteBarrierSize());
 
     switch (newWriteBarrier)
     {
