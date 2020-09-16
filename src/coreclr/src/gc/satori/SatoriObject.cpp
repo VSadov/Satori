@@ -11,12 +11,22 @@
 #include "../env/gcenv.os.h"
 #include "SatoriObject.h"
 #include "SatoriObject.inl"
+#include "SatoriRegion.h"
+#include "SatoriRegion.inl"
 
 MethodTable* SatoriObject::s_emptyObjectMt;
 
 void SatoriObject::Initialize()
 {
     s_emptyObjectMt = GCToEEInterface::GetFreeObjectMethodTable();
+}
+
+void SatoriObject::ClearPinned()
+{
+    if (!IsEscaped())
+    {
+        ClearBit(2);
+    }
 }
 
 SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
@@ -63,6 +73,36 @@ SatoriObject* SatoriObject::FormatAsFreeAfterHuge(size_t location, size_t size)
 
 void SatoriObject::Validate()
 {
+#ifdef _DEBUG
     _ASSERTE(this->GetReloc() == 0);
     _ASSERTE(this->Size() >= Satori::MIN_FREE_SIZE);
+
+    if (ContainingRegion()->OwnedByCurrentThread())
+    {
+        if (IsEscaped())
+        {
+            _ASSERTE(!IsFree());
+
+            ForEachObjectRef(
+                [this](SatoriObject** ref)
+                {
+                    _ASSERTE(ContainingRegion()->IsExposed(ref));
+                    SatoriObject* child = *ref;
+                    if (child->ContainingRegion() == ContainingRegion())
+                    {
+                        _ASSERTE(child->IsEscaped());
+                    }
+                }
+            );
+        }
+        else
+        {
+            size_t size = Size();
+            for (size_t i = Start(); i < size; i++)
+            {
+                _ASSERTE(!((SatoriObject*)i)->IsMarked());
+            }
+        }
+    }
+#endif
 }
