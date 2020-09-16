@@ -318,7 +318,7 @@ uint32_t SatoriGC::WaitUntilGCComplete(bool bConsiderGCStart)
 void SatoriGC::FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
 {
     // this is only called when thread is terminating and about to clear its context.
-    ((SatoriAllocationContext*)acontext)->Deactivate(m_heap, /* forGc */ false);
+    ((SatoriAllocationContext*)acontext)->Deactivate(m_heap);
 }
 
 size_t SatoriGC::GetCurrentObjSize()
@@ -373,6 +373,17 @@ Object* SatoriGC::Alloc(gc_alloc_context* acontext, size_t size, uint32_t flags)
 
 void SatoriGC::PublishObject(uint8_t* obj)
 {
+    SatoriObject* so = (SatoriObject*)obj;
+    SatoriRegion* region = so->ContainingRegion();
+
+    // we do not retain huge regions in allocator,
+    // but can't drop them in recycler until object has a MethodTable.
+    // do that here.
+    if (!region->IsThreadLocal())
+    {
+        _ASSERTE(region->Size() > Satori::REGION_SIZE_GRANULARITY);
+        m_heap->Recycler()->AddRegion(region);
+    }
 }
 
 void SatoriGC::SetWaitForGCEvent()
