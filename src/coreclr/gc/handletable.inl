@@ -115,19 +115,19 @@ inline BOOL HndFirstAssignHandle(OBJECTHANDLE handle, OBJECTREF objref)
     _UNCHECKED_OBJECTREF value = OBJECTREF_TO_UNCHECKED_OBJECTREF(objref);
     _UNCHECKED_OBJECTREF null = NULL;
 
+    //TODO: VS this looks like a dead code.
+
+    // if we are doing a non-NULL pointer store then invoke the write-barrier
+    if (value)
+        HndWriteBarrier(handle, objref);
+
     // store the pointer if we are the first ones here
     BOOL success = (NULL == Interlocked::CompareExchangePointer(reinterpret_cast<_UNCHECKED_OBJECTREF volatile*>(handle),
                                                                 value,
                                                                 null));
 
-    // if we successfully did a non-NULL pointer store then invoke the write-barrier
     if (success)
-    {
-        if (value)
-            HndWriteBarrier(handle, objref);
-
         HndLogSetEvent(handle, value);
-    }
 
     // return our result
     return success;

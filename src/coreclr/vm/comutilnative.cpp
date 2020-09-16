@@ -1514,6 +1514,7 @@ FCIMPL2(LPVOID,COMInterlocked::ExchangeObject, LPVOID*location, LPVOID value)
 {
     FCALL_CONTRACT;
 
+    CheckEscapeSatori((Object**)location, (Object*)value); 
     LPVOID ret = InterlockedExchangeT(location, value);
 #ifdef _DEBUG
     Thread::ObjectRefAssign((OBJECTREF *)location);
@@ -1527,6 +1528,7 @@ FCIMPL3(LPVOID,COMInterlocked::CompareExchangeObject, LPVOID *location, LPVOID v
 {
     FCALL_CONTRACT;
 
+    CheckEscapeSatori((Object**)location, (Object*)value);
     // <TODO>@todo: only set ref if is updated</TODO>
     LPVOID ret = InterlockedCompareExchangeT(location, value, comparand);
     if (ret == comparand) {

@@ -88,8 +88,8 @@ extern void ThrowOutOfMemoryDimensionsExceeded();
 
 void ErectWriteBarrier(OBJECTREF* dst, OBJECTREF ref);
 bool IsInHeapSatori(void* ptr);
-void CheckAndMarkEscapeSatori(Object** dst, Object* ref);
-void CheckAndMarkEscapeSatoriRange(void* dst, void* src, size_t len);
+void CheckEscapeSatori(Object** dst, Object* ref);
+void CheckEscapeSatoriRange(void* dst, void* src, size_t len);
 
 void PublishFrozenObject(Object*& orObject);
 
