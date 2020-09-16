@@ -11,12 +11,10 @@
 #include "common.h"
 #include "../gc.h"
 
-class SatoriGC;
-class SatoriRegion;
-
 class SatoriObject : public Object
 {
-    friend SatoriGC;
+    friend class SatoriRegion;
+    friend class SatoriGC;
 
 public:
     SatoriObject() = delete;
@@ -43,8 +41,8 @@ public:
     void SetPinned();
     void ClearPinnedAndMarked();
     bool IsEscaped();
-    void SetEscaped();
     bool IsEscapedOrPinned();
+    int MarkBitOffset(size_t* bitmapIndex);
 
     bool IsFinalizationSuppressed();
 
@@ -60,7 +58,7 @@ public:
     void Validate();
 
     template<typename F>
-    void ForEachObjectRef(F& lambda);
+    void ForEachObjectRef(F& lambda, bool includeCollectibleAllocator = false);
 
 private:
     static MethodTable* s_emptyObjectMt;
@@ -69,6 +67,8 @@ private:
     void SetBit(int offset);
     void ClearBit(int offset);
     bool CheckBit(int offset);
+    void SetEscaped();
+    void ClearPinned();
 };
 
 #endif

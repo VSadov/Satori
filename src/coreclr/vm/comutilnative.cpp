@@ -1622,6 +1622,8 @@ FCIMPL2(LPVOID,COMInterlocked::ExchangeObject, LPVOID*location, LPVOID value)
         FCThrow(kNullReferenceException);
     }
 
+    CheckEscapeSatori((Object**)location, (Object*)value);
+
     LPVOID ret = FastInterlockExchangePointer(location, value);
 #ifdef _DEBUG
     Thread::ObjectRefAssign((OBJECTREF *)location);
@@ -1638,6 +1640,8 @@ FCIMPL3(LPVOID,COMInterlocked::CompareExchangeObject, LPVOID *location, LPVOID v
     if( NULL == location) {
         FCThrow(kNullReferenceException);
     }
+
+    CheckEscapeSatori((Object**)location, (Object*)value);
 
     // <TODO>@todo: only set ref if is updated</TODO>
     LPVOID ret = FastInterlockCompareExchangePointer(location, value, comparand);

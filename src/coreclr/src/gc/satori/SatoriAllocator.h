@@ -42,8 +42,9 @@ private:
 
     SatoriMarkChunkQueue* m_markChunks;
 
-    SatoriObject* AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
+    SatoriObject* AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags);
+    SatoriObject* AllocHuge(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     static int SizeToBucket(size_t size)
     {
