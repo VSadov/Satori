@@ -39,7 +39,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_gcInProgress = 0;
 }
 
-void SatoriRecycler::AddRegion(SatoriRegion* region, bool forGc)
+void SatoriRecycler::AddRegion(SatoriRegion* region)
 {
     _ASSERTE(region->AllocStart() == 0);
     _ASSERTE(region->AllocRemaining() == 0);
@@ -58,16 +58,27 @@ void SatoriRecycler::AddRegion(SatoriRegion* region, bool forGc)
     {
         m_regularRegions->Push(region);
     }
+}
 
+// TODO: this should go to heuristics?
+void SatoriRecycler::MaybeTriggerGC()
+{
     int count = m_finalizationTrackingRegions->Count() + m_regularRegions->Count();
-    if (!forGc && count - m_prevRegionCount > 10)
+    if (count - m_prevRegionCount > 10)
     {
-        if (!m_gcInProgress && Interlocked::CompareExchange(&m_gcInProgress, 1, 0) == 0)
+        if (m_gcInProgress)
+        {
+            //TODO: VS unhijack thread?
+            GCToEEInterface::EnablePreemptiveGC();
+            GCToEEInterface::DisablePreemptiveGC();
+        }
+        else if (Interlocked::CompareExchange(&m_gcInProgress, 1, 0) == 0)
         {
             Collect(/*force*/ false);
         }
     }
 }
+
 
 void SatoriRecycler::Collect(bool force)
 {
@@ -194,7 +205,7 @@ void SatoriRecycler::Collect(bool force)
 void SatoriRecycler::DeactivateFn(gc_alloc_context* gcContext, void* param)
 {
     SatoriAllocationContext* context = (SatoriAllocationContext*)gcContext;
-    context->Deactivate((SatoriHeap*)param, /* forGc */ true);
+    context->Deactivate((SatoriHeap*)param);
 }
 
 void SatoriRecycler::DeactivateAllStacks()
@@ -395,7 +406,8 @@ void SatoriRecycler::DrainMarkQueues()
                             this->PushToMarkQueuesSlow(dstChunk, child);
                         }
                     }
-                }
+                },
+                /* includeCollectibleAllocator */ true
             );
         }
 

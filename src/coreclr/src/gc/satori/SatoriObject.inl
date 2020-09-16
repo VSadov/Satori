@@ -66,41 +66,36 @@ inline bool SatoriObject::IsFree()
 
 #ifndef HOST_64BIT
 
-fix the following for 32bit
+32bit is NYI
 
 #endif
 
+
 inline void SatoriObject::SetBit(int offset)
 {
-    size_t objOffset = Start() & (Satori::REGION_SIZE_GRANULARITY - 1);
-    size_t bitOffset = (objOffset >> 3) + offset;
-    size_t wordOffset = bitOffset >> 6;
-    size_t maskBit = bitOffset & 63;
-    size_t mask = (size_t)1 << maskBit;
+    size_t word = Start() + offset * sizeof(size_t);
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_SIZE - 1);
+    size_t mask = (size_t)1 << ((word >> 3) & 63);
 
-    ContainingRegion()->m_bitmap[wordOffset] |= mask;
+    ContainingRegion()->m_bitmap[bitmapIndex] |= mask;
 }
 
 inline void SatoriObject::ClearBit(int offset)
 {
-    size_t objOffset = Start() & (Satori::REGION_SIZE_GRANULARITY - 1);
-    size_t bitOffset = (objOffset >> 3) + offset;
-    size_t wordOffset = bitOffset >> 6;
-    size_t maskBit = bitOffset & 63;
-    size_t mask = (size_t)1 << maskBit;
+    size_t word = Start() + offset * sizeof(size_t);
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_SIZE - 1);
+    size_t mask = (size_t)1 << ((word >> 3) & 63);
 
-    ContainingRegion()->m_bitmap[wordOffset] &= ~mask;
+    ContainingRegion()->m_bitmap[bitmapIndex] &= ~mask;
 }
 
 inline bool SatoriObject::CheckBit(int offset)
 {
-    size_t objOffset = Start() & (Satori::REGION_SIZE_GRANULARITY - 1);
-    size_t bitOffset = (objOffset >> 3) + offset;
-    size_t wordOffset = bitOffset >> 6;
-    size_t maskBit = bitOffset & 63;
-    size_t mask = (size_t)1 << maskBit;
+    size_t word = Start() + offset * sizeof(size_t);
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_SIZE - 1);
+    size_t mask = (size_t)1 << ((word >> 3) & 63);
 
-    return ContainingRegion()->m_bitmap[wordOffset] & mask;
+    return ContainingRegion()->m_bitmap[bitmapIndex] & mask;
 }
 
 inline bool SatoriObject::IsMarked()
@@ -127,7 +122,11 @@ inline void SatoriObject::ClearPinnedAndMarked()
 {
     _ASSERTE(GetReloc() == 0);
     ClearBit(0);
-    ClearBit(2);
+    if (IsPinned())
+    {
+        //TODO: VS make sure this does not inline.
+        ClearPinned();
+    }
 }
 
 inline bool SatoriObject::IsEscaped()
@@ -143,21 +142,6 @@ inline void SatoriObject::SetEscaped()
 inline bool SatoriObject::IsEscapedOrPinned()
 {
     return IsEscaped() || IsPinned();
-
-    //TODO: VS the following is not faster
-    /*size_t objOffset = Start() & (Satori::REGION_SIZE_GRANULARITY - 1);
-    size_t bitOffset = (objOffset >> 3) + 1;
-    size_t wordOffset = bitOffset >> 6;
-    size_t maskBit = bitOffset & 63;
-    size_t mask = (size_t)3 << maskBit;
-
-    bool result = ContainingRegion()->m_bitmap[wordOffset] & mask;
-    if (maskBit == 63)
-    {
-        result |= ContainingRegion()->m_bitmap[wordOffset + 1] & 1;
-    }
-
-    return result;*/
 }
 
 inline bool SatoriObject::IsFinalizationSuppressed()
@@ -208,17 +192,23 @@ inline void SatoriObject::CleanSyncBlock()
     ((size_t*)this)[-1] = 0;
 }
 
+inline int SatoriObject::MarkBitOffset(size_t* bitmapIndex)
+{
+    size_t start = Start();
+    *bitmapIndex = (start >> 9) & (SatoriRegion::BITMAP_SIZE - 1); // % words in the bitmap
+    return (start >> 3) & 63;     // % bits in a word
+}
+
 template<typename F>
-inline void SatoriObject::ForEachObjectRef(F& lambda)
+inline void SatoriObject::ForEachObjectRef(F& lambda, bool includeCollectibleAllocator)
 {
     MethodTable* mt = RawGetMethodTable();
 
-    if (mt->Collectible())
+    if (includeCollectibleAllocator && mt->Collectible())
     {
         uint8_t* loaderAllocator = GCToEEInterface::GetLoaderAllocatorObjectForGC(this);
-        // NB: lambda my modify loaderAllocator for relocation, that is redundant, but ok.
-        //     actual accesses to loader are via a week handle, which will be updated
-        //     as necessary.
+        // NB: Allocator ref location is fake. The actual location is a handle).
+        //     For that same reason relocation callers should not care about the location.
         lambda((SatoriObject**)&loaderAllocator);
     }
 
