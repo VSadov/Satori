@@ -525,51 +525,65 @@ LEAF_END JIT_PatchedCodeStart, _TEXT
 ; change at runtime as the GC changes. Initially it should simply be a copy of the
 ; larger of the two functions (JIT_WriteBarrier_PostGrow) to ensure we have created
 ; enough space to copy that code in.
+;   rcx - dest address 
+;   rdx - object
+;
 LEAF_ENTRY JIT_WriteBarrier, _TEXT
-        mov     [rcx], rdx
+    ; check for escaping assignment
+    ; 1) check if we own the source region
+        mov     r8, rdx
+        and     r8, 0FFFFFFFFFFE00000h  ; source region
+        jz      EscapeChecked           ; assigning null   
+        mov     rax,  gs:[30h]          ; thread tag, TEB on NT
+        cmp     qword ptr [r8], rax     
+        jne     EscapeChecked           ; not local to this thread
 
+    ; 2) check if the destination region is the same
         mov     rax, rdx
         xor     rax, rcx
         shr     rax, 21
-        jnz     CrossRegion
-        REPRET                          ; assignment is within the same region
+        jnz     Escape                  ; cross region assignment. definitely escaping
 
-    CrossRegion:
-        cmp     rdx, 0
-        je      Exit                    ; assigning null
+    ; 3) check if the target is exposed
+        mov     rax, rcx
+        mov     r9,  rcx
+        shr     rax, 3
+        and     rax,03Fh
+        shr     r9, 9
+        and     r9, 0FFFh
+        bt      qword ptr [r8+r9*8], rax
+        ;jnb     EscapeChecked           ; target is not exposed. threadlocal assignment  (TODO: VS no need for cards or fences)
 
-        mov     rax, rdx
-        and     rax, 0FFFFFFFFFFE00000h ; region
-        mov     r8,  gs:[58h]
-        cmp     qword ptr [rax], r8     ; check that we own the region
-        jne     EscapeChecked           ; not ours
-
-        mov     r8, rdx
-        shr     r8, 3
-        and     r8d,03FFFFh
-        inc     r8
-        mov     r9, r8
-        and     r8d,03Fh
-        shr     r9, 6
-        bt      qword ptr [rax+r9*8], r8
-        jb      EscapeChecked           ; object is already marked as escaped
-
-        bts     qword ptr [rax+r9*8], r8
+    Escape:
+        
+    ; tailcall the escape helper [rcx - dest, rdx - src, r8 - region]
+        jmp JIT_WriteBarrierHelper_SATORI
 
     EscapeChecked:
-        ; cross generational referencing would be recorded here
-    Exit:
+        mov     [rcx], rdx
         ret
-
-    ; make sure this is bigger than any of the others
-    align 16
-        nop
 LEAF_END_MARKED JIT_WriteBarrier, _TEXT
 
 ; Mark start of the code region that we patch at runtime
 LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
         ret
 LEAF_END JIT_PatchedCodeLast, _TEXT
+
+NESTED_ENTRY JIT_WriteBarrierHelper_SATORI, _TEXT
+        push_vol_reg rcx
+        push_vol_reg rdx
+        alloc_stack 20h
+    END_PROLOGUE
+
+        ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
+        call    qword ptr [r8 + 8]
+
+        add     rsp, 20h
+        pop     rdx
+        pop     rcx
+        mov     [rcx], rdx
+        ret
+NESTED_END_MARKED JIT_WriteBarrierHelper_SATORI, _TEXT
 
 ; JIT_ByRefWriteBarrier has weird symantics, see usage in StubLinkerX86.cpp
 ;
@@ -581,57 +595,26 @@ LEAF_END JIT_PatchedCodeLast, _TEXT
 ; Exit:
 ;   RDI, RSI are incremented by SIZEOF(LPVOID)
 LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
-        mov     rcx, [rsi]
+        mov     rcx, rdi
+        mov     rdx, [rsi]
+        add     rdi, 8h
+        add     rsi, 8h
 
-        ; do the assignment
-        mov     [rdi], rcx
+        ; See if assignment is into heap
+        cmp     rcx, [g_highest_address]
+        jnb     NotInHeap               ; not in heap
 
-        ; See if this is in GCHeap
-        cmp     rdi, [g_highest_address]
-        jnb     Exit                    ; not in heap
-
-        mov     rax, rdi
+        mov     rax, rcx
         shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
         add     rax, [g_card_table]
         cmp     byte ptr [rax], 0
-        je      Exit                    ; not in heap
+        je      NotInHeap               ; not in heap
 
-        ; check if this is a cross-region assignment (TODO: VS perhaps check before "in heap")
-        mov     rax, rdi
-        xor     rax, rcx
-        shr     rax, 21
-        jz      Exit                    ; assignment is within the same region
-
-    CrossRegion:
-        cmp     rcx, 0
-        je      Exit                    ; assigning null
-
-        mov     rax, rcx
-        and     rax, 0FFFFFFFFFFE00000h ; region
-        mov     r8 , gs:[58h]
-        cmp     qword ptr [rax], r8     ; check that we own the region
-        jne     EscapeChecked           ; not ours
-
-        mov     r8, rcx
-        shr     r8, 3
-        and     r8d,03FFFFh
-        inc     r8
-        mov     r9, r8
-        and     r8d,03Fh
-        shr     r9, 6
-        bt      qword ptr [rax+r9*8], r8
-        jb      EscapeChecked           ; object is already marked as escaped
-
-        bts     qword ptr [rax+r9*8], r8
-
-    EscapeChecked:
-        ; cross generational referencing would be recorded here
+        jmp     JIT_WriteBarrier
 
     align 16
-    Exit:
-        ; Increment the registers before leaving
-        add     rdi, 8h
-        add     rsi, 8h
+    NotInHeap:
+        mov     [rcx], rdx
         ret
 LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
 
