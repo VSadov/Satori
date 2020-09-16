@@ -433,13 +433,14 @@ int WriteBarrierManager::ChangeWriteBarrierTo(WriteBarrierType newWriteBarrier, 
     _ASSERTE(m_currentWriteBarrier != newWriteBarrier);
     m_currentWriteBarrier = newWriteBarrier;
 
-    // the memcpy must come before the switch statement because the asserts inside the switch
-    // are actually looking into the JIT_WriteBarrier buffer
-    {
-        ExecutableWriterHolder<void> writeBarrierWriterHolder(GetWriteBarrierCodeLocation((void*)JIT_WriteBarrier), GetCurrentWriteBarrierSize());
-        memcpy(writeBarrierWriterHolder.GetRW(), (LPVOID)GetCurrentWriteBarrierCode(), GetCurrentWriteBarrierSize());
-        stompWBCompleteActions |= SWB_ICACHE_FLUSH;
-    }
+    //TODO: Satori   we do not need to replace the barrier body for now
+    //// the memcpy must come before the switch statement because the asserts inside the switch
+    //// are actually looking into the JIT_WriteBarrier buffer
+    //{
+    //    ExecutableWriterHolder<void> writeBarrierWriterHolder(GetWriteBarrierCodeLocation((void*)JIT_WriteBarrier), GetCurrentWriteBarrierSize());
+    //    memcpy(writeBarrierWriterHolder.GetRW(), (LPVOID)GetCurrentWriteBarrierCode(), GetCurrentWriteBarrierSize());
+    //    stompWBCompleteActions |= SWB_ICACHE_FLUSH;
+    //}
 
     switch (newWriteBarrier)
     {

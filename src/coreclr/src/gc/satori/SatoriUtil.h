@@ -79,8 +79,9 @@ public:
 
     static size_t GetCurrentThreadTag()
     {
-        // TODO: VS literal
-        return (size_t)__readgsqword(0x58);
+        // must match what is used in barriers.
+        // we use linear address of TEB on NT
+        return (size_t)__readgsqword(0x30);
     }
 };
 
