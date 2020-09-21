@@ -95,7 +95,7 @@ void SatoriRegion::MakeBlank()
     //clear index
     if (m_used > (size_t)&m_index)
     {
-        ZeroMemory(&m_index, offsetof(SatoriRegion, m_syncBlock) - offsetof(SatoriRegion, m_index));
+        memset(&m_index, 0, sizeof(m_index));
     }
 
 #ifdef _DEBUG
@@ -141,7 +141,7 @@ bool SatoriRegion::ValidateBlank()
         return false;
     }
 
-    for (int i = 0; i < Satori::INDEX_ITEMS; i += Satori::INDEX_ITEMS / 4)
+    for (int i = 0; i < Satori::INDEX_LENGTH; i += Satori::INDEX_LENGTH / 4)
     {
         _ASSERTE(m_index[i] == nullptr);
         if (m_index[i] != nullptr)
@@ -342,26 +342,54 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool ensureZeroInited)
     return chunkStart;
 }
 
+inline int LocationToIndex(size_t location)
+{
+    return (location >> Satori::INDEX_GRANULARITY_BITS) % Satori::INDEX_LENGTH;
+}
+
 SatoriObject* SatoriRegion::FindObject(size_t location)
 {
     _ASSERTE(location >= (size_t)FirstObject() && location <= End());
 
-    SatoriObject* obj = &m_firstObject;
-    if (IsAllocating() && location >= m_allocEnd)
+    // start search from the first object or after unparseable alloc gap
+    SatoriObject* obj = (IsAllocating() && (location >= m_allocEnd)) ?
+                                 (SatoriObject*)m_allocEnd :
+                                 FirstObject();
+
+    // use a better start obj if we have that in the index 
+    int limit = LocationToIndex(obj->Start());
+    for (int current = LocationToIndex(location); current > limit; current--)
     {
-        obj = (SatoriObject*)m_allocEnd;
+        if (m_index[current] != 0)
+        {
+            obj = m_index[current];
+            if (obj->End() > location)
+            {
+                return obj;
+            }
+
+            break;
+        }
     }
 
-    // TODO: VS adjust obj using index and update index on the go 
+    // walk to the location and update index on the way
     SatoriObject* next = obj->Next();
     while (next->Start() <= location)
     {
+        // if object straddles index granules, record it in the indices
+        if ((obj->Start() ^ next->Start()) >> Satori::INDEX_GRANULARITY_BITS)
+        {
+            for (size_t l = obj->Start(); l < next->Start(); l += Satori::INDEX_GRANULARITY)
+            {
+                m_index[LocationToIndex(l) + 1] = obj;
+            }
+        }
+
         obj = next;
         next = next->Next();
     }
 
     _ASSERTE(!obj->IsFree());
-
     return obj;
 }
 
@@ -512,7 +540,7 @@ void SatoriRegion::ThreadLocalMark()
     // nothing should be marked in the region, so we can find escapes via bit scan
     size_t bitmapIndex = BITMAP_START;
     int markBitOffset = 0;
-    while (bitmapIndex < BITMAP_SIZE)
+    while (bitmapIndex < BITMAP_LENGTH)
     {
         DWORD step;
         if (BitScanForward64(&step, m_bitmap[bitmapIndex] >> markBitOffset))
@@ -533,7 +561,7 @@ void SatoriRegion::ThreadLocalMark()
         {
             // skip empty mark words
             markBitOffset = 0;
-            while (++bitmapIndex < BITMAP_SIZE && m_bitmap[bitmapIndex] == 0) {}
+            while (++bitmapIndex < BITMAP_LENGTH && m_bitmap[bitmapIndex] == 0) {}
         }
     }
 
@@ -758,7 +786,7 @@ void SatoriRegion::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     SatoriRegion* region = (SatoriRegion*)sc->_unused1;
     size_t location = (size_t)*ppObject;
 
-    // ignore objects otside current region.
+    // ignore objects otside of the current region.
     // this also rejects nulls.
     if (location < (size_t)region->FirstObject() || location > region->End())
     {
@@ -773,6 +801,7 @@ void SatoriRegion::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
         {
             return;
         }
+
     }
     else
     {
@@ -798,7 +827,7 @@ void SatoriRegion::ThreadLocalUpdatePointers()
     // go through all live objets and update what they reference.
     size_t bitmapIndex = BITMAP_START;
     int markBitOffset = 0;
-    while (bitmapIndex < BITMAP_SIZE)
+    while (bitmapIndex < BITMAP_LENGTH)
     {
         DWORD step;
         if (BitScanForward64(&step, m_bitmap[bitmapIndex] >> markBitOffset))
@@ -841,7 +870,7 @@ void SatoriRegion::ThreadLocalUpdatePointers()
         {
             // skip empty mark words
             markBitOffset = 0;
-            while (++bitmapIndex < BITMAP_SIZE && m_bitmap[bitmapIndex] == 0) {}
+            while (++bitmapIndex < BITMAP_LENGTH && m_bitmap[bitmapIndex] == 0) {}
         }
     }
 
@@ -884,7 +913,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
     else
     {
         markBitOffset = 0;
-        while (bitmapIndex < SatoriRegion::BITMAP_SIZE)
+        while (bitmapIndex < SatoriRegion::BITMAP_LENGTH)
         {
             bitmapIndex++;
             if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
@@ -914,7 +943,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
     else
     {
         size_t limit = (upTo - Start()) >> 9;
-        _ASSERTE(limit <= SatoriRegion::BITMAP_SIZE);
+        _ASSERTE(limit <= SatoriRegion::BITMAP_LENGTH);
         markBitOffset = 0;
         while (bitmapIndex < limit)
         {
@@ -940,7 +969,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
 
 bool SatoriRegion::NothingMarked()
 {
-    for (size_t bitmapIndex = BITMAP_START; bitmapIndex < BITMAP_SIZE; bitmapIndex++)
+    for (size_t bitmapIndex = BITMAP_START; bitmapIndex < BITMAP_LENGTH; bitmapIndex++)
     {
         size_t chunk = m_bitmap[bitmapIndex];
         if (chunk)
@@ -1073,6 +1102,8 @@ bool SatoriRegion::ThreadLocalCompact(size_t desiredFreeSpace)
 
     Verify();
 
+    memset(&m_index, 0, sizeof(m_index));
+
     m_occupancy = Satori::REGION_SIZE_GRANULARITY - foundFree;
 
     return (foundFree >= desiredFreeSpace + Satori::MIN_FREE_SIZE);
@@ -1132,7 +1163,7 @@ void SatoriRegion::CompactFinalizables()
 
 void SatoriRegion::CleanMarks()
 {
-    ZeroMemory(&m_bitmap[BITMAP_START], (BITMAP_SIZE - BITMAP_START) * sizeof(size_t));
+    ZeroMemory(&m_bitmap[BITMAP_START], (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
 }
 
 void SatoriRegion::Verify(bool allowMarked)

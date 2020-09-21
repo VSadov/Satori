@@ -456,13 +456,13 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         jz      EscapeChecked           ; assigning null   
         mov     rax,  gs:[30h]          ; thread tag, TEB on NT
         cmp     qword ptr [r8], rax     
-        jne     EscapeChecked           ; not local to this thread
+        jne      EscapeChecked          ; not local to this thread
 
-    ; 2) check if the destination region is the same
+    ; 2) check if the src and dst are from the same region
         mov     rax, rdx
         xor     rax, rcx
         shr     rax, 21
-        jnz     Escape                  ; cross region assignment. definitely escaping
+        jnz     JIT_WriteBarrierHelper_SATORI ; cross region assignment. definitely escaping
 
     ; 3) check if the target is exposed
         mov     rax, rcx
@@ -472,14 +472,9 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         shr     r9, 9
         and     r9, 0FFFh
         bt      qword ptr [r8+r9*8], rax
-        ;jnb     EscapeChecked           ; target is not exposed. threadlocal assignment  (TODO: VS no need for cards or fences)
+        jb      JIT_WriteBarrierHelper_SATORI ; target is exposed. record an escape.
 
-    Escape:
-        
-    ; tailcall the escape helper [rcx - dest, rdx - src, r8 - region]
-        jmp JIT_WriteBarrierHelper_SATORI
-
-    EscapeChecked:
+     EscapeChecked:
         mov     [rcx], rdx
         ret
 LEAF_END_MARKED JIT_WriteBarrier, _TEXT
@@ -489,6 +484,11 @@ LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
         ret
 LEAF_END JIT_PatchedCodeLast, _TEXT
 
+; Framed helper for a rare path to invoke recursive escape before doing assignment.
+;  rcx - dest  (assumed to be in the heap)
+;  rdx - src
+;  r8  - source region
+;
 NESTED_ENTRY JIT_WriteBarrierHelper_SATORI, _TEXT
         push_vol_reg rcx
         push_vol_reg rdx
@@ -501,6 +501,7 @@ NESTED_ENTRY JIT_WriteBarrierHelper_SATORI, _TEXT
         add     rsp, 20h
         pop     rdx
         pop     rcx
+        ; the actual assignment. (AV here will be attributed to the caller)
         mov     [rcx], rdx
         ret
 NESTED_END_MARKED JIT_WriteBarrierHelper_SATORI, _TEXT
@@ -510,8 +511,10 @@ NESTED_END_MARKED JIT_WriteBarrierHelper_SATORI, _TEXT
 ; Entry:
 ;   RDI - address of ref-field (assigned to)
 ;   RSI - address of the data  (source)
-;   RCX is trashed
-;   RAX is trashed when FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP is defined
+;   Note: RyuJIT assumes that all volatile registers can be trashed by 
+;   the CORINFO_HELP_ASSIGN_BYREF helper (i.e. JIT_ByRefWriteBarrier)
+;   except RDI and RSI. This helper uses and defines RDI and RSI, so
+;   they remain as live GC refs or byrefs, and are not killed.
 ; Exit:
 ;   RDI, RSI are incremented by SIZEOF(LPVOID)
 LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT

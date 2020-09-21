@@ -36,8 +36,6 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
 
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
 {
-    m_heap->Recycler()->MaybeTriggerGC();
-
 tryAgain:
     SatoriRegion* putBack = nullptr;
 
@@ -118,7 +116,12 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 
     SatoriObject* result;
 
-    if (context->alloc_ptr + size <= context->alloc_limit)
+    // TODO: VS special region for POH, AllocLarge is ok for now
+    if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
+    {
+        result = AllocLarge(context, size, flags);
+    }
+    else if (context->alloc_ptr + size <= context->alloc_limit)
     {
         result = (SatoriObject*)context->alloc_ptr;
         context->alloc_ptr += size;
@@ -218,6 +221,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             m_heap->Recycler()->AddRegion(region);
         }
 
+        m_heap->Recycler()->MaybeTriggerGC();
         region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
         if (region == nullptr)
         {
@@ -273,6 +277,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
         }
 
         // get a new region.
+        m_heap->Recycler()->MaybeTriggerGC();
         region = GetRegion(regionSize);
         if (!region)
         {
@@ -289,6 +294,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
 SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
     size_t regionSize = ALIGN_UP(size + sizeof(SatoriRegion) + Satori::MIN_FREE_SIZE, Satori::REGION_SIZE_GRANULARITY);
+    m_heap->Recycler()->MaybeTriggerGC();
     SatoriRegion* region = GetRegion(regionSize);
     if (!region)
     {
