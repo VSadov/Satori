@@ -26,8 +26,9 @@ namespace Satori
     const static int REGION_BITS = 21;
     const static size_t REGION_SIZE_GRANULARITY = 1 << REGION_BITS;
 
-    const static int INDEX_GRANULARITY = 4096;
-    const static int INDEX_ITEMS = REGION_SIZE_GRANULARITY / INDEX_GRANULARITY;
+    const static int INDEX_GRANULARITY_BITS = 12;
+    const static int INDEX_GRANULARITY = 1 << INDEX_GRANULARITY_BITS;
+    const static int INDEX_LENGTH = REGION_SIZE_GRANULARITY / INDEX_GRANULARITY;
 
     static const int BUCKET_COUNT = PAGE_BITS - REGION_BITS;
 
@@ -57,7 +58,7 @@ namespace Satori
     {
         // we can support sizes that are binary fractions of REGION_SIZE_GRANULARITY.
         // we can also support 1G
-        // TODO: VS this can be configured or computed at start up, but cannot change dynamically.
+        // TODO: VS this can be configured or computed at start up, but should not change dynamically.
         return 4096;
     }
 }
