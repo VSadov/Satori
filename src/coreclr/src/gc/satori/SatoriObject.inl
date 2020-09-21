@@ -74,7 +74,7 @@ inline bool SatoriObject::IsFree()
 inline void SatoriObject::SetBit(int offset)
 {
     size_t word = Start() + offset * sizeof(size_t);
-    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_SIZE - 1);
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
     size_t mask = (size_t)1 << ((word >> 3) & 63);
 
     ContainingRegion()->m_bitmap[bitmapIndex] |= mask;
@@ -83,7 +83,7 @@ inline void SatoriObject::SetBit(int offset)
 inline void SatoriObject::ClearBit(int offset)
 {
     size_t word = Start() + offset * sizeof(size_t);
-    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_SIZE - 1);
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
     size_t mask = (size_t)1 << ((word >> 3) & 63);
 
     ContainingRegion()->m_bitmap[bitmapIndex] &= ~mask;
@@ -92,7 +92,7 @@ inline void SatoriObject::ClearBit(int offset)
 inline bool SatoriObject::CheckBit(int offset)
 {
     size_t word = Start() + offset * sizeof(size_t);
-    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_SIZE - 1);
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
     size_t mask = (size_t)1 << ((word >> 3) & 63);
 
     return ContainingRegion()->m_bitmap[bitmapIndex] & mask;
@@ -195,7 +195,7 @@ inline void SatoriObject::CleanSyncBlock()
 inline int SatoriObject::MarkBitOffset(size_t* bitmapIndex)
 {
     size_t start = Start();
-    *bitmapIndex = (start >> 9) & (SatoriRegion::BITMAP_SIZE - 1); // % words in the bitmap
+    *bitmapIndex = (start >> 9) & (SatoriRegion::BITMAP_LENGTH - 1); // % words in the bitmap
     return (start >> 3) & 63;     // % bits in a word
 }
 
