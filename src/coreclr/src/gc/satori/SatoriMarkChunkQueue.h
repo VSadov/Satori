@@ -5,20 +5,19 @@
 // SatoriRegionQueue.h
 //
 
-#ifndef __SATORI_REGION_QUEUE_H__
-#define __SATORI_REGION_QUEUE_H__
+#ifndef __SATORI_MARK_CHUNK_QUEUE_H__
+#define __SATORI_MARK_CHUNK_QUEUE_H__
 
 #include "common.h"
 #include "../gc.h"
 #include "SatoriQueue.h"
 
-class SatoriRegion;
+class SatoriMarkChunk;
 
-class SatoriRegionQueue : public SatoriQueue<SatoriRegion>
+class SatoriMarkChunkQueue : public SatoriQueue<SatoriMarkChunk>
 {
 public:
-    SatoriRegion* TryPopWithSize(size_t regionSize, SatoriRegion* &putBack);
-    SatoriRegion* TryRemoveWithSize(size_t regionSize, SatoriRegion*& putBack);
+
 };
 
 #endif

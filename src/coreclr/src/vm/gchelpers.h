@@ -70,8 +70,9 @@ extern void ThrowOutOfMemoryDimensionsExceeded();
 //========================================================================
 
 void ErectWriteBarrier(OBJECTREF* dst, OBJECTREF ref);
-bool IsInHeapSatori(Object** start);
-void CheckAndMarkEscapeSatori(Object** dst, Object* ref);
+bool IsInHeapSatori(void* ptr);
+void CheckEscapeSatori(Object** dst, Object* ref);
+void CheckEscapeSatoriRange(void* dst, void* src, size_t len);
 
 //void SetCardsAfterBulkCopy(Object **start, size_t len);
 #endif // _GCHELPERS_H_

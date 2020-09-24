@@ -18,6 +18,8 @@ class SatoriHeap;
 class SatoriRegion;
 class SatoriObject;
 class SatoriAllocationContext;
+class SatoriMarkChunk;
+class SatoriMarkChunkQueue;
 
 class SatoriAllocator
 {
@@ -29,13 +31,20 @@ public:
     void AddRegion(SatoriRegion* region);
     Object* Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
+    //TODO: VS do we need not allocating version for recycler? (it should be able to handle failures)
+    SatoriMarkChunk* TryGetMarkChunk();
+    void ReturnMarkChunk(SatoriMarkChunk* chunk);
+
 private:
     SatoriHeap* m_heap;
     //TODO: VS embed
     SatoriRegionQueue* m_queues[Satori::BUCKET_COUNT];
 
-    SatoriObject* AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags);
+    SatoriMarkChunkQueue* m_markChunks;
+
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
+    SatoriObject* AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags);
+    SatoriObject* AllocHuge(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     static int SizeToBucket(size_t size)
     {
@@ -49,6 +58,8 @@ private:
 #endif
         return min(highestBit - Satori::REGION_BITS, Satori::BUCKET_COUNT - 1);
     }
+
+    bool AddMoreMarkChunks();
 };
 
 #endif

@@ -306,7 +306,9 @@ int WriteBarrierManager::ChangeWriteBarrierTo(WriteBarrierType newWriteBarrier, 
 
     // the memcpy must come before the switch statment because the asserts inside the switch
     // are actually looking into the JIT_WriteBarrier buffer
-    memcpy(GetWriteBarrierCodeLocation((void*)JIT_WriteBarrier), (LPVOID)GetCurrentWriteBarrierCode(), GetCurrentWriteBarrierSize());
+
+    //TODO: Satori   we do not need to replace the barrier body for now
+    // memcpy(GetWriteBarrierCodeLocation((void*)JIT_WriteBarrier), (LPVOID)GetCurrentWriteBarrierCode(), GetCurrentWriteBarrierSize());
 
     switch (newWriteBarrier)
     {
@@ -501,8 +503,13 @@ bool WriteBarrierManager::NeedDifferentWriteBarrier(bool bReqUpperBoundsCheck, W
             }
 #endif
 
-            //TODO: Satori
-            writeBarrierType = GCHeapUtilities::IsServerHeap() ? WRITE_BARRIER_SATORI : WRITE_BARRIER_PREGROW64;
+            writeBarrierType = 
+#ifdef FEATURE_SATORI_GC
+                g_heap_type == GC_HEAP_SATORI?
+                    WRITE_BARRIER_SATORI :
+#endif // FEATURE_SATORI_GC
+                    GCHeapUtilities::IsServerHeap() ? WRITE_BARRIER_SVR64 : WRITE_BARRIER_PREGROW64;
+
             continue;
 
         case WRITE_BARRIER_PREGROW64:

@@ -15,23 +15,30 @@
 
 class SatoriHeap;
 
-void SatoriAllocationContext::OnTerminateThread(SatoriHeap* heap)
+void SatoriAllocationContext::Deactivate(SatoriHeap* heap)
 {
     if (RegularRegion() != nullptr)
     {
+        SatoriRegion* region = RegularRegion();
+        size_t allocPtr = (size_t)this->alloc_ptr;
+
         this->alloc_bytes -= this->alloc_limit - this->alloc_ptr;
-
-        //TODO: VS make parseable
-        //TODO: VS check for emptiness, mark, sweep, compact, slice, ...
-
-        RegularRegion()->Deactivate(heap);
+        this->alloc_limit = this->alloc_ptr = nullptr;
         RegularRegion() = nullptr;
+
+        region->Deactivate(heap, allocPtr);
+    }
+    else
+    {
+        _ASSERTE(this->alloc_limit == nullptr);
+        _ASSERTE(this->alloc_ptr == nullptr);
     }
 
     if (LargeRegion() != nullptr)
     {
-        //TODO: VS check for emptiness, mark, sweep, compact, slice, ...
-        LargeRegion()->Deactivate(heap);
+        SatoriRegion* region = LargeRegion();
         LargeRegion() = nullptr;
+
+        region->Deactivate(heap, /* allocPtr */ 0);
     }
  }

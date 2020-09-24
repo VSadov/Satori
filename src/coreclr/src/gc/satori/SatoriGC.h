@@ -20,13 +20,13 @@ class SatoriGC : public IGCHeapInternal
 private:
     int64_t m_perfCounterFrequency;
     SatoriHeap* m_heap;
-    SatoriAllocator* m_allocator;
-    SatoriRecycler* m_recycler;
 
     // what is the difference between these two?
     // should these be volatile
     bool    m_gcInProgress;
     bool    m_suspensionPending;
+
+    GCEvent* m_waitForGCEvent;
 
 public:
     // Inherited via IGCHeap

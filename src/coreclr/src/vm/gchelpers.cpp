@@ -35,6 +35,7 @@
 
 #include "../gc/satori/SatoriObject.inl"
 #include "../gc/satori/SatoriRegion.inl"
+#include "../gc/satori/SatoriPage.h"
 
 //========================================================================
 //
@@ -1272,12 +1273,12 @@ extern "C" HCIMPL2_RAW(VOID, JIT_WriteBarrier, Object **dst, Object *ref)
         if(*pCardByte != 0xFF)
         {
 #ifdef FEATURE_COUNT_GC_WRITE_BARRIERS
-            UncheckedAfterAlreadyDirtyFilter++;
+        UncheckedAfterAlreadyDirtyFilter++;
 #endif
-            *pCardByte = 0xFF;
+        *pCardByte = 0xFF;
 
 #ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
-            SetCardBundleByte((BYTE*)dst);
+        SetCardBundleByte((BYTE*)dst);
 #endif
         }
     }
@@ -1312,35 +1313,105 @@ static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
 
 #include <optsmallperfcritical.h>
 
-bool IsInHeapSatori(Object** start)
+// same as SatoriGC::IsHeapPointer, just to avoid dependency on SatoriGC class.
+bool IsInHeapSatori(void* ptr)
 {
-    if ((uint8_t*)start > (uint8_t*)g_highest_address)
+    if ((uint8_t*)ptr > (uint8_t*)g_highest_address)
     {
         return false;
     }
 
-    uint8_t* pages = (uint8_t*)g_card_table;
-    size_t page = (size_t)start >> PAGE_BITS;
-    return pages[page];
+    uint8_t* pageMap = (uint8_t*)g_card_table;
+    size_t page = (size_t)ptr >> PAGE_BITS;
+    return pageMap[page];
 }
 
-void CheckAndMarkEscapeSatori(Object** dst, Object* ref)
+SatoriPage* PageForAddressSatori(void* address)
+{
+    size_t mapIndex = (size_t)address >> PAGE_BITS;
+    uint8_t* pageMap = (uint8_t*)g_card_table;
+    while (pageMap[mapIndex] > 1)
+    {
+        mapIndex -= ((size_t)1 << (pageMap[mapIndex] - 2));
+    }
+
+    return (SatoriPage*)(mapIndex << PAGE_BITS);
+}
+
+void CheckEscapeSatori(Object** dst, Object* ref)
 {
 #if FEATURE_SATORI_GC
-    if (ref && ((size_t)dst ^ (size_t)(ref)) >> 21)
+    SatoriObject* obj = (SatoriObject*)ref;
+    SatoriRegion* region = obj->ContainingRegion();
+
+    // we should be the owner of the region to care about escapes
+    if (region && region->OwnedByCurrentThread())
     {
-        SatoriObject* obj = (SatoriObject*)ref;
-        if (obj->ContainingRegion()->State() == SatoriRegionState::allocating)
+        if ((((size_t)dst ^ (size_t)ref) >> 21) == 0 &&
+            !(region->IsExposed((SatoriObject**)dst)))
         {
-            if (!obj->IsEscaped())
-            {
-                // an unescaped object in an allocating region -> the region is our threadlocal
-                // thus we can mark the object escape
-                // we use ordinary assignment, noone else should be marking this region.
-                obj->SetEscaped();
-            }
+            // if assigning to the same region and location is not marked then
+            // this is a trivial local assignment and nothing needs escaping.
+            return;
+        }
+
+        region->EscapeRecursively(obj);
+    }
+#endif
+}
+
+void CheckEscapeSatoriRange(void* dst, void* src, size_t len)
+{
+#if FEATURE_SATORI_GC
+    if (!IsInHeapSatori(src))
+    {
+        return;
+    }
+
+    SatoriRegion* srcRegion = PageForAddressSatori(src)->RegionForAddress((size_t)src);
+    if (!srcRegion->OwnedByCurrentThread())
+    {
+        return;
+    }
+
+    // if move is within a region, check if the dest is escaped.
+    if ((((size_t)dst ^ (size_t)src) >> 21) == 0)
+    {
+        SatoriObject* containingDstObj = srcRegion->FindObject((size_t)dst);
+        if (!containingDstObj->IsEscaped())
+        {
+            return;
         }
     }
+
+    SatoriObject* containingSrcObj = srcRegion->FindObject((size_t)src);
+    if (containingSrcObj->IsEscaped())
+    {
+        return;
+    }
+
+    containingSrcObj->ForEachObjectRef(
+        [&](SatoriObject** ref)
+        {
+            // TODO: VS fold bounds checks into iterator
+            if ((size_t)ref < (size_t)src)
+            {
+                return;
+            }
+
+            size_t offset = (size_t)ref - (size_t)src;
+            if (offset >= len)
+            {
+                return;
+            }
+
+            SatoriObject* child = *ref;
+            if (child->ContainingRegion() == srcRegion)
+            {
+                srcRegion->EscapeRecursively(child);
+            }
+        }
+    );
 #endif
 }
 
@@ -1350,12 +1421,10 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
 
-    if (!IsInHeapSatori((Object**)dst))
+    if (IsInHeapSatori((Object**)dst))
     {
-        return;
+        //TODO: VS do cards
     }
-
-    CheckAndMarkEscapeSatori((Object**)dst, OBJECTREFToObject(ref));
 
     //TODO: Satori
 //    // if the dst is outside of the heap (unboxed value classes) then we
@@ -1397,38 +1466,41 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref)
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
 
+    //NB: no need to check escape, the loader allocator is escaped via a handle
     *dst = ref;
 
-#ifdef WRITE_BARRIER_CHECK
-    updateGCShadow((Object **)dst, (Object *)ref);     // support debugging write barrier, updateGCShadow only cares that these are pointers
-#endif
+    //TODO: Satori do cards
 
-    if (ref->Collectible())
-    {
-#ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
-        if (GCHeapUtilities::SoftwareWriteWatchIsEnabled())
-        {
-            GCHeapUtilities::SoftwareWriteWatchSetDirty(dst, sizeof(*dst));
-        }
-
-#endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
-
-        BYTE *refObject = *(BYTE **)ref->GetLoaderAllocatorObjectHandle();
-        if((BYTE*) refObject >= g_ephemeral_low && (BYTE*) refObject < g_ephemeral_high)
-        {
-            // VolatileLoadWithoutBarrier() is used here to prevent fetch of g_card_table from being reordered
-            // with g_lowest/highest_address check above. See comment in StompWriteBarrier.
-            BYTE* pCardByte = (BYTE*)VolatileLoadWithoutBarrier(&g_card_table) + card_byte((BYTE *)dst);
-            if( !((*pCardByte) & card_bit((BYTE *)dst)) )
-            {
-                *pCardByte = 0xFF;
-
-#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
-                SetCardBundleByte((BYTE*)dst);
-#endif
-            }
-        }
-    }
+//#ifdef WRITE_BARRIER_CHECK
+//    updateGCShadow((Object **)dst, (Object *)ref);     // support debugging write barrier, updateGCShadow only cares that these are pointers
+//#endif
+//
+//    if (ref->Collectible())
+//    {
+//#ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+//        if (GCHeapUtilities::SoftwareWriteWatchIsEnabled())
+//        {
+//            GCHeapUtilities::SoftwareWriteWatchSetDirty(dst, sizeof(*dst));
+//        }
+//
+//#endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+//
+//        BYTE *refObject = *(BYTE **)ref->GetLoaderAllocatorObjectHandle();
+//        if((BYTE*) refObject >= g_ephemeral_low && (BYTE*) refObject < g_ephemeral_high)
+//        {
+//            // VolatileLoadWithoutBarrier() is used here to prevent fetch of g_card_table from being reordered
+//            // with g_lowest/highest_address check above. See comment in StompWriteBarrier.
+//            BYTE* pCardByte = (BYTE*)VolatileLoadWithoutBarrier(&g_card_table) + card_byte((BYTE *)dst);
+//            if( !((*pCardByte) & card_bit((BYTE *)dst)) )
+//            {
+//                *pCardByte = 0xFF;
+//
+//#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
+//                SetCardBundleByte((BYTE*)dst);
+//#endif
+//            }
+//        }
+//    }
 }
 
 //----------------------------------------------------------------------------
@@ -1452,15 +1524,15 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref)
 #pragma optimize("y", on)        // Small critical routines, don't put in EBP frame
 #endif //_MSC_VER && TARGET_X86
 
-//void
-//SetCardsAfterBulkCopy(Object **start, size_t len)
-//{
-//    // If the size is smaller than a pointer, no write barrier is required.
-//    if (len >= sizeof(uintptr_t))
-//    {
-//        InlinedSetCardsAfterBulkCopyHelper(start, len);
-//    }
-//}
+void
+SetCardsAfterBulkCopy(Object **start, size_t len)
+{
+    // If the size is smaller than a pointer, no write barrier is required.
+    if (len >= sizeof(uintptr_t))
+    {
+        InlinedSetCardsAfterBulkCopyHelper(start, len);
+    }
+}
 
 #if defined(_MSC_VER) && defined(TARGET_X86)
 #pragma optimize("", on)        // Go back to command line default optimizations

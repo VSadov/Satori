@@ -13,9 +13,13 @@
 #include "SatoriUtil.h"
 
 #include "SatoriLock.h"
-#include "SatoriPage.h"
 #include "SatoriAllocator.h"
 #include "SatoriRecycler.h"
+#include "SatoriFinalizationQueue.h"
+
+class SatoriPage;
+class SatoriRegion;
+class SatoriObject;
 
 class SatoriHeap
 {
@@ -38,11 +42,19 @@ public:
         return &m_recycler;
     }
 
-    SatoriPage* PageForAddress(uint8_t* address);
-
-    bool IsHeapAddress(uint8_t* address)
+    SatoriFinalizationQueue* FinalizationQueue()
     {
-        size_t mapIndex = (size_t)address >> Satori::PAGE_BITS;
+        return &m_finalizationQueue;
+    }
+
+    SatoriPage* PageForAddress(size_t address);
+    SatoriRegion* RegionForAddress(size_t address);
+    SatoriObject* ObjectForAddress(size_t address);
+    void SetCardForAddress(size_t address);
+
+    bool IsHeapAddress(size_t address)
+    {
+        size_t mapIndex = address >> Satori::PAGE_BITS;
         return (unsigned int)mapIndex < (unsigned int)m_committedMapSize &&
             m_pageMap[mapIndex] != 0;
     }
@@ -50,6 +62,7 @@ public:
 private:
     SatoriAllocator m_allocator;
     SatoriRecycler m_recycler;
+    SatoriFinalizationQueue m_finalizationQueue;
 
     int m_reservedMapSize;
     int m_committedMapSize;

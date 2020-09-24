@@ -206,41 +206,8 @@ endif
 ifdef FEATURE_SATORI_GC
 
 LEAF_ENTRY JIT_WriteBarrier_SATORI, _TEXT
-        align 8
-        mov     [rcx], rdx
-
-        mov     rax, rdx
-        xor     rax, rcx
-        shr     rax, 21
-        jnz     CrossRegion
-        REPRET                          ; assignment is within the same region
-
-    CrossRegion:
-        cmp     rdx, 0
-        je      Exit                    ; assigning null
-
-        mov     rax, rdx
-        and     rax, 0FFFFFFFFFFE00000h ;  region
-        cmp     byte ptr [rax], 0       ; check status, 0 -> allocating
-        jne     EscapeChecked           ; object is not from allocating region
-
-        mov     r8, rdx
-        shr     r8, 3
-        and     r8d,03FFFFh
-        inc     r8
-        mov     r9, r8
-        and     r8d,03Fh
-        shr     r9, 6
-        mov     r10,qword ptr [rax+r9*8]
-        bt      r10,r8
-        jb      EscapeChecked           ; object is already marked as escaped
-
-        bts     r10,r8
-        mov     qword ptr [rax+r9*8], r10
-
-    EscapeChecked:
-        ; cross generational referencing would be recorded here
-    Exit:
+    ; TODO: Satori, when we need barrier replacement
+        mov qword ptr[0], 0
         ret
 LEAF_END_MARKED JIT_WriteBarrier_SATORI, _TEXT
 

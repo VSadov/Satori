@@ -15,9 +15,14 @@
 #include "../env/gcenv.ee.h"
 #include "SatoriRegion.h"
 
-inline SatoriRegionState SatoriRegion::State()
+inline bool SatoriRegion::IsThreadLocal()
 {
-    return m_state;
+    return m_ownerThreadTag;
+}
+
+inline bool SatoriRegion::OwnedByCurrentThread()
+{
+    return m_ownerThreadTag == SatoriUtil::GetCurrentThreadTag();
 }
 
 inline bool SatoriRegion::IsAllocating()
@@ -27,7 +32,7 @@ inline bool SatoriRegion::IsAllocating()
 
 inline size_t SatoriRegion::Start()
 {
-    return (size_t)&m_state;
+    return (size_t)this;
 }
 
 inline size_t SatoriRegion::End()
@@ -45,14 +50,11 @@ inline size_t SatoriRegion::AllocStart()
     return m_allocStart;
 }
 
-inline size_t SatoriRegion::AllocEnd()
+inline size_t SatoriRegion::AllocRemaining()
 {
-    return m_allocEnd;
-}
-
-inline size_t SatoriRegion::AllocSize()
-{
-    return m_allocEnd - m_allocStart;
+    // reserve Satori::MIN_FREE_SIZE to be able to make the unused space parseable
+    ptrdiff_t diff = m_allocEnd - m_allocStart - Satori::MIN_FREE_SIZE;
+    return diff > 0 ? (size_t)diff : 0;
 }
 
 inline SatoriObject* SatoriRegion::FirstObject()
@@ -60,10 +62,64 @@ inline SatoriObject* SatoriRegion::FirstObject()
     return &m_firstObject;
 }
 
+inline size_t SatoriRegion::Occupancy()
+{
+    return m_occupancy;
+}
+
+//TODO: VS why do we have this?
 inline void SatoriRegion::Publish()
 {
-    _ASSERTE(m_state == SatoriRegionState::allocating);
-    m_state = SatoriRegionState::shared;
+    m_ownerThreadTag = 0;
+}
+
+template<typename F>
+void SatoriRegion::ForEachFinalizable(F& lambda)
+{
+    size_t items = 0;
+    size_t nulls = 0;
+    SatoriMarkChunk* chunk = m_finalizables;
+    while (chunk)
+    {
+        items += chunk->Count();
+        for (size_t i = 0; i < chunk->Count(); i++)
+        {
+            SatoriObject* finalizable = chunk->Item(i);
+            if (finalizable == nullptr)
+            {
+                nulls++;
+                continue;
+            }
+
+            SatoriObject* newFinalizable = lambda(finalizable);
+            if (newFinalizable != finalizable)
+            {
+                chunk->Item(i) = newFinalizable;
+                if (newFinalizable == nullptr)
+                {
+                    nulls++;
+                }
+            }
+        }
+
+        chunk = chunk->Next();
+    }
+
+    //TODO: VS tune? this should not be frequent and list should be short, *2 seems ok.
+    if (nulls * 2 >= items)
+    {
+       CompactFinalizables();
+    }
+}
+
+inline bool SatoriRegion::HasFinalizables()
+{
+    return m_finalizables;
+}
+
+inline bool& SatoriRegion::HasPendingFinalizables()
+{
+    return m_hasPendingFinalizables;
 }
 
 #endif

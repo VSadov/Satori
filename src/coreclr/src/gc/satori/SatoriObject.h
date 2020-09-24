@@ -11,12 +11,10 @@
 #include "common.h"
 #include "../gc.h"
 
-class SatoriGC;
-class SatoriRegion;
-
 class SatoriObject : public Object
 {
-    friend SatoriGC;
+    friend class SatoriRegion;
+    friend class SatoriGC;
 
 public:
     SatoriObject() = delete;
@@ -24,6 +22,10 @@ public:
 
     static SatoriObject* At(size_t location);
     static SatoriObject* FormatAsFree(size_t location, size_t size);
+
+    // very special method to place Free object after a huge allocation.
+    // Do not use for anything else!!!
+    static SatoriObject* FormatAsFreeAfterHuge(size_t location, size_t size);
 
     SatoriRegion* ContainingRegion();
     size_t Start();
@@ -39,8 +41,10 @@ public:
     void SetPinned();
     void ClearPinnedAndMarked();
     bool IsEscaped();
-    void SetEscaped();
     bool IsEscapedOrPinned();
+    int MarkBitOffset(size_t* bitmapIndex);
+
+    bool IsFinalizationSuppressed();
 
     int32_t GetNextInMarkStack();
     void SetNextInMarkStack(int32_t);
@@ -54,7 +58,7 @@ public:
     void Validate();
 
     template<typename F>
-    void ForEachObjectRef(F& lambda);
+    void ForEachObjectRef(F& lambda, bool includeCollectibleAllocator = false);
 
 private:
     static MethodTable* s_emptyObjectMt;
@@ -63,6 +67,8 @@ private:
     void SetBit(int offset);
     void ClearBit(int offset);
     bool CheckBit(int offset);
+    void SetEscaped();
+    void ClearPinned();
 };
 
 #endif

@@ -14,6 +14,8 @@
 #include "SatoriUtil.h"
 #include "SatoriObject.h"
 
+class SatoriAllocator;
+
 enum class SatoriRegionState : int8_t
 {
     allocating   = 0,
@@ -24,73 +26,100 @@ class SatoriRegion
 {
     friend class SatoriRegionQueue;
     friend class SatoriObject;
+    friend class SatoriAllocationContext;
 
 public:
     SatoriRegion() = delete;
     ~SatoriRegion() = delete;
 
-    static SatoriRegion* InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t zeroInitedAfter);
+    static SatoriRegion* InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used);
     void MakeBlank();
     bool ValidateBlank();
-    void StopAllocating();
 
     SatoriRegion* Split(size_t regionSize);
     bool CanCoalesce(SatoriRegion* other);
     void Coalesce(SatoriRegion* next);
 
-    void Deactivate(SatoriHeap* heap);
+    void Deactivate(SatoriHeap* heap, size_t allocPtr);
 
+    size_t AllocStart();
+    size_t AllocRemaining();
     size_t Allocate(size_t size, bool ensureZeroInited);
     size_t AllocateHuge(size_t size, bool ensureZeroInited);
+    void StopAllocating(size_t allocPtr);
 
     bool IsAllocating();
     void Publish();
-    SatoriRegionState State();
+
+    bool IsThreadLocal();
+    bool OwnedByCurrentThread();
 
     size_t Start();
     size_t End();
     size_t Size();
-    size_t AllocStart();
-    size_t AllocEnd();
-    size_t AllocSize();
-    SatoriObject* FirstObject();
+    size_t Occupancy();
 
+    SatoriObject* FirstObject();
     SatoriObject* FindObject(size_t location);
 
     void ThreadLocalMark();
     size_t ThreadLocalPlan();
     void ThreadLocalUpdatePointers();
+    SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
-    SatoriObject* NextMarked(SatoriObject* after);
+    bool NothingMarked();
     bool ThreadLocalCompact(size_t desiredFreeSpace);
 
-    void Verify();
+    bool IsExposed(SatoriObject** location);
+    void EscapeRecursively(SatoriObject* obj);
+
+    template<typename F>
+    void ForEachFinalizable(F& lambda);
+    bool RegisterForFinalization(SatoriObject* finalizable);
+    bool HasFinalizables();
+    bool& HasPendingFinalizables();
+
+    void CleanMarks();
+
+    void Verify(bool allowMarked = false);
 
 private:
-    // one bit per size_t
-    // first useful index is offsetof(m_firstObject) / sizeof(size_t) / 8
-    // TODO: VS we could save some space by virtually shifting the map by a few bytes not taken by region state
-    //       we will keep that for now. We may need that for card table or smth.
-    static const int BITMAP_SIZE = Satori::REGION_SIZE_GRANULARITY / sizeof(size_t) / sizeof(size_t) / 8;
-    static const int BITMAP_START = BITMAP_SIZE / sizeof(size_t) / 8;
+    static const int BITMAP_LENGTH = Satori::REGION_SIZE_GRANULARITY / sizeof(size_t) / sizeof(size_t) / 8;
+
+    // The first actually useful index is offsetof(m_firstObject) / sizeof(size_t) / 8,
+    static const int BITMAP_START = (BITMAP_LENGTH + Satori::INDEX_LENGTH) / sizeof(size_t) / 8;
     union
     {
-        // +1 to include End()
-        size_t m_bitmap[BITMAP_SIZE + 1];
+        // object metadata - one bit per size_t
+        // due to the minimum size of an object we can store 3 bits per object: {Marked, Escaped, Pinned}
+        // it may be possible to repurpose the bits for other needs as we see fit.
+        //
+        // we will overlap the map and the header for simplicity of map operations.
+        // it is ok because the first BITMAP_START elements of the map cover the header/map and thus will not be used.
+        // +1 to include End(), it will always be 0, but it is conveninet to make it legal map index.
+        size_t m_bitmap[BITMAP_LENGTH + 1];
 
+        // Header.(can be up to 72 size_t)
         struct
         {
-            SatoriRegionState m_state;
-            int32_t m_markStack;
-            // end is edge exclusive
+            // just some thread-specific value that is easy to get.
+            // TEB address could be used on Windows, for example
+            size_t m_ownerThreadTag;
+            void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
+
             size_t m_end;
             size_t m_committed;
-            size_t m_zeroInitedAfter;
+            size_t m_used;
             SatoriPage* m_containingPage;
 
             SatoriRegion* m_prev;
             SatoriRegion* m_next;
-            SatoriRegionQueue* m_containingQueue;
+            SatoriQueue<SatoriRegion>* m_containingQueue;
+            SatoriMarkChunk* m_finalizables;
+
+            bool m_hasPendingFinalizables;
+
+            int32_t m_markStack;
 
             // active allocation may happen in the following range.
             // the range may not be parseable as sequence of objects
@@ -99,9 +128,11 @@ private:
             size_t m_allocStart;
             size_t m_allocEnd;
 
-            SatoriObject* m_index[Satori::INDEX_ITEMS];
+            size_t m_occupancy;
         };
     };
+
+    SatoriObject* m_index[Satori::INDEX_LENGTH + 1];
 
     size_t m_syncBlock;
     SatoriObject m_firstObject;
@@ -110,11 +141,16 @@ private:
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
     static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
-    bool IsEmpty();
+    static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
+
+    SatoriAllocator* Allocator();
 
     void PushToMarkStack(SatoriObject* obj);
     SatoriObject* PopFromMarkStack();
-    SatoriObject* ObjectForBit(size_t bitmapIndex, int offset);
+    SatoriObject* ObjectForMarkBit(size_t bitmapIndex, int offset);
+    void CompactFinalizables();
+
+    void SetExposed(SatoriObject** location);
 };
 
 #endif

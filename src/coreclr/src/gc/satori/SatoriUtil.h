@@ -12,7 +12,7 @@
 #include "../gc.h"
 
 
-//TODO: VS rename move somwhere
+//TODO: VS rename move somewhere
 namespace Satori
 {
     // page granularity is 1 Gb, but they can be bigger
@@ -21,14 +21,14 @@ namespace Satori
     static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
 
     // regions are aligned at 2 Mb
-    // (TODO: VS our commit unit must be powerof 2. must be <= 2 Mb?, otherwise large mode?)
-    // objects can be larger than that and straddle multiple region tiles.
-    // the additional "tail" tiles cannot have object starts though (makes finding region for obj easier).
+    // objects can be larger than that and straddle multiple region "tiles".
+    // all real objects start in the first tile though to allow for fixed size of the metadata.
     const static int REGION_BITS = 21;
     const static size_t REGION_SIZE_GRANULARITY = 1 << REGION_BITS;
 
-    const static int INDEX_GRANULARITY = 4096;
-    const static int INDEX_ITEMS = REGION_SIZE_GRANULARITY / INDEX_GRANULARITY;
+    const static int INDEX_GRANULARITY_BITS = 12;
+    const static int INDEX_GRANULARITY = 1 << INDEX_GRANULARITY_BITS;
+    const static int INDEX_LENGTH = REGION_SIZE_GRANULARITY / INDEX_GRANULARITY;
 
     static const int BUCKET_COUNT = PAGE_BITS - REGION_BITS;
 
@@ -38,13 +38,29 @@ namespace Satori
     // object starts are aligned to this
     static const size_t OBJECT_ALIGNMENT = sizeof(size_t);
 
-    // in theory min size could be 2 heap words, but that would complicate walking.
+    // minimal free size that can be made parseable.
+    // we use a trivial array object to fill holes, thus this is the size of an array object.
     static const size_t MIN_FREE_SIZE = 3 * sizeof(size_t);
 
-    // when doing rgular allocation we clean this much memory
+    // when doing regular allocation we clean this much memory
     // if we do cleaning, and if available
     // TODO: VS should this be a constant or be 1/2 L0 ?
     static const size_t MIN_REGULAR_ALLOC = 16 << 10;
+
+    // 8K for now, we can fiddle with size a bit later
+    const static size_t MARK_CHUNK_SIZE = 8 * 1024;
+
+    // address bits set to track finalizable that needs to be scheduled to F-queue
+    const static size_t FINALIZATION_PENDING = 1;
+
+    // TODO: VS move to something like SatoriConfig, MIN_REGULAR_ALLOC too. These are not constants.
+    static size_t CommitGranularity()
+    {
+        // we can support sizes that are binary fractions of REGION_SIZE_GRANULARITY.
+        // we can also support 1G
+        // TODO: VS this can be configured or computed at start up, but should not change dynamically.
+        return 4096;
+    }
 }
 
 class SatoriUtil
@@ -62,6 +78,12 @@ public:
         return (size_t)1 << highestBit;
     }
 
+    static size_t GetCurrentThreadTag()
+    {
+        // must match what is used in barriers.
+        // we use linear address of TEB on NT
+        return (size_t)__readgsqword(0x30);
+    }
 };
 
 #endif

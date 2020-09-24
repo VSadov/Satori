@@ -6,11 +6,16 @@
 //
 
 #include "common.h"
+
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
-#include "SatoriUtil.h"
+#include "../env/gcenv.ee.h"
 
+#include "SatoriUtil.h"
 #include "SatoriHeap.h"
+#include "SatoriRegion.h"
+#include "SatoriObject.h"
+#include "SatoriPage.h"
 
 void InitWriteBarrier(uint8_t* segmentTable, size_t highest_address)
 {
@@ -61,7 +66,7 @@ SatoriHeap* SatoriHeap::Create()
 
     void* reserved = GCToOSInterface::VirtualReserve(rezerveSize, 0, VirtualReserveFlags::None);
 
-    size_t commitSize = min(GCToOSInterface::GetPageSize(), rezerveSize);
+    size_t commitSize = min(Satori::CommitGranularity(), rezerveSize);
     if (!GCToOSInterface::VirtualCommit(reserved, commitSize))
     {
         // failure
@@ -78,6 +83,7 @@ SatoriHeap* SatoriHeap::Create()
 
     result->m_allocator.Initialize(result);
     result->m_recycler.Initialize(result);
+    result->m_finalizationQueue.Initialize();
 
     return result;
 }
@@ -85,7 +91,7 @@ SatoriHeap* SatoriHeap::Create()
 bool SatoriHeap::CommitMoreMap(int currentlyCommitted)
 {
     void* commitFrom = &m_pageMap[currentlyCommitted];
-    size_t commitSize = GCToOSInterface::GetPageSize();
+    size_t commitSize = Satori::CommitGranularity();
 
     SatoriLockHolder<SatoriLock> holder(&m_mapLock);
     if (currentlyCommitted < m_committedMapSize)
@@ -114,7 +120,7 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
         }
 
         size_t pageAddress = (size_t)i << Satori::PAGE_BITS;
-        newPage = SatoriPage::InitializeAt(pageAddress, Satori::PAGE_SIZE_GRANULARITY);
+        newPage = SatoriPage::InitializeAt(pageAddress, Satori::PAGE_SIZE_GRANULARITY, this);
         if (newPage)
         {
             // SYNCRONIZATION:
@@ -169,7 +175,7 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
         }
 
         size_t pageAddress = (size_t)i << Satori::PAGE_BITS;
-        SatoriPage* newPage = SatoriPage::InitializeAt(pageAddress, minSize);
+        SatoriPage* newPage = SatoriPage::InitializeAt(pageAddress, minSize, this);
         if (newPage)
         {
             // mark the map, before an object can be allocated in the new page and
@@ -204,7 +210,42 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
     return nullptr;
 }
 
-SatoriPage* SatoriHeap::PageForAddress(uint8_t* address)
+//TODO: VS move into inl
+inline SatoriPage* SatoriHeap::PageForAddress(size_t address)
 {
+    size_t mapIndex = address >> Satori::PAGE_BITS;
+    while (m_pageMap[mapIndex] > 1)
+    {
+        mapIndex -= ((size_t)1 << (m_pageMap[mapIndex] - 2));
+    }
+
+    return (SatoriPage *)(mapIndex << Satori::PAGE_BITS);
+}
+
+//TODO: VS unused?
+SatoriRegion* SatoriHeap::RegionForAddress(size_t address)
+{
+    if (IsHeapAddress(address))
+    {
+        return PageForAddress(address)->RegionForAddress(address);
+    }
+
     return nullptr;
+}
+
+//TODO: VS optimize this, move to inl
+SatoriObject* SatoriHeap::ObjectForAddress(size_t address)
+{
+    if (IsHeapAddress(address))
+    {
+        return PageForAddress(address)->RegionForAddress(address)->FindObject(address);
+    }
+
+    return nullptr;
+}
+
+//TODO: VS move into inl
+void SatoriHeap::SetCardForAddress(size_t address)
+{
+    PageForAddress(address)->SetCardForAddress(address);
 }
