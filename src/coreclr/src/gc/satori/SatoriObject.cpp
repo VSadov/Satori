@@ -21,11 +21,20 @@ void SatoriObject::Initialize()
     s_emptyObjectMt = GCToEEInterface::GetFreeObjectMethodTable();
 }
 
-void SatoriObject::ClearPinned()
+NOINLINE void SatoriObject::ClearPinned()
 {
     if (!IsEscaped())
     {
         ClearBit(2);
+    }
+}
+
+void SatoriObject::EscapeCheck()
+{
+    SatoriRegion* region = ContainingRegion();
+    if (region->OwnedByCurrentThread())
+    {
+        region->EscapeRecursively(this);
     }
 }
 
