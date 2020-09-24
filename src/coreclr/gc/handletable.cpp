@@ -19,8 +19,10 @@
 
 #include "objecthandle.h"
 #include "handletablepriv.h"
-#include "satori/SatoriObject.inl"
-#include "satori/SatoriRegion.inl"
+
+#if FEATURE_SATORI_GC
+#include "../gc/satori/SatoriObject.h"
+#endif
 
 #if defined(ENABLE_PERF_COUNTERS) || defined(FEATURE_EVENT_TRACE)
 DWORD g_dwHandles = 0;
@@ -544,18 +546,6 @@ void HndLogSetEvent(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
 
 #ifndef DACCESS_COMPILE
 
-void MarkEscapeSatori(Object* ref)
-{
-#if FEATURE_SATORI_GC
-    SatoriObject* obj = (SatoriObject*)ref;
-    SatoriRegion* region = obj->ContainingRegion();
-    if (region->OwnedByCurrentThread())
-    {
-        obj->ContainingRegion()->EscapeRecursively(obj);
-    }
-#endif
-}
-
 /*
  * HndWriteBarrierWorker
  *
@@ -566,7 +556,9 @@ void HndWriteBarrierWorker(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
 {
     _ASSERTE (value != NULL);
 
-    MarkEscapeSatori(OBJECTREFToObject(value));
+#if FEATURE_SATORI_GC
+    ((SatoriObject*)OBJECTREFToObject(value))->EscapeCheck();
+#endif
 
     // find the write barrier for this handle
     uint8_t *barrier = (uint8_t *)((uintptr_t)handle & HANDLE_SEGMENT_ALIGN_MASK);
