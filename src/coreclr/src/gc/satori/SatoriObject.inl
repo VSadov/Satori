@@ -124,7 +124,7 @@ inline void SatoriObject::ClearPinnedAndMarked()
     ClearBit(0);
     if (IsPinned())
     {
-        //TODO: VS make sure this does not inline.
+        // this would be rare. do not inline.
         ClearPinned();
     }
 }
