@@ -33,6 +33,10 @@
 #include "runtimecallablewrapper.h"
 #endif // FEATURE_COMINTEROP
 
+#if FEATURE_SATORI_GC
+#include "../gc/satori/SatoriObject.h"
+#endif
+
 // Allocate 4K worth. Typically enough
 #define MAXSYNCBLOCK (0x1000-sizeof(void*))/sizeof(SyncBlock)
 #define SYNC_TABLE_INITIAL_SIZE 250
@@ -945,6 +949,11 @@ DWORD SyncBlockCache::NewSyncBlockSlot(Object *obj)
 
 
     CardTableSetBit (indexNewEntry);
+
+    // effectively we are creating a weak handle to the obj
+#if FEATURE_SATORI_GC
+    ((SatoriObject*)obj)->EscapeCheck();
+#endif
 
     // In debug builds the m_SyncBlock at indexNewEntry should already be null, since we should
     // start out with a null table and always null it out on delete.
