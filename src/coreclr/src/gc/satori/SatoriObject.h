@@ -44,6 +44,8 @@ public:
     bool IsEscapedOrPinned();
     int MarkBitOffset(size_t* bitmapIndex);
 
+    void EscapeCheck();
+
     bool IsFinalizationSuppressed();
 
     int32_t GetNextInMarkStack();
