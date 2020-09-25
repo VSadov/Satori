@@ -12,6 +12,7 @@
 
 #include "SatoriHeap.h"
 #include "SatoriPage.h"
+#include "SatoriPage.inl"
 #include "SatoriRecycler.h"
 #include "SatoriObject.h"
 #include "SatoriObject.inl"
@@ -116,19 +117,19 @@ void SatoriRecycler::Collect(bool force)
         while (m_workList->Count() > 0)
         {
             DrainMarkQueues();
-            //TODO: VS clean cards   (could be due to overflow)
         }
 
-        // all strongly reachable objects are marked here 
+        // all strongly reachable objects are marked here
+        AssertNoWork();
 
         DependentHandlesInitialScan();
         while (m_workList->Count() > 0)
         {
             DrainMarkQueues();
-            //TODO: VS clean cards   (could be due to overflow)
             DependentHandlesRescan();
         }
 
+        AssertNoWork();
         //       sync
         WeakPtrScan(/*isShort*/ true);
         //       sync
@@ -138,10 +139,10 @@ void SatoriRecycler::Collect(bool force)
         while (m_workList->Count() > 0)
         {
             DrainMarkQueues();
-            //TODO: VS clean cards   (could be due to overflow)
             DependentHandlesRescan();
         }
 
+        AssertNoWork();
         //       sync 
         WeakPtrScan(/*isShort*/ false);
         WeakPtrScanBySingleThread();
@@ -202,6 +203,18 @@ void SatoriRecycler::Collect(bool force)
     m_gcInProgress = false;
 }
 
+void SatoriRecycler::AssertNoWork()
+{
+    _ASSERTE(m_workList->Count() == 0);
+
+    m_heap->ForEachPage(
+        [&](SatoriPage* page)
+        {
+            _ASSERTE(page->IsClean());
+        }
+    );
+}
+
 void SatoriRecycler::DeactivateFn(gc_alloc_context* gcContext, void* param)
 {
     SatoriAllocationContext* context = (SatoriAllocationContext*)gcContext;
@@ -247,15 +260,20 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriMarkChunk* &currentMarkChunk, Sa
         m_workList->Push(currentMarkChunk);
     }
 
-    currentMarkChunk = m_heap->Allocator()->TryGetMarkChunk();
+    //TODO: VS HACK HACK HACK, this is just to force overflows.(do this always in debug?)
+    currentMarkChunk = nullptr;
+    if (m_workList->Count() == 0)
+    {
+        currentMarkChunk = m_heap->Allocator()->TryGetMarkChunk();
+    }
+
     if (currentMarkChunk)
     {
         currentMarkChunk->Push(o);
     }
     else
     {
-        // TODO: VS handle mark overflow.
-        _ASSERTE(!"overflow");
+        o->SetCardsForContent();
     }
 }
 
@@ -288,7 +306,7 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
         }
     }
 
-    if (o->ContainingRegion()->IsThreadLocal())
+    if (o->ContainingRegion()->Generation() == 0)
     {
         // do not mark thread local regions.
         _ASSERTE(!"thread local region is unexpected");
@@ -302,9 +320,6 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
 
         MarkContext* context = (MarkContext*)sc->_unused1;
         // TODO: VS we do not need to push if card is marked, we will have to revisit anyways.
-
-        // TODO: VS test card setting. for now this is unused.
-        // context->m_recycler->m_heap->SetCardForAddress(location);
 
         context->PushToMarkQueues(o);
     }
@@ -431,6 +446,91 @@ void SatoriRecycler::DrainMarkQueues()
     {
         _ASSERTE(dstChunk->Count() == 0);
         m_heap->Allocator()->ReturnMarkChunk(dstChunk);
+    }
+
+    CleanCards();
+}
+
+void SatoriRecycler::CleanCards()
+{
+    SatoriMarkChunk* dstChunk = nullptr;
+    bool revisit = false;
+
+    do
+    {
+        m_heap->ForEachPage(
+            [&](SatoriPage* page)
+            {
+                if (!page->IsClean())
+                {
+                    page->SetProcessing();
+
+                    size_t groupCount = page->CardGroupCount();
+                    for (size_t i = 0; i < groupCount; i++)
+                    {
+                        // TODO: VS when stealing is implemented we should start from a random location
+                        if (page->CardGroupState(i) == Satori::CardGroupState::dirty)
+                        {
+                            page->CardGroupSetProcessing(i);
+
+                            size_t* cards = page->CardsForGroup(i);
+                            // TODO: VS page->RegionForCardGroup
+                            SatoriRegion* region = page->RegionForAddress(page->LocationForCard(cards));
+                            for (int j = 0; j < Satori::CARD_WORDS_IN_CARD_GROUP; j++)
+                            {
+                                // TODO: VS do one word at a time for now, scan for contiguous ranges later.
+                                size_t card = cards[j];
+                                if (!card)
+                                {
+                                    continue;
+                                }
+
+                                cards[j] = 0;
+                                size_t start = page->LocationForCard(&cards[j]);
+                                size_t end = start + Satori::BYTES_PER_CARD_WORD;
+                                SatoriObject* o = region->FindObject(start);
+                                do
+                                {
+                                    if (o->IsMarked())
+                                    {
+                                        o->ForEachObjectRef(
+                                            [&](SatoriObject** ref)
+                                            {
+                                                // TODO: VS check that the ref is dirty in the card.
+
+                                                SatoriObject* child = *ref;
+                                                if (child && !child->IsMarked())
+                                                {
+                                                    child->SetMarked();
+                                                    child->Validate();
+                                                    if (!dstChunk || !dstChunk->TryPush(child))
+                                                    {
+                                                        this->PushToMarkQueuesSlow(dstChunk, child);
+                                                    }
+                                                }
+                                            },
+                                            start,
+                                            end
+                                        );
+                                    }
+                                    o = o->Next();
+                                } while (o->Start() < end);
+                            }
+
+                            page->CardGroupTrySetClean(i);
+                        }
+                    }
+
+                    // record missed clean to revisit the whole deal. 
+                    revisit = !page->TrySetClean();
+                }
+            }
+        );
+    } while (revisit);
+
+    if (dstChunk)
+    {
+        m_workList->Push(dstChunk);
     }
 }
 
