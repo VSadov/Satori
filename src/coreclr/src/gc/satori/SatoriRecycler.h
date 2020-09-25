@@ -30,6 +30,8 @@ public:
 
     void Collect(bool force);
 
+    void AssertNoWork();
+
 private:
     SatoriHeap* m_heap;
 
@@ -65,6 +67,7 @@ private:
     void MarkOtherStacks();
     void IncrementScanCount();
     void DrainMarkQueues();
+    void CleanCards();
     void MarkHandles();
     void WeakPtrScan(bool isShort);
     void WeakPtrScanBySingleThread();
