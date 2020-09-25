@@ -44,8 +44,8 @@ public:
 
     size_t AllocStart();
     size_t AllocRemaining();
-    size_t Allocate(size_t size, bool ensureZeroInited);
-    size_t AllocateHuge(size_t size, bool ensureZeroInited);
+    size_t Allocate(size_t size, bool zeroInitialize);
+    size_t AllocateHuge(size_t size, bool zeroInitialize);
     void StopAllocating(size_t allocPtr);
 
     bool IsAllocating();
@@ -53,6 +53,8 @@ public:
 
     bool IsThreadLocal();
     bool OwnedByCurrentThread();
+    size_t Generation();
+    void SetGeneration(size_t generation);
 
     size_t Start();
     size_t End();
@@ -106,6 +108,7 @@ private:
             // TEB address could be used on Windows, for example
             size_t m_ownerThreadTag;
             void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
+            size_t m_generation;
 
             size_t m_end;
             size_t m_committed;
