@@ -15,6 +15,7 @@
 #include "../env/gcenv.ee.h"
 #include "SatoriRegion.h"
 
+//TODO: VS unused?
 inline bool SatoriRegion::IsThreadLocal()
 {
     return m_ownerThreadTag;
@@ -23,6 +24,16 @@ inline bool SatoriRegion::IsThreadLocal()
 inline bool SatoriRegion::OwnedByCurrentThread()
 {
     return m_ownerThreadTag == SatoriUtil::GetCurrentThreadTag();
+}
+
+inline size_t SatoriRegion::Generation()
+{
+    return m_generation;
+}
+
+inline void SatoriRegion::SetGeneration(size_t generation)
+{
+    m_generation = generation;
 }
 
 inline bool SatoriRegion::IsAllocating()
@@ -71,6 +82,7 @@ inline size_t SatoriRegion::Occupancy()
 inline void SatoriRegion::Publish()
 {
     m_ownerThreadTag = 0;
+    m_generation = 1;
 }
 
 template<typename F>
