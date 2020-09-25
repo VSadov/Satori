@@ -127,9 +127,8 @@ int SatoriGC::WaitForFullGCComplete(int millisecondsTimeout)
 
 unsigned SatoriGC::WhichGeneration(Object* obj)
 {
-    //TODO: Satori update when have Gen1
     SatoriObject* so = (SatoriObject*)obj;
-    return so->ContainingRegion()->IsThreadLocal() ? 0 : 2;
+    return (unsigned)so->ContainingRegion()->Generation();
 }
 
 int SatoriGC::CollectionCount(int generation, int get_bgc_fgc_coutn)
@@ -379,7 +378,7 @@ void SatoriGC::PublishObject(uint8_t* obj)
     // we do not retain huge regions in allocator,
     // but can't drop them in recycler until object has a MethodTable.
     // do that here.
-    if (!region->IsThreadLocal())
+    if (region->Generation() != 0)
     {
         _ASSERTE(region->Size() > Satori::REGION_SIZE_GRANULARITY);
         m_heap->Recycler()->AddRegion(region);
