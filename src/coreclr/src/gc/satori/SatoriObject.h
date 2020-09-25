@@ -44,6 +44,8 @@ public:
     bool IsEscapedOrPinned();
     int MarkBitOffset(size_t* bitmapIndex);
 
+    void SetCardsForContent();
+
     void EscapeCheck();
 
     bool IsFinalizationSuppressed();
@@ -61,6 +63,9 @@ public:
 
     template<typename F>
     void ForEachObjectRef(F& lambda, bool includeCollectibleAllocator = false);
+
+    template<typename F>
+    void ForEachObjectRef(F& lambda, size_t start, size_t end);
 
 private:
     static MethodTable* s_emptyObjectMt;
