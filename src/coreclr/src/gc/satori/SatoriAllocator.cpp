@@ -161,13 +161,13 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             size_t allocRemaining = region->AllocRemaining();
             if (moreSpace <= allocRemaining)
             {
-                bool isZeroing = true;
-                if (isZeroing && moreSpace < Satori::MIN_REGULAR_ALLOC)
+                bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
+                if (zeroInitialize && moreSpace < Satori::MIN_REGULAR_ALLOC)
                 {
                     moreSpace = min(allocRemaining, Satori::MIN_REGULAR_ALLOC);
                 }
 
-                if (region->Allocate(moreSpace, isZeroing))
+                if (region->Allocate(moreSpace, zeroInitialize))
                 {
                     context->alloc_bytes += moreSpace;
                     context->alloc_limit += moreSpace;
@@ -247,7 +247,8 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
             size_t allocRemaining = region->AllocRemaining();
             if (allocRemaining >= size)
             {
-                SatoriObject* result = SatoriObject::At(region->Allocate(size, true));
+                bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
+                SatoriObject* result = SatoriObject::At(region->Allocate(size, zeroInitialize));
                 if (result)
                 {
                     result->CleanSyncBlock();
@@ -286,7 +287,6 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
         }
 
         _ASSERTE(region->NothingMarked());
-        region->m_ownerThreadTag = SatoriUtil::GetCurrentThreadTag();
         context->LargeRegion() = region;
     }
 }
@@ -302,7 +302,8 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
         return nullptr;
     }
 
-    SatoriObject* result = SatoriObject::At(region->AllocateHuge(size, true));
+    bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
+    SatoriObject* result = SatoriObject::At(region->AllocateHuge(size, zeroInitialize));
     if (result)
     {
         result->CleanSyncBlock();
@@ -318,8 +319,9 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
 
     // we do not want to keep huge region in allocator for simplicity,
     // but can't drop it to recycler yet since the object has no MethodTable.
-    // we will leave the region unowned and send it to recycler later in PublishObject.
+    // we will make the region gen1 and send it to recycler later in PublishObject.
     region->StopAllocating(/* allocPtr */ 0);
+    region->SetGeneration(1);
     return result;
 }
 
@@ -345,7 +347,7 @@ bool SatoriAllocator::AddMoreMarkChunks()
 
     while (true)
     {
-        size_t mem = region->Allocate(Satori::MARK_CHUNK_SIZE, /*ensureZeroInited*/ false);
+        size_t mem = region->Allocate(Satori::MARK_CHUNK_SIZE, /*zeroInitialize*/ false);
         if (!mem)
         {
             break;
