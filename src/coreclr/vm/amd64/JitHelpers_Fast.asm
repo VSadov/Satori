@@ -484,16 +484,16 @@ LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
         ret
 LEAF_END JIT_PatchedCodeLast, _TEXT
 
-; Framed helper for a rare path to invoke recursive escape before doing assignment.
+; A helper for a rare path to invoke recursive escape before doing assignment.
 ;  rcx - dest  (assumed to be in the heap)
 ;  rdx - src
 ;  r8  - source region
 ;
-NESTED_ENTRY JIT_WriteBarrierHelper_SATORI, _TEXT
-        push_vol_reg rcx
-        push_vol_reg rdx
-        alloc_stack 20h
-    END_PROLOGUE
+LEAF_ENTRY JIT_WriteBarrierHelper_SATORI, _TEXT
+        ; save rcx and rdx and have enough stack for the callee
+        push rcx
+        push rdx
+        sub  rsp, 20h
 
         ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         call    qword ptr [r8 + 8]
@@ -501,10 +501,11 @@ NESTED_ENTRY JIT_WriteBarrierHelper_SATORI, _TEXT
         add     rsp, 20h
         pop     rdx
         pop     rcx
-        ; the actual assignment. (AV here will be attributed to the caller)
+
+        ; the actual assignment. (AV here will be attributed to the caller, unwinder knows this method)
         mov     [rcx], rdx
         ret
-NESTED_END_MARKED JIT_WriteBarrierHelper_SATORI, _TEXT
+LEAF_END_MARKED JIT_WriteBarrierHelper_SATORI, _TEXT
 
 ; JIT_ByRefWriteBarrier has weird symantics, see usage in StubLinkerX86.cpp
 ;
