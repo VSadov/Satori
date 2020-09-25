@@ -61,6 +61,18 @@ namespace Satori
         // TODO: VS this can be configured or computed at start up, but should not change dynamically.
         return 4096;
     }
+
+    static const int BYTES_PER_CARD_BYTE = 512;
+    static const int BYTES_PER_CARD_WORD = BYTES_PER_CARD_BYTE * sizeof(size_t);
+    static const int CARD_WORDS_IN_CARD_GROUP = Satori::REGION_SIZE_GRANULARITY / BYTES_PER_CARD_WORD;
+
+    enum CardGroupState : uint8_t
+    {
+        uncommitted = 0xFF,
+        clean = 0,
+        dirty = 1,
+        processing = 2
+    };
 }
 
 class SatoriUtil
