@@ -16,6 +16,7 @@
 #include "SatoriRegion.h"
 #include "SatoriObject.h"
 #include "SatoriPage.h"
+#include "SatoriPage.inl"
 
 void InitWriteBarrier(uint8_t* segmentTable, size_t highest_address)
 {
@@ -183,8 +184,9 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
             m_pageMap[i] = 1;
             for (int j = 1; j < mapMarkCount; j++)
             {
-                // TODO: VS skip-marks
-                m_pageMap[i + j] = 2;
+                DWORD log2;
+                BitScanReverse(&log2, j);
+                m_pageMap[i + j] = (uint8_t)(log2 + 2);
             }
 
             // we also need to ensure that the other thread doing the barrier,
@@ -210,30 +212,6 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
     return nullptr;
 }
 
-//TODO: VS move into inl
-inline SatoriPage* SatoriHeap::PageForAddress(size_t address)
-{
-    size_t mapIndex = address >> Satori::PAGE_BITS;
-    while (m_pageMap[mapIndex] > 1)
-    {
-        mapIndex -= ((size_t)1 << (m_pageMap[mapIndex] - 2));
-    }
-
-    return (SatoriPage *)(mapIndex << Satori::PAGE_BITS);
-}
-
-//TODO: VS unused?
-SatoriRegion* SatoriHeap::RegionForAddress(size_t address)
-{
-    if (IsHeapAddress(address))
-    {
-        return PageForAddress(address)->RegionForAddress(address);
-    }
-
-    return nullptr;
-}
-
-//TODO: VS optimize this, move to inl
 SatoriObject* SatoriHeap::ObjectForAddress(size_t address)
 {
     if (IsHeapAddress(address))
@@ -242,10 +220,4 @@ SatoriObject* SatoriHeap::ObjectForAddress(size_t address)
     }
 
     return nullptr;
-}
-
-//TODO: VS move into inl
-void SatoriHeap::SetCardForAddress(size_t address)
-{
-    PageForAddress(address)->SetCardForAddress(address);
 }

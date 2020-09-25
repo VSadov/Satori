@@ -1353,19 +1353,21 @@ void CheckEscapeSatori(Object** dst, Object* ref)
 #endif
 }
 
-void CheckEscapeSatoriRange(void* dst, void* src, size_t len)
+void CheckEscapeSatoriRange(void* dst, size_t src, size_t len)
 {
 #if FEATURE_SATORI_GC
-    if (!IsInHeapSatori(src))
+    if (!IsInHeapSatori((void*)src))
     {
         return;
     }
 
-    SatoriRegion* srcRegion = PageForAddressSatori(src)->RegionForAddress((size_t)src);
+    SatoriRegion* srcRegion = PageForAddressSatori((void*)src)->RegionForAddress((size_t)src);
     if (!srcRegion->OwnedByCurrentThread())
     {
         return;
     }
+
+    // TODO: VS the following IsEscaped checks could be done faster by scanning bitmaps
 
     // if move is within a region, check if the dest is escaped.
     if ((((size_t)dst ^ (size_t)src) >> 21) == 0)
@@ -1386,24 +1388,14 @@ void CheckEscapeSatoriRange(void* dst, void* src, size_t len)
     containingSrcObj->ForEachObjectRef(
         [&](SatoriObject** ref)
         {
-            // TODO: VS fold bounds checks into iterator
-            if ((size_t)ref < (size_t)src)
-            {
-                return;
-            }
-
-            size_t offset = (size_t)ref - (size_t)src;
-            if (offset >= len)
-            {
-                return;
-            }
-
             SatoriObject* child = *ref;
             if (child->ContainingRegion() == srcRegion)
             {
                 srcRegion->EscapeRecursively(child);
             }
-        }
+        },
+        src,
+        src + len
     );
 #endif
 }
