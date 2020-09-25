@@ -13,6 +13,8 @@
 #include "SatoriObject.inl"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
+#include "SatoriPage.h"
+#include "SatoriPage.inl"
 
 MethodTable* SatoriObject::s_emptyObjectMt;
 
@@ -78,6 +80,32 @@ SatoriObject* SatoriObject::FormatAsFreeAfterHuge(size_t location, size_t size)
     ((size_t*)obj)[ArrayBase::GetOffsetOfNumComponents() / sizeof(size_t)] = size - (sizeof(ArrayBase) + sizeof(size_t));
 
     return obj;
+}
+
+void SatoriObject::SetCardsForContent()
+{
+    _ASSERTE(IsMarked());
+    MethodTable* mt = RawGetMethodTable();
+    if (mt->ContainsPointers())
+    {
+        SatoriPage* page = ContainingRegion()->m_containingPage;
+
+        // TODO: VS SetCardsForRange
+        for (size_t i = Start(); i < End(); i++)
+        {
+            page->SetCardForAddress(i);
+        }
+    }
+
+    if (mt->Collectible())
+    {
+        SatoriObject* o = (SatoriObject*)GCToEEInterface::GetLoaderAllocatorObjectForGC(this);
+        if (!o->IsMarked())
+        {
+            o->SetMarked();
+            o->SetCardsForContent();
+        }
+    }
 }
 
 void SatoriObject::Validate()
