@@ -276,4 +276,105 @@ inline void SatoriObject::ForEachObjectRef(F& lambda, bool includeCollectibleAll
         }
     }
 }
+
+template<typename F>
+inline void SatoriObject::ForEachObjectRef(F& lambda, size_t start, size_t end)
+{
+    MethodTable* mt = RawGetMethodTable();
+    if (!mt->ContainsPointers())
+    {
+        return;
+    }
+
+    CGCDesc* map = CGCDesc::GetCGCDescFromMT(mt);
+    CGCDescSeries* cur = map->GetHighestSeries();
+
+    // GetNumSeries is actually signed.
+    // Negative value means the pattern repeats -cnt times such as in a case of arrays
+    ptrdiff_t cnt = (ptrdiff_t)map->GetNumSeries();
+    if (cnt >= 0)
+    {
+        CGCDescSeries* last = map->GetLowestSeries();
+
+        // series size is offset by the object size
+        size_t size = mt->GetBaseSize();
+
+        // object arrays are handled here too, so need to compensate for that.
+        if (mt->HasComponentSize())
+        {
+            size += (size_t)((ArrayBase*)this)->GetNumComponents() * sizeof(size_t);
+        }
+
+        do
+        {
+            size_t refPtr = (size_t)this + cur->GetSeriesOffset();
+            size_t refPtrStop = refPtr + size + cur->GetSeriesSize();
+
+            refPtr = max(refPtr, start);
+
+            // TODO: VS make ordinary while
+            if (refPtr < refPtrStop)
+            {
+                do
+                {
+                    if (refPtr >= end)
+                    {
+                        return;
+                    }
+
+                    lambda((SatoriObject**)refPtr);
+                    refPtr += sizeof(size_t);
+                } while (refPtr < refPtrStop);
+            }
+
+            cur--;
+        } while (cur >= last);
+    }
+    else
+    {
+        // repeating patern - an array of structs
+        ptrdiff_t componentNum = ((ArrayBase*)this)->GetNumComponents();
+        size_t elementSize = mt->RawGetComponentSize();
+        size_t refPtr = (size_t)this + cur->GetSeriesOffset();
+
+        if (refPtr < start)
+        {
+            size_t skip = (start - refPtr) / elementSize;
+            componentNum -= skip;
+            refPtr += skip * elementSize;
+        }
+
+        while (componentNum-- > 0)
+        {
+            for (ptrdiff_t i = 0; i > cnt; i--)
+            {
+                val_serie_item item = cur->val_serie[i];
+                size_t refPtrStop = refPtr + item.nptrs * sizeof(size_t);
+
+                if (refPtrStop <= start)
+                {
+                    // serie does not intersect with the range
+                    refPtr = refPtrStop;
+                }
+                else
+                {
+                    refPtr = max(refPtr, start);
+                    do
+                    {
+                        if (refPtr >= end)
+                        {
+                            return;
+                        }
+
+                        lambda((SatoriObject**)refPtr);
+                        refPtr += sizeof(size_t);
+                    } while (refPtr < refPtrStop);
+
+                }
+
+                refPtr += item.skip;
+            }
+        }
+    }
+}
 #endif
