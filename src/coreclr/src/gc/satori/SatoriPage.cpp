@@ -11,6 +11,7 @@
 #include "../env/gcenv.os.h"
 
 #include "SatoriPage.h"
+#include "SatoriPage.inl"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
 
@@ -24,10 +25,12 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
         return result;
     }
 
-    // 128 bit/byte
-    size_t cardTableBytes = pageSize / (128 * 8);
+    size_t cardTableBytes = pageSize / Satori::BYTES_PER_CARD_BYTE;
 
+    // TODO: VS we do not need to commit the whole card table, we can wait until regions are used
+    //       and track commit via card groups.
     // commit size is the same as header size. We could commit more in the future.
+    // or commit on demand as regions are committed.
     size_t commitSize = ALIGN_UP(cardTableBytes, Satori::CommitGranularity());
     if (!GCToOSInterface::VirtualCommit((void*)address, commitSize))
     {
@@ -41,15 +44,19 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     result->m_cardTableSize = (int)cardTableBytes / sizeof(size_t);
 
     // conservatively assume the first useful card word to cover the start of the first region.
-    size_t cardTableStart = (result->m_firstRegion - address) / (128 * 8 * sizeof(size_t));
+    size_t cardTableStart = (result->m_firstRegion - address) / Satori::BYTES_PER_CARD_WORD;
 
-    // make sure the first useful card word is beyond the header.
     size_t regionMapSize = pageSize >> Satori::REGION_BITS;
-    _ASSERTE(cardTableStart * sizeof(size_t) > offsetof(SatoriPage, m_regionMap) + regionMapSize);
 
     result->m_cardTableStart = (int)cardTableStart;
     result->m_heap = heap;
 
+    // make sure offset of m_cardsStatus is 128.
+    _ASSERTE(offsetof(SatoriPage, m_cardGroups) == 128);
+    result->m_regionMap = (uint8_t*)(address + 128 + (pageSize >> Satori::REGION_BITS));
+
+    // make sure the first useful card word is beyond the header.
+    _ASSERTE(result->Start() + cardTableStart * sizeof(size_t) > (size_t)(result->m_regionMap) + regionMapSize);
     return result;
 }
 
@@ -68,8 +75,9 @@ void SatoriPage::RegionInitialized(SatoriRegion* region)
     RegionMap()[startIndex] = 1;
     for (int i = 1; i < mapCount; i++)
     {
-        // TODO: VS skip-marks
-        RegionMap()[startIndex + i] = 2;
+        DWORD log2;
+        BitScanReverse(&log2, i);
+        RegionMap()[startIndex + i] = (uint8_t)(log2 + 2);
     }
 }
 
@@ -80,8 +88,9 @@ void SatoriPage::RegionDestroyed(SatoriRegion* region)
     size_t mapCount = region->Size() >> Satori::REGION_BITS;
     for (int i = 0; i < mapCount; i++)
     {
-        // TODO: VS skip-marks
-        RegionMap()[startIndex + i] = 0;
+        DWORD log2;
+        BitScanReverse(&log2, i);
+        RegionMap()[startIndex + i] = (uint8_t)(log2 + 2);
     }
 }
 
