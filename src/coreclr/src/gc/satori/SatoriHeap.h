@@ -47,16 +47,43 @@ public:
         return &m_finalizationQueue;
     }
 
-    SatoriPage* PageForAddress(size_t address);
-    SatoriRegion* RegionForAddress(size_t address);
-    SatoriObject* ObjectForAddress(size_t address);
-    void SetCardForAddress(size_t address);
-
     bool IsHeapAddress(size_t address)
     {
         size_t mapIndex = address >> Satori::PAGE_BITS;
-        return (unsigned int)mapIndex < (unsigned int)m_committedMapSize &&
+        return (unsigned int)mapIndex < (unsigned int)m_committedMapSize&&
             m_pageMap[mapIndex] != 0;
+    }
+
+    SatoriPage* PageForAddress(size_t address)
+    {
+        size_t mapIndex = address >> Satori::PAGE_BITS;
+        while (m_pageMap[mapIndex] > 1)
+        {
+            mapIndex -= ((size_t)1 << (m_pageMap[mapIndex] - 2));
+        }
+
+        return (SatoriPage*)(mapIndex << Satori::PAGE_BITS);
+    }
+
+    SatoriObject* ObjectForAddress(size_t address);
+
+    template<typename F>
+    void ForEachPage(F& lambda)
+    {
+        size_t mapIndex = m_nextPageIndex - 1;
+        while (mapIndex > 0)
+        {
+            switch (m_pageMap[mapIndex])
+            {
+            case 1:
+                lambda((SatoriPage*)(mapIndex << Satori::PAGE_BITS));
+            case 0:
+                mapIndex--;
+                continue;
+            default:
+                mapIndex -= ((size_t)1 << (m_pageMap[mapIndex] - 2));
+            }
+        }
     }
 
 private:
