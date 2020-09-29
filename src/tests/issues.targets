@@ -114,6 +114,64 @@
         <ExcludeList Include="$(XunitTestBinBase)/JIT/Regression/JitBlue/DevDiv_255294/DevDiv_255294/*">
             <Issue>https://github.com/dotnet/runtime/issues/44341</Issue>
         </ExcludeList>
+        <ExcludeList Include="$(XunitTestBinBase)/Interop/COM/NativeClients/Dispatch/*">
+            <Issue>https://github.com/dotnet/runtime/issues/44186</Issue>
+        </ExcludeList>
+        
+      <ExcludeList Include="$(XunitTestBinBase)/GC/Scenarios/LeakWheel/leakwheel/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/Features/LOHCompaction/lohpin/*">
+        <Issue>Satori GC compaction</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/GC/Collect1/*">
+        <Issue>Satori GC expects object tenuring</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/GCSettings/InputValidation/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/GC/GetTotalAllocatedBytes/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/GC/GetGCMemoryInfo/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+
+      <ExcludeList Include="$(XunitTestBinBase)/JIT/Methodical/doublearray/**">
+        <Issue>Satori GC apis, LOH expectations</Issue>
+      </ExcludeList>
+
+      <ExcludeList Include="$(XunitTestBinBase)/JIT/Performance/CodeQuality/BenchmarksGame/k-nucleotide/k-nucleotide-9/*">
+        <Issue>Satori fails in baseline. Reenable later.</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/JIT/Performance/CodeQuality/BenchmarksGame/regex-redux/regex-redux-1/*">
+        <Issue>Satori fails in baseline. Reenable later.</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/JIT/Performance/CodeQuality/BenchmarksGame/reverse-complement/reverse-complement-1/*">
+        <Issue>Satori fails in baseline. Reenable later.</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/JIT/Performance/CodeQuality/BenchmarksGame/reverse-complement/reverse-complement-6/*">
+        <Issue>Satori fails in baseline. Reenable later.</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/JIT/Performance/CodeQuality/BenchmarksGame/regex-redux/regex-redux-5/*">
+        <Issue>Satori fails in baseline. Reenable later.</Issue>
+      </ExcludeList>
+
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/unittest/getappdomainstaticaddress/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/gc/gcbasic/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/gc/gc/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/tracing/tracevalidation/inducedgc/inducedgc/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/tracing/eventpipe/gcdump/gcdump/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
     </ItemGroup>
 
     <!-- All Unix targets on all runtimes -->
