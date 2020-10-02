@@ -339,6 +339,8 @@ SatoriMarkChunk* SatoriAllocator::TryGetMarkChunk()
 
 bool SatoriAllocator::AddMoreMarkChunks()
 {
+    //TODO: VS if committing by OS page get one region at the beginning and dispense by a piece (take a lock),
+    //      then just do whole regions.
     SatoriRegion* region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
     if (!region)
     {
