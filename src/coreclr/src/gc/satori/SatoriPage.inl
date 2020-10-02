@@ -36,20 +36,4 @@ inline SatoriHeap* SatoriPage::Heap()
     return m_heap;
 }
 
-inline void SatoriPage::SetCardForAddress(size_t address)
-{
-    size_t offset = address - Start();
-    size_t cardByteOffset = offset / Satori::BYTES_PER_CARD_BYTE;
-
-    _ASSERTE(cardByteOffset / 8 > m_cardTableStart);
-    _ASSERTE(cardByteOffset / 8 < m_cardTableSize);
-
-    ((uint8_t*)this)[cardByteOffset] = 0xFF;
-
-    size_t cardGroupOffset = offset / Satori::REGION_SIZE_GRANULARITY;
-    this->m_cardGroups[cardGroupOffset] = Satori::CardGroupState::dirty;
-
-    this->m_cardState = 1;
-}
-
 #endif
