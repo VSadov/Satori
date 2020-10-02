@@ -82,19 +82,14 @@ SatoriObject* SatoriObject::FormatAsFreeAfterHuge(size_t location, size_t size)
     return obj;
 }
 
-void SatoriObject::SetCardsForContent()
+void SatoriObject::DirtyCardsForContent()
 {
     _ASSERTE(IsMarked());
     MethodTable* mt = RawGetMethodTable();
     if (mt->ContainsPointers())
     {
         SatoriPage* page = ContainingRegion()->m_containingPage;
-
-        // TODO: VS SetCardsForRange
-        for (size_t i = Start(); i < End(); i++)
-        {
-            page->SetCardForAddress(i);
-        }
+        page->DirtyCardsForRange(Start(), End());
     }
 
     if (mt->Collectible())
@@ -103,7 +98,7 @@ void SatoriObject::SetCardsForContent()
         if (!o->IsMarked())
         {
             o->SetMarked();
-            o->SetCardsForContent();
+            o->DirtyCardsForContent();
         }
     }
 }

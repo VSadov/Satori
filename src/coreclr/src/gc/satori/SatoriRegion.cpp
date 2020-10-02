@@ -80,6 +80,11 @@ SatoriAllocator* SatoriRegion::Allocator()
     return m_containingPage->Heap()->Allocator();
 }
 
+void SatoriRegion::WipeCards()
+{
+    m_containingPage->WipeCardsForRange(Start(), End());
+}
+
 void SatoriRegion::MakeBlank()
 {
     m_ownerThreadTag = 0;
@@ -191,7 +196,7 @@ void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextC
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
     _ASSERTE(regionSize < this->Size());
-    _ASSERTE(m_allocEnd == m_end);
+    _ASSERTE(m_allocEnd == 0 || m_allocEnd == m_end);
     _ASSERTE((size_t)m_allocStart < m_end - regionSize - Satori::MIN_FREE_SIZE);
 
     size_t newEnd = m_end - regionSize;
@@ -202,10 +207,9 @@ void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextC
     m_end = newEnd;
     m_committed = min(newEnd, m_committed);
     m_used = min(newEnd, m_used);
-    m_allocEnd = newEnd;
+    m_allocEnd = min(m_allocEnd, newEnd);
 
     _ASSERTE(Size() >= Satori::REGION_SIZE_GRANULARITY);
-    _ASSERTE(IsAllocating());
 }
 
 SatoriRegion* SatoriRegion::Split(size_t regionSize)
@@ -976,6 +980,55 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
     _ASSERTE(result->Start() <= upTo);
     return result;
 }
+
+bool SatoriRegion::Sweep()
+{
+    size_t limit = Start() + Satori::REGION_SIZE_GRANULARITY;
+    if (End() > limit)
+    {
+        SatoriObject* last = FindObject(limit - 1);
+        if (!last->IsMarked())
+        {
+            SatoriObject::FormatAsFree(last->Start(), limit - last->Start());
+            SatoriRegion* other = this->Split(Size() - Satori::REGION_SIZE_GRANULARITY);
+            other->WipeCards();
+            other->MakeBlank();
+            Allocator()->ReturnRegion(other);
+        }
+    }
+
+    bool sawMarked = false;
+    SatoriObject* cur = FirstObject();
+
+    while(true)
+    {
+        if (cur->Start() >= limit)
+        {
+            break;
+        }
+
+        if (cur->IsMarked())
+        {
+            sawMarked = true;
+            cur = cur->Next();
+            continue;
+        }
+
+        size_t lastMarkedEnd = cur->Start();
+        cur = SkipUnmarked(cur);
+        size_t skipped = cur->Start() - lastMarkedEnd;
+        if (skipped)
+        {
+            SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
+        }
+    }
+
+    // clean index
+    memset(&m_index, 0, sizeof(m_index));
+
+    return !sawMarked;
+}
+
 
 bool SatoriRegion::NothingMarked()
 {
