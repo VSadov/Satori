@@ -109,10 +109,10 @@ __forceinline size_t Interlocked::CompareExchange<size_t>(size_t volatile * dest
 }
 
 template <>
-__forceinline uint8_t Interlocked::CompareExchange<uint8_t>(uint8_t volatile* destination, uint8_t exchange, uint8_t comparand)
+__forceinline int8_t Interlocked::CompareExchange<int8_t>(int8_t volatile* destination, int8_t exchange, int8_t comparand)
 {
 #ifdef _MSC_VER
-    return _InterlockedCompareExchange8((char*)destination, exchange, comparand);
+    return (int8_t)_InterlockedCompareExchange8((char*)destination, exchange, comparand);
 #else
     T result = __sync_val_compare_and_swap(destination, comparand, exchange);
     ArmInterlockedOperationBarrier();
