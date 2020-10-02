@@ -35,6 +35,7 @@ public:
     static SatoriRegion* InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used);
     void MakeBlank();
     bool ValidateBlank();
+    void WipeCards();
 
     SatoriRegion* Split(size_t regionSize);
     bool CanCoalesce(SatoriRegion* other);
@@ -49,12 +50,13 @@ public:
     void StopAllocating(size_t allocPtr);
 
     bool IsAllocating();
-    void Publish();
+    void ResetOwningThread();
 
     bool IsThreadLocal();
     bool OwnedByCurrentThread();
-    size_t Generation();
-    void SetGeneration(size_t generation);
+
+    int Generation();
+    void SetGeneration(int generation);
 
     size_t Start();
     size_t End();
@@ -69,6 +71,7 @@ public:
     void ThreadLocalUpdatePointers();
     SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
+    bool Sweep();
     bool NothingMarked();
     bool ThreadLocalCompact(size_t desiredFreeSpace);
 
@@ -108,7 +111,7 @@ private:
             // TEB address could be used on Windows, for example
             size_t m_ownerThreadTag;
             void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
-            size_t m_generation;
+            int m_generation;
 
             size_t m_end;
             size_t m_committed;
