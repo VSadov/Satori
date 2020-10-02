@@ -26,12 +26,12 @@ inline bool SatoriRegion::OwnedByCurrentThread()
     return m_ownerThreadTag == SatoriUtil::GetCurrentThreadTag();
 }
 
-inline size_t SatoriRegion::Generation()
+inline int SatoriRegion::Generation()
 {
     return m_generation;
 }
 
-inline void SatoriRegion::SetGeneration(size_t generation)
+inline void SatoriRegion::SetGeneration(int generation)
 {
     m_generation = generation;
 }
@@ -78,11 +78,9 @@ inline size_t SatoriRegion::Occupancy()
     return m_occupancy;
 }
 
-//TODO: VS why do we have this?
-inline void SatoriRegion::Publish()
+inline void SatoriRegion::ResetOwningThread()
 {
     m_ownerThreadTag = 0;
-    m_generation = 1;
 }
 
 template<typename F>

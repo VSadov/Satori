@@ -25,13 +25,14 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
         return result;
     }
 
-    size_t cardTableBytes = pageSize / Satori::BYTES_PER_CARD_BYTE;
+    size_t cardTableSize = pageSize / Satori::BYTES_PER_CARD_BYTE;
 
-    // TODO: VS we do not need to commit the whole card table, we can wait until regions are used
-    //       and track commit via card groups.
+    // TODO: VS if commit granularity is OS pagem do not commit the whole card table, we can wait until regions are committed
+    //       and track card table commit via groups.
+    //
     // commit size is the same as header size. We could commit more in the future.
     // or commit on demand as regions are committed.
-    size_t commitSize = ALIGN_UP(cardTableBytes, Satori::CommitGranularity());
+    size_t commitSize = ALIGN_UP(cardTableSize, Satori::CommitGranularity());
     if (!GCToOSInterface::VirtualCommit((void*)address, commitSize))
     {
         GCToOSInterface::VirtualRelease((void*)address, pageSize);
@@ -39,16 +40,16 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     }
 
     result->m_end = address + pageSize;
-    result->m_firstRegion = address + ALIGN_UP(cardTableBytes, Satori::REGION_SIZE_GRANULARITY);
+    result->m_firstRegion = address + ALIGN_UP(cardTableSize, Satori::REGION_SIZE_GRANULARITY);
     result->m_initialCommit = address + commitSize;
-    result->m_cardTableSize = (int)cardTableBytes / sizeof(size_t);
+    result->m_cardTableSize = cardTableSize;
 
     // conservatively assume the first useful card word to cover the start of the first region.
-    size_t cardTableStart = (result->m_firstRegion - address) / Satori::BYTES_PER_CARD_WORD;
+    size_t cardTableStart = (result->m_firstRegion - address) / Satori::BYTES_PER_CARD_BYTE;
 
     size_t regionMapSize = pageSize >> Satori::REGION_BITS;
 
-    result->m_cardTableStart = (int)cardTableStart;
+    result->m_cardTableStart = cardTableStart;
     result->m_heap = heap;
 
     // make sure offset of m_cardsStatus is 128.
@@ -56,7 +57,7 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     result->m_regionMap = (uint8_t*)(address + 128 + (pageSize >> Satori::REGION_BITS));
 
     // make sure the first useful card word is beyond the header.
-    _ASSERTE(result->Start() + cardTableStart * sizeof(size_t) > (size_t)(result->m_regionMap) + regionMapSize);
+    _ASSERTE(result->Start() + cardTableStart > (size_t)(result->m_regionMap) + regionMapSize);
     return result;
 }
 
@@ -104,4 +105,78 @@ SatoriRegion* SatoriPage::RegionForAddress(size_t address)
     }
 
     return (SatoriRegion*)((mapIndex << Satori::REGION_BITS) + Start());
+}
+
+SatoriRegion* SatoriPage::RegionForCardGroup(size_t group)
+{
+    size_t mapIndex = group;
+    while (RegionMap()[mapIndex] > 1)
+    {
+        mapIndex -= ((size_t)1 << (RegionMap()[mapIndex] - 2));
+    }
+
+    return (SatoriRegion*)((mapIndex << Satori::REGION_BITS) + Start());
+}
+
+void SatoriPage::DirtyCardForAddress(size_t address)
+{
+    size_t offset = address - Start();
+    size_t cardByteOffset = offset / Satori::BYTES_PER_CARD_BYTE;
+
+    _ASSERTE(cardByteOffset >= m_cardTableStart);
+    _ASSERTE(cardByteOffset < m_cardTableSize);
+
+    m_cardTable[cardByteOffset] = Satori::CARD_DIRTY;
+
+    size_t cardGroupOffset = offset / Satori::REGION_SIZE_GRANULARITY;
+    this->m_cardGroups[cardGroupOffset] = Satori::CARD_DIRTY;
+
+    this->m_cardState = Satori::CARD_DIRTY;
+}
+
+void SatoriPage::DirtyCardsForRange(size_t start, size_t end)
+{
+    size_t firstByteOffset = start - Start();
+    size_t lastByteOffset = end - Start() - 1;
+
+    size_t firstCard = firstByteOffset / Satori::BYTES_PER_CARD_BYTE;
+    _ASSERTE(firstCard >= m_cardTableStart);
+    _ASSERTE(firstCard < m_cardTableSize);
+
+    size_t lastCard = lastByteOffset / Satori::BYTES_PER_CARD_BYTE;
+    _ASSERTE(lastCard >= m_cardTableStart);
+    _ASSERTE(lastCard < m_cardTableSize);
+
+    for (size_t i = firstCard; i <= lastCard; i++)
+    {
+        m_cardTable[i] = Satori::CARD_DIRTY;
+    }
+
+    size_t firstGroup = firstByteOffset / Satori::REGION_SIZE_GRANULARITY;
+    size_t lastGroup = lastByteOffset / Satori::REGION_SIZE_GRANULARITY;
+    for (size_t i = firstGroup; i <= lastGroup; i++)
+    {
+        this->m_cardGroups[i] = Satori::CARD_DIRTY;
+    }
+
+    this->m_cardState = Satori::CARD_DIRTY;
+}
+
+void SatoriPage::WipeCardsForRange(size_t start, size_t end)
+{
+    size_t firstByteOffset = start - Start();
+    size_t lastByteOffset = end - Start() - 1;
+
+    size_t firstCard = firstByteOffset / Satori::BYTES_PER_CARD_BYTE;
+    _ASSERTE(firstCard >= m_cardTableStart);
+    _ASSERTE(firstCard < m_cardTableSize);
+
+    size_t lastCard = lastByteOffset / Satori::BYTES_PER_CARD_BYTE;
+    _ASSERTE(lastCard >= m_cardTableStart);
+    _ASSERTE(lastCard < m_cardTableSize);
+    memset((void*)(m_cardTable + firstCard), 0, lastCard - firstCard + 1);
+
+    size_t firstGroup = firstByteOffset / Satori::REGION_SIZE_GRANULARITY;
+    size_t lastGroup = lastByteOffset / Satori::REGION_SIZE_GRANULARITY;
+    memset((void*)(m_cardGroups + firstGroup), 0, lastGroup - firstGroup + 1);
 }
