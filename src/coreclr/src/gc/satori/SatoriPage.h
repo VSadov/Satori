@@ -29,28 +29,35 @@ public:
 
     SatoriRegion* RegionForAddress(size_t address);
 
+    SatoriRegion* RegionForCardGroup(size_t group);
+
     size_t Start();
     size_t End();
     size_t RegionsStart();
     uint8_t* RegionMap();
     SatoriHeap* Heap();
 
-    void SetCardForAddress(size_t address);
+    void DirtyCardForAddress(size_t address);
 
-    bool IsClean()
+    void DirtyCardsForRange(size_t start, size_t length);
+
+    void WipeCardsForRange(size_t start, size_t end);
+
+    int8_t CardState()
     {
-        return VolatileLoadWithoutBarrier(&m_cardState) == 0;
+        // TODO: VS should this be VolatileLoad when we have concurrency?
+        return m_cardState;
     }
 
     void SetProcessing()
     {
-        VolatileStoreWithoutBarrier(&m_cardState, 2);
+        // TODO: VS should this be VolatileStore when we have concurrency? (same for the groups)
+        m_cardState = Satori::CARD_PROCESSING;
     }
 
     bool TrySetClean()
     {
-        _ASSERTE((m_cardState >= 0) && (m_cardState <= 2));
-        return Interlocked::CompareExchange(&m_cardState, 0, 2) != 1;
+        return Interlocked::CompareExchange(&m_cardState, Satori::CARD_HAS_REFERENCES, Satori::CARD_PROCESSING) != Satori::CARD_DIRTY;
     }
 
     size_t CardGroupCount()
@@ -58,27 +65,17 @@ public:
         return (End() - Start()) >> Satori::REGION_BITS;
     }
 
-    Satori::CardGroupState CardGroupState(size_t i)
+    int8_t& CardGroup(size_t i)
     {
-        return (Satori::CardGroupState)m_cardGroups[i];
+        return m_cardGroups[i];
     }
 
-    void CardGroupSetProcessing(size_t i)
+    int8_t* CardsForGroup(size_t i)
     {
-        m_cardGroups[i] = Satori::CardGroupState::processing;
+        return &m_cardTable[i * Satori::CARD_BYTES_IN_CARD_GROUP];
     }
 
-    void CardGroupTrySetClean(size_t i)
-    {
-        Interlocked::CompareExchange<uint8_t>(&m_cardGroups[i], Satori::CardGroupState::clean, Satori::CardGroupState::processing);
-    }
-
-    size_t* CardsForGroup(size_t i)
-    {
-        return &m_cardTable[i * Satori::CARD_WORDS_IN_CARD_GROUP];
-    }
-
-    size_t LocationForCard(void* cardPtr)
+    size_t LocationForCard(int8_t* cardPtr)
     {
         return Start() + ((size_t)cardPtr - Start()) * Satori::BYTES_PER_CARD_BYTE;
     }
@@ -93,12 +90,12 @@ private:
         // 2Mb   - 1Gb (region granule can store cards for 1Gb page)
         // We can start card table at the beginning of the page for simplicity
         // The first 4K cover the card itself, so that space will be unused and we can use it for other metadata.
-        size_t m_cardTable[1];
+        int8_t m_cardTable[1];
 
         // header (can be up to 2Kb for 1Gb page)
         struct
         {
-            int32_t m_cardState;
+            int8_t m_cardState;
             size_t m_end;
             size_t m_initialCommit;
             size_t m_firstRegion;
@@ -107,8 +104,8 @@ private:
 
             // the following is useful when scanning/clearing cards
             // it can be computed from the page size, but we have space, so we will store.
-            int m_cardTableSize;
-            int m_cardTableStart;
+            size_t m_cardTableSize;
+            size_t m_cardTableStart;
 
             // -----  we can have a few more fields above as long as m_cardsStatus starts at offset 128.
             //        that can be adjusted if needed
@@ -122,7 +119,7 @@ private:
             // 1byte per region
             // 512 bytes per 1Gb
             DECLSPEC_ALIGN(128)
-            uint8_t m_cardGroups[1];
+            int8_t m_cardGroups[1];
         };
     };
 };
