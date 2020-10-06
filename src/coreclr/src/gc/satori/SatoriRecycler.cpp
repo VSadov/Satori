@@ -372,11 +372,9 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
         MarkContext* context = (MarkContext*)sc->_unused1;
 
         //TODO: VS put heap directly on context.
-        //TODO: VS need ObjectForAddressChecked
-        o = context->m_recycler->m_heap->ObjectForAddress(location);
+        o = context->m_recycler->m_heap->ObjectForAddressChecked(location);
         if (o == nullptr)
         {
-            //TODO: VS when this could happen? matching orig GC?
             return;
         }
     }
@@ -392,10 +390,7 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     {
         // TODO: VS should use threadsafe variant
         o->SetMarked();
-
         MarkContext* context = (MarkContext*)sc->_unused1;
-        // TODO: VS we do not need to push if card is marked, we will have to revisit anyways.
-
         context->PushToMarkQueues(o);
     }
 
