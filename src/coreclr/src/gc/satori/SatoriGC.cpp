@@ -420,7 +420,7 @@ Object* SatoriGC::NextObj(Object* object)
 
 Object* SatoriGC::GetContainingObject(void* pInteriorPtr, bool fCollectedGenOnly)
 {
-    return m_heap->ObjectForAddress((size_t)pInteriorPtr);
+    return m_heap->ObjectForAddressChecked((size_t)pInteriorPtr);
 
     //TODO: Satori fCollectedGenOnly?
 }
