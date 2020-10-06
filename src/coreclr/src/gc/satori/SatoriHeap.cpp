@@ -214,9 +214,15 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
 
 SatoriObject* SatoriHeap::ObjectForAddress(size_t address)
 {
-    if (IsHeapAddress(address))
+    return PageForAddress(address)->RegionForAddress(address)->FindObject(address);
+}
+
+SatoriObject* SatoriHeap::ObjectForAddressChecked(size_t address)
+{
+    SatoriPage* page = PageForAddressChecked(address);
+    if (page)
     {
-        return PageForAddress(address)->RegionForAddress(address)->FindObject(address);
+        return page->RegionForAddress(address)->FindObject(address);
     }
 
     return nullptr;
