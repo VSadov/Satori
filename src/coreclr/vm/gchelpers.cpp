@@ -34,9 +34,11 @@
 #include "runtimecallablewrapper.h"
 #endif // FEATURE_COMINTEROP
 
+#if FEATURE_SATORI_GC
 #include "../gc/satori/SatoriObject.inl"
 #include "../gc/satori/SatoriRegion.inl"
 #include "../gc/satori/SatoriPage.h"
+#endif
 
 //========================================================================
 //
@@ -1304,14 +1306,12 @@ extern "C" HCIMPL2_RAW(VOID, JIT_WriteBarrierEnsureNonHeapTarget, Object **dst, 
 }
 HCIMPLEND_RAW
 
-// This function sets the card table with the granularity of 1 byte, to avoid ghost updates
-//    that could occur if multiple threads were trying to set different bits in the same card.
+#include <optsmallperfcritical.h>
 
+#if FEATURE_SATORI_GC
 
 static const int PAGE_BITS = 30;
 static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
-
-#include <optsmallperfcritical.h>
 
 // same as SatoriGC::IsHeapPointer, just to avoid dependency on SatoriGC class.
 bool IsInHeapSatori(void* ptr)
@@ -1326,21 +1326,31 @@ bool IsInHeapSatori(void* ptr)
     return pageMap[page];
 }
 
-SatoriPage* PageForAddressSatori(void* address)
+// same as SatoriGC::PageForAddressChecked, just to avoid dependency on SatoriGC class.
+SatoriPage* PageForAddressCheckedSatori(void* address)
 {
     size_t mapIndex = (size_t)address >> PAGE_BITS;
     uint8_t* pageMap = (uint8_t*)g_card_table;
-    while (pageMap[mapIndex] > 1)
+    if ((uint8_t*)address <= (uint8_t*)g_highest_address)
     {
-        mapIndex -= ((size_t)1 << (pageMap[mapIndex] - 2));
+    tryAgain:
+        switch (pageMap[mapIndex])
+        {
+        case 0:
+            break;
+        case 1:
+            return (SatoriPage*)(mapIndex << Satori::PAGE_BITS);
+        default:
+            mapIndex -= ((size_t)1 << (pageMap[mapIndex] - 2));
+            goto tryAgain;
+        }
     }
 
-    return (SatoriPage*)(mapIndex << PAGE_BITS);
+    return nullptr;
 }
 
 void CheckEscapeSatori(Object** dst, Object* ref)
 {
-#if FEATURE_SATORI_GC
     SatoriObject* obj = (SatoriObject*)ref;
     SatoriRegion* region = obj->ContainingRegion();
 
@@ -1357,18 +1367,17 @@ void CheckEscapeSatori(Object** dst, Object* ref)
 
         region->EscapeRecursively(obj);
     }
-#endif
 }
 
 void CheckEscapeSatoriRange(void* dst, size_t src, size_t len)
 {
-#if FEATURE_SATORI_GC
-    if (!IsInHeapSatori((void*)src))
+    SatoriPage* page = PageForAddressCheckedSatori((void*)src);
+    if (!page)
     {
         return;
     }
 
-    SatoriRegion* srcRegion = PageForAddressSatori((void*)src)->RegionForAddress((size_t)src);
+    SatoriRegion* srcRegion = page->RegionForAddress((size_t)src);
     if (!srcRegion->OwnedByCurrentThread())
     {
         return;
@@ -1404,51 +1413,72 @@ void CheckEscapeSatoriRange(void* dst, size_t src, size_t len)
         src,
         src + len
     );
-#endif
 }
+#endif
 
+// This function sets the card table with the granularity of 1 byte, to avoid ghost updates
+//    that could occur if multiple threads were trying to set different bits in the same card.
 void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
 {
     STATIC_CONTRACT_MODE_COOPERATIVE;
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
 
-    if (IsInHeapSatori((Object**)dst))
+#if FEATURE_SATORI_GC
+
+    SatoriObject* obj = (SatoriObject*)OBJECTREFToObject(ref);
+    if ((((size_t)dst ^ (size_t)obj) >> 21) == 0)
     {
-        //TODO: VS do cards
+        // same region
+        return;
     }
 
-    //TODO: Satori
-//    // if the dst is outside of the heap (unboxed value classes) then we
-//    //      simply exit
-//    if (((BYTE*)dst < g_lowest_address) || ((BYTE*)dst >= g_highest_address))
-//        return;
-//
-//#ifdef WRITE_BARRIER_CHECK
-//    updateGCShadow((Object**) dst, OBJECTREFToObject(ref));     // support debugging write barrier
-//#endif
-//
-//#ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
-//    if (GCHeapUtilities::SoftwareWriteWatchIsEnabled())
-//    {
-//        GCHeapUtilities::SoftwareWriteWatchSetDirty(dst, sizeof(*dst));
-//    }
-//#endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
-//
-//    if ((BYTE*) OBJECTREFToObject(ref) >= g_ephemeral_low && (BYTE*) OBJECTREFToObject(ref) < g_ephemeral_high)
-//    {
-//        // VolatileLoadWithoutBarrier() is used here to prevent fetch of g_card_table from being reordered
-//        // with g_lowest/highest_address check above. See comment in StompWriteBarrier.
-//        BYTE* pCardByte = (BYTE*)VolatileLoadWithoutBarrier(&g_card_table) + card_byte((BYTE *)dst);
-//        if (*pCardByte != 0xFF)
-//        {
-//            *pCardByte = 0xFF;
-//
-//#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
-//            SetCardBundleByte((BYTE*)dst);
-//#endif
-//        }
-//    }
+    if (!obj || obj->ContainingRegion()->Generation() == 2)
+    {
+        return;
+    }
+
+    SatoriPage* page = PageForAddressCheckedSatori(dst);
+    if (!page)
+    {
+        // not assigning to heap
+        return;
+    }
+
+    page->SetCardForAddress((size_t)dst);
+
+#else
+    // if the dst is outside of the heap (unboxed value classes) then we
+    //      simply exit
+    if (((BYTE*)dst < g_lowest_address) || ((BYTE*)dst >= g_highest_address))
+        return;
+
+#ifdef WRITE_BARRIER_CHECK
+    updateGCShadow((Object**) dst, OBJECTREFToObject(ref));     // support debugging write barrier
+#endif
+
+#ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+    if (GCHeapUtilities::SoftwareWriteWatchIsEnabled())
+    {
+        GCHeapUtilities::SoftwareWriteWatchSetDirty(dst, sizeof(*dst));
+    }
+#endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+
+    if ((BYTE*) OBJECTREFToObject(ref) >= g_ephemeral_low && (BYTE*) OBJECTREFToObject(ref) < g_ephemeral_high)
+    {
+        // VolatileLoadWithoutBarrier() is used here to prevent fetch of g_card_table from being reordered
+        // with g_lowest/highest_address check above. See comment in StompWriteBarrier.
+        BYTE* pCardByte = (BYTE*)VolatileLoadWithoutBarrier(&g_card_table) + card_byte((BYTE *)dst);
+        if (*pCardByte != 0xFF)
+        {
+            *pCardByte = 0xFF;
+
+#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
+            SetCardBundleByte((BYTE*)dst);
+#endif
+        }
+    }
+#endif
 }
 #include <optdefault.h>
 
@@ -1458,41 +1488,45 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref)
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
 
-    //NB: no need to check escape, the loader allocator is escaped via a handle
     *dst = ref;
 
-    //TODO: Satori do cards
+#if FEATURE_SATORI_GC
 
-//#ifdef WRITE_BARRIER_CHECK
-//    updateGCShadow((Object **)dst, (Object *)ref);     // support debugging write barrier, updateGCShadow only cares that these are pointers
-//#endif
-//
-//    if (ref->Collectible())
-//    {
-//#ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
-//        if (GCHeapUtilities::SoftwareWriteWatchIsEnabled())
-//        {
-//            GCHeapUtilities::SoftwareWriteWatchSetDirty(dst, sizeof(*dst));
-//        }
-//
-//#endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
-//
-//        BYTE *refObject = *(BYTE **)ref->GetLoaderAllocatorObjectHandle();
-//        if((BYTE*) refObject >= g_ephemeral_low && (BYTE*) refObject < g_ephemeral_high)
-//        {
-//            // VolatileLoadWithoutBarrier() is used here to prevent fetch of g_card_table from being reordered
-//            // with g_lowest/highest_address check above. See comment in StompWriteBarrier.
-//            BYTE* pCardByte = (BYTE*)VolatileLoadWithoutBarrier(&g_card_table) + card_byte((BYTE *)dst);
-//            if( !((*pCardByte) & card_bit((BYTE *)dst)) )
-//            {
-//                *pCardByte = 0xFF;
-//
-//#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
-//                SetCardBundleByte((BYTE*)dst);
-//#endif
-//            }
-//        }
-//    }
+    // Satori has no special behaviors for large objects.
+    // Noting bypasses gen1.
+
+#else
+#ifdef WRITE_BARRIER_CHECK
+    updateGCShadow((Object **)dst, (Object *)ref);     // support debugging write barrier, updateGCShadow only cares that these are pointers
+#endif
+
+    if (ref->Collectible())
+    {
+#ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+        if (GCHeapUtilities::SoftwareWriteWatchIsEnabled())
+        {
+            GCHeapUtilities::SoftwareWriteWatchSetDirty(dst, sizeof(*dst));
+        }
+
+#endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+
+        BYTE *refObject = *(BYTE **)ref->GetLoaderAllocatorObjectHandle();
+        if((BYTE*) refObject >= g_ephemeral_low && (BYTE*) refObject < g_ephemeral_high)
+        {
+            // VolatileLoadWithoutBarrier() is used here to prevent fetch of g_card_table from being reordered
+            // with g_lowest/highest_address check above. See comment in StompWriteBarrier.
+            BYTE* pCardByte = (BYTE*)VolatileLoadWithoutBarrier(&g_card_table) + card_byte((BYTE *)dst);
+            if( !((*pCardByte) & card_bit((BYTE *)dst)) )
+            {
+                *pCardByte = 0xFF;
+
+#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
+                SetCardBundleByte((BYTE*)dst);
+#endif
+            }
+        }
+    }
+#endif
 }
 
 //----------------------------------------------------------------------------
@@ -1517,12 +1551,29 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref)
 #endif //_MSC_VER && TARGET_X86
 
 void
-SetCardsAfterBulkCopy(Object **start, size_t len)
+SetCardsAfterBulkCopy(Object** dst, Object **src, size_t len)
 {
     // If the size is smaller than a pointer, no write barrier is required.
     if (len >= sizeof(uintptr_t))
     {
-        InlinedSetCardsAfterBulkCopyHelper(start, len);
+#if FEATURE_SATORI_GC
+        if ((((size_t)dst ^ (size_t)src) >> 21) == 0)
+        {
+            // same region
+            return;
+        }
+
+        SatoriPage* page = PageForAddressCheckedSatori(dst);
+        if (!page)
+        {
+            // not assigning to heap
+            return;
+        }
+
+        page->SetCardsForRange((size_t)dst, (size_t)dst + len);
+#else
+        InlinedSetCardsAfterBulkCopyHelper(dst, len);
+#endif
     }
 }
 
