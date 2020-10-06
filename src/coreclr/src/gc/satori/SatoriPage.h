@@ -37,10 +37,10 @@ public:
     uint8_t* RegionMap();
     SatoriHeap* Heap();
 
+    void SetCardForAddress(size_t address);
+    void SetCardsForRange(size_t start, size_t end);
     void DirtyCardForAddress(size_t address);
-
     void DirtyCardsForRange(size_t start, size_t length);
-
     void WipeCardsForRange(size_t start, size_t end);
 
     int8_t CardState()
