@@ -118,6 +118,63 @@ SatoriRegion* SatoriPage::RegionForCardGroup(size_t group)
     return (SatoriRegion*)((mapIndex << Satori::REGION_BITS) + Start());
 }
 
+void SatoriPage::SetCardForAddress(size_t address)
+{
+    size_t offset = address - Start();
+    size_t cardByteOffset = offset / Satori::BYTES_PER_CARD_BYTE;
+
+    _ASSERTE(cardByteOffset >= m_cardTableStart);
+    _ASSERTE(cardByteOffset < m_cardTableSize);
+
+    if (!m_cardTable[cardByteOffset])
+    {
+        m_cardTable[cardByteOffset] = Satori::CARD_HAS_REFERENCES;
+    }
+
+    size_t cardGroupOffset = offset / Satori::REGION_SIZE_GRANULARITY;
+    if (m_cardGroups[cardGroupOffset])
+    {
+        m_cardGroups[cardGroupOffset] = Satori::CARD_HAS_REFERENCES;
+    }
+
+    if (!m_cardState)
+    {
+        m_cardState = Satori::CARD_HAS_REFERENCES;
+    }
+}
+
+void SatoriPage::SetCardsForRange(size_t start, size_t end)
+{
+    size_t firstByteOffset = start - Start();
+    size_t lastByteOffset = end - Start() - 1;
+
+    size_t firstCard = firstByteOffset / Satori::BYTES_PER_CARD_BYTE;
+    _ASSERTE(firstCard >= m_cardTableStart);
+    _ASSERTE(firstCard < m_cardTableSize);
+
+    size_t lastCard = lastByteOffset / Satori::BYTES_PER_CARD_BYTE;
+    _ASSERTE(lastCard >= m_cardTableStart);
+    _ASSERTE(lastCard < m_cardTableSize);
+
+    memset((void*)(m_cardTable + firstCard), Satori::CARD_HAS_REFERENCES, lastCard - firstCard + 1);
+
+    size_t firstGroup = firstByteOffset / Satori::REGION_SIZE_GRANULARITY;
+    size_t lastGroup = lastByteOffset / Satori::REGION_SIZE_GRANULARITY;
+    for (size_t i = firstGroup; i <= lastGroup; i++)
+    {
+        if (m_cardGroups[i])
+        {
+            m_cardGroups[i] = Satori::CARD_HAS_REFERENCES;
+        }
+    }
+
+    if (!m_cardState)
+    {
+        m_cardState = Satori::CARD_HAS_REFERENCES;
+    }
+}
+
+//TODO: VS fences.
 void SatoriPage::DirtyCardForAddress(size_t address)
 {
     size_t offset = address - Start();
@@ -134,6 +191,7 @@ void SatoriPage::DirtyCardForAddress(size_t address)
     this->m_cardState = Satori::CARD_DIRTY;
 }
 
+//TODO: VS fences.
 void SatoriPage::DirtyCardsForRange(size_t start, size_t end)
 {
     size_t firstByteOffset = start - Start();
