@@ -453,16 +453,16 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
     ; 1) check if we own the source region
         mov     r8, rdx
         and     r8, 0FFFFFFFFFFE00000h  ; source region
-        jz      EscapeChecked           ; assigning null   
+        jz      JustAssign              ; assigning null   
         mov     rax,  gs:[30h]          ; thread tag, TEB on NT
         cmp     qword ptr [r8], rax     
-        jne      EscapeChecked          ; not local to this thread
+        jne     AssignAndMarkCards      ; not local to this thread
 
     ; 2) check if the src and dst are from the same region
         mov     rax, rdx
         xor     rax, rcx
         shr     rax, 21
-        jnz     JIT_WriteBarrierHelper_SATORI ; cross region assignment. definitely escaping
+        jnz     RecordEscape             ; cross region assignment. definitely escaping
 
     ; 3) check if the target is exposed
         mov     rax, rcx
@@ -472,10 +472,68 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         shr     r9, 9
         and     r9, 0FFFh
         bt      qword ptr [r8+r9*8], rax
-        jb      JIT_WriteBarrierHelper_SATORI ; target is exposed. record an escape.
+        jb      RecordEscape             ; target is exposed. record an escape.
 
-     EscapeChecked:
+    JustAssign:
+        mov     [rcx], rdx              ; threadlocal assignment of unescaped object
+        ret
+
+    RecordEscape:
+        ; save rcx, rdx, r8 and have enough stack for the callee
+        push rcx
+        push rdx
+        push r8
+        sub  rsp, 20h
+
+        ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
+        call    qword ptr [r8 + 8]
+
+        add     rsp, 20h
+        pop     r8
+        pop     rdx
+        pop     rcx
+
+    AssignAndMarkCards:
         mov     [rcx], rdx
+
+    ; 1) check if the src and dst are from the same region
+        mov     rax, rdx
+        xor     rax, rcx
+        shr     rax, 21
+        jz      Exit                    ; same segment no need for barrier.
+
+    ; 2) check if the src is already in gen2
+        cmp     word ptr [r8+16], 1     ; r8 is region, r8+16 is its generation
+        jg      Exit                    ; src is in gen2 region, no need for barriers
+
+    ; SETTING CARD FOR RCX
+        mov     r8,  rcx
+        mov     r9 , [g_card_table]     ; fetch the page map
+        mov     rax, rcx
+        shr     rax, 30
+     CheckPageMap:                               
+        movzx   ecx, byte ptr [r9 + rax]
+        cmp     cl, 1
+        je      HasPage
+        add     cl, -2
+        mov     edx, 1
+        shl     rdx, cl
+        sub     rax, rdx
+        jmp     CheckPageMap
+     HasPage:
+        shl     rax, 30   ; page
+
+        sub     r8, rax   ; offset in page
+        mov     rdx,r8
+
+        shr     r8, 21    ; group offset
+        shr     rdx,9     ; card offset
+
+        mov     byte ptr [rdx + rax], 1        ; set card
+        mov     byte ptr [r8  + rax + 80h], 1  ; set group
+        mov     byte ptr [rax], 1              ; set page
+
+    Exit:
         ret
 LEAF_END_MARKED JIT_WriteBarrier, _TEXT
 
