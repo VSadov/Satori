@@ -103,6 +103,11 @@ inline bool SatoriObject::IsMarked()
     return CheckBit(0);
 }
 
+inline bool SatoriObject::IsMarkedOrOlderThan(int generation)
+{
+    return ContainingRegion()->Generation() > generation || IsMarked();
+}
+
 inline void SatoriObject::SetMarked()
 {
     SetBit(0);
