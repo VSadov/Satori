@@ -526,11 +526,24 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         sub     r8, rax   ; offset in page
         mov     rdx,r8
 
-        shr     r8, 21    ; group offset
-        shr     rdx,9     ; card offset
+        shr     r8, 9     ; card offset
+        cmp     byte ptr [rax + r8], 0
+        je      SetCard
+        REPRET
+     SetCard:
+        mov     byte ptr [rax + r8], 1        
 
-        mov     byte ptr [rdx + rax], 1        ; set card
-        mov     byte ptr [r8  + rax + 80h], 1  ; set group
+        shr     rdx, 21    ; group offset
+        cmp     byte ptr [rax + rdx + 80h], 0
+        je      SetGroup
+        REPRET
+     SetGroup:
+        mov     byte ptr [rax + rdx + 80h], 1
+
+        cmp     byte ptr [rax], 0
+        je      SetPage
+        REPRET
+     SetPage:
         mov     byte ptr [rax], 1              ; set page
 
     Exit:
@@ -541,29 +554,6 @@ LEAF_END_MARKED JIT_WriteBarrier, _TEXT
 LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
         ret
 LEAF_END JIT_PatchedCodeLast, _TEXT
-
-; A helper for a rare path to invoke recursive escape before doing assignment.
-;  rcx - dest  (assumed to be in the heap)
-;  rdx - src
-;  r8  - source region
-;
-LEAF_ENTRY JIT_WriteBarrierHelper_SATORI, _TEXT
-        ; save rcx and rdx and have enough stack for the callee
-        push rcx
-        push rdx
-        sub  rsp, 20h
-
-        ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
-        call    qword ptr [r8 + 8]
-
-        add     rsp, 20h
-        pop     rdx
-        pop     rcx
-
-        ; the actual assignment. (AV here will be attributed to the caller, unwinder knows this method)
-        mov     [rcx], rdx
-        ret
-LEAF_END_MARKED JIT_WriteBarrierHelper_SATORI, _TEXT
 
 ; JIT_ByRefWriteBarrier has weird symantics, see usage in StubLinkerX86.cpp
 ;
