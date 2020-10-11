@@ -36,6 +36,7 @@ public:
     bool IsFree();
 
     bool IsMarked();
+    bool IsMarkedOrOlderThan(int generation);
     void SetMarked();
     bool IsPinned();
     void SetPinned();
