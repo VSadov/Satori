@@ -78,6 +78,7 @@ private:
 
     void DependentHandlesInitialScan();
     void DependentHandlesRescan();
+    void PromoteSurvivedHandles();
 };
 
 #endif

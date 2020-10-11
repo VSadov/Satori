@@ -6016,9 +6016,6 @@ EXTERN_C void JIT_WriteBarrier_End();
 EXTERN_C void JIT_CheckedWriteBarrier_End();
 EXTERN_C void JIT_ByRefWriteBarrier_End();
 
-EXTERN_C void JIT_WriteBarrierHelper_SATORI(Object** dst, Object* ref, void* region);
-EXTERN_C void JIT_WriteBarrierHelper_SATORI_End();
-
 #endif // TARGET_X86
 
 #if defined(TARGET_AMD64) && defined(_DEBUG)
@@ -6067,7 +6064,6 @@ bool IsIPInMarkedJitHelper(UINT_PTR uControlPc)
 
 #ifndef TARGET_X86
     CHECK_RANGE(JIT_WriteBarrier)
-    CHECK_RANGE(JIT_WriteBarrierHelper_SATORI)
     CHECK_RANGE(JIT_CheckedWriteBarrier)
     CHECK_RANGE(JIT_ByRefWriteBarrier)
 #if !defined(TARGET_ARM64) && !defined(TARGET_LOONGARCH64) && !defined(TARGET_RISCV64)
