@@ -92,7 +92,7 @@ private:
     static const int BITMAP_LENGTH = Satori::REGION_SIZE_GRANULARITY / sizeof(size_t) / sizeof(size_t) / 8;
 
     // The first actually useful index is offsetof(m_firstObject) / sizeof(size_t) / 8,
-    static const int BITMAP_START = (BITMAP_LENGTH + Satori::INDEX_LENGTH) / sizeof(size_t) / 8;
+    static const int BITMAP_START = (BITMAP_LENGTH + Satori::INDEX_LENGTH + 2) / sizeof(size_t) / 8;
     union
     {
         // object metadata - one bit per size_t
