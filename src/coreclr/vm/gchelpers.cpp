@@ -1550,12 +1550,6 @@ SetCardsAfterBulkCopy(Object** dst, Object **src, size_t len)
     if (len >= sizeof(uintptr_t))
     {
 #if FEATURE_SATORI_GC
-        if ((((size_t)dst ^ (size_t)src) >> 21) == 0)
-        {
-            // same region
-            return;
-        }
-
         SatoriPage* page = PageForAddressCheckedSatori(dst);
         if (!page)
         {
