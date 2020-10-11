@@ -43,16 +43,9 @@ public:
     void DirtyCardsForRange(size_t start, size_t length);
     void WipeCardsForRange(size_t start, size_t end);
 
-    int8_t CardState()
+    int8_t& CardState()
     {
-        // TODO: VS should this be VolatileLoad when we have concurrency?
         return m_cardState;
-    }
-
-    void SetProcessing()
-    {
-        // TODO: VS should this be VolatileStore when we have concurrency? (same for the groups)
-        m_cardState = Satori::CARD_PROCESSING;
     }
 
     bool TrySetClean()
