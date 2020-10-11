@@ -167,9 +167,9 @@ uint64_t SatoriGC::GetTotalAllocatedBytes()
 
 HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
 {
-    // TODO: VS we do full GC for now.
+    // we do either Gen1 or Gen2 for now.
+    generation = (generation < 0) ? 2 : min(generation, 2);
     generation = max(1, generation);
-    generation = min(2, generation);
 
     m_heap->Recycler()->Collect(generation, /*force*/ true);
     return S_OK;
@@ -235,8 +235,7 @@ HRESULT SatoriGC::Initialize()
     return S_OK;
 }
 
-// checks if obj is marked.
-// makes sense only during marking phases.
+// actually checks if object is considered reachable as a result of a marking phase.
 bool SatoriGC::IsPromoted(Object* object)
 {
     _ASSERTE(object == nullptr || m_heap->IsHeapAddress((size_t)object));
@@ -245,10 +244,7 @@ bool SatoriGC::IsPromoted(Object* object)
     // objects outside of the collected generation (including null) are considered marked.
     // (existing behavior)
     return o == nullptr ||
-        o->IsMarked()
-        // TODO: VS enable when truly generational
-        // || o->ContainingRegion()->Generation() > m_heap->Recycler()->CondemnedGeneration()
-        ;
+        o->IsMarkedOrOlderThan(m_heap->Recycler()->CondemnedGeneration());
 }
 
 bool SatoriGC::IsHeapPointer(void* object, bool small_heap_only)
@@ -259,9 +255,7 @@ bool SatoriGC::IsHeapPointer(void* object, bool small_heap_only)
 
 unsigned SatoriGC::GetCondemnedGeneration()
 {
-    return 2;
-    // TODO: VS enable when truly generational
-    // return m_heap->Recycler()->CondemnedGeneration();
+    return m_heap->Recycler()->CondemnedGeneration();
 }
 
 bool SatoriGC::IsGCInProgressHelper(bool bConsiderGCStart)
