@@ -55,6 +55,8 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
         committed += toCommit;
     }
 
+    _ASSERTE(BITMAP_START * sizeof(size_t) == offsetof(SatoriRegion, m_firstObject) / sizeof(size_t) / 8);
+
     // clear the header if was used before
     size_t zeroUpTo = min(used, (size_t)&result->m_syncBlock);
     memset((void*)address, 0, zeroUpTo - address);
@@ -1000,13 +1002,8 @@ bool SatoriRegion::Sweep()
     bool sawMarked = false;
     SatoriObject* cur = FirstObject();
 
-    while(true)
+    do
     {
-        if (cur->Start() >= limit)
-        {
-            break;
-        }
-
         if (cur->IsMarked())
         {
             sawMarked = true;
@@ -1022,6 +1019,7 @@ bool SatoriRegion::Sweep()
             SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
         }
     }
+    while (cur->Start() < limit);
 
     // clean index
     memset(&m_index, 0, sizeof(m_index));
