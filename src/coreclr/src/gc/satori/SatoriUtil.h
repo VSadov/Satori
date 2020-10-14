@@ -61,6 +61,16 @@ namespace Satori
         // TODO: VS this can be configured or computed at start up, but should not change dynamically.
         return 4096;
     }
+
+    static const int BYTES_PER_CARD_BYTE = 512;
+    static const int CARD_BYTES_IN_CARD_GROUP = Satori::REGION_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;
+
+    static const int8_t CARD_UNCOMMITTED = (int8_t)-1;
+    static const int8_t CARD_BLANK = 0;
+    static const int8_t CARD_HAS_REFERENCES = 1;
+    static const int8_t CARD_PROCESSING = 2;
+    // TODO: VS setting and reading dirty should be Volatile Store/Load, matters only on ARM though
+    static const int8_t CARD_DIRTY = 3;
 }
 
 class SatoriUtil

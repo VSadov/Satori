@@ -311,7 +311,7 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
 
     if (len >= sizeof(size_t))
     {
-        CheckEscapeSatoriRange(dest, (void*)src, len);
+        CheckEscapeSatoriRange(dest, (size_t)src, len);
     }
 
     // To be able to copy forwards, the destination buffer cannot start inside the source buffer
@@ -324,7 +324,7 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
         InlinedBackwardGCSafeCopyHelper(dest, src, len);
     }
 
-    InlinedSetCardsAfterBulkCopyHelper((Object**)dest, len);
+    SetCardsAfterBulkCopy((Object**)dest, (Object**)src, len);
 }
 
 #endif // !_ARRAYNATIVE_INL_

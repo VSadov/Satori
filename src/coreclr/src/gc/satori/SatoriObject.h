@@ -36,6 +36,7 @@ public:
     bool IsFree();
 
     bool IsMarked();
+    bool IsMarkedOrOlderThan(int generation);
     void SetMarked();
     bool IsPinned();
     void SetPinned();
@@ -43,6 +44,8 @@ public:
     bool IsEscaped();
     bool IsEscapedOrPinned();
     int MarkBitOffset(size_t* bitmapIndex);
+
+    void DirtyCardsForContent();
 
     void EscapeCheck();
 
@@ -61,6 +64,9 @@ public:
 
     template<typename F>
     void ForEachObjectRef(F& lambda, bool includeCollectibleAllocator = false);
+
+    template<typename F>
+    void ForEachObjectRef(F& lambda, size_t start, size_t end);
 
 private:
     static MethodTable* s_emptyObjectMt;

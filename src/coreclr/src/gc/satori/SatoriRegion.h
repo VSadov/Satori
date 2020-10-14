@@ -35,6 +35,7 @@ public:
     static SatoriRegion* InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used);
     void MakeBlank();
     bool ValidateBlank();
+    void WipeCards();
 
     SatoriRegion* Split(size_t regionSize);
     bool CanCoalesce(SatoriRegion* other);
@@ -44,15 +45,18 @@ public:
 
     size_t AllocStart();
     size_t AllocRemaining();
-    size_t Allocate(size_t size, bool ensureZeroInited);
-    size_t AllocateHuge(size_t size, bool ensureZeroInited);
+    size_t Allocate(size_t size, bool zeroInitialize);
+    size_t AllocateHuge(size_t size, bool zeroInitialize);
     void StopAllocating(size_t allocPtr);
 
     bool IsAllocating();
-    void Publish();
+    void ResetOwningThread();
 
     bool IsThreadLocal();
     bool OwnedByCurrentThread();
+
+    int Generation();
+    void SetGeneration(int generation);
 
     size_t Start();
     size_t End();
@@ -67,6 +71,7 @@ public:
     void ThreadLocalUpdatePointers();
     SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
+    bool Sweep();
     bool NothingMarked();
     bool ThreadLocalCompact(size_t desiredFreeSpace);
 
@@ -87,7 +92,7 @@ private:
     static const int BITMAP_LENGTH = Satori::REGION_SIZE_GRANULARITY / sizeof(size_t) / sizeof(size_t) / 8;
 
     // The first actually useful index is offsetof(m_firstObject) / sizeof(size_t) / 8,
-    static const int BITMAP_START = (BITMAP_LENGTH + Satori::INDEX_LENGTH) / sizeof(size_t) / 8;
+    static const int BITMAP_START = (BITMAP_LENGTH + Satori::INDEX_LENGTH + 2) / sizeof(size_t) / 8;
     union
     {
         // object metadata - one bit per size_t
@@ -106,6 +111,7 @@ private:
             // TEB address could be used on Windows, for example
             size_t m_ownerThreadTag;
             void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
+            int m_generation;
 
             size_t m_end;
             size_t m_committed;

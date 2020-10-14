@@ -10,6 +10,7 @@
 
 #include "common.h"
 #include "../gc.h"
+#include "SatoriUtil.h"
 
 class SatoriHeap;
 class SatoriRegion;
@@ -28,59 +29,66 @@ public:
 
     SatoriRegion* RegionForAddress(size_t address);
 
-    size_t Start()
+    SatoriRegion* RegionForCardGroup(size_t group);
+
+    size_t Start();
+    size_t End();
+    size_t RegionsStart();
+    uint8_t* RegionMap();
+    SatoriHeap* Heap();
+
+    void SetCardForAddress(size_t address);
+    void SetCardsForRange(size_t start, size_t end);
+    void DirtyCardForAddress(size_t address);
+    void DirtyCardsForRange(size_t start, size_t length);
+    void WipeCardsForRange(size_t start, size_t end);
+
+    int8_t& CardState()
     {
-        return (size_t)this;
+        return m_cardState;
     }
 
-    size_t End()
+    bool TrySetClean()
     {
-        return m_end;
+        return Interlocked::CompareExchange(&m_cardState, Satori::CARD_HAS_REFERENCES, Satori::CARD_PROCESSING) != Satori::CARD_DIRTY;
     }
 
-    size_t RegionsStart()
+    size_t CardGroupCount()
     {
-        return m_firstRegion;
+        return (End() - Start()) >> Satori::REGION_BITS;
     }
 
-    uint8_t* RegionMap()
+    int8_t& CardGroup(size_t i)
     {
-        return m_regionMap;
+        return m_cardGroups[i];
     }
 
-    SatoriHeap* Heap()
+    int8_t* CardsForGroup(size_t i)
     {
-        return m_heap;
+        return &m_cardTable[i * Satori::CARD_BYTES_IN_CARD_GROUP];
     }
 
-    void SetCardForAddress(size_t address)
+    size_t LocationForCard(int8_t* cardPtr)
     {
-        size_t offset = address - Start();
-        size_t cardByteOffset = offset / (128 * 8);
-
-        _ASSERTE(cardByteOffset / 8 > m_cardTableStart);
-        _ASSERTE(cardByteOffset / 8 < m_cardTableSize);
-
-        ((uint8_t*)this)[cardByteOffset] = 0xFF;
-
-        // TODO: VS dirty the region
+        return Start() + ((size_t)cardPtr - Start()) * Satori::BYTES_PER_CARD_BYTE;
     }
 
 private:
     union
     {
-        // 1bit  - 128 bytes
-        // 1byte - 1k
-        // 2K    - 2Mb (region granularity)
-        // 1Mb   - 1Gb
+        // 1bit  - 64  bytes
+        // 1byte - 512 bytes   i.e cards add ~ 0.002 overhead
+        // 8byte - 4k
+        // 4K    - 2Mb (region granularity)
+        // 2Mb   - 1Gb (region granule can store cards for 1Gb page)
         // We can start card table at the beginning of the page for simplicity
-        // The first 2K+ cover the header, which includes the region map and the table itself
-        // so that space will be unused.
-        size_t m_cardTable[1];
+        // The first 4K cover the card itself, so that space will be unused and we can use it for other metadata.
+        int8_t m_cardTable[1];
 
         // header (can be up to 2Kb for 1Gb page)
         struct
         {
+            int8_t m_cardState;
             size_t m_end;
             size_t m_initialCommit;
             size_t m_firstRegion;
@@ -89,12 +97,22 @@ private:
 
             // the following is useful when scanning/clearing cards
             // it can be computed from the page size, but we have space, so we will store.
-            int m_cardTableSize;
-            int m_cardTableStart;
+            size_t m_cardTableSize;
+            size_t m_cardTableStart;
 
+            // -----  we can have a few more fields above as long as m_cardsStatus starts at offset 128.
+            //        that can be adjusted if needed
+
+            // computed size,
             // 1byte per region
             // 512 bytes per 1Gb
-            uint8_t m_regionMap[1];
+            uint8_t* m_regionMap;
+
+            // computed size,
+            // 1byte per region
+            // 512 bytes per 1Gb
+            DECLSPEC_ALIGN(128)
+            int8_t m_cardGroups[1];
         };
     };
 };

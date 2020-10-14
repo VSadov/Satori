@@ -96,6 +96,30 @@ __forceinline T Interlocked::CompareExchange(T volatile *destination, T exchange
 #endif
 }
 
+template <>
+__forceinline size_t Interlocked::CompareExchange<size_t>(size_t volatile * destination, size_t exchange, size_t comparand)
+{
+#ifdef _MSC_VER
+    return _InterlockedCompareExchange64((volatile long long*)destination, exchange, comparand);
+#else
+    T result = __sync_val_compare_and_swap(destination, comparand, exchange);
+    ArmInterlockedOperationBarrier();
+    return result;
+#endif
+}
+
+template <>
+__forceinline int8_t Interlocked::CompareExchange<int8_t>(int8_t volatile* destination, int8_t exchange, int8_t comparand)
+{
+#ifdef _MSC_VER
+    return (int8_t)_InterlockedCompareExchange8((char*)destination, exchange, comparand);
+#else
+    T result = __sync_val_compare_and_swap(destination, comparand, exchange);
+    ArmInterlockedOperationBarrier();
+    return result;
+#endif
+}
+
 // Perform an atomic addition of two 32-bit values and return the original value of the addend.
 // Parameters:
 //  addend - variable to be added to

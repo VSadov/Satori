@@ -127,15 +127,14 @@ int SatoriGC::WaitForFullGCComplete(int millisecondsTimeout)
 
 unsigned SatoriGC::WhichGeneration(Object* obj)
 {
-    //TODO: Satori update when have Gen1
     SatoriObject* so = (SatoriObject*)obj;
-    return so->ContainingRegion()->IsThreadLocal() ? 0 : 2;
+    return (unsigned)so->ContainingRegion()->Generation();
 }
 
 int SatoriGC::CollectionCount(int generation, int get_bgc_fgc_coutn)
 {
-    //TODO: VS this is implementable. We can just count blocking GCs.
-    return m_heap->Recycler()->GetScanCount();
+    //TODO: VS get_bgc_fgc_coutn ?.
+    return (int)m_heap->Recycler()->GetCollectionCount(generation);
 }
 
 int SatoriGC::StartNoGCRegion(uint64_t totalSize, bool lohSizeKnown, uint64_t lohSize, bool disallowFullBlockingGC)
@@ -168,14 +167,16 @@ uint64_t SatoriGC::GetTotalAllocatedBytes()
 
 HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
 {
-    // TODO: VS we do full GC for now.
-    m_heap->Recycler()->Collect(/*force*/ true);
+    // we do either Gen1 or Gen2 for now.
+    generation = (generation < 0) ? 2 : min(generation, 2);
+    generation = max(1, generation);
+
+    m_heap->Recycler()->Collect(generation, /*force*/ true);
     return S_OK;
 }
 
 unsigned SatoriGC::GetMaxGeneration()
 {
-    // TODO: VS we will probably have only 0, 1 and 2.
     return 2;
 }
 
@@ -234,30 +235,27 @@ HRESULT SatoriGC::Initialize()
     return S_OK;
 }
 
-// checks if obj is marked.
-// makes sense only during marking phases.
+// actually checks if object is considered reachable as a result of a marking phase.
 bool SatoriGC::IsPromoted(Object* object)
 {
+    _ASSERTE(object == nullptr || m_heap->IsHeapAddress((size_t)object));
+    SatoriObject* o = (SatoriObject*)object;
+
     // objects outside of the collected generation (including null) are considered marked.
     // (existing behavior)
-    _ASSERTE(object == nullptr || m_heap->IsHeapAddress((size_t)object));
-
-    // TODO: VS, will need to adjust for Gen1
-    SatoriObject* o = (SatoriObject*)object;
-    return o == nullptr || o->IsMarked();
+    return o == nullptr ||
+        o->IsMarkedOrOlderThan(m_heap->Recycler()->CondemnedGeneration());
 }
 
 bool SatoriGC::IsHeapPointer(void* object, bool small_heap_only)
 {
-    return m_heap->IsHeapAddress((size_t)object);
-
     //TODO: Satori small_heap_only ?
+    return m_heap->IsHeapAddress((size_t)object);
 }
 
 unsigned SatoriGC::GetCondemnedGeneration()
 {
-    // TODO: VS, will need to adjust for Gen1
-    return 2;
+    return m_heap->Recycler()->CondemnedGeneration();
 }
 
 bool SatoriGC::IsGCInProgressHelper(bool bConsiderGCStart)
@@ -267,8 +265,12 @@ bool SatoriGC::IsGCInProgressHelper(bool bConsiderGCStart)
 
 unsigned SatoriGC::GetGcCount()
 {
-    //TODO: Satori Collect
-    return 0;
+    if (!m_heap)
+    {
+        return 0;
+    }
+
+    return (unsigned)m_heap->Recycler()->GetScanCount();
 }
 
 bool SatoriGC::IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, int thread_number)
@@ -379,7 +381,7 @@ void SatoriGC::PublishObject(uint8_t* obj)
     // we do not retain huge regions in allocator,
     // but can't drop them in recycler until object has a MethodTable.
     // do that here.
-    if (!region->IsThreadLocal())
+    if (region->Generation() != 0)
     {
         _ASSERTE(region->Size() > Satori::REGION_SIZE_GRANULARITY);
         m_heap->Recycler()->AddRegion(region);
@@ -412,7 +414,7 @@ Object* SatoriGC::NextObj(Object* object)
 
 Object* SatoriGC::GetContainingObject(void* pInteriorPtr, bool fCollectedGenOnly)
 {
-    return m_heap->ObjectForAddress((size_t)pInteriorPtr);
+    return m_heap->ObjectForAddressChecked((size_t)pInteriorPtr);
 
     //TODO: Satori fCollectedGenOnly?
 }

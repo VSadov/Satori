@@ -19,8 +19,9 @@
 #include "SatoriObject.inl"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
-#include "SatoriQueue.h"
 #include "SatoriPage.h"
+#include "SatoriPage.inl"
+#include "SatoriQueue.h"
 #include "SatoriMarkChunk.h"
 
 #ifdef memcpy
@@ -54,6 +55,8 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
         committed += toCommit;
     }
 
+    _ASSERTE(BITMAP_START * sizeof(size_t) == offsetof(SatoriRegion, m_firstObject) / sizeof(size_t) / 8);
+
     // clear the header if was used before
     size_t zeroUpTo = min(used, (size_t)&result->m_syncBlock);
     memset((void*)address, 0, zeroUpTo - address);
@@ -79,10 +82,16 @@ SatoriAllocator* SatoriRegion::Allocator()
     return m_containingPage->Heap()->Allocator();
 }
 
+void SatoriRegion::WipeCards()
+{
+    m_containingPage->WipeCardsForRange(Start(), End());
+}
+
 void SatoriRegion::MakeBlank()
 {
     m_ownerThreadTag = 0;
     m_escapeFunc = EscapeFn;
+    m_generation = 0;
     m_allocStart = (size_t)&m_firstObject;
     m_allocEnd = End();
     m_occupancy = 0;
@@ -99,7 +108,7 @@ void SatoriRegion::MakeBlank()
     }
 
 #ifdef _DEBUG
-    memset(&m_syncBlock, 0xFE, m_used - (size_t)&m_syncBlock);
+    // memset(&m_syncBlock, 0xFE, m_used - (size_t)&m_syncBlock);
 #endif
 }
 
@@ -189,7 +198,7 @@ void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextC
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
     _ASSERTE(regionSize < this->Size());
-    _ASSERTE(m_allocEnd == m_end);
+    _ASSERTE(m_allocEnd == 0 || m_allocEnd == m_end);
     _ASSERTE((size_t)m_allocStart < m_end - regionSize - Satori::MIN_FREE_SIZE);
 
     size_t newEnd = m_end - regionSize;
@@ -200,10 +209,9 @@ void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextC
     m_end = newEnd;
     m_committed = min(newEnd, m_committed);
     m_used = min(newEnd, m_used);
-    m_allocEnd = newEnd;
+    m_allocEnd = min(m_allocEnd, newEnd);
 
     _ASSERTE(Size() >= Satori::REGION_SIZE_GRANULARITY);
-    _ASSERTE(IsAllocating());
 }
 
 SatoriRegion* SatoriRegion::Split(size_t regionSize)
@@ -239,7 +247,7 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
     m_containingPage->RegionInitialized(this);
 }
 
-size_t SatoriRegion::Allocate(size_t size, bool ensureZeroInited)
+size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
 {
     _ASSERTE(m_containingQueue == nullptr);
 
@@ -260,13 +268,13 @@ size_t SatoriRegion::Allocate(size_t size, bool ensureZeroInited)
             m_committed = newComitted;
         }
 
-        if (ensureZeroInited)
+        if (zeroInitialize)
         {
             size_t zeroUpTo = min(m_used, chunkEnd);
             ptrdiff_t zeroInitCount = zeroUpTo - chunkStart;
             if (zeroInitCount > 0)
             {
-                ZeroMemory((void*)chunkStart, zeroInitCount);
+                memset((void*)chunkStart, 0, zeroInitCount);
             }
         }
 
@@ -278,7 +286,7 @@ size_t SatoriRegion::Allocate(size_t size, bool ensureZeroInited)
     return 0;
 }
 
-size_t SatoriRegion::AllocateHuge(size_t size, bool ensureZeroInited)
+size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
 {
     _ASSERTE(ValidateBlank());
     _ASSERTE(AllocRemaining() >= size);
@@ -300,6 +308,13 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool ensureZeroInited)
         chunkStart = m_allocStart;
     }
 
+    // in rare cases the object does not cross into the last tile. (when free obj padding is on the edge).
+    // in such case force the object to cross.
+    if (End() - (chunkStart + size) >= Satori::REGION_SIZE_GRANULARITY)
+    {
+        chunkStart += Satori::LARGE_OBJECT_THRESHOLD + Satori::MIN_FREE_SIZE;
+    }
+
     chunkEnd = chunkStart + size;
 
     // huge allocation should cross the end of the first tile, but have enough space between
@@ -319,14 +334,14 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool ensureZeroInited)
         m_committed = newComitted;
     }
 
-    if (ensureZeroInited)
+    if (zeroInitialize)
     {
         size_t zeroInitStart = chunkStart;
         size_t zeroUpTo = min(m_used, chunkEnd);
         ptrdiff_t zeroInitCount = zeroUpTo - zeroInitStart;
         if (zeroInitCount > 0)
         {
-            ZeroMemory((void*)zeroInitStart, zeroInitCount);
+            memset((void*)zeroInitStart, 0, zeroInitCount);
         }
     }
 
@@ -347,9 +362,10 @@ inline int LocationToIndex(size_t location)
     return (location >> Satori::INDEX_GRANULARITY_BITS) % Satori::INDEX_LENGTH;
 }
 
+//TODO: VS need FindObjectChecked when a real object must be found.
 SatoriObject* SatoriRegion::FindObject(size_t location)
 {
-    _ASSERTE(location >= (size_t)FirstObject() && location <= End());
+    _ASSERTE(location >= Start() && location <= End());
 
     // start search from the first object or after unparseable alloc gap
     SatoriObject* obj = (IsAllocating() && (location >= m_allocEnd)) ?
@@ -389,7 +405,6 @@ SatoriObject* SatoriRegion::FindObject(size_t location)
         next = next->Next();
     }
 
-    _ASSERTE(!obj->IsFree());
     return obj;
 }
 
@@ -485,6 +500,7 @@ void SatoriRegion::SetExposed(SatoriObject** location)
 void SatoriRegion::EscapeRecursively(SatoriObject* o)
 {
     _ASSERTE(this->OwnedByCurrentThread());
+    _ASSERTE(o->ContainingRegion() == this);
 
     if (o->IsEscaped())
     {
@@ -967,6 +983,51 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
     return result;
 }
 
+bool SatoriRegion::Sweep()
+{
+    size_t limit = Start() + Satori::REGION_SIZE_GRANULARITY;
+    if (End() > limit)
+    {
+        SatoriObject* last = FindObject(limit - 1);
+        if (!last->IsMarked())
+        {
+            SatoriObject::FormatAsFree(last->Start(), limit - last->Start());
+            SatoriRegion* other = this->Split(Size() - Satori::REGION_SIZE_GRANULARITY);
+            other->WipeCards();
+            other->MakeBlank();
+            Allocator()->ReturnRegion(other);
+        }
+    }
+
+    bool sawMarked = false;
+    SatoriObject* cur = FirstObject();
+
+    do
+    {
+        if (cur->IsMarked())
+        {
+            sawMarked = true;
+            cur = cur->Next();
+            continue;
+        }
+
+        size_t lastMarkedEnd = cur->Start();
+        cur = SkipUnmarked(cur);
+        size_t skipped = cur->Start() - lastMarkedEnd;
+        if (skipped)
+        {
+            SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
+        }
+    }
+    while (cur->Start() < limit);
+
+    // clean index
+    memset(&m_index, 0, sizeof(m_index));
+
+    return !sawMarked;
+}
+
+
 bool SatoriRegion::NothingMarked()
 {
     for (size_t bitmapIndex = BITMAP_START; bitmapIndex < BITMAP_LENGTH; bitmapIndex++)
@@ -1163,7 +1224,7 @@ void SatoriRegion::CompactFinalizables()
 
 void SatoriRegion::CleanMarks()
 {
-    ZeroMemory(&m_bitmap[BITMAP_START], (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
+    memset(&m_bitmap[BITMAP_START], 0, (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
 }
 
 void SatoriRegion::Verify(bool allowMarked)

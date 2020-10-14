@@ -27,17 +27,22 @@ public:
     void MaybeTriggerGC();
 
     int GetScanCount();
+    int64_t GetCollectionCount(int gen);
+    int CondemnedGeneration();
 
-    void Collect(bool force);
+    void Collect(int generation, bool force);
+
+    void AssertNoWork();
 
 private:
     SatoriHeap* m_heap;
 
-    // this is to ensure that only one thread suspends VM and to block all others on it.
-    SatoriLock m_suspensionLock;
-
     // used to ensure each thread is scanned once per scan round.
     int m_scanCount;
+
+    int64_t m_gen1Count;
+    int64_t m_gen2Count;
+    int m_condemnedGeneration;
 
     // region count at the end of last GC, used in a crude GC triggering heuristic.
     int m_prevRegionCount;
@@ -65,6 +70,7 @@ private:
     void MarkOtherStacks();
     void IncrementScanCount();
     void DrainMarkQueues();
+    bool MarkThroughCards(int8_t minState);
     void MarkHandles();
     void WeakPtrScan(bool isShort);
     void WeakPtrScanBySingleThread();
@@ -72,6 +78,7 @@ private:
 
     void DependentHandlesInitialScan();
     void DependentHandlesRescan();
+    void PromoteSurvivedHandles();
 };
 
 #endif
