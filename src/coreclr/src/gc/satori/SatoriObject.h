@@ -23,10 +23,6 @@ public:
     static SatoriObject* At(size_t location);
     static SatoriObject* FormatAsFree(size_t location, size_t size);
 
-    // very special method to place Free object after a huge allocation.
-    // Do not use for anything else!!!
-    static SatoriObject* FormatAsFreeAfterHuge(size_t location, size_t size);
-
     SatoriRegion* ContainingRegion();
     size_t Start();
     size_t End();
@@ -43,7 +39,10 @@ public:
     void ClearPinnedAndMarked();
     bool IsEscaped();
     bool IsEscapedOrPinned();
-    int MarkBitOffset(size_t* bitmapIndex);
+    int GetMarkBitAndOffset(size_t* bitmapIndex);
+
+    void SetPOH();
+    bool IsPOH();
 
     void DirtyCardsForContent();
 
