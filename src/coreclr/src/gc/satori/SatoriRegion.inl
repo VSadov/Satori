@@ -15,7 +15,6 @@
 #include "../env/gcenv.ee.h"
 #include "SatoriRegion.h"
 
-//TODO: VS unused?
 inline bool SatoriRegion::IsThreadLocal()
 {
     return m_ownerThreadTag;

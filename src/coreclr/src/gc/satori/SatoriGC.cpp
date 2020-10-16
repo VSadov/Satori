@@ -320,7 +320,7 @@ uint32_t SatoriGC::WaitUntilGCComplete(bool bConsiderGCStart)
 void SatoriGC::FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
 {
     // this is only called when thread is terminating and about to clear its context.
-    ((SatoriAllocationContext*)acontext)->Deactivate(m_heap);
+    ((SatoriAllocationContext*)acontext)->Deactivate(m_heap->Recycler(), /*detach*/ true);
 }
 
 size_t SatoriGC::GetCurrentObjSize()
@@ -384,7 +384,7 @@ void SatoriGC::PublishObject(uint8_t* obj)
     if (region->Generation() != 0)
     {
         _ASSERTE(region->Size() > Satori::REGION_SIZE_GRANULARITY);
-        m_heap->Recycler()->AddRegion(region);
+        m_heap->Recycler()->MakeSharedGen1(region);
     }
 }
 

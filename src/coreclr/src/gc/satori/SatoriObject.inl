@@ -125,7 +125,6 @@ inline void SatoriObject::SetPinned()
 
 inline void SatoriObject::ClearPinnedAndMarked()
 {
-    _ASSERTE(GetReloc() == 0);
     ClearBit(0);
     if (IsPinned())
     {

@@ -186,39 +186,49 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
             // unclaim unused.
             context->alloc_bytes -= context->alloc_limit - context->alloc_ptr;
-            region->StopAllocating((size_t)context->alloc_ptr);
+            if (region->IsAllocating())
+            {
+                region->StopAllocating((size_t)context->alloc_ptr);
+            }
+            else
+            {
+                _ASSERTE(context->alloc_ptr == nullptr);
+            }
+
+            // try get from the free list
+            size_t desiredFreeSpace = max(size + Satori::MIN_FREE_SIZE, Satori::MIN_REGULAR_ALLOC);
+            if (region->StartAllocating(desiredFreeSpace))
+            {
+                // we have enough free space in the region to continue
+                context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
+                continue;
+            }
 
             // TODO: VS heuristic needed
             //       when there is 10% "sediment" we want to release this to recycler
             //       the rate may be different and consider fragmentation, escaped, and marked values
             //       may also try smoothing, although unlikely.
             //       All this can be tuned once full GC works.
-            if (region->Occupancy() < Satori::REGION_SIZE_GRANULARITY * 1 / 10)
+            if (region->Occupancy() < (Satori::REGION_SIZE_GRANULARITY * 1 / 10))
             {
                 // try compact current
                 region->ThreadLocalMark();
-                //TODO: VS check if can split and split (here, after marking)
                 region->ThreadLocalPlan();
                 region->ThreadLocalUpdatePointers();
+                region->ThreadLocalCompact();
 
-                size_t desiredFreeSpace = max(size, Satori::MIN_REGULAR_ALLOC);
-                if (region->ThreadLocalCompact(desiredFreeSpace))
+                if (region->StartAllocating(desiredFreeSpace))
                 {
                     // we have enough free space in the region to continue
                     context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
                     continue;
                 }
-
-                //TODO: VS we should not start allocating if we have no space. This will change when we do free lists.
-                if (region->IsAllocating())
-                {
-                    region->StopAllocating(0);
-                }
             }
 
             context->RegularRegion() = nullptr;
             context->alloc_ptr = context->alloc_limit = nullptr;
-            m_heap->Recycler()->AddRegion(region);
+            region->ClearMarks();
+            m_heap->Recycler()->MakeSharedGen1(region);
         }
 
         m_heap->Recycler()->MaybeTriggerGC();
@@ -263,18 +273,31 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
             }
         }
 
+        // handle huge allocation. It can't be form the current region.
         size_t regionSize = ALIGN_UP(size + sizeof(SatoriRegion) + Satori::MIN_FREE_SIZE, Satori::REGION_SIZE_GRANULARITY);
         if (regionSize > Satori::REGION_SIZE_GRANULARITY)
         {
             return AllocHuge(context, size, flags);
         }
 
-        // drop existing region into recycler
+        // check if existing region has spece or drop it into recycler
         if (region)
         {
-            region->StopAllocating(/* allocPtr */ 0);
+            if (region->IsAllocating())
+            {
+                region->StopAllocating(/* allocPtr */ 0);
+            }
+
+            // try get from the free list
+            size_t desiredFreeSpace = size + Satori::MIN_FREE_SIZE;
+            if (region->StartAllocating(desiredFreeSpace))
+            {
+                // we have enough free space in the region to continue
+                continue;
+            }
+
             context->LargeRegion() = nullptr;
-            m_heap->Recycler()->AddRegion(region);
+            m_heap->Recycler()->MakeSharedGen1(region);
         }
 
         // get a new region.

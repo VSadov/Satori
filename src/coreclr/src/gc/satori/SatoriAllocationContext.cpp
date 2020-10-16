@@ -13,9 +13,9 @@
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
 
-class SatoriHeap;
+class SatoriRecycler;
 
-void SatoriAllocationContext::Deactivate(SatoriHeap* heap)
+void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
 {
     if (RegularRegion() != nullptr)
     {
@@ -24,9 +24,23 @@ void SatoriAllocationContext::Deactivate(SatoriHeap* heap)
 
         this->alloc_bytes -= this->alloc_limit - this->alloc_ptr;
         this->alloc_limit = this->alloc_ptr = nullptr;
-        RegularRegion() = nullptr;
 
-        region->Deactivate(heap, allocPtr);
+        if (region->IsAllocating())
+        {
+            region->StopAllocating(allocPtr);
+        }
+
+        region->ClearMarks();
+        // TODO: VS heuristic needed
+        if (detach || region->Occupancy() >= (Satori::REGION_SIZE_GRANULARITY * 1 / 10))
+        {
+            recycler->MakeSharedGen1(region);
+            RegularRegion() = nullptr;
+        }
+        else
+        {
+            recycler->AddRegionToQueues(region);
+        }
     }
     else
     {
@@ -37,8 +51,20 @@ void SatoriAllocationContext::Deactivate(SatoriHeap* heap)
     if (LargeRegion() != nullptr)
     {
         SatoriRegion* region = LargeRegion();
-        LargeRegion() = nullptr;
 
-        region->Deactivate(heap, /* allocPtr */ 0);
+        if (region->IsAllocating())
+        {
+            region->StopAllocating(/* allocPtr */ 0);
+        }
+
+        if (detach)
+        {
+            recycler->MakeSharedGen1(region);
+            LargeRegion() = nullptr;
+        }
+        else
+        {
+            recycler->AddRegionToQueues(region);
+        }
     }
  }
