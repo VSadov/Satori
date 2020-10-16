@@ -17,7 +17,8 @@ class SatoriMarkChunk;
 class SatoriMarkChunkQueue : public SatoriQueue<SatoriMarkChunk>
 {
 public:
-
+    SatoriMarkChunkQueue() :
+        SatoriQueue<SatoriMarkChunk>(QueueKind::MarkChunk) {}
 };
 
 #endif
