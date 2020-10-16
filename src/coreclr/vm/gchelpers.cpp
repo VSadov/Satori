@@ -316,7 +316,11 @@ inline void LogAlloc(Object* object)
 template <class TObj>
 void PublishObjectAndNotify(TObj* &orObject, GC_ALLOC_FLAGS flags)
 {
+#if FEATURE_SATORI_GC
+    _ASSERTE(orObject->HasEmptySyncBlockInfo() || (flags & GC_ALLOC_PINNED_OBJECT_HEAP));
+#else
     _ASSERTE(orObject->HasEmptySyncBlockInfo());
+#endif
 
     if (flags & GC_ALLOC_USER_OLD_HEAP)
     {
