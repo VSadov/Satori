@@ -26,12 +26,6 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     }
 
     size_t cardTableSize = pageSize / Satori::BYTES_PER_CARD_BYTE;
-
-    // TODO: VS if commit granularity is OS pagem do not commit the whole card table, we can wait until regions are committed
-    //       and track card table commit via groups.
-    //
-    // commit size is the same as header size. We could commit more in the future.
-    // or commit on demand as regions are committed.
     size_t commitSize = ALIGN_UP(cardTableSize, Satori::CommitGranularity());
     if (!GCToOSInterface::VirtualCommit((void*)address, commitSize))
     {
@@ -46,18 +40,18 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 
     // conservatively assume the first useful card word to cover the start of the first region.
     size_t cardTableStart = (result->m_firstRegion - address) / Satori::BYTES_PER_CARD_BYTE;
-
-    size_t regionMapSize = pageSize >> Satori::REGION_BITS;
+    // this is also region map and region group size
+    size_t regionNumber = pageSize >> Satori::REGION_BITS;
 
     result->m_cardTableStart = cardTableStart;
     result->m_heap = heap;
 
     // make sure offset of m_cardsStatus is 128.
     _ASSERTE(offsetof(SatoriPage, m_cardGroups) == 128);
-    result->m_regionMap = (uint8_t*)(address + 128 + (pageSize >> Satori::REGION_BITS));
+    result->m_regionMap = (uint8_t*)(address + 128 + regionNumber);
 
     // make sure the first useful card word is beyond the header.
-    _ASSERTE(result->Start() + cardTableStart > (size_t)(result->m_regionMap) + regionMapSize);
+    _ASSERTE(result->Start() + cardTableStart > (size_t)(result->m_regionMap) + regionNumber);
     return result;
 }
 
@@ -105,6 +99,25 @@ SatoriRegion* SatoriPage::RegionForAddress(size_t address)
     }
 
     return (SatoriRegion*)((mapIndex << Satori::REGION_BITS) + Start());
+}
+
+SatoriRegion* SatoriPage::NextInPage(SatoriRegion* region)
+{
+    _ASSERTE(region->Start() > Start());
+
+    size_t address = region->End();
+    if (address >= End())
+    {
+        return nullptr;
+    }
+
+    size_t mapIndex = (address - Start()) >> Satori::REGION_BITS;
+    if (RegionMap()[mapIndex] == 0)
+    {
+        return nullptr;
+    }
+
+    return (SatoriRegion*)address;
 }
 
 SatoriRegion* SatoriPage::RegionForCardGroup(size_t group)
