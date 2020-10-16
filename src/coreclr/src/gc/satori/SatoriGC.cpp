@@ -151,9 +151,7 @@ int SatoriGC::EndNoGCRegion()
 
 size_t SatoriGC::GetTotalBytesInUse()
 {
-    // bytes used by objects? What is GetCurrentObjSize then?
-
-    //TODO: VS
+    //TODO: VS, bytes used by objects? What is GetCurrentObjSize then?
     return Satori::REGION_SIZE_GRANULARITY * 10;
 }
 
@@ -320,7 +318,7 @@ uint32_t SatoriGC::WaitUntilGCComplete(bool bConsiderGCStart)
 void SatoriGC::FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
 {
     // this is only called when thread is terminating and about to clear its context.
-    ((SatoriAllocationContext*)acontext)->Deactivate(m_heap);
+    ((SatoriAllocationContext*)acontext)->Deactivate(m_heap->Recycler(), /*detach*/ true);
 }
 
 size_t SatoriGC::GetCurrentObjSize()
@@ -488,11 +486,11 @@ void SatoriGC::ControlPrivateEvents(GCEventKeyword keyword, GCEventLevel level)
 {
 }
 
+// This is not used much. Where it is used, the assumption is that it returns #procs
+// see: SyncBlockCacheWeakPtrScan and getNumberOfSlots
 int SatoriGC::GetNumberOfHeaps()
 {
-    // TODO: Satori   we return the max degree of concurrency here
-    // return g_SystemInfo.dwNumberOfProcessors;
-    return 1;
+    return GCToOSInterface::GetTotalProcessorCount();;
 }
 
 int SatoriGC::GetHomeHeapNumber()

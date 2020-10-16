@@ -28,8 +28,9 @@ public:
     void RegionDestroyed(SatoriRegion* region);
 
     SatoriRegion* RegionForAddress(size_t address);
-
     SatoriRegion* RegionForCardGroup(size_t group);
+
+    SatoriRegion* NextInPage(SatoriRegion* region);
 
     size_t Start();
     size_t End();

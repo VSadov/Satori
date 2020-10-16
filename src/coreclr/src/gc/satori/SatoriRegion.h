@@ -16,12 +16,6 @@
 
 class SatoriAllocator;
 
-enum class SatoriRegionState : int8_t
-{
-    allocating   = 0,
-    shared       = 1,
-};
-
 class SatoriRegion
 {
     friend class SatoriRegionQueue;
@@ -35,22 +29,27 @@ public:
     static SatoriRegion* InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used);
     void MakeBlank();
     bool ValidateBlank();
+    bool ValidateIndexEmpty();
     void WipeCards();
 
     SatoriRegion* Split(size_t regionSize);
     bool CanCoalesce(SatoriRegion* other);
+    void TryCoalesceWithNext();
     void Coalesce(SatoriRegion* next);
-
-    void Deactivate(SatoriHeap* heap, size_t allocPtr);
 
     size_t AllocStart();
     size_t AllocRemaining();
+    size_t MaxAllocEstimate();
     size_t Allocate(size_t size, bool zeroInitialize);
     size_t AllocateHuge(size_t size, bool zeroInitialize);
     void StopAllocating(size_t allocPtr);
 
+    void AddFreeSpace(SatoriObject* freeObj);
+
+    size_t StartAllocating(size_t minSize);
+
     bool IsAllocating();
-    void ResetOwningThread();
+    void StopEscapeTracking();
 
     bool IsThreadLocal();
     bool OwnedByCurrentThread();
@@ -61,7 +60,6 @@ public:
     size_t Start();
     size_t End();
     size_t Size();
-    size_t Occupancy();
 
     SatoriObject* FirstObject();
     SatoriObject* FindObject(size_t location);
@@ -71,12 +69,15 @@ public:
     void ThreadLocalUpdatePointers();
     SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
-    bool Sweep();
+    bool Sweep(bool turnMarkedIntoEscaped);
     bool NothingMarked();
-    bool ThreadLocalCompact(size_t desiredFreeSpace);
+    void ThreadLocalCompact();
 
     bool IsExposed(SatoriObject** location);
     void EscapeRecursively(SatoriObject* obj);
+
+    void EscapeShallow(SatoriObject* o);
+    void ReportOccupancy(size_t occupancy);
 
     template<typename F>
     void ForEachFinalizable(F& lambda);
@@ -84,7 +85,12 @@ public:
     bool HasFinalizables();
     bool& HasPendingFinalizables();
 
-    void CleanMarks();
+    void ClearMarks();
+    void PromoteToGen1();
+
+    void ThreadLocalCollect();
+
+    SatoriRegion* NextInPage();
 
     void Verify(bool allowMarked = false);
 
@@ -93,6 +99,10 @@ private:
 
     // The first actually useful index is offsetof(m_firstObject) / sizeof(size_t) / 8,
     static const int BITMAP_START = (BITMAP_LENGTH + Satori::INDEX_LENGTH + 2) / sizeof(size_t) / 8;
+
+    static const int MIN_FREELIST_BUCKET_BITS = 12;
+    static const size_t MIN_FREELIST_BUCKET = 1 << MIN_FREELIST_BUCKET_BITS;
+    static const int NUM_FREELIST_BUCKETS = Satori::REGION_BITS - MIN_FREELIST_BUCKET_BITS;
     union
     {
         // object metadata - one bit per size_t
@@ -125,8 +135,6 @@ private:
 
             bool m_hasPendingFinalizables;
 
-            int32_t m_markStack;
-
             // active allocation may happen in the following range.
             // the range may not be parseable as sequence of objects
             // NB: the range is in terms of objects,
@@ -134,7 +142,15 @@ private:
             size_t m_allocStart;
             size_t m_allocEnd;
 
+            int32_t m_markStack;
+
+            // counting escaped objects
+            // when number goes to high, we stop escaping and do not do local GC.
+            int32_t m_escapeCounter;
+
             size_t m_occupancy;
+
+            SatoriObject* m_freeLists[NUM_FREELIST_BUCKETS];
         };
     };
 
@@ -147,6 +163,7 @@ private:
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
     static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+
     static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
 
     SatoriAllocator* Allocator();
