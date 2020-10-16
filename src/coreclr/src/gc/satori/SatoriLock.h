@@ -10,6 +10,7 @@
 
 #include "common.h"
 #include "../gc.h"
+#include "SatoriUtil.h"
 
 class SatoriLock
 {
@@ -46,16 +47,8 @@ public:
 
 };
 
-// TODO: VS move to util
-class StackOnly {
-private:
-    void* operator new(size_t size) throw() = delete;
-    void* operator new[](size_t size) throw() = delete;
-};
-
-
 template <typename T>
-class SatoriLockHolder : public StackOnly {
+class SatoriLockHolder : public Satori::StackOnly {
 private:
     T* const m_lock;
 

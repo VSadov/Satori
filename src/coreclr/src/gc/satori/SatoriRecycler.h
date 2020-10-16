@@ -23,7 +23,6 @@ class SatoriRecycler
 public:
     void Initialize(SatoriHeap* heap);
     void AddRegion(SatoriRegion* region);
-
     void MaybeTriggerGC();
 
     int GetScanCount();

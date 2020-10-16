@@ -15,6 +15,12 @@
 //TODO: VS rename move somewhere
 namespace Satori
 {
+    class StackOnly {
+    private:
+        void* operator new(size_t size) throw() = delete;
+        void* operator new[](size_t size) throw() = delete;
+    };
+
     // page granularity is 1 Gb, but they can be bigger
     // (on 32 bit we will have smaller sizes)
     static const int PAGE_BITS = 30;
@@ -65,12 +71,15 @@ namespace Satori
     static const int BYTES_PER_CARD_BYTE = 512;
     static const int CARD_BYTES_IN_CARD_GROUP = Satori::REGION_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;
 
-    static const int8_t CARD_UNCOMMITTED = (int8_t)-1;
     static const int8_t CARD_BLANK = 0;
     static const int8_t CARD_HAS_REFERENCES = 1;
     static const int8_t CARD_PROCESSING = 2;
-    // TODO: VS setting and reading dirty should be Volatile Store/Load, matters only on ARM though
     static const int8_t CARD_DIRTY = 3;
+
+    // TUNING: this is just a threshold for cases when clearly too many objects have escaped already.
+    // Assuming minimum sized objects, when 1/8 escapes, stop tracking escapes
+    // The actual value may not matter a lot. Still may be worth revisiting.
+    static const int MAX_TRACKED_ESCAPES = REGION_SIZE_GRANULARITY / MIN_FREE_SIZE / 8;
 }
 
 class SatoriUtil
