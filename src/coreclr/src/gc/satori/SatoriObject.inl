@@ -59,11 +59,6 @@ inline bool SatoriObject::IsFree()
     return RawGetMethodTable() == s_emptyObjectMt;
 }
 
-//
-// Implementation note on mark overflow and relocation - we could use temporary maps,
-// but we will use unused bits in the syncblock instead.
-//
-
 #ifndef HOST_64BIT
 
 32bit is NYI
@@ -125,7 +120,6 @@ inline void SatoriObject::SetPinned()
 
 inline void SatoriObject::ClearPinnedAndMarked()
 {
-    _ASSERTE(GetReloc() == 0);
     ClearBit(0);
     if (IsPinned())
     {
@@ -154,7 +148,11 @@ inline bool SatoriObject::IsFinalizationSuppressed()
     return GetHeader()->GetBits() & BIT_SBLK_FINALIZER_RUN;
 }
 
-// TODO: VS consolidate to common impl.
+//
+// Implementation note on mark overflow and relocation - we could use temporary maps,
+// but we will use unused bits in the syncblock instead.
+//
+
 inline int32_t SatoriObject::GetNextInMarkStack()
 {
     return ((int32_t*)this)[-2];
@@ -171,23 +169,26 @@ inline void SatoriObject::ClearNextInMarkStack()
     ((int32_t*)this)[-2] = 0;
 }
 
-// TODO: VS same as [Get|Set]NextInMarkStack
-// TODO: VS rename GetLocalReloc
 inline int32_t SatoriObject::GetReloc()
 {
-    return ((int32_t*)this)[-2];
+    // since relocation does not intersect with uses of mark stack
+    // we will use the same bits.
+    return GetNextInMarkStack();
 }
 
 inline void SatoriObject::SetReloc(int32_t next)
 {
-    _ASSERTE(GetReloc() == 0);
-    ((int32_t*)this)[-2] = next;
+    // since relocation does not intersect with uses of mark stack
+    // we will use the same bits.
+    SetNextInMarkStack(next);
 }
 
 inline void SatoriObject::ClearMarkCompactStateForRelocation()
 {
     _ASSERTE(!IsEscaped());
-    ((int32_t*)this)[-2] = 0;
+    // since relocation does not intersect with uses of mark stack
+    // we will use the same bits.
+    ClearNextInMarkStack();
     ClearBit(0);
     ClearBit(2);
 }
@@ -197,11 +198,21 @@ inline void SatoriObject::CleanSyncBlock()
     ((size_t*)this)[-1] = 0;
 }
 
-inline int SatoriObject::MarkBitOffset(size_t* bitmapIndex)
+inline int SatoriObject::GetMarkBitAndOffset(size_t* bitmapIndex)
 {
     size_t start = Start();
     *bitmapIndex = (start >> 9) & (SatoriRegion::BITMAP_LENGTH - 1); // % words in the bitmap
     return (start >> 3) & 63;     // % bits in a word
+}
+
+inline void SatoriObject::SetPOH()
+{
+    GetHeader()->SetGCBit();
+}
+
+inline bool SatoriObject::IsPOH()
+{
+   return GetHeader()->GetBits() & BIT_SBLK_GC_RESERVE;
 }
 
 template<typename F>
