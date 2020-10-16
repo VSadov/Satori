@@ -12,7 +12,7 @@
 #include "../gc.h"
 
 class SatoriRegion;
-class SatoriHeap;
+class SatoriRecycler;
 
 class SatoriAllocationContext : public gc_alloc_context
 {
@@ -27,7 +27,10 @@ public:
         return (SatoriRegion*&)this->gc_reserved_2;
     }
 
-    void Deactivate(SatoriHeap* heap);
+    // stop allocating on all associated regions.
+    // if detach is set, drop the regions into recycler,
+    // oterwise it is optional
+    void Deactivate(SatoriRecycler* recycler, bool detach);
 
 private:
 
