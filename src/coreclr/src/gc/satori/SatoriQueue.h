@@ -12,13 +12,27 @@
 #include "../gc.h"
 #include "SatoriLock.h"
 
+enum class QueueKind
+{
+    Allocator,
+    RecyclerRegular,
+    RecyclerFinalizationTracking,
+    RecyclerFinalizationScanComplete,
+    RecyclerFinalizationPending,
+
+    RecyclerStaying,
+    RecyclerRelocating,
+
+    MarkChunk,
+};
+
 template<class T>
 class SatoriQueue
 {
 public:
 
-    SatoriQueue() :
-        m_lock(), m_head(), m_tail(), m_count()
+    SatoriQueue(QueueKind kind) :
+        m_kind(kind), m_lock(), m_head(), m_tail(), m_count()
     {
         m_lock.Initialize();
     };
@@ -135,7 +149,13 @@ public:
         return m_count;
     }
 
+    QueueKind Kind()
+    {
+        return m_kind;
+    }
+
 protected:
+    QueueKind m_kind;
     SatoriLock m_lock;
     T* m_head;
     T* m_tail;
