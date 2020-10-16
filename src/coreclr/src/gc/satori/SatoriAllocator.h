@@ -31,13 +31,12 @@ public:
     void AddRegion(SatoriRegion* region);
     Object* Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
-    //TODO: VS do we need not allocating version for recycler? (it should be able to handle failures)
+    //TODO: VS do we need not-allocating version for recycler? (it should be able to handle failures)
     SatoriMarkChunk* TryGetMarkChunk();
     void ReturnMarkChunk(SatoriMarkChunk* chunk);
 
 private:
     SatoriHeap* m_heap;
-    //TODO: VS embed
     SatoriRegionQueue* m_queues[Satori::BUCKET_COUNT];
 
     SatoriMarkChunkQueue* m_markChunks;
