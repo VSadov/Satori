@@ -15,7 +15,6 @@
 #include "../env/gcenv.ee.h"
 #include "SatoriRegion.h"
 
-//TODO: VS unused?
 inline bool SatoriRegion::IsThreadLocal()
 {
     return m_ownerThreadTag;
@@ -73,14 +72,10 @@ inline SatoriObject* SatoriRegion::FirstObject()
     return &m_firstObject;
 }
 
-inline size_t SatoriRegion::Occupancy()
-{
-    return m_occupancy;
-}
-
-inline void SatoriRegion::ResetOwningThread()
+inline void SatoriRegion::StopEscapeTracking()
 {
     m_ownerThreadTag = 0;
+    m_escapeFunc = nullptr;
 }
 
 template<typename F>
@@ -115,7 +110,9 @@ void SatoriRegion::ForEachFinalizable(F& lambda)
         chunk = chunk->Next();
     }
 
-    //TODO: VS tune? this should not be frequent and list should be short, *2 seems ok.
+    // typically the list is short, so having some dead entries is not a big deal.
+    // compacting at 1/2 occupancy should be good enough (
+    // (50% overhead limit at O(N) maintenance cost)
     if (nulls * 2 >= items)
     {
        CompactFinalizables();
