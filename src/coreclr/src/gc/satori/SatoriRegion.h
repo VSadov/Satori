@@ -16,12 +16,6 @@
 
 class SatoriAllocator;
 
-enum class SatoriRegionState : int8_t
-{
-    allocating   = 0,
-    shared       = 1,
-};
-
 class SatoriRegion
 {
     friend class SatoriRegionQueue;
@@ -41,13 +35,15 @@ public:
     bool CanCoalesce(SatoriRegion* other);
     void Coalesce(SatoriRegion* next);
 
-    void Deactivate(SatoriHeap* heap, size_t allocPtr);
-
     size_t AllocStart();
     size_t AllocRemaining();
     size_t Allocate(size_t size, bool zeroInitialize);
     size_t AllocateHuge(size_t size, bool zeroInitialize);
     void StopAllocating(size_t allocPtr);
+
+    void AddFreeSpace(SatoriObject* freeObj);
+
+    size_t StartAllocating(size_t minSize);
 
     bool IsAllocating();
     void ResetOwningThread();
@@ -71,12 +67,14 @@ public:
     void ThreadLocalUpdatePointers();
     SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
-    bool Sweep();
+    bool Sweep(bool turnMarkedIntoEscaped);
     bool NothingMarked();
-    bool ThreadLocalCompact(size_t desiredFreeSpace);
+    void ThreadLocalCompact();
 
     bool IsExposed(SatoriObject** location);
     void EscapeRecursively(SatoriObject* obj);
+
+    void EscapeShallow(SatoriObject* o);
 
     template<typename F>
     void ForEachFinalizable(F& lambda);
@@ -84,7 +82,7 @@ public:
     bool HasFinalizables();
     bool& HasPendingFinalizables();
 
-    void CleanMarks();
+    void ClearMarks();
 
     void Verify(bool allowMarked = false);
 
@@ -93,6 +91,10 @@ private:
 
     // The first actually useful index is offsetof(m_firstObject) / sizeof(size_t) / 8,
     static const int BITMAP_START = (BITMAP_LENGTH + Satori::INDEX_LENGTH + 2) / sizeof(size_t) / 8;
+
+    static const int MIN_FREELIST_BUCKET_BITS = 12;
+    static const size_t MIN_FREELIST_BUCKET = 1 << MIN_FREELIST_BUCKET_BITS;
+    static const int NUM_FREELIST_BUCKETS = Satori::REGION_BITS - MIN_FREELIST_BUCKET_BITS;
     union
     {
         // object metadata - one bit per size_t
@@ -125,8 +127,6 @@ private:
 
             bool m_hasPendingFinalizables;
 
-            int32_t m_markStack;
-
             // active allocation may happen in the following range.
             // the range may not be parseable as sequence of objects
             // NB: the range is in terms of objects,
@@ -134,7 +134,11 @@ private:
             size_t m_allocStart;
             size_t m_allocEnd;
 
+            int32_t m_markStack;
+
             size_t m_occupancy;
+
+            SatoriObject* m_freeLists[NUM_FREELIST_BUCKETS];
         };
     };
 

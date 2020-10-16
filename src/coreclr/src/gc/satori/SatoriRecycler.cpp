@@ -71,16 +71,20 @@ int SatoriRecycler::CondemnedGeneration()
     return m_condemnedGeneration;
  }
 
-void SatoriRecycler::AddRegion(SatoriRegion* region)
+void SatoriRecycler::MakeSharedGen1(SatoriRegion* region)
+{
+    region->ResetOwningThread();
+    region->SetGeneration(1);
+
+    AddRegionToQueues(region);
+}
+
+void SatoriRecycler::AddRegionToQueues(SatoriRegion* region)
 {
     _ASSERTE(region->AllocStart() == 0);
     _ASSERTE(region->AllocRemaining() == 0);
 
     region->Verify();
-
-    region->ResetOwningThread();
-    region->CleanMarks();
-    region->SetGeneration(1);
 
     if (region->HasFinalizables())
     {
@@ -215,24 +219,36 @@ void SatoriRecycler::Collect(int generation, bool force)
             SatoriRegion* curRegion;
             while (curRegion = regions->TryPop())
             {
-                // we must sweep in gen2, since unloadable types may invalidate method tables and make
+                // we must sweep gen2, since unloadable types may invalidate method tables and make
                 // unreachable objects unwalkable.
-                // we do not sweep gen1 though. without compaction there is no benefit, just forcing index rebuilding.
+                // in gen1 we do not sweep gen1 though. without compaction there is no benefit, just forcing index rebuilding.
+                // must sweep gen0 in gen1 and turn marks into escapes.
                 bool canRecycle = false;
                 if (m_condemnedGeneration == 2)
                 {
-                    // we must sweep in gen2 since everything will be gen2
-                    canRecycle = curRegion->Sweep();
+                    canRecycle = curRegion->Sweep(/*turnMarkedIntoEscaped*/ false);
                 }
-                else if (curRegion->Generation() != 2)
+                else
                 {
-                    canRecycle = curRegion->NothingMarked();
+                    if (curRegion->Generation() == 1)
+                    {
+                        canRecycle = curRegion->NothingMarked();
+                    }
+                    else if (curRegion->Generation() == 0)
+                    {
+                        curRegion->Sweep(/*turnMarkedIntoEscaped*/ curRegion->IsThreadLocal());
+                        if (!curRegion->IsThreadLocal())
+                        {
+                            curRegion->ClearMarks();
+                        }
+
+                        curRegion->Verify();
+                        continue;
+                    }
                 }
 
                 if (canRecycle)
                 {
-                    // TODO: VS wipe cards should be a part of return and MakeBlank too, but make it minimal
-                    curRegion->WipeCards();
                     curRegion->MakeBlank();
                     m_heap->Allocator()->AddRegion(curRegion);
                 }
@@ -251,7 +267,7 @@ void SatoriRecycler::Collect(int generation, bool force)
 
             while (curRegion = m_stayingRegions->TryPop())
             {
-                curRegion->CleanMarks();
+                curRegion->ClearMarks();
                 regions->Push(curRegion);
             }
         };
@@ -297,12 +313,14 @@ void SatoriRecycler::AssertNoWork()
 void SatoriRecycler::DeactivateFn(gc_alloc_context* gcContext, void* param)
 {
     SatoriAllocationContext* context = (SatoriAllocationContext*)gcContext;
-    context->Deactivate((SatoriHeap*)param);
+    SatoriRecycler* recycler = (SatoriRecycler*)param;
+
+    context->Deactivate(recycler, /*detach*/ recycler->m_condemnedGeneration == 2);
 }
 
 void SatoriRecycler::DeactivateAllStacks()
 {
-    GCToEEInterface::GcEnumAllocContexts(DeactivateFn, this->m_heap);
+    GCToEEInterface::GcEnumAllocContexts(DeactivateFn, m_heap->Recycler());
 }
 
 class MarkContext
@@ -389,12 +407,13 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
         }
     }
 
-    if (o->ContainingRegion()->Generation() == 0)
-    {
-        // do not mark thread local regions.
-        _ASSERTE(!"thread local region is unexpected");
-        return;
-    }
+    // TODO: VS when concurrent should not go into gen 0
+    //if (o->ContainingRegion()->Generation() == 0)
+    //{
+    //    // do not mark thread local regions.
+    //    _ASSERTE(!"thread local region is unexpected");
+    //    return;
+    //}
 
     MarkContext* context = (MarkContext*)sc->_unused1;
     if (!o->IsMarkedOrOlderThan(context->m_condemnedGeneration))
@@ -483,7 +502,6 @@ void SatoriRecycler::DrainMarkQueues()
                     SatoriObject* child = *ref;
                     if (child && !child->IsMarkedOrOlderThan(m_condemnedGeneration))
                     {
-                        _ASSERTE(child->ContainingRegion()->Generation() > 0);
                         child->SetMarked();
                         child->Validate();
                         if (!dstChunk || !dstChunk->TryPush(child))
