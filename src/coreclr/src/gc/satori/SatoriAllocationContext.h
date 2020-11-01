@@ -28,7 +28,8 @@ public:
     }
 
     // stop allocating on all associated regions.
-    // if recycler is passed, drop the regions into recycler.
+    // if detach is set, drop the regions into recycler,
+    // oterwise it is optional
     void Deactivate(SatoriRecycler* recycler, bool detach);
 
 private:
