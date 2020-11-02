@@ -15,6 +15,12 @@
 //TODO: VS rename move somewhere
 namespace Satori
 {
+    class StackOnly {
+    private:
+        void* operator new(size_t size) throw() = delete;
+        void* operator new[](size_t size) throw() = delete;
+    };
+
     // page granularity is 1 Gb, but they can be bigger
     // (on 32 bit we will have smaller sizes)
     static const int PAGE_BITS = 30;

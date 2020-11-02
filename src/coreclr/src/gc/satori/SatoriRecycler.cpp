@@ -603,6 +603,7 @@ bool SatoriRecycler::MarkThroughCards(int8_t minState)
                             } while (j < Satori::CARD_BYTES_IN_CARD_GROUP && cards[j] >= minState);
 
                             size_t end = page->LocationForCard(&cards[j]);
+                            size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
                             SatoriObject* o = region->FindObject(start);
                             do
                             {
@@ -624,7 +625,7 @@ bool SatoriRecycler::MarkThroughCards(int8_t minState)
                                         }, start, end);
                                 }
                                 o = o->Next();
-                            } while (o->Start() < end);
+                            } while (o->Start() < objLimit);
                         }
                     }
                 }
