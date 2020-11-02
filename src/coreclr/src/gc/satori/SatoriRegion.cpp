@@ -342,7 +342,8 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     if (AllocStart() + Satori::LARGE_OBJECT_THRESHOLD + size + Satori::MIN_FREE_SIZE < m_committed)
     {
         chunkStart = m_committed - Satori::MIN_FREE_SIZE - size;
-        // ensure enough space at start to be replacable with a free obj in the same tile.
+        // ensure enough space at start to fit a free obj in the first granule
+        // That is useful in case if we split the region after the huge obj is unreachable.
         chunkStart = min(chunkStart, Start() + Satori::REGION_SIZE_GRANULARITY - Satori::MIN_FREE_SIZE);
     }
     else
@@ -351,7 +352,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     }
 
     // in rare cases the object does not cross into the last tile. (when free obj padding is on the edge).
-    // in such case force the object to cross.
+// in such case force the object to cross.
     if (End() - (chunkStart + size) >= Satori::REGION_SIZE_GRANULARITY)
     {
         chunkStart += Satori::LARGE_OBJECT_THRESHOLD + Satori::MIN_FREE_SIZE;
@@ -389,12 +390,17 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
 
     // if did not allocate from start, there could be some fillable space before the obj.
     m_allocEnd = chunkStart;
+    m_used = max(m_used, chunkEnd);
 
     // space after chunkEnd is a waste, no normal object can start there.
-    // just make a free gap there for parseability.
-    m_used = max(m_used, chunkEnd + Satori::MIN_FREE_SIZE);
-    SatoriObject::FormatAsFreeAfterHuge(chunkEnd, End() - chunkEnd);
-
+    // if there is dirty space after the chunkEnd,
+    // zero-out what would be the next obj MT in debug - to catch if we walk there by accident.
+#if _DEBUG
+    if (m_used - chunkEnd > sizeof(size_t))
+    {
+        *((size_t*)chunkEnd) = 0;
+    }
+#endif
     _ASSERTE(m_allocEnd < Start() + Satori::REGION_SIZE_GRANULARITY);
     return chunkStart;
 }
@@ -1050,14 +1056,15 @@ bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
     memset(&m_index, 0, sizeof(m_index));
 
     size_t foundFree = 0;
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
 
-    size_t limit = Start() + Satori::REGION_SIZE_GRANULARITY;
-    if (End() > limit)
+    //TODO: VS try splitting _after_ the sweep, and only if seen any marked, otherwise just return false.
+    if (End() > objLimit)
     {
-        SatoriObject* last = FindObject(limit - 1);
+        SatoriObject* last = FindObject(objLimit - 1);
         if (!last->IsMarked())
         {
-            SatoriObject::FormatAsFree(last->Start(), limit - last->Start());
+            SatoriObject::FormatAsFree(last->Start(), objLimit - last->Start());
             SatoriRegion* other = this->Split(Size() - Satori::REGION_SIZE_GRANULARITY);
             other->MakeBlank();
             Allocator()->ReturnRegion(other);
@@ -1091,7 +1098,7 @@ bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
            AddFreeSpace(free);
         }
     }
-    while (cur->Start() < limit);
+    while (cur->Start() < objLimit);
 
     m_occupancy = Satori::REGION_SIZE_GRANULARITY - foundFree;
     return !sawMarked;
@@ -1304,7 +1311,8 @@ void SatoriRegion::Verify(bool allowMarked)
     SatoriObject* prevObj = nullptr;
     SatoriObject* obj = FirstObject();
 
-    while (obj->Start() < End())
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+    while (obj->Start() < objLimit)
     {
         obj->Validate();
 
@@ -1322,6 +1330,7 @@ void SatoriRegion::Verify(bool allowMarked)
         obj = obj->Next();
     }
 
-    _ASSERTE(obj->Start() == End());
+    _ASSERTE(obj->Start() == End() ||
+        (Size() > Satori::REGION_SIZE_GRANULARITY) && (End() - obj->Start()) < Satori::REGION_SIZE_GRANULARITY);
 #endif
 }

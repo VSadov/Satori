@@ -488,11 +488,11 @@ void SatoriGC::ControlPrivateEvents(GCEventKeyword keyword, GCEventLevel level)
 {
 }
 
+// This is not used much. Where it is used, the assumption is that it returns #procs
+// see: SyncBlockCacheWeakPtrScan and getNumberOfSlots
 int SatoriGC::GetNumberOfHeaps()
 {
-    // TODO: Satori   we return the max degree of concurrency here
-    // return g_SystemInfo.dwNumberOfProcessors;
-    return 1;
+    return GCToOSInterface::GetTotalProcessorCount();;
 }
 
 int SatoriGC::GetHomeHeapNumber()
