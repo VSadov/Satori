@@ -143,6 +143,11 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
         }
     }
 
+    if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
+    {
+        result->SetPOH();
+    }
+
     return result;
 }
 
