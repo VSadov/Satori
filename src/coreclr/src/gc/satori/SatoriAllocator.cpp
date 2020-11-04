@@ -65,6 +65,10 @@ tryAgain:
         }
     }
 
+    // for regions < 1/2 page granularity, just allocate a regular page
+    // this is the most common case.
+    // for bigger ones, use more complex helper that may allocate a larger
+    // page, if needed.
     if (regionSize < Satori::PAGE_SIZE_GRANULARITY / 2)
     {
         SatoriPage* page = nullptr;

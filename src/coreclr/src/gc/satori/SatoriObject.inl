@@ -171,7 +171,6 @@ inline void SatoriObject::ClearNextInMarkStack()
 }
 
 // TODO: VS same as [Get|Set]NextInMarkStack
-// TODO: VS rename GetLocalReloc
 inline int32_t SatoriObject::GetReloc()
 {
     return ((int32_t*)this)[-2];

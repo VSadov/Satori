@@ -214,11 +214,16 @@ size_t SatoriRegion::StartAllocating(size_t minSize)
     DWORD bucket;
     BitScanReverse64(&bucket, minSize);
 
-    // TODO: VS should we search?
-    // we could search through the current bucket, which may have a large enough obj,
+    // when minSize is not a power of two we could search through the current bucket,
+    // which may have a large enough obj,
     // but we will just use the next bucket, which guarantees that any obj will fit
-    bucket = bucket >= MIN_FREELIST_BUCKET_BITS ?
-        bucket - (MIN_FREELIST_BUCKET_BITS - 1) :
+    if (minSize & (minSize - 1))
+    {
+        bucket++;
+    }
+
+    bucket = bucket > MIN_FREELIST_BUCKET_BITS ?
+        bucket - MIN_FREELIST_BUCKET_BITS :
         0;
 
     for (; bucket < NUM_FREELIST_BUCKETS; bucket++)
@@ -410,7 +415,6 @@ inline int LocationToIndex(size_t location)
     return (location >> Satori::INDEX_GRANULARITY_BITS) % Satori::INDEX_LENGTH;
 }
 
-//TODO: VS need FindObjectChecked when a real object must be found.
 SatoriObject* SatoriRegion::FindObject(size_t location)
 {
     _ASSERTE(location >= Start() && location <= End());
@@ -529,20 +533,32 @@ SatoriObject* SatoriRegion::ObjectForMarkBit(size_t bitmapIndex, int offset)
     return SatoriObject::At(Start() + objOffset);
 }
 
-bool SatoriRegion::IsExposed(SatoriObject** location)
-{
-    _ASSERTE(((SatoriObject*)location)->ContainingRegion() == this);
-
-    //TODO: VS optimize by getting the bit directly?
-    return ((SatoriObject*)location)->IsMarked();
-}
-
 void SatoriRegion::SetExposed(SatoriObject** location)
 {
     _ASSERTE(((SatoriObject*)location)->ContainingRegion() == this);
 
-    //TODO: VS optimize by getting the bit directly?
-    return ((SatoriObject*)location)->SetMarked();
+    // set the mark bit corresponding to the location to indicate that it is globally exposed
+    // same as: ((SatoriObject*)location)->SetMarked();
+
+    size_t word = (size_t)location;
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t mask = (size_t)1 << ((word >> 3) & 63);
+
+    m_bitmap[bitmapIndex] |= mask;
+}
+
+bool SatoriRegion::IsExposed(SatoriObject** location)
+{
+    _ASSERTE(((SatoriObject*)location)->ContainingRegion() == this);
+
+    // check the mark bit corresponding to the location
+    //same as: return ((SatoriObject*)location)->IsMarked();
+
+    size_t word = (size_t)location;
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t mask = (size_t)1 << ((word >> 3) & 63);
+
+    return m_bitmap[bitmapIndex] & mask;
 }
 
 void SatoriRegion::EscapeRecursively(SatoriObject* o)
@@ -1058,19 +1074,6 @@ bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
     size_t foundFree = 0;
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
 
-    //TODO: VS try splitting _after_ the sweep, and only if seen any marked, otherwise just return false.
-    if (End() > objLimit)
-    {
-        SatoriObject* last = FindObject(objLimit - 1);
-        if (!last->IsMarked())
-        {
-            SatoriObject::FormatAsFree(last->Start(), objLimit - last->Start());
-            SatoriRegion* other = this->Split(Size() - Satori::REGION_SIZE_GRANULARITY);
-            other->MakeBlank();
-            Allocator()->ReturnRegion(other);
-        }
-    }
-
     bool sawMarked = false;
     SatoriObject* cur = FirstObject();
 
@@ -1099,6 +1102,20 @@ bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
         }
     }
     while (cur->Start() < objLimit);
+
+    // if region is huge and has reachable objects, check if the last obj is reachable.
+    // since we can split extra regions off and return if it is not.
+    if (End() > objLimit && sawMarked)
+    {
+        SatoriObject* last = FindObject(objLimit - 1);
+        if (!last->IsMarked())
+        {
+            SatoriObject::FormatAsFree(last->Start(), objLimit - last->Start());
+            SatoriRegion* other = this->Split(Size() - Satori::REGION_SIZE_GRANULARITY);
+            other->MakeBlank();
+            Allocator()->ReturnRegion(other);
+        }
+    }
 
     m_occupancy = Satori::REGION_SIZE_GRANULARITY - foundFree;
     return !sawMarked;
