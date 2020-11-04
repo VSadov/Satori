@@ -41,6 +41,9 @@ public:
     bool IsEscapedOrPinned();
     int MarkBitOffset(size_t* bitmapIndex);
 
+    void SetPOH();
+    bool IsPOH();
+
     void DirtyCardsForContent();
 
     void EscapeCheck();

@@ -72,11 +72,6 @@ inline SatoriObject* SatoriRegion::FirstObject()
     return &m_firstObject;
 }
 
-inline size_t SatoriRegion::Occupancy()
-{
-    return m_occupancy;
-}
-
 inline void SatoriRegion::ResetOwningThread()
 {
     m_ownerThreadTag = 0;

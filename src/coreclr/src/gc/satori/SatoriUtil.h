@@ -77,6 +77,11 @@ namespace Satori
     static const int8_t CARD_PROCESSING = 2;
     // TODO: VS setting and reading dirty should be Volatile Store/Load, matters only on ARM though
     static const int8_t CARD_DIRTY = 3;
+
+    // TUNING: this is just a threshold for cases when clearly too many objects have escaped already.
+    // Assuming minimum sized objects, when 1/8 escapes, stop tracking escapes
+    // The actual value may not matter a lot. Still may be worth revisiting.
+    static const int ESCAPE_LIMIT = REGION_SIZE_GRANULARITY / MIN_FREE_SIZE / 8;
 }
 
 class SatoriUtil

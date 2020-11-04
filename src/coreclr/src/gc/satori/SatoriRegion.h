@@ -57,7 +57,6 @@ public:
     size_t Start();
     size_t End();
     size_t Size();
-    size_t Occupancy();
 
     SatoriObject* FirstObject();
     SatoriObject* FindObject(size_t location);
@@ -75,6 +74,7 @@ public:
     void EscapeRecursively(SatoriObject* obj);
 
     void EscapeShallow(SatoriObject* o);
+    bool EligibleForThreadLocalGC();
 
     template<typename F>
     void ForEachFinalizable(F& lambda);
@@ -136,6 +136,10 @@ private:
 
             int32_t m_markStack;
 
+            // counting escaped objects
+            // when number goes to high, we stop escaping and do not do local GC.
+            int32_t m_escapeCounter;
+
             size_t m_occupancy;
 
             SatoriObject* m_freeLists[NUM_FREELIST_BUCKETS];
@@ -151,7 +155,9 @@ private:
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
     static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+
     static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
+    static void EscapeFnNoop(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
 
     SatoriAllocator* Allocator();
 
