@@ -147,6 +147,11 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
         }
     }
 
+    if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
+    {
+        result->SetPOH();
+    }
+
     return result;
 }
 
@@ -208,12 +213,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                 continue;
             }
 
-            // TODO: VS heuristic needed
-            //       when there is 10% "sediment" we want to release this to recycler
-            //       the rate may be different and consider fragmentation, escaped, and marked values
-            //       may also try smoothing, although unlikely.
-            //       All this can be tuned once full GC works.
-            if (region->Occupancy() < (Satori::REGION_SIZE_GRANULARITY * 1 / 10))
+            if (region->EligibleForThreadLocalGC())
             {
                 // try compact current
                 region->ThreadLocalMark();

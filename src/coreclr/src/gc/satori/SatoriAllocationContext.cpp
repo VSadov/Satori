@@ -31,8 +31,7 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
         }
 
         region->ClearMarks();
-        // TODO: VS heuristic needed
-        if (detach || region->Occupancy() >= (Satori::REGION_SIZE_GRANULARITY * 1 / 10))
+        if (detach || !region->EligibleForThreadLocalGC())
         {
             recycler->MakeSharedGen1(region);
             RegularRegion() = nullptr;

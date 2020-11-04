@@ -97,6 +97,7 @@ void SatoriRegion::MakeBlank()
     m_allocStart = (size_t)&m_firstObject;
     m_allocEnd = End();
     m_occupancy = 0;
+    m_escapeCounter = 0;
     m_markStack = 0;
 
     //clear index and free list
@@ -566,11 +567,13 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
     _ASSERTE(this->OwnedByCurrentThread());
     _ASSERTE(o->ContainingRegion() == this);
 
-    if (o->IsEscaped())
+    // return if already escaped or if this region is no longer tracking escapes
+    if (o->IsEscaped() || !EligibleForThreadLocalGC())
     {
         return;
     }
 
+    m_escapeCounter++;
     o->SetEscaped();
 
     // now recursively mark all the objects reachable from escaped object.
@@ -591,6 +594,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
                 SatoriObject* child = *ref;
                 if (child->ContainingRegion() == this && !child->IsEscaped())
                 {
+                    m_escapeCounter++;
                     child->SetEscaped();
                     PushToMarkStack(child);
                 }
@@ -605,23 +609,52 @@ void SatoriRegion::EscapeShallow(SatoriObject* o)
     _ASSERTE(o->ContainingRegion() == this);
     _ASSERTE(!o->IsEscaped());
 
-    o->SetEscaped();
-    o->ForEachObjectRef(
-        [&](SatoriObject** ref)
-        {
-            // no refs should be exposed yet, except if the ref is the first field,
-            // we use that to escape whole object.
-            _ASSERTE(!IsExposed(ref) || ((size_t)o == (size_t)ref - sizeof(size_t)));
+    if (EligibleForThreadLocalGC())
+    {
+        m_escapeCounter++;
+        o->SetEscaped();
+        o->ForEachObjectRef(
+            [&](SatoriObject** ref)
+            {
+                // no refs should be exposed yet, except if the ref is the first field,
+                // we use that to escape whole object.
+                _ASSERTE(!IsExposed(ref) || ((size_t)o == (size_t)ref - sizeof(size_t)));
 
-            // mark ref location as exposed
-            SetExposed(ref);
-        }
-    );
+                // mark ref location as exposed
+                SetExposed(ref);
+            }
+        );
+    }
+}
+
+// TODO: VS heuristic needed
+//       when there is 10% "sediment" we want to release this to recycler
+//       the rate may be different and consider fragmentation, escaped, and marked values
+//       may also try smoothing, although unlikely.
+//       All this can be tuned once full GC works.
+bool SatoriRegion::EligibleForThreadLocalGC()
+{
+    return m_occupancy < (Satori::REGION_SIZE_GRANULARITY * 1 / 10);
 }
 
 void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
 {
-    region->EscapeRecursively(src);
+    if (region->m_escapeCounter < Satori::ESCAPE_LIMIT)
+    {
+        region->EscapeRecursively(src);
+    }
+    else
+    {
+        // 100% occupancy - to prevent local GC
+        region->m_occupancy = Satori::REGION_SIZE_GRANULARITY;
+        // stop escaping.
+        region->m_escapeFunc = EscapeFnNoop;
+        // TODO: consider disowning the region
+    }
+}
+
+void SatoriRegion::EscapeFnNoop(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
+{
 }
 
 void SatoriRegion::ThreadLocalMark()
@@ -1070,11 +1103,13 @@ bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
 {
     memset(&m_freeLists, 0, sizeof(m_freeLists));
     memset(&m_index, 0, sizeof(m_index));
+    m_escapeCounter = 0;
 
     size_t foundFree = 0;
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
 
     bool sawMarked = false;
+    bool sawPinned = false;
     SatoriObject* cur = FirstObject();
 
     do
@@ -1087,6 +1122,12 @@ bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
                 cur->ClearPinnedAndMarked();
                 this->EscapeShallow(cur);
             }
+            else if (!sawPinned &&
+                (cur->IsPinned() || cur->IsPOH()))
+            {
+                sawPinned = true;
+            }
+
             cur = cur->Next();
             continue;
         }

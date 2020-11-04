@@ -202,6 +202,16 @@ inline int SatoriObject::MarkBitOffset(size_t* bitmapIndex)
     return (start >> 3) & 63;     // % bits in a word
 }
 
+inline void SatoriObject::SetPOH()
+{
+    GetHeader()->SetGCBit();
+}
+
+inline bool SatoriObject::IsPOH()
+{
+   return GetHeader()->GetBits() & BIT_SBLK_GC_RESERVE;
+}
+
 template<typename F>
 inline void SatoriObject::ForEachObjectRef(F& lambda, bool includeCollectibleAllocator)
 {
