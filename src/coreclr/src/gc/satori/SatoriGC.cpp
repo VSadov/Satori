@@ -384,7 +384,7 @@ void SatoriGC::PublishObject(uint8_t* obj)
     if (region->Generation() != 0)
     {
         _ASSERTE(region->Size() > Satori::REGION_SIZE_GRANULARITY);
-        m_heap->Recycler()->MakeSharedGen1(region);
+        m_heap->Recycler()->AddRegion(region);
     }
 }
 

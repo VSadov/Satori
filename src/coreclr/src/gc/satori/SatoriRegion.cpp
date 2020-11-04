@@ -567,8 +567,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
     _ASSERTE(this->OwnedByCurrentThread());
     _ASSERTE(o->ContainingRegion() == this);
 
-    // return if already escaped or if this region is no longer tracking escapes
-    if (o->IsEscaped() || !EligibleForThreadLocalGC())
+    if (o->IsEscaped())
     {
         return;
     }
@@ -609,52 +608,55 @@ void SatoriRegion::EscapeShallow(SatoriObject* o)
     _ASSERTE(o->ContainingRegion() == this);
     _ASSERTE(!o->IsEscaped());
 
-    if (EligibleForThreadLocalGC())
-    {
-        m_escapeCounter++;
-        o->SetEscaped();
-        o->ForEachObjectRef(
-            [&](SatoriObject** ref)
-            {
-                // no refs should be exposed yet, except if the ref is the first field,
-                // we use that to escape whole object.
-                _ASSERTE(!IsExposed(ref) || ((size_t)o == (size_t)ref - sizeof(size_t)));
+    //NB: we are not checking is we exceed escape limit here
+    //    it is possible, if we have a lot od stack roots, but unlikely
+    //    most likely we will have fewer escapes than before the GC
 
-                // mark ref location as exposed
-                SetExposed(ref);
-            }
-        );
-    }
+    m_escapeCounter++;
+    o->SetEscaped();
+    o->ForEachObjectRef(
+        [&](SatoriObject** ref)
+        {
+            // no refs should be exposed yet, except if the ref is the first field,
+            // we use that to escape whole object.
+            _ASSERTE(!IsExposed(ref) || ((size_t)o == (size_t)ref - sizeof(size_t)));
+
+            // mark ref location as exposed
+            SetExposed(ref);
+        }
+    );
 }
 
-// TODO: VS heuristic needed
-//       when there is 10% "sediment" we want to release this to recycler
-//       the rate may be different and consider fragmentation, escaped, and marked values
-//       may also try smoothing, although unlikely.
-//       All this can be tuned once full GC works.
-bool SatoriRegion::EligibleForThreadLocalGC()
+void SatoriRegion::ReportOccupancy(size_t occupancy)
 {
-    return m_occupancy < (Satori::REGION_SIZE_GRANULARITY * 1 / 10);
+    m_occupancy = occupancy;
+
+    // TODO: VS heuristic needed
+    //       when there is 10% "sediment" we want to release this to recycler
+    //       the rate may be different and consider fragmentation, escaped, and marked values
+    //       may also try smoothing, although unlikely.
+    //       All this can be tuned once full GC works.
+    if (m_occupancy >= (Satori::REGION_SIZE_GRANULARITY * 1 / 10))
+    {
+        // Stop escape tracking. The region is too full
+        StopEscapeTracking();
+    }
 }
 
 void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
 {
-    if (region->m_escapeCounter < Satori::ESCAPE_LIMIT)
+    region->EscapeRecursively(src);
+    if (region->m_escapeCounter > Satori::MAX_TRACKED_ESCAPES)
     {
-        region->EscapeRecursively(src);
-    }
-    else
-    {
-        // 100% occupancy - to prevent local GC
-        region->m_occupancy = Satori::REGION_SIZE_GRANULARITY;
-        // stop escaping.
-        region->m_escapeFunc = EscapeFnNoop;
-        // TODO: consider disowning the region
+        // stop escape tracking.
+        region->StopEscapeTracking();
     }
 }
 
-void SatoriRegion::EscapeFnNoop(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
+void SatoriRegion::PromoteToGen1()
 {
+    StopEscapeTracking();
+    SetGeneration(1);
 }
 
 void SatoriRegion::ThreadLocalMark()

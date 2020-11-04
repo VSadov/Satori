@@ -71,15 +71,7 @@ int SatoriRecycler::CondemnedGeneration()
     return m_condemnedGeneration;
  }
 
-void SatoriRecycler::MakeSharedGen1(SatoriRegion* region)
-{
-    region->ResetOwningThread();
-    region->SetGeneration(1);
-
-    AddRegionToQueues(region);
-}
-
-void SatoriRecycler::AddRegionToQueues(SatoriRegion* region)
+void SatoriRecycler::AddRegion(SatoriRegion* region)
 {
     _ASSERTE(region->AllocStart() == 0);
     _ASSERTE(region->AllocRemaining() == 0);

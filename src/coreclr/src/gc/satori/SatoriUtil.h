@@ -81,7 +81,7 @@ namespace Satori
     // TUNING: this is just a threshold for cases when clearly too many objects have escaped already.
     // Assuming minimum sized objects, when 1/8 escapes, stop tracking escapes
     // The actual value may not matter a lot. Still may be worth revisiting.
-    static const int ESCAPE_LIMIT = REGION_SIZE_GRANULARITY / MIN_FREE_SIZE / 8;
+    static const int MAX_TRACKED_ESCAPES = REGION_SIZE_GRANULARITY / MIN_FREE_SIZE / 8;
 }
 
 class SatoriUtil
