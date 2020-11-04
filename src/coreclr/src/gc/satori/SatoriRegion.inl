@@ -114,7 +114,9 @@ void SatoriRegion::ForEachFinalizable(F& lambda)
         chunk = chunk->Next();
     }
 
-    //TODO: VS tune? this should not be frequent and list should be short, *2 seems ok.
+    // typically the list is short, so having some dead entries is not a big deal.
+    // compacting on at 1/2 occupancy should be good enough (
+    // (50% overhead limit at O(N) maintenance cost)
     if (nulls * 2 >= items)
     {
        CompactFinalizables();

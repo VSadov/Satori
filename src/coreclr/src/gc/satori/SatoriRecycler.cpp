@@ -104,7 +104,6 @@ void SatoriRecycler::MaybeTriggerGC()
     {
         if (m_gcInProgress)
         {
-            //TODO: VS unhijack thread?
             GCToEEInterface::EnablePreemptiveGC();
             GCToEEInterface::DisablePreemptiveGC();
         }
@@ -191,27 +190,6 @@ void SatoriRecycler::Collect(int generation, bool force)
         //       sync 
         WeakPtrScan(/*isShort*/ false);
         WeakPtrScanBySingleThread();
-
-        // TODO: VS can't know live size without scanning all live objects. We need to scan at least live ones.
-        // Then we could as well coalesce gaps and thread to buckets.
-
-        // plan regions:
-        // 0% - return to recycler
-        // > 80%   go to stayers
-        // > 50% or with pins - targets, sweep and thread gaps, slice and release free tails, add to queues,   need buckets similar to allocator, should regs have buckets?
-        //   targets go to stayers too.
-        //
-        // rest - add to move sources
-
-        // once no more regs in queue
-        // go through sources and relocate to destinations,
-        // grab empties if no space, add to stayers and use as if gotten from free buckets.
-        // if no space at all, put the region to stayers.
-
-        // go through roots and update refs
-
-        // go through stayers, update refs  (need to care about relocated in stayers, could happen if no space)
-
 
         // TODO: VS do trivial sweep for now
         auto SweepRegions = [&](SatoriRegionQueue* regions)
@@ -738,7 +716,7 @@ void SatoriRecycler::ScanFinalizables()
                         }
                         else
                         {
-                            if (m_heap->FinalizationQueue()->TryScheduleForFinalizationSingleThreaded(finalizable))
+                            if (m_heap->FinalizationQueue()->TryScheduleForFinalizationExclusive(finalizable))
                             {
                                 // this tracker has served its purpose.
                                 finalizable = nullptr;
@@ -774,7 +752,7 @@ void SatoriRecycler::ScanFinalizables()
                 {
                     (size_t&)finalizable &= ~Satori::FINALIZATION_PENDING;
 
-                    if (m_heap->FinalizationQueue()->TryScheduleForFinalizationSingleThreaded(finalizable))
+                    if (m_heap->FinalizationQueue()->TryScheduleForFinalizationExclusive(finalizable))
                     {
                         // this tracker has served its purpose.
                         finalizable = nullptr;
