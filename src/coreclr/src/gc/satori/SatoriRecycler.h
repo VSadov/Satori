@@ -22,10 +22,7 @@ class SatoriRecycler
 
 public:
     void Initialize(SatoriHeap* heap);
-    void MakeSharedGen1(SatoriRegion* region);
-
-    void AddRegionToQueues(SatoriRegion* region);
-
+    void AddRegion(SatoriRegion* region);
     void MaybeTriggerGC();
 
     int GetScanCount();

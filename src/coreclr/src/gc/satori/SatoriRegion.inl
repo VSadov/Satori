@@ -72,9 +72,10 @@ inline SatoriObject* SatoriRegion::FirstObject()
     return &m_firstObject;
 }
 
-inline void SatoriRegion::ResetOwningThread()
+inline void SatoriRegion::StopEscapeTracking()
 {
     m_ownerThreadTag = 0;
+    m_escapeFunc = nullptr;
 }
 
 template<typename F>
@@ -110,7 +111,7 @@ void SatoriRegion::ForEachFinalizable(F& lambda)
     }
 
     // typically the list is short, so having some dead entries is not a big deal.
-    // compacting on at 1/2 occupancy should be good enough (
+    // compacting at 1/2 occupancy should be good enough (
     // (50% overhead limit at O(N) maintenance cost)
     if (nulls * 2 >= items)
     {

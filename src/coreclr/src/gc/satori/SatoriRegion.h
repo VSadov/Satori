@@ -46,7 +46,7 @@ public:
     size_t StartAllocating(size_t minSize);
 
     bool IsAllocating();
-    void ResetOwningThread();
+    void StopEscapeTracking();
 
     bool IsThreadLocal();
     bool OwnedByCurrentThread();
@@ -74,7 +74,7 @@ public:
     void EscapeRecursively(SatoriObject* obj);
 
     void EscapeShallow(SatoriObject* o);
-    bool EligibleForThreadLocalGC();
+    void ReportOccupancy(size_t occupancy);
 
     template<typename F>
     void ForEachFinalizable(F& lambda);
@@ -83,6 +83,7 @@ public:
     bool& HasPendingFinalizables();
 
     void ClearMarks();
+    void PromoteToGen1();
 
     void Verify(bool allowMarked = false);
 
@@ -157,7 +158,6 @@ private:
     static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 
     static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
-    static void EscapeFnNoop(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
 
     SatoriAllocator* Allocator();
 

@@ -213,7 +213,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                 continue;
             }
 
-            if (region->EligibleForThreadLocalGC())
+            if (region->IsThreadLocal())
             {
                 // try compact current
                 region->ThreadLocalMark();
@@ -232,7 +232,8 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             context->RegularRegion() = nullptr;
             context->alloc_ptr = context->alloc_limit = nullptr;
             region->ClearMarks();
-            m_heap->Recycler()->MakeSharedGen1(region);
+            region->PromoteToGen1();
+            m_heap->Recycler()->AddRegion(region);
         }
 
         m_heap->Recycler()->MaybeTriggerGC();
@@ -301,7 +302,8 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
             }
 
             context->LargeRegion() = nullptr;
-            m_heap->Recycler()->MakeSharedGen1(region);
+            region->PromoteToGen1();
+            m_heap->Recycler()->AddRegion(region);
         }
 
         // get a new region.
@@ -331,24 +333,23 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
 
     bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
     SatoriObject* result = SatoriObject::At(region->AllocateHuge(size, zeroInitialize));
-    if (result)
-    {
-        result->CleanSyncBlock();
-        context->alloc_bytes_uoh += size;
-    }
-    else
+    if (!result)
     {
         ReturnRegion(region);
         // OOM
+        return nullptr;
     }
+
+    result->CleanSyncBlock();
+    context->alloc_bytes_uoh += size;
 
     // TODO: VS maybe one day we can keep them if there is enough space remaining
 
     // we do not want to keep huge region in allocator for simplicity,
-    // but can't drop it to recycler yet since the object has no MethodTable.
-    // we will make the region gen1 and send it to recycler later in PublishObject.
+    // but can't add it to recycler yet since the object has no MethodTable and the region is not parseable.
+    // we will make it gen1 already and add it to recycler later in PublishObject.
     region->StopAllocating(/* allocPtr */ 0);
-    region->SetGeneration(1);
+    region->PromoteToGen1();
     return result;
 }
 

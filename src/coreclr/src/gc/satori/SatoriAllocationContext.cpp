@@ -31,15 +31,13 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
         }
 
         region->ClearMarks();
-        if (detach || !region->EligibleForThreadLocalGC())
+        if (detach || !region->IsThreadLocal())
         {
-            recycler->MakeSharedGen1(region);
+            region->PromoteToGen1();
             RegularRegion() = nullptr;
         }
-        else
-        {
-            recycler->AddRegionToQueues(region);
-        }
+
+        recycler->AddRegion(region);
     }
     else
     {
@@ -58,12 +56,10 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
 
         if (detach)
         {
-            recycler->MakeSharedGen1(region);
+            region->PromoteToGen1();
             LargeRegion() = nullptr;
         }
-        else
-        {
-            recycler->AddRegionToQueues(region);
-        }
+
+        recycler->AddRegion(region);
     }
  }
