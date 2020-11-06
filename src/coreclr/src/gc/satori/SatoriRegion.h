@@ -29,14 +29,17 @@ public:
     static SatoriRegion* InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used);
     void MakeBlank();
     bool ValidateBlank();
+    bool ValidateIndexEmpty();
     void WipeCards();
 
     SatoriRegion* Split(size_t regionSize);
     bool CanCoalesce(SatoriRegion* other);
+    void TryCoalesceWithNext();
     void Coalesce(SatoriRegion* next);
 
     size_t AllocStart();
     size_t AllocRemaining();
+    size_t MaxAllocEstimate();
     size_t Allocate(size_t size, bool zeroInitialize);
     size_t AllocateHuge(size_t size, bool zeroInitialize);
     void StopAllocating(size_t allocPtr);
@@ -84,6 +87,8 @@ public:
 
     void ClearMarks();
     void PromoteToGen1();
+
+    SatoriRegion* NextInPage();
 
     void Verify(bool allowMarked = false);
 

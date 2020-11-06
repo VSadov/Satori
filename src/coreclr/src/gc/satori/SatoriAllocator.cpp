@@ -28,7 +28,7 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
 
     for (int i = 0; i < Satori::BUCKET_COUNT; i++)
     {
-        m_queues[i] = new SatoriRegionQueue();
+        m_queues[i] = new SatoriRegionQueue(QueueKind::Allocator);
     }
 
     m_markChunks = new SatoriMarkChunkQueue();
@@ -104,12 +104,18 @@ tryAgain:
 
 void SatoriAllocator::ReturnRegion(SatoriRegion* region)
 {
+    //TUNING: is this too aggressive, or should coalesce with prev too?
+    region->TryCoalesceWithNext();
+
     // TODO: VS select by current core
     m_queues[SizeToBucket(region->Size())]->Push(region);
 }
 
 void SatoriAllocator::AddRegion(SatoriRegion* region)
 {
+    //TUNING: is this too aggressive, or should coalesce with prev too?
+    region->TryCoalesceWithNext();
+
     // TODO: VS select by current core
     m_queues[SizeToBucket(region->Size())]->Enqueue(region);
 }
@@ -285,7 +291,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
             return AllocHuge(context, size, flags);
         }
 
-        // check if existing region has spece or drop it into recycler
+        // check if existing region has space or drop it into recycler
         if (region)
         {
             if (region->IsAllocating())
@@ -324,18 +330,18 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
 {
     size_t regionSize = ALIGN_UP(size + sizeof(SatoriRegion) + Satori::MIN_FREE_SIZE, Satori::REGION_SIZE_GRANULARITY);
     m_heap->Recycler()->MaybeTriggerGC();
-    SatoriRegion* region = GetRegion(regionSize);
-    if (!region)
+    SatoriRegion* hugeRegion = GetRegion(regionSize);
+    if (!hugeRegion)
     {
         //OOM
         return nullptr;
     }
 
     bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
-    SatoriObject* result = SatoriObject::At(region->AllocateHuge(size, zeroInitialize));
+    SatoriObject* result = SatoriObject::At(hugeRegion->AllocateHuge(size, zeroInitialize));
     if (!result)
     {
-        ReturnRegion(region);
+        ReturnRegion(hugeRegion);
         // OOM
         return nullptr;
     }
@@ -343,13 +349,34 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     result->CleanSyncBlock();
     context->alloc_bytes_uoh += size;
 
-    // TODO: VS maybe one day we can keep them if there is enough space remaining
+    // hugeRegion may have a lot of remaining space.
+    // if by a rough estimate it is better than what we have in LargeRegion,
+    // then replace LargeRegion 
+    SatoriRegion* curLarge = context->LargeRegion();
+    if (!curLarge ||
+        curLarge->MaxAllocEstimate() < hugeRegion->MaxAllocEstimate())
+    {
+        if (curLarge)
+        {
+            if (curLarge->IsAllocating())
+            {
+                curLarge->StopAllocating(/* allocPtr */ 0);
+            }
+            curLarge->PromoteToGen1();
+            m_heap->Recycler()->AddRegion(curLarge);
+        }
 
-    // we do not want to keep huge region in allocator for simplicity,
-    // but can't add it to recycler yet since the object has no MethodTable and the region is not parseable.
-    // we will make it gen1 already and add it to recycler later in PublishObject.
-    region->StopAllocating(/* allocPtr */ 0);
-    region->PromoteToGen1();
+        context->LargeRegion() = hugeRegion;
+    }
+    else
+    {
+        // we cannot add hugeRegion to recycler yet since the new object has no MethodTable
+        // and region is not parseable.
+        // we will make it gen1 already and add it to recycler later in PublishObject.
+        hugeRegion->StopAllocating(/* allocPtr */ 0);
+        hugeRegion->PromoteToGen1();
+    }
+
     return result;
 }
 

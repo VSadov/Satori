@@ -107,6 +107,25 @@ SatoriRegion* SatoriPage::RegionForAddress(size_t address)
     return (SatoriRegion*)((mapIndex << Satori::REGION_BITS) + Start());
 }
 
+SatoriRegion* SatoriPage::NextInPage(SatoriRegion* region)
+{
+    _ASSERTE(region->Start() > Start());
+
+    size_t address = region->End();
+    if (address >= End())
+    {
+        return nullptr;
+    }
+
+    size_t mapIndex = (address - Start()) >> Satori::REGION_BITS;
+    if (RegionMap()[mapIndex] == 0)
+    {
+        return nullptr;
+    }
+
+    return (SatoriRegion*)address;
+}
+
 SatoriRegion* SatoriPage::RegionForCardGroup(size_t group)
 {
     size_t mapIndex = group;
