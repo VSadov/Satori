@@ -27,14 +27,14 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
     m_heap = heap;
 
-    m_regularRegions = new SatoriRegionQueue();
-    m_finalizationTrackingRegions = new SatoriRegionQueue();
+    m_regularRegions = new SatoriRegionQueue(QueueKind::RecyclerRegular);
+    m_finalizationTrackingRegions = new SatoriRegionQueue(QueueKind::RecyclerFinalizationTracking);
 
-    m_finalizationScanCompleteRegions = new SatoriRegionQueue();
-    m_finalizationPendingRegions = new SatoriRegionQueue();
+    m_finalizationScanCompleteRegions = new SatoriRegionQueue(QueueKind::RecyclerFinalizationScanComplete);
+    m_finalizationPendingRegions = new SatoriRegionQueue(QueueKind::RecyclerFinalizationPending);
 
-    m_stayingRegions = new SatoriRegionQueue();
-    m_relocatingRegions = new SatoriRegionQueue();
+    m_stayingRegions = new SatoriRegionQueue(QueueKind::RecyclerStaying);
+    m_relocatingRegions = new SatoriRegionQueue(QueueKind::RecyclerRelocating);
 
     m_workList = new SatoriMarkChunkQueue();
     m_gcInProgress = 0;

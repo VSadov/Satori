@@ -151,6 +151,22 @@ bool SatoriRegion::ValidateBlank()
         return false;
     }
 
+    if (!ValidateIndexEmpty())
+    {
+        return false;
+    }
+
+    if (m_finalizables)
+    {
+        _ASSERTE(false);
+        return false;
+    }
+
+    return true;
+}
+
+bool SatoriRegion::ValidateIndexEmpty()
+{
     for (int i = 0; i < Satori::INDEX_LENGTH; i += Satori::INDEX_LENGTH / 4)
     {
         _ASSERTE(m_index[i] == nullptr);
@@ -158,12 +174,6 @@ bool SatoriRegion::ValidateBlank()
         {
             return false;
         }
-    }
-
-    if (m_finalizables)
-    {
-        _ASSERTE(false);
-        return false;
     }
 
     return true;
@@ -242,6 +252,21 @@ size_t SatoriRegion::StartAllocating(size_t minSize)
     return 0;
 }
 
+size_t SatoriRegion::MaxAllocEstimate()
+{
+    size_t maxRemaining = AllocRemaining();
+    for (int bucket = NUM_FREELIST_BUCKETS - 1; bucket > 0; bucket--)
+    {
+        SatoriObject* freeObj = m_freeLists[bucket];
+        if (freeObj)
+        {
+            maxRemaining = max(maxRemaining, ((size_t)1 << bucket) - Satori::MIN_FREE_SIZE);
+        }
+    }
+
+    return maxRemaining;
+}
+
 void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextCommitted, size_t& nextUsed)
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
@@ -271,6 +296,27 @@ SatoriRegion* SatoriRegion::Split(size_t regionSize)
     SatoriRegion* result = InitializeAt(m_containingPage, nextStart, regionSize, nextCommitted, nextUsed);
     _ASSERTE(result->ValidateBlank());
     return result;
+}
+
+SatoriRegion* SatoriRegion::NextInPage()
+{
+    return m_containingPage->NextInPage(this);
+}
+
+void SatoriRegion::TryCoalesceWithNext()
+{
+    SatoriRegion* next = NextInPage();
+    if (next && CanCoalesce(next))
+    {
+        auto queue = next->m_containingQueue;
+        if (queue && queue->Kind() == QueueKind::Allocator)
+        {
+            if (queue->TryRemove(next))
+            {
+                Coalesce(next);
+            }
+        }
+    }
 }
 
 bool SatoriRegion::CanCoalesce(SatoriRegion* other)
@@ -1103,17 +1149,31 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
 
 bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
 {
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+
+    // if region is huge and last object is unreachable,
+    // we can split off extra regions and return to allocator.
+    if (End() > objLimit)
+    {
+        SatoriObject* last = FindObject(objLimit - 1);
+        if (!last->IsMarked())
+        {
+            SatoriObject* free = SatoriObject::FormatAsFree(last->Start(), objLimit - last->Start());
+            SatoriRegion* tail = this->Split(Size() - Satori::REGION_SIZE_GRANULARITY);
+            tail->WipeCards();
+            Allocator()->ReturnRegion(tail);
+        }
+    }
+
     memset(&m_freeLists, 0, sizeof(m_freeLists));
     memset(&m_index, 0, sizeof(m_index));
     m_escapeCounter = 0;
 
     size_t foundFree = 0;
-    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
-
     bool sawMarked = false;
     bool sawPinned = false;
-    SatoriObject* cur = FirstObject();
 
+    SatoriObject* cur = FirstObject();
     do
     {
         if (cur->IsMarked())
@@ -1141,24 +1201,10 @@ bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
         {
             foundFree += skipped;
             SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
-           AddFreeSpace(free);
+            AddFreeSpace(free);
         }
     }
     while (cur->Start() < objLimit);
-
-    // if region is huge and has reachable objects, check if the last obj is reachable.
-    // since we can split extra regions off and return if it is not.
-    if (End() > objLimit && sawMarked)
-    {
-        SatoriObject* last = FindObject(objLimit - 1);
-        if (!last->IsMarked())
-        {
-            SatoriObject::FormatAsFree(last->Start(), objLimit - last->Start());
-            SatoriRegion* other = this->Split(Size() - Satori::REGION_SIZE_GRANULARITY);
-            other->MakeBlank();
-            Allocator()->ReturnRegion(other);
-        }
-    }
 
     m_occupancy = Satori::REGION_SIZE_GRANULARITY - foundFree;
     return !sawMarked;
