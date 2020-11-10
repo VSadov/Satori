@@ -404,7 +404,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     }
 
     // in rare cases the object does not cross into the last tile. (when free obj padding is on the edge).
-// in such case force the object to cross.
+    // in such case force the object to cross.
     if (End() - (chunkStart + size) >= Satori::REGION_SIZE_GRANULARITY)
     {
         chunkStart += Satori::LARGE_OBJECT_THRESHOLD + Satori::MIN_FREE_SIZE;
@@ -705,6 +705,14 @@ void SatoriRegion::PromoteToGen1()
     SetGeneration(1);
 }
 
+void SatoriRegion::ThreadLocalCollect()
+{
+    ThreadLocalMark();
+    ThreadLocalPlan();
+    ThreadLocalUpdatePointers();
+    ThreadLocalCompact();
+}
+
 void SatoriRegion::ThreadLocalMark()
 {
     Verify();
@@ -735,7 +743,7 @@ void SatoriRegion::ThreadLocalMark()
             obj->Validate();
 
             // skip the object
-            markBitOffset = obj->Next()->MarkBitOffset(&bitmapIndex);
+            markBitOffset = obj->Next()->GetMarkBitAndOffset(&bitmapIndex);
         }
         else
         {
@@ -1044,7 +1052,7 @@ void SatoriRegion::ThreadLocalUpdatePointers()
             }
 
             // skip the object
-            markBitOffset = obj->Next()->MarkBitOffset(&bitmapIndex);
+            markBitOffset = obj->Next()->GetMarkBitAndOffset(&bitmapIndex);
         }
         else
         {
@@ -1076,152 +1084,6 @@ void SatoriRegion::ThreadLocalUpdatePointers()
             }
         );
     }
-}
-
-SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
-{
-    _ASSERTE(from->Start() < End());
-    size_t bitmapIndex;
-    int markBitOffset = from->MarkBitOffset(&bitmapIndex);
-
-    DWORD offset;
-    if (BitScanForward64(&offset, m_bitmap[bitmapIndex] >> markBitOffset))
-    {
-        // got reachable object.
-        markBitOffset += offset;
-    }
-    else
-    {
-        markBitOffset = 0;
-        while (bitmapIndex < SatoriRegion::BITMAP_LENGTH)
-        {
-            bitmapIndex++;
-            if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
-            {
-                // got reachable object.
-                markBitOffset = offset;
-                break;
-            }
-        }
-    }
-
-    return ObjectForMarkBit(bitmapIndex, markBitOffset);
-}
-
-SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
-{
-    _ASSERTE(from->Start() < End());
-    size_t bitmapIndex;
-    int markBitOffset = from->MarkBitOffset(&bitmapIndex);
-
-    DWORD offset;
-    if (BitScanForward64(&offset, m_bitmap[bitmapIndex] >> markBitOffset))
-    {
-        // got reachable object.
-        markBitOffset += offset;
-    }
-    else
-    {
-        size_t limit = (upTo - Start()) >> 9;
-        _ASSERTE(limit <= SatoriRegion::BITMAP_LENGTH);
-        markBitOffset = 0;
-        while (bitmapIndex < limit)
-        {
-            bitmapIndex++;
-            if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
-            {
-                // got reachable object.
-                markBitOffset = offset;
-                break;
-            }
-        }
-    }
-
-    SatoriObject* result = ObjectForMarkBit(bitmapIndex, markBitOffset);
-    if (result->Start() > upTo)
-    {
-        result = SatoriObject::At(upTo);
-    }
-
-    _ASSERTE(result->Start() <= upTo);
-    return result;
-}
-
-bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
-{
-    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
-
-    // if region is huge and last object is unreachable,
-    // we can split off extra regions and return to allocator.
-    if (End() > objLimit)
-    {
-        SatoriObject* last = FindObject(objLimit - 1);
-        if (!last->IsMarked())
-        {
-            SatoriObject* free = SatoriObject::FormatAsFree(last->Start(), objLimit - last->Start());
-            SatoriRegion* tail = this->Split(Size() - Satori::REGION_SIZE_GRANULARITY);
-            tail->WipeCards();
-            Allocator()->ReturnRegion(tail);
-        }
-    }
-
-    memset(&m_freeLists, 0, sizeof(m_freeLists));
-    memset(&m_index, 0, sizeof(m_index));
-    m_escapeCounter = 0;
-
-    size_t foundFree = 0;
-    bool sawMarked = false;
-    bool sawPinned = false;
-
-    SatoriObject* cur = FirstObject();
-    do
-    {
-        if (cur->IsMarked())
-        {
-            sawMarked = true;
-            if (turnMarkedIntoEscaped)
-            {
-                cur->ClearPinnedAndMarked();
-                this->EscapeShallow(cur);
-            }
-            else if (!sawPinned &&
-                (cur->IsPinned() || cur->IsPOH()))
-            {
-                sawPinned = true;
-            }
-
-            cur = cur->Next();
-            continue;
-        }
-
-        size_t lastMarkedEnd = cur->Start();
-        cur = SkipUnmarked(cur);
-        size_t skipped = cur->Start() - lastMarkedEnd;
-        if (skipped)
-        {
-            foundFree += skipped;
-            SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
-            AddFreeSpace(free);
-        }
-    }
-    while (cur->Start() < objLimit);
-
-    m_occupancy = Satori::REGION_SIZE_GRANULARITY - foundFree;
-    return !sawMarked;
-}
-
-bool SatoriRegion::NothingMarked()
-{
-    for (size_t bitmapIndex = BITMAP_START; bitmapIndex < BITMAP_LENGTH; bitmapIndex++)
-    {
-        size_t chunk = m_bitmap[bitmapIndex];
-        if (chunk)
-        {
-            return false;
-        }
-    }
-
-    return true;
 }
 
 void SatoriRegion::ThreadLocalCompact()
@@ -1398,6 +1260,152 @@ void SatoriRegion::CompactFinalizables()
 
         Allocator()->ReturnMarkChunk(current);
     }
+}
+
+SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
+{
+    _ASSERTE(from->Start() < End());
+    size_t bitmapIndex;
+    int markBitOffset = from->GetMarkBitAndOffset(&bitmapIndex);
+
+    DWORD offset;
+    if (BitScanForward64(&offset, m_bitmap[bitmapIndex] >> markBitOffset))
+    {
+        // got reachable object.
+        markBitOffset += offset;
+    }
+    else
+    {
+        markBitOffset = 0;
+        while (bitmapIndex < SatoriRegion::BITMAP_LENGTH)
+        {
+            bitmapIndex++;
+            if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
+            {
+                // got reachable object.
+                markBitOffset = offset;
+                break;
+            }
+        }
+    }
+
+    return ObjectForMarkBit(bitmapIndex, markBitOffset);
+}
+
+SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
+{
+    _ASSERTE(from->Start() < End());
+    size_t bitmapIndex;
+    int markBitOffset = from->GetMarkBitAndOffset(&bitmapIndex);
+
+    DWORD offset;
+    if (BitScanForward64(&offset, m_bitmap[bitmapIndex] >> markBitOffset))
+    {
+        // got reachable object.
+        markBitOffset += offset;
+    }
+    else
+    {
+        size_t limit = (upTo - Start()) >> 9;
+        _ASSERTE(limit <= SatoriRegion::BITMAP_LENGTH);
+        markBitOffset = 0;
+        while (bitmapIndex < limit)
+        {
+            bitmapIndex++;
+            if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
+            {
+                // got reachable object.
+                markBitOffset = offset;
+                break;
+            }
+        }
+    }
+
+    SatoriObject* result = ObjectForMarkBit(bitmapIndex, markBitOffset);
+    if (result->Start() > upTo)
+    {
+        result = SatoriObject::At(upTo);
+    }
+
+    _ASSERTE(result->Start() <= upTo);
+    return result;
+}
+
+bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
+{
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+
+    // if region is huge and last object is unreachable,
+    // we can split off extra regions and return to allocator.
+    if (End() > objLimit)
+    {
+        SatoriObject* last = FindObject(objLimit - 1);
+        if (!last->IsMarked())
+        {
+            SatoriObject* free = SatoriObject::FormatAsFree(last->Start(), objLimit - last->Start());
+            SatoriRegion* tail = this->Split(Size() - Satori::REGION_SIZE_GRANULARITY);
+            tail->WipeCards();
+            Allocator()->ReturnRegion(tail);
+        }
+    }
+
+    memset(&m_freeLists, 0, sizeof(m_freeLists));
+    memset(&m_index, 0, sizeof(m_index));
+    m_escapeCounter = 0;
+
+    size_t foundFree = 0;
+    bool sawMarked = false;
+    bool sawPinned = false;
+
+    SatoriObject* cur = FirstObject();
+    do
+    {
+        if (cur->IsMarked())
+        {
+            sawMarked = true;
+            if (turnMarkedIntoEscaped)
+            {
+                cur->ClearPinnedAndMarked();
+                this->EscapeShallow(cur);
+            }
+            else if (!sawPinned &&
+                (cur->IsPinned() || cur->IsPOH()))
+            {
+                sawPinned = true;
+            }
+
+            cur = cur->Next();
+            continue;
+        }
+
+        size_t lastMarkedEnd = cur->Start();
+        cur = SkipUnmarked(cur);
+        size_t skipped = cur->Start() - lastMarkedEnd;
+        if (skipped)
+        {
+            foundFree += skipped;
+            SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
+            AddFreeSpace(free);
+        }
+    }
+    while (cur->Start() < objLimit);
+
+    m_occupancy = Satori::REGION_SIZE_GRANULARITY - foundFree;
+    return !sawMarked;
+}
+
+bool SatoriRegion::NothingMarked()
+{
+    for (size_t bitmapIndex = BITMAP_START; bitmapIndex < BITMAP_LENGTH; bitmapIndex++)
+    {
+        size_t chunk = m_bitmap[bitmapIndex];
+        if (chunk)
+        {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void SatoriRegion::ClearMarks()

@@ -151,9 +151,7 @@ int SatoriGC::EndNoGCRegion()
 
 size_t SatoriGC::GetTotalBytesInUse()
 {
-    // bytes used by objects? What is GetCurrentObjSize then?
-
-    //TODO: VS
+    //TODO: VS, bytes used by objects? What is GetCurrentObjSize then?
     return Satori::REGION_SIZE_GRANULARITY * 10;
 }
 

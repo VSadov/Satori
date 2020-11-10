@@ -37,7 +37,6 @@ public:
 
 private:
     SatoriHeap* m_heap;
-    //TODO: VS embed
     SatoriRegionQueue* m_queues[Satori::BUCKET_COUNT];
 
     SatoriMarkChunkQueue* m_markChunks;

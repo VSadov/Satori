@@ -39,7 +39,7 @@ public:
     void ClearPinnedAndMarked();
     bool IsEscaped();
     bool IsEscapedOrPinned();
-    int MarkBitOffset(size_t* bitmapIndex);
+    int GetMarkBitAndOffset(size_t* bitmapIndex);
 
     void SetPOH();
     bool IsPOH();

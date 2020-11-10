@@ -221,12 +221,8 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
             if (region->IsThreadLocal())
             {
-                // try compact current
-                region->ThreadLocalMark();
-                region->ThreadLocalPlan();
-                region->ThreadLocalUpdatePointers();
-                region->ThreadLocalCompact();
-
+                // perform thread local colletion and see if we have enough space after that.
+                region->ThreadLocalCollect();
                 if (region->StartAllocating(desiredFreeSpace))
                 {
                     // we have enough free space in the region to continue

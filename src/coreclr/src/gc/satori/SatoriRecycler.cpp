@@ -43,13 +43,16 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_condemnedGeneration = 0;
 }
 
-// TODO: VS interlocked?
+// not interlocked. this is not done concurrently. 
 void SatoriRecycler::IncrementScanCount()
 {
     m_scanCount++;
 }
 
-// TODO: VS volatile?
+// CONSISTENCY: no synchronization needed
+// there is only one writer (thread that initiates GC)
+// and treads reading this are guarantee to see it
+// since they need to know that there is GC in progress in the first place
 int SatoriRecycler::GetScanCount()
 {
     return m_scanCount;
@@ -160,13 +163,14 @@ void SatoriRecycler::Collect(int generation, bool force)
             DependentHandlesRescan();
         }
 
-        AssertNoWork();
         //       sync
+        AssertNoWork();
         WeakPtrScan(/*isShort*/ true);
+
         //       sync
         ScanFinalizables();
 
-        // TODO: VS why no sync before?
+        // sync
         while (m_workList->Count() > 0)
         {
             do
@@ -178,8 +182,9 @@ void SatoriRecycler::Collect(int generation, bool force)
             DependentHandlesRescan();
         }
 
-        AssertNoWork();
         //       sync 
+        AssertNoWork();
+
         WeakPtrScan(/*isShort*/ false);
         WeakPtrScanBySingleThread();
 
@@ -246,7 +251,7 @@ void SatoriRecycler::Collect(int generation, bool force)
         SweepRegions(m_finalizationTrackingRegions);
 
         // TODO: VS relocation - this could be done right after marking now,
-        //       but will have to be after reference updating.
+        //       but it will have to be after reference updating.
         if (m_condemnedGeneration == 2)
         {
             PromoteSurvivedHandles();

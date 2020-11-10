@@ -88,6 +88,8 @@ public:
     void ClearMarks();
     void PromoteToGen1();
 
+    void ThreadLocalCollect();
+
     SatoriRegion* NextInPage();
 
     void Verify(bool allowMarked = false);
