@@ -70,6 +70,8 @@ public:
     SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
     bool Sweep(bool turnMarkedIntoEscaped);
+    void UpdateReferences();
+    void TakeFinalizerInfoFrom(SatoriRegion* other);
     bool NothingMarked();
     void ThreadLocalCompact();
 
@@ -82,8 +84,12 @@ public:
     template<typename F>
     void ForEachFinalizable(F& lambda);
     bool RegisterForFinalization(SatoriObject* finalizable);
-    bool HasFinalizables();
+    bool EverHadFinalizables();
     bool& HasPendingFinalizables();
+
+    size_t Occupancy();
+
+    bool HasPinnedObjects();
 
     void ClearMarks();
     void PromoteToGen1();
@@ -100,9 +106,6 @@ private:
     // The first actually useful index is offsetof(m_firstObject) / sizeof(size_t) / 8,
     static const int BITMAP_START = (BITMAP_LENGTH + Satori::INDEX_LENGTH + 2) / sizeof(size_t) / 8;
 
-    static const int MIN_FREELIST_BUCKET_BITS = 12;
-    static const size_t MIN_FREELIST_BUCKET = 1 << MIN_FREELIST_BUCKET_BITS;
-    static const int NUM_FREELIST_BUCKETS = Satori::REGION_BITS - MIN_FREELIST_BUCKET_BITS;
     union
     {
         // object metadata - one bit per size_t
@@ -131,8 +134,10 @@ private:
             SatoriRegion* m_prev;
             SatoriRegion* m_next;
             SatoriQueue<SatoriRegion>* m_containingQueue;
+            //TODO: VS rename --> finalizableTrackers
             SatoriMarkChunk* m_finalizables;
 
+            bool m_everHadFinalizables;
             bool m_hasPendingFinalizables;
 
             // active allocation may happen in the following range.
@@ -149,8 +154,9 @@ private:
             int32_t m_escapeCounter;
 
             size_t m_occupancy;
+            size_t m_hasPinnedObjects;
 
-            SatoriObject* m_freeLists[NUM_FREELIST_BUCKETS];
+            SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
         };
     };
 
