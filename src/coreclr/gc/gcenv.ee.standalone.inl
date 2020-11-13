@@ -114,6 +114,12 @@ inline void GCToEEInterface::DisablePreemptiveGC()
     g_theGCToCLR->DisablePreemptiveGC();
 }
 
+inline void GCToEEInterface::GcPoll()
+{
+    assert(g_theGCToCLR != nullptr);
+    g_theGCToCLR->GcPoll();
+}
+
 inline Thread* GCToEEInterface::GetThread()
 {
     assert(g_theGCToCLR != nullptr);
