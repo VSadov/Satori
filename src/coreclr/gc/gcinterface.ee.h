@@ -264,6 +264,10 @@ public:
     virtual
     void DisablePreemptiveGC() = 0;
 
+    // If suspension is requiested suspends the current thread.
+    virtual
+    void GcPoll() = 0;
+
     // Gets the Thread instance for the current thread, or null if no thread
     // instance is associated with this thread.
     //
