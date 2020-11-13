@@ -85,17 +85,20 @@ public:
 
     size_t Compact()
     {
-        size_t from = 0;
-        while (from < m_top && m_data[from++]);
+        size_t to = 0;
+        while (to < m_top && m_data[to])
+        {
+            to++;
+        }
 
-        size_t to = from - 1;
+        size_t from = to + 1;
         while (from < m_top)
         {
-            if (m_data[from])
+            SatoriObject* o = m_data[from++];
+            if (o)
             {
-                m_data[to++] = m_data[from];
+                m_data[to++] = o;
             }
-            from++;
         }
 
         m_top = to;
