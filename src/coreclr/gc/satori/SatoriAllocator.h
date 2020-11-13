@@ -37,7 +37,7 @@ public:
 
 private:
     SatoriHeap* m_heap;
-    SatoriRegionQueue* m_queues[Satori::BUCKET_COUNT];
+    SatoriRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
 
     SatoriMarkChunkQueue* m_markChunks;
 
@@ -55,7 +55,7 @@ private:
 #else
         BitScanReverse(&highestBit, value);
 #endif
-        return min(highestBit - Satori::REGION_BITS, Satori::BUCKET_COUNT - 1);
+        return min(highestBit - Satori::REGION_BITS, Satori::ALLOCATOR_BUCKET_COUNT - 1);
     }
 
     bool AddMoreMarkChunks();
