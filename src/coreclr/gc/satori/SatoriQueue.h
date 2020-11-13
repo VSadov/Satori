@@ -15,15 +15,23 @@
 enum class QueueKind
 {
     Allocator,
-    RecyclerRegular,
-    RecyclerFinalizationTracking,
-    RecyclerFinalizationScanComplete,
+    MarkChunk,
+
+    RecyclerEphemeral,
+    RecyclerEphemeralFinalizationTracking,
+
+    RecyclerTenured,
+    RecyclerTenuredFinalizationTracking,
+
+    RecyclerNursery,
+
     RecyclerFinalizationPending,
+    RecyclerFinalizationScanComplete,
 
     RecyclerStaying,
     RecyclerRelocating,
-
-    MarkChunk,
+    RecyclerRelocated,
+    RecyclerRelocationTarget,
 };
 
 template<class T>
