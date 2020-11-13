@@ -45,6 +45,7 @@ public:
     bool IsPreemptiveGCDisabled();
     bool EnablePreemptiveGC();
     void DisablePreemptiveGC();
+    void GcPoll();
     Thread* GetThread();
     gc_alloc_context * GetAllocContext();
     void GcEnumAllocContexts(enum_alloc_context_func* fn, void* param);
