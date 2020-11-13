@@ -22,7 +22,7 @@ class SatoriRecycler
 
 public:
     void Initialize(SatoriHeap* heap);
-    void AddRegion(SatoriRegion* region);
+    void AddEphemeralRegion(SatoriRegion* region);
     void MaybeTriggerGC();
 
     int GetScanCount();
@@ -30,9 +30,6 @@ public:
     int CondemnedGeneration();
 
     void Collect(int generation, bool force);
-
-    void AssertNoWork();
-
 private:
     SatoriHeap* m_heap;
 
@@ -47,8 +44,13 @@ private:
     int m_prevRegionCount;
     int m_gcInProgress;
 
-    SatoriRegionQueue* m_regularRegions;
-    SatoriRegionQueue* m_finalizationTrackingRegions;
+    // temporary store for Gen0 regions
+    SatoriRegionQueue* m_nurseryRegions;
+    SatoriRegionQueue* m_ephemeralRegions;
+    SatoriRegionQueue* m_ephemeralFinalizationTrackingRegions;
+
+    SatoriRegionQueue* m_tenuredRegions;
+    SatoriRegionQueue* m_tenuredFinalizationTrackingRegions;
 
     // temporary store while processing finalizables
     SatoriRegionQueue* m_finalizationScanCompleteRegions;
@@ -57,11 +59,14 @@ private:
     // temporary store while planning
     SatoriRegionQueue* m_stayingRegions;
     SatoriRegionQueue* m_relocatingRegions;
+    SatoriRegionQueue* m_relocationTargets[Satori::FREELIST_COUNT];
+    SatoriRegionQueue* m_relocatedRegions;
 
     SatoriMarkChunkQueue* m_workList;
 
     static void DeactivateFn(gc_alloc_context* context, void* param);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+    static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 
     void DeactivateAllStacks();
     void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
@@ -74,10 +79,28 @@ private:
     void WeakPtrScan(bool isShort);
     void WeakPtrScanBySingleThread();
     void ScanFinalizables();
+    void ScanFinalizableRegions(SatoriRegionQueue* regions);
 
     void DependentHandlesInitialScan();
     void DependentHandlesRescan();
     void PromoteSurvivedHandles();
+    void SweepNurseryRegions();
+
+    void Mark();
+    void Sweep();
+    void Compact();
+    void RelocateRegion(SatoriRegion* region);
+    void UpdatePointers();
+
+    void UpdatePointersInRegions(SatoriRegionQueue* queue);
+    void UpdatePointersThroughCards();
+    void SweepRegions(SatoriRegionQueue* regions);
+    void AddRelocationTarget(SatoriRegion* region);
+
+    SatoriRegion* TryGetRelocationTarget(size_t size);
+
+    int RegionCount();
+    void AssertNoWork();
 };
 
 #endif
