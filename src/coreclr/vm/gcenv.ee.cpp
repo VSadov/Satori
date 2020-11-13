@@ -501,6 +501,28 @@ void GCToEEInterface::DisablePreemptiveGC()
     }
 }
 
+void GCToEEInterface::GcPoll()
+{
+    CONTRACTL{
+        THROWS;
+        GC_TRIGGERS;
+        MODE_COOPERATIVE;
+    }
+    CONTRACTL_END;
+
+    if (g_TrapReturningThreads.LoadWithoutBarrier())
+    {
+        Thread* pThread = ::GetThread();
+        _ASSERTE(!ThreadStore::HoldingThreadStore(pThread));
+#ifdef FEATURE_HIJACK
+        pThread->UnhijackThread();
+#endif // FEATURE_HIJACK
+
+        pThread->EnablePreemptiveGC();
+        pThread->DisablePreemptiveGC();
+    }
+}
+
 Thread* GCToEEInterface::GetThread()
 {
     WRAPPER_NO_CONTRACT;
