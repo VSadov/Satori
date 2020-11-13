@@ -185,6 +185,7 @@ void SatoriGC::SetFinalizationRun(Object* obj)
 
 bool SatoriGC::RegisterForFinalization(int gen, Object* obj)
 {
+    _ASSERTE(obj->RawGetMethodTable()->HasFinalizer());
     if (obj->GetHeader()->GetBits() & BIT_SBLK_FINALIZER_RUN)
     {
         obj->GetHeader()->ClrBit(BIT_SBLK_FINALIZER_RUN);
@@ -268,7 +269,7 @@ unsigned SatoriGC::GetGcCount()
         return 0;
     }
 
-    return (unsigned)m_heap->Recycler()->GetScanCount();
+    return (unsigned)(int)m_heap->Recycler()->GetCollectionCount(/*gen*/ 1);
 }
 
 bool SatoriGC::IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, int thread_number)
@@ -382,7 +383,7 @@ void SatoriGC::PublishObject(uint8_t* obj)
     if (region->Generation() != 0)
     {
         _ASSERTE(region->Size() > Satori::REGION_SIZE_GRANULARITY);
-        m_heap->Recycler()->AddRegion(region);
+        m_heap->Recycler()->AddEphemeralRegion(region);
     }
 }
 
