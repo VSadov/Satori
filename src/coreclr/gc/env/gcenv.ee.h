@@ -52,6 +52,7 @@ public:
     static bool IsPreemptiveGCDisabled();
     static bool EnablePreemptiveGC();
     static void DisablePreemptiveGC();
+    static void GcPoll();
     static Thread* GetThread();
 
     static gc_alloc_context * GetAllocContext();
