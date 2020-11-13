@@ -205,12 +205,12 @@ inline int SatoriObject::GetMarkBitAndOffset(size_t* bitmapIndex)
     return (start >> 3) & 63;     // % bits in a word
 }
 
-inline void SatoriObject::SetPOH()
+inline void SatoriObject::SetPermanentlyPinned()
 {
     GetHeader()->SetGCBit();
 }
 
-inline bool SatoriObject::IsPOH()
+inline bool SatoriObject::IsPermanentlyPinned()
 {
    return GetHeader()->GetBits() & BIT_SBLK_GC_RESERVE;
 }
