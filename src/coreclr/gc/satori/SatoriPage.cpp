@@ -91,7 +91,7 @@ void SatoriPage::RegionDestroyed(SatoriRegion* region)
 
 SatoriRegion* SatoriPage::RegionForAddress(size_t address)
 {
-    _ASSERTE(address > Start() && address < End());
+    _ASSERTE(address >= Start() && address < End());
     size_t mapIndex = (address - Start()) >> Satori::REGION_BITS;
     while (RegionMap()[mapIndex] > 1)
     {
