@@ -126,7 +126,8 @@ void SatoriRecycler::MaybeTriggerGC()
         }
         else if (Interlocked::CompareExchange(&m_gcInProgress, 1, 0) == 0)
         {
-            // for now just do every 16th
+            //TODO: VS start with gen1?  (though first gen2 is probably cheap)
+            // for now just do every 16th scan (every 8 global GCs)
             int generation = m_scanCount % 16 == 0 ? 2 : 1;
             Collect(generation, /*force*/ false);
         }
@@ -135,9 +136,6 @@ void SatoriRecycler::MaybeTriggerGC()
 
 void SatoriRecycler::Collect(int generation, bool force)
 {
-    // TODO: VS hack
-    generation = 2;
-
     bool wasCoop = GCToEEInterface::EnablePreemptiveGC();
     _ASSERTE(wasCoop);
 
@@ -301,7 +299,7 @@ private:
     int m_condemnedGeneration;
 };
 
-void SatoriRecycler::PushToMarkQueuesSlow(SatoriMarkChunk* &currentMarkChunk, SatoriObject* o)
+void SatoriRecycler::PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o)
 {
     if (currentMarkChunk)
     {
@@ -347,7 +345,7 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     {
         MarkContext* context = (MarkContext*)sc->_unused1;
 
-        //TODO: VS why checked? can this fail?
+        // byrefs may point to stack, use checked here
         o = context->m_heap->ObjectForAddressChecked(location);
         if (o == nullptr)
         {
@@ -464,7 +462,7 @@ void SatoriRecycler::DrainMarkQueues()
                     }
                 },
                 /* includeCollectibleAllocator */ true
-            );
+                    );
         }
 
         // done with srcChunk
@@ -847,6 +845,7 @@ void SatoriRecycler::SweepNurseryRegions()
         }
 
         curRegion->Verify();
+        m_stayingRegions->Push(curRegion);
     }
 }
 
@@ -935,6 +934,14 @@ void SatoriRecycler::AddRelocationTarget(SatoriRegion* region)
 
 SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t minSize)
 {
+    //make this occasionally fail in debug to be sure we can handle low memory case.
+#if _DEBUG
+    if (minSize % 1024 == 0)
+    {
+        return nullptr;
+    }
+#endif
+
     DWORD bucket;
     BitScanReverse64(&bucket, minSize);
 
@@ -953,12 +960,19 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t minSize)
             SatoriRegion* region = queue->TryPop();
             if (region)
             {
+                region->StartAllocating(minSize);
                 return region;
             }
         }
     }
 
-    return m_heap->Allocator()->GetRegion(ALIGN_UP(minSize, Satori::REGION_SIZE_GRANULARITY));
+    SatoriRegion* newRegion = m_heap->Allocator()->GetRegion(ALIGN_UP(minSize, Satori::REGION_SIZE_GRANULARITY));
+    if (newRegion)
+    {
+        newRegion->SetGeneration(m_condemnedGeneration);
+    }
+
+    return newRegion;
 }
 
 void SatoriRecycler::Compact()
@@ -975,18 +989,14 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     relocationSource->Verify(true);
 
     size_t copySize = relocationSource->Occupancy();
-    //TODO: VS do we need  + Satori::MIN_FREE_SIZE  ???
-    SatoriRegion* relocationTarget = TryGetRelocationTarget(copySize + Satori::MIN_FREE_SIZE);
+    SatoriRegion* relocationTarget = TryGetRelocationTarget(copySize);
 
+    // could not get a region. we must be low on available memory.
+    // we can try using the source as a target for others.
     if (!relocationTarget)
     {
-        m_stayingRegions->Push(relocationSource);
+        AddRelocationTarget(relocationSource);
         return;
-    }
-
-    if (!relocationTarget->IsAllocating())
-    {
-        relocationTarget->StartAllocating(copySize + Satori::MIN_FREE_SIZE);
     }
 
     size_t dstPtr = relocationTarget->Allocate(copySize, /*zeroInitialize*/ false);
@@ -1012,19 +1022,17 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     } while (obj->Start() < objLimit);
 
     _ASSERTE(dstPtr - dstPtrOrig == copySize);
-    relocationSource->Verify(true);
+    relocationTarget->StopAllocating(/*allocPtr*/ 0);
 
     // transfer finalization trackers if any
     relocationTarget->TakeFinalizerInfoFrom(relocationSource);
 
+    // the target may yet have more space. put it back.
+    relocationTarget->Verify(true);
+    AddRelocationTarget(relocationTarget);
+
     // the region is now relocated.
     m_relocatedRegions->Push(relocationSource);
-
-    // put the target region back. It may have more space.
-    relocationTarget->StopAllocating(dstPtr);
-    relocationTarget->Verify(true);
-
-    AddRelocationTarget(relocationTarget);
 }
 
 void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
@@ -1046,7 +1054,7 @@ void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t
     {
         MarkContext* context = (MarkContext*)sc->_unused1;
 
-        //TODO: VS why checked? can this fail?
+        // byrefs may point to stack, use checked here
         o = context->m_heap->ObjectForAddressChecked(location);
         if (o == nullptr)
         {
@@ -1144,8 +1152,12 @@ void SatoriRecycler::UpdatePointersInRegions(SatoriRegionQueue* queue)
     while (curRegion = queue->TryPop())
     {
         curRegion->UpdateReferences();
-        curRegion->ClearMarks();
+        if (curRegion->Generation() == 0)
+        {
+            continue;
+        }
 
+        curRegion->ClearMarks();
         if (m_condemnedGeneration == 2)
         {
             curRegion->SetGeneration(2);
@@ -1213,8 +1225,8 @@ void SatoriRecycler::UpdatePointersThroughCards()
                             size_t start = page->LocationForCard(&cards[j]);
                             do
                             {
-                                //TODO: VS no need to reset. assert that has this state already
-                                cards[j++] = resetValue;
+                                _ASSERTE(cards[j] <= Satori::CARD_HAS_REFERENCES);
+                                j++;
                             } while (j < Satori::CARD_BYTES_IN_CARD_GROUP && cards[j] >= Satori::CARD_HAS_REFERENCES);
 
                             size_t end = page->LocationForCard(&cards[j]);
