@@ -107,14 +107,18 @@ void SatoriRegion::ForEachFinalizable(F& lambda)
             }
         }
 
-        //TODO: VS in non-last chunck unfilled slots should count as nulls
+        // unfilled slots in the tail chunks count as nulls
+        if (chunk != m_finalizables)
+        {
+            nulls += chunk->FreeSpace();
+        }
 
         chunk = chunk->Next();
     }
 
     // typically the list is short, so having some dead entries is not a big deal.
-    // compacting at 1/2 occupancy should be good enough (
-    // (50% overhead limit at O(N) maintenance cost)
+    // compacting at 1/2 occupancy should be good enough.
+    // (50% max overhead at O(N) maintenance cost)
     if (nulls * 2 > items)
     {
        CompactFinalizables();
