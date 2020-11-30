@@ -150,7 +150,7 @@ private:
             int32_t m_markStack;
 
             // counting escaped objects
-            // when number goes to high, we stop escaping and do not do local GC.
+            // when number goes too high, we stop escaping and do not do local GC.
             int32_t m_escapeCounter;
 
             size_t m_occupancy;
