@@ -225,7 +225,7 @@ size_t SatoriRegion::StartAllocating(size_t minSize)
 
     // when minSize is not a power of two we could search through the current bucket,
     // which may have a large enough obj,
-    // but we will just use the next bucket, which guarantees that any obj will fit
+    // but we will just use the next bucket, which guarantees it fits
     if (minSize & (minSize - 1))
     {
         bucket++;
@@ -514,24 +514,16 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
     size_t location = (size_t)*ppObject;
 
     // ignore objects outside of the current region.
-    // this also rejects nulls.
+    // this also rejects nulls and byrefs pointing to stack.
     if (location < (size_t)region->FirstObject() || location > region->End())
     {
         return;
     }
 
-    SatoriObject* o;
+    SatoriObject* o = SatoriObject::At(location);
     if (flags & GC_CALL_INTERIOR)
     {
         o = region->FindObject(location);
-        if (o == nullptr)
-        {
-            return;
-        }
-    }
-    else
-    {
-        o = SatoriObject::At(location);
     }
 
     if (!o->IsMarked())
@@ -846,6 +838,13 @@ size_t SatoriRegion::ThreadLocalPlan()
     // we will shift left all movable objects - as long as they fit between unmovables
     //
 
+    // planning also trashes these, since free spaces get reformatted.
+    // we will do more of that in Compact, but before that Upate may use the index.
+    // TODO: VS consider updating index in FormatAsFree
+    //       it should be ok to fill indx with the free, since even if
+    //       smth is allocated at start, it would be a valid obj to start
+    memset(&m_index, 0, sizeof(m_index));
+
     // what we want to move
     SatoriObject* moveable;
     size_t moveableSize = 0;
@@ -1088,15 +1087,19 @@ void SatoriRegion::ThreadLocalUpdatePointers()
 
 void SatoriRegion::ThreadLocalCompact()
 {
-    memset(m_freeLists, 0, sizeof(m_freeLists));
-    memset(&m_index, 0, sizeof(m_index));
-
     SatoriObject* s1;
     SatoriObject* s2 = FirstObject();
     SatoriObject* d1 = FirstObject();
     SatoriObject* d2 = FirstObject();
 
     size_t foundFree = 0;
+
+    // compacting also trashes these, since free spaces get reformatted.
+    // TODO: VS consider updating index in FormatAsFree
+    memset(&m_index, 0, sizeof(m_index));
+
+    // we will be building new free lists
+    memset(m_freeLists, 0, sizeof(m_freeLists));
 
     // when d1 reaches the end everything is copied or swept
     while (d1->Start() < End())
@@ -1407,18 +1410,13 @@ bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
 void SatoriRegion::UpdateReferences()
 {
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
-
-    // TODO: VS assert these
-    // memset(&m_freeLists, 0, sizeof(m_freeLists));
-    // memset(&m_index, 0, sizeof(m_index));
-
     SatoriObject* obj = FirstObject();
     do
     {
-        //TODO: VS walking objects without bitmap.
-        //      - we need to get MTs for all live objects anyways
-        //      - free objects are near optimal since we have just swept
-        //      - besides, relocated objects are not marked (we could, but there is little point if we do not use that here)
+        //NB: walking objects without bitmap.
+        //     - we need to get MTs for all live objects anyways
+        //     - free objects are near optimal since we have just swept the region
+        //     - besides, relocated objects would have to be marked, which is extra work.
         obj->ForEachObjectRef(
             [](SatoriObject** ppObject)
             {

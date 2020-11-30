@@ -37,6 +37,11 @@ public:
         return m_top;
     }
 
+    size_t FreeSpace()
+    {
+        return (Satori::MARK_CHUNK_SIZE - sizeof(SatoriMarkChunk)) / sizeof(SatoriObject*) - m_top;
+    }
+
     bool HasSpace()
     {
         return m_top < (Satori::MARK_CHUNK_SIZE - sizeof(SatoriMarkChunk)) / sizeof(SatoriObject*);
