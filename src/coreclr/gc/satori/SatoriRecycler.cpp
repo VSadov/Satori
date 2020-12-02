@@ -351,6 +351,13 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
         {
             return;
         }
+
+#ifdef FEATURE_CONSERVATIVE_GC
+        if (GCConfig::GetConservativeGC() && o->IsFree())
+        {
+            return;
+        }
+#endif
     }
 
     // TODO: VS when concurrent should not go into gen 0
@@ -1060,6 +1067,13 @@ void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t
         {
             return;
         }
+
+#ifdef FEATURE_CONSERVATIVE_GC
+        if (GCConfig::GetConservativeGC() && o->IsFree())
+        {
+            return;
+        }
+#endif
     }
 
     // TODO: VS not sure we need to check the region.
