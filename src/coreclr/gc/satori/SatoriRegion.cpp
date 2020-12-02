@@ -459,9 +459,37 @@ inline int LocationToIndex(size_t location)
     return (location >> Satori::INDEX_GRANULARITY_BITS) % Satori::INDEX_LENGTH;
 }
 
+// Finds an object that contains given location.
+//
+// Assumptions that caller must arrange or handle:
+//  - we may return a Free object here.
+//  - locations before the first object and after the last object match to the First/Last objects
+//  - location must not be inside unparseable unconsumed budget when actively allocating.
+//
+// Typical usees:
+//  - precise root marking.
+//         not in allocating mode
+//         always provides real refs into real objects.
+//  - conservative root marking
+//         not in allocating mode
+//         can give refs outside of First/Last objects or pointing to Free
+//  - escape checks for array copying.
+//         always provides refs into real objects
+//         may be in allocation mode, but uses the region owned by current thread, thus no allocations could happen concurrently.
+//  - iterating over card table - 
+//         not in allocating mode
+//         can give refs outside of First/Last objects or pointing to Free. (because of card granularity)
 SatoriObject* SatoriRegion::FindObject(size_t location)
 {
-    _ASSERTE(location >= Start() && location <= End());
+    _ASSERTE(location >= Start() && location < End());
+    location = min(location, Start() + Satori::REGION_SIZE_GRANULARITY);
+
+#ifdef FEATURE_CONSERVATIVE_GC
+    if (GCConfig::GetConservativeGC() && m_generation < 0)
+    {
+        return nullptr;
+    }
+#endif
 
     // start search from the first object or after unparseable alloc gap
     SatoriObject* obj = (IsAllocating() && (location >= m_allocEnd)) ?
@@ -515,7 +543,7 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
 
     // ignore objects outside of the current region.
     // this also rejects nulls and byrefs pointing to stack.
-    if (location < (size_t)region->FirstObject() || location > region->End())
+    if (location < (size_t)region->FirstObject() || location >= region->End())
     {
         return;
     }
@@ -524,6 +552,13 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
     if (flags & GC_CALL_INTERIOR)
     {
         o = region->FindObject(location);
+
+#ifdef FEATURE_CONSERVATIVE_GC
+        if (GCConfig::GetConservativeGC() && o->IsFree())
+        {
+            return;
+        }
+#endif
     }
 
     if (!o->IsMarked())
@@ -974,25 +1009,23 @@ void SatoriRegion::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     size_t location = (size_t)*ppObject;
 
     // ignore objects otside of the current region.
-    // this also rejects nulls.
-    if (location < (size_t)region->FirstObject() || location > region->End())
+    // this also rejects nulls and byrefs pointing to stack.
+    if (location < (size_t)region->FirstObject() || location >= region->End())
     {
         return;
     }
 
-    SatoriObject* o;
+    SatoriObject* o = SatoriObject::At(location);
     if (flags & GC_CALL_INTERIOR)
     {
         o = region->FindObject(location);
-        if (o == nullptr)
+
+#ifdef FEATURE_CONSERVATIVE_GC
+        if (GCConfig::GetConservativeGC() && o->IsFree())
         {
             return;
         }
-
-    }
-    else
-    {
-        o = SatoriObject::At(location);
+#endif
     }
 
     size_t reloc = o->GetReloc();
