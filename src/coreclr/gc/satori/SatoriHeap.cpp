@@ -219,6 +219,7 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
     return nullptr;
 }
 
+//TODO: VS unused?
 SatoriObject* SatoriHeap::ObjectForAddress(size_t address)
 {
     return PageForAddress(address)->RegionForAddress(address)->FindObject(address);
@@ -229,7 +230,11 @@ SatoriObject* SatoriHeap::ObjectForAddressChecked(size_t address)
     SatoriPage* page = PageForAddressChecked(address);
     if (page)
     {
-        return page->RegionForAddress(address)->FindObject(address);
+        SatoriRegion* region = page->RegionForAddress(address);
+        if (region)
+        {
+            return region->FindObject(address);
+        }
     }
 
     return nullptr;
