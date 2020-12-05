@@ -97,7 +97,7 @@ private:
     void SweepRegions(SatoriRegionQueue* regions);
     void AddRelocationTarget(SatoriRegion* region);
 
-    SatoriRegion* TryGetRelocationTarget(size_t size);
+    SatoriRegion* TryGetRelocationTarget(size_t size, bool existingRegionOnly);
 
     int RegionCount();
     void AssertNoWork();
