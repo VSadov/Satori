@@ -48,6 +48,8 @@ public:
 
     size_t StartAllocating(size_t minSize);
 
+    bool HasFreeSpaceInTopBucket();
+
     bool IsAllocating();
     void StopEscapeTracking();
 
@@ -64,16 +66,12 @@ public:
     SatoriObject* FirstObject();
     SatoriObject* FindObject(size_t location);
 
-    void ThreadLocalMark();
-    size_t ThreadLocalPlan();
-    void ThreadLocalUpdatePointers();
     SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
     bool Sweep(bool turnMarkedIntoEscaped);
-    void UpdateReferences();
     void TakeFinalizerInfoFrom(SatoriRegion* other);
     bool NothingMarked();
-    void ThreadLocalCompact();
+    void UpdatePointers();
 
     bool IsExposed(SatoriObject** location);
     void EscapeRecursively(SatoriObject* obj);
@@ -134,8 +132,7 @@ private:
             SatoriRegion* m_prev;
             SatoriRegion* m_next;
             SatoriQueue<SatoriRegion>* m_containingQueue;
-            //TODO: VS rename --> finalizableTrackers
-            SatoriMarkChunk* m_finalizables;
+            SatoriMarkChunk* m_finalizableTrackers;
 
             bool m_everHadFinalizables;
             bool m_hasPendingFinalizables;
@@ -172,12 +169,18 @@ private:
 
     static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
 
+    void ThreadLocalMark();
+    size_t ThreadLocalPlan();
+    void ThreadLocalUpdatePointers();
+    void ThreadLocalCompact();
+    void ThreadLocalPendFinalizables();
+
     SatoriAllocator* Allocator();
 
     void PushToMarkStack(SatoriObject* obj);
     SatoriObject* PopFromMarkStack();
     SatoriObject* ObjectForMarkBit(size_t bitmapIndex, int offset);
-    void CompactFinalizables();
+    void CompactFinalizableTrackers();
 
     void SetExposed(SatoriObject** location);
 };
