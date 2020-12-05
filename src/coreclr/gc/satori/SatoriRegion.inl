@@ -83,7 +83,7 @@ void SatoriRegion::ForEachFinalizable(F& lambda)
 {
     size_t items = 0;
     size_t nulls = 0;
-    SatoriMarkChunk* chunk = m_finalizables;
+    SatoriMarkChunk* chunk = m_finalizableTrackers;
     while (chunk)
     {
         items += chunk->Count();
@@ -108,7 +108,7 @@ void SatoriRegion::ForEachFinalizable(F& lambda)
         }
 
         // unfilled slots in the tail chunks count as nulls
-        if (chunk != m_finalizables)
+        if (chunk != m_finalizableTrackers)
         {
             nulls += chunk->FreeSpace();
         }
@@ -121,7 +121,7 @@ void SatoriRegion::ForEachFinalizable(F& lambda)
     // (50% max overhead at O(N) maintenance cost)
     if (nulls * 2 > items)
     {
-       CompactFinalizables();
+       CompactFinalizableTrackers();
     }
 }
 
