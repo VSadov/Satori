@@ -49,9 +49,9 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
     SatoriObject* obj = SatoriObject::At(location);
     _ASSERTE(obj->ContainingRegion()->m_used > location + ArrayBase::GetOffsetOfNumComponents() + sizeof(size_t));
 
-#if _DEBUG
+#ifdef JUNK_FILL_FREE_SPACE
     size_t dirtySize = min(size, obj->ContainingRegion()->m_used - location);
-    memset((void*)(location - sizeof(size_t)), 0xac, dirtySize);
+    memset((void*)(location - sizeof(size_t)), 0xAC, dirtySize);
 #endif
 
     obj->CleanSyncBlock();
