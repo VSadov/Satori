@@ -72,7 +72,7 @@ namespace Satori
     static const int CARD_BYTES_IN_CARD_GROUP = Satori::REGION_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;
 
     static const int8_t CARD_BLANK = 0;
-    static const int8_t CARD_HAS_REFERENCES = 1;
+    static const int8_t CARD_INTERESTING = 1;
     static const int8_t CARD_PROCESSING = 2;
     static const int8_t CARD_DIRTY = 3;
 
