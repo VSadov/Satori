@@ -1333,7 +1333,7 @@ void CheckEscapeSatoriRange(void* dst, size_t src, size_t len)
         return;
     }
 
-    SatoriRegion* srcRegion = page->RegionForAddress((size_t)src);
+    SatoriRegion* srcRegion = page->RegionForAddressChecked((size_t)src);
     if (!srcRegion->OwnedByCurrentThread())
     {
         return;
