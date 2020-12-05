@@ -28,6 +28,7 @@ public:
     void RegionDestroyed(SatoriRegion* region);
 
     SatoriRegion* RegionForAddress(size_t address);
+    SatoriRegion* RegionForAddressChecked(size_t address);
     SatoriRegion* RegionForCardGroup(size_t group);
 
     SatoriRegion* NextInPage(SatoriRegion* region);
@@ -51,7 +52,7 @@ public:
 
     bool TrySetClean()
     {
-        return Interlocked::CompareExchange(&m_cardState, Satori::CARD_HAS_REFERENCES, Satori::CARD_PROCESSING) != Satori::CARD_DIRTY;
+        return Interlocked::CompareExchange(&m_cardState, Satori::CARD_INTERESTING, Satori::CARD_PROCESSING) != Satori::CARD_DIRTY;
     }
 
     size_t CardGroupCount()
@@ -62,6 +63,11 @@ public:
     int8_t& CardGroup(size_t i)
     {
         return m_cardGroups[i];
+    }
+
+    bool TryResetGroup(size_t i)
+    {
+        return Interlocked::CompareExchange(&m_cardGroups[i], Satori::CARD_BLANK, Satori::CARD_INTERESTING) == Satori::CARD_INTERESTING;
     }
 
     int8_t* CardsForGroup(size_t i)
