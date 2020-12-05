@@ -99,7 +99,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 {
     _ASSERTE(region->AllocStart() == 0);
     _ASSERTE(region->AllocRemaining() == 0);
-    _ASSERTE(region->Generation() < 2);
+    _ASSERTE(region->Generation() == 0 || region->Generation() == 1);
 
     region->Verify();
 
@@ -126,9 +126,8 @@ void SatoriRecycler::MaybeTriggerGC()
         }
         else if (Interlocked::CompareExchange(&m_gcInProgress, 1, 0) == 0)
         {
-            //TODO: VS start with gen1?  (though first gen2 is probably cheap)
             // for now just do every 16th scan (every 8 global GCs)
-            int generation = m_scanCount % 16 == 0 ? 2 : 1;
+            int generation = (m_scanCount + 1) % 16 == 0 ? 2 : 1;
             Collect(generation, /*force*/ false);
         }
     }
@@ -150,20 +149,9 @@ void SatoriRecycler::Collect(int generation, bool force)
     {
         m_condemnedGeneration = generation;
         DeactivateAllStacks();
-
         Mark();
         Sweep();
         Compact();
-
-        // TODO: VS we might be able to do this right after marking.
-        //       since we are not demoting, this only updates the age of handles
-        //       which does not look at the age or location of the actual objects.
-        if (m_condemnedGeneration == 2)
-        {
-            PromoteSurvivedHandles();
-        }
-
-        // TODO: VS looks like this needs to hapen after PromoteSurvivedHandles. is that true?
         UpdatePointers();
 
         m_gen1Count++;
@@ -194,7 +182,7 @@ void SatoriRecycler::Mark()
 
     // mark through all cards that have interesting refs (remembered set).
     bool revisitCards = m_condemnedGeneration == 1 ?
-        MarkThroughCards(/* minState */ Satori::CARD_HAS_REFERENCES) :
+        MarkThroughCards(/* minState */ Satori::CARD_INTERESTING) :
         false;
 
     while (m_workList->Count() > 0 || revisitCards)
@@ -242,6 +230,13 @@ void SatoriRecycler::Mark()
 
     WeakPtrScan(/*isShort*/ false);
     WeakPtrScanBySingleThread();
+
+    if (m_condemnedGeneration == 2)
+    {
+        // this does not look at the age or location of the actual objects,
+        // so can be done any time after marking
+        PromoteSurvivedHandles();
+    }
 }
 
 void SatoriRecycler::AssertNoWork()
@@ -532,10 +527,12 @@ bool SatoriRecycler::MarkThroughCards(int8_t minState)
                         //ephemeral regions are not interesting here unless they are dirty.
                         if (groupState < Satori::CARD_DIRTY && region->Generation() < 2)
                         {
+                            //optimization - to not look at this again.
+                            page->TryResetGroup(i);
                             continue;
                         }
 
-                        int8_t resetValue = region->Generation() == 2 ? Satori::CARD_HAS_REFERENCES : Satori::CARD_BLANK;
+                        int8_t resetValue = region->Generation() == 2 ? Satori::CARD_INTERESTING : Satori::CARD_BLANK;
                         bool considerAllMarked = region->Generation() > m_condemnedGeneration;
 
                         int8_t* cards = page->CardsForGroup(i);
@@ -721,7 +718,6 @@ void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* regions)
     }
 }
 
-// TODO: VS can run concurrently, but not with mutator (since it may reregister for finalization) 
 void SatoriRecycler::ScanFinalizables()
 {
     ScanFinalizableRegions(m_ephemeralFinalizationTrackingRegions);
@@ -859,8 +855,8 @@ void SatoriRecycler::SweepNurseryRegions()
 void SatoriRecycler::Sweep()
 {
     SweepNurseryRegions();
-    SweepRegions(m_ephemeralRegions);
 
+    SweepRegions(m_ephemeralRegions);
     if (m_condemnedGeneration == 2)
     {
         SweepRegions(m_tenuredRegions);
@@ -939,7 +935,16 @@ void SatoriRecycler::AddRelocationTarget(SatoriRegion* region)
     }
 }
 
-SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t minSize)
+void SatoriRecycler::Compact()
+{
+    SatoriRegion* curRegion;
+    while (curRegion = m_relocatingRegions->TryPop())
+    {
+        RelocateRegion(curRegion);
+    }
+}
+
+SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t minSize, bool existingRegionOnly)
 {
     //make this occasionally fail in debug to be sure we can handle low memory case.
 #if _DEBUG
@@ -973,6 +978,11 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t minSize)
         }
     }
 
+    if (existingRegionOnly)
+    {
+        return nullptr;
+    }
+
     SatoriRegion* newRegion = m_heap->Allocator()->GetRegion(ALIGN_UP(minSize, Satori::REGION_SIZE_GRANULARITY));
     if (newRegion)
     {
@@ -982,33 +992,36 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t minSize)
     return newRegion;
 }
 
-void SatoriRecycler::Compact()
-{
-    SatoriRegion* curRegion;
-    while (curRegion = m_relocatingRegions->TryPop())
-    {
-        RelocateRegion(curRegion);
-    }
-}
-
 void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
 {
     relocationSource->Verify(true);
 
     size_t copySize = relocationSource->Occupancy();
-    SatoriRegion* relocationTarget = TryGetRelocationTarget(copySize);
+    // if half region is contiguously free, relocate only into existing regions,
+    // otherwise we would rather make this one a target of relocations.
+    bool existingRegionOnly = relocationSource->HasFreeSpaceInTopBucket();
+    SatoriRegion* relocationTarget = TryGetRelocationTarget(copySize, existingRegionOnly);
 
     // could not get a region. we must be low on available memory.
-    // we can try using the source as a target for others.
+    // we can try using the source region as a target for other relocations.
     if (!relocationTarget)
     {
         AddRelocationTarget(relocationSource);
         return;
     }
 
-    size_t dstPtr = relocationTarget->Allocate(copySize, /*zeroInitialize*/ false);
-    size_t dstPtrOrig = dstPtr;
+    // transfer finalization trackers if we have any any
+    relocationTarget->TakeFinalizerInfoFrom(relocationSource);
 
+    // allocate space for relocated objects
+    size_t dstPtr = relocationTarget->Allocate(copySize, /*zeroInitialize*/ false);
+    relocationTarget->StopAllocating(/*allocPtr*/ 0);
+
+    // the target may yet have more space and be a target for more relocations.
+    AddRelocationTarget(relocationTarget);
+
+    // actually relocate src objects into the allocated space.
+    size_t dstPtrOrig = dstPtr;
     size_t objLimit = relocationSource->Start() + Satori::REGION_SIZE_GRANULARITY;
     SatoriObject* obj = relocationSource->FirstObject();
     do
@@ -1016,11 +1029,13 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         size_t size = obj->Size();
         if (obj->IsMarked())
         {
-            // TODO: VS optimize by copying adjacent objects at once.
-            //       Is there actually enough gain vs. touching src twice?   (can force copy N times to amplify cost and measure)
-            //       Then update reloc data. Which could be tricky. Can use mark bits.
+            // TODO: VS this may be optimized by copying contiguous objects at once. Copying is a relatively cheap operation.
+            //       Is there actually enough gain vs. touching src twice?
+            //       Setting reloc data after copying could be tricky. Can use mark bits.
             //
             memcpy((void*)(dstPtr - sizeof(size_t)), (void*)(obj->Start() - sizeof(size_t)), size);
+            // record the new location of the object by storing it in the syncblock space.
+            // make it negative so it is different from a normal syncblock.
             ((ptrdiff_t*)obj)[-1] = -(ptrdiff_t)dstPtr;
             dstPtr += size;
         }
@@ -1029,14 +1044,6 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     } while (obj->Start() < objLimit);
 
     _ASSERTE(dstPtr - dstPtrOrig == copySize);
-    relocationTarget->StopAllocating(/*allocPtr*/ 0);
-
-    // transfer finalization trackers if any
-    relocationTarget->TakeFinalizerInfoFrom(relocationSource);
-
-    // the target may yet have more space. put it back.
-    relocationTarget->Verify(true);
-    AddRelocationTarget(relocationTarget);
 
     // the region is now relocated.
     m_relocatedRegions->Push(relocationSource);
@@ -1076,26 +1083,25 @@ void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t
 #endif
     }
 
-    // TODO: VS not sure we need to check the region.
-    //       - stack is more likely to reference younger stuff.
-    //       - reading generation may thrash the cache by associating to same slot
-    //       - scaning handles will filter to the generation (IS THIS TRUE?)
+    // TODO: VS this check does not look like worth it
+    //       revisit when have good banchmarks
+    //MarkContext* context = (MarkContext*)sc->_unused1;
+    //if (o->ContainingRegion()->Generation() > context->m_condemnedGeneration)
+    //{
+    //    return;
+    //}
 
-    // MarkContext* context = (MarkContext*)sc->_unused1;
-    // if (o->ContainingRegion()->Generation() <= context->m_condemnedGeneration)
+    ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
+    if (ptr < 0)
     {
-        ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
-        if (ptr < 0)
+        ptr = -ptr;
+        if (flags & GC_CALL_INTERIOR)
         {
-            ptr = -ptr;
-            if (flags & GC_CALL_INTERIOR)
-            {
-                *ppObject = (PTR_Object)(location + (ptr - o->Start()));
-            }
-            else
-            {
-                *ppObject = (PTR_Object)ptr;
-            }
+            *ppObject = (PTR_Object)(location + (ptr - o->Start()));
+        }
+        else
+        {
+            *ppObject = (PTR_Object)ptr;
         }
     }
 };
@@ -1165,7 +1171,7 @@ void SatoriRecycler::UpdatePointersInRegions(SatoriRegionQueue* queue)
     SatoriRegion* curRegion;
     while (curRegion = queue->TryPop())
     {
-        curRegion->UpdateReferences();
+        curRegion->UpdatePointers();
         if (curRegion->Generation() == 0)
         {
             continue;
@@ -1197,7 +1203,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
         [&](SatoriPage* page)
         {
             int8_t pageState = page->CardState();
-            if (pageState >= Satori::CARD_HAS_REFERENCES)
+            if (pageState >= Satori::CARD_INTERESTING)
             {
                 //TODO: VS claim the page
                 page->CardState() = Satori::CARD_PROCESSING;
@@ -1207,7 +1213,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                 for (size_t i = 0; i < groupCount; i++)
                 {
                     int8_t groupState = page->CardGroup(i);
-                    if (groupState >= Satori::CARD_HAS_REFERENCES)
+                    if (groupState >= Satori::CARD_INTERESTING)
                     {
                         SatoriRegion* region = page->RegionForCardGroup(i);
 
@@ -1218,7 +1224,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                         }
 
                         // TODO: VS claim the group
-                        int8_t resetValue = Satori::CARD_HAS_REFERENCES;
+                        int8_t resetValue = Satori::CARD_INTERESTING;
 
                         int8_t* cards = page->CardsForGroup(i);
                         page->CardGroup(i) = resetValue;
@@ -1231,7 +1237,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                 continue;
                             }
 
-                            if (cards[j] < Satori::CARD_HAS_REFERENCES)
+                            if (cards[j] < Satori::CARD_INTERESTING)
                             {
                                 continue;
                             }
@@ -1239,9 +1245,9 @@ void SatoriRecycler::UpdatePointersThroughCards()
                             size_t start = page->LocationForCard(&cards[j]);
                             do
                             {
-                                _ASSERTE(cards[j] <= Satori::CARD_HAS_REFERENCES);
+                                _ASSERTE(cards[j] <= Satori::CARD_INTERESTING);
                                 j++;
-                            } while (j < Satori::CARD_BYTES_IN_CARD_GROUP && cards[j] >= Satori::CARD_HAS_REFERENCES);
+                            } while (j < Satori::CARD_BYTES_IN_CARD_GROUP && cards[j] >= Satori::CARD_INTERESTING);
 
                             size_t end = page->LocationForCard(&cards[j]);
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);

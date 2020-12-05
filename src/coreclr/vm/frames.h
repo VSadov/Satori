@@ -859,6 +859,34 @@ public:
     virtual void ExceptionUnwind();
 #endif
 
+    // TODO: Satori. Is this necessary?
+    virtual void GcScanRoots(promote_func* fn, ScanContext* sc)
+    {
+        WRAPPER_NO_CONTRACT;
+#if defined(FEATURE_CONSERVATIVE_GC) && !defined(DACCESS_COMPILE)
+        if (g_pConfig->GetGCConservative() && sc->promotion)
+        {
+            fn((Object**)&this->GetContext()->R10, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->R11, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->R12, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->R13, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->R14, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->R15, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->R8, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->R9, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->Rax, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->Rbp, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->Rbx, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->Rcx, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->Rdi, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->Rdx, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->Rip, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->Rsi, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+            fn((Object**)&this->GetContext()->Rsp, sc, GC_CALL_INTERIOR | GC_CALL_PINNED);
+        }
+#endif
+    }
+
     // Keep as last entry in class
     DEFINE_VTABLE_GETTER_AND_CTOR_AND_DTOR(RedirectedThreadFrame)
 };
