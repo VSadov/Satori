@@ -89,8 +89,18 @@ void SatoriPage::RegionDestroyed(SatoriRegion* region)
     }
 }
 
-//TODO: VS should this be "Checked" ?
 SatoriRegion* SatoriPage::RegionForAddress(size_t address)
+{
+    _ASSERTE(address >= Start() && address < End());
+    size_t mapIndex = (address - Start()) >> Satori::REGION_BITS;
+    while (RegionMap()[mapIndex] > 1)
+    {
+        mapIndex -= ((size_t)1 << (RegionMap()[mapIndex] - 2));
+    }
+    return (SatoriRegion*)((mapIndex << Satori::REGION_BITS) + Start());
+}
+
+SatoriRegion* SatoriPage::RegionForAddressChecked(size_t address)
 {
     _ASSERTE(address >= Start() && address < End());
     size_t mapIndex = (address - Start()) >> Satori::REGION_BITS;
@@ -146,16 +156,16 @@ void SatoriPage::SetCardForAddress(size_t address)
 
     if (!m_cardTable[cardByteOffset])
     {
-        m_cardTable[cardByteOffset] = Satori::CARD_HAS_REFERENCES;
+        m_cardTable[cardByteOffset] = Satori::CARD_INTERESTING;
 
         size_t cardGroupOffset = offset / Satori::REGION_SIZE_GRANULARITY;
         if (!m_cardGroups[cardGroupOffset])
         {
-            m_cardGroups[cardGroupOffset] = Satori::CARD_HAS_REFERENCES;
+            m_cardGroups[cardGroupOffset] = Satori::CARD_INTERESTING;
 
             if (!m_cardState)
             {
-                m_cardState = Satori::CARD_HAS_REFERENCES;
+                m_cardState = Satori::CARD_INTERESTING;
             }
         }
     }
@@ -176,7 +186,7 @@ void SatoriPage::SetCardsForRange(size_t start, size_t end)
     _ASSERTE(lastCard >= m_cardTableStart);
     _ASSERTE(lastCard < m_cardTableSize);
 
-    memset((void*)(m_cardTable + firstCard), Satori::CARD_HAS_REFERENCES, lastCard - firstCard + 1);
+    memset((void*)(m_cardTable + firstCard), Satori::CARD_INTERESTING, lastCard - firstCard + 1);
    
     size_t firstGroup = firstByteOffset / Satori::REGION_SIZE_GRANULARITY;
     size_t lastGroup = lastByteOffset / Satori::REGION_SIZE_GRANULARITY;
@@ -184,13 +194,13 @@ void SatoriPage::SetCardsForRange(size_t start, size_t end)
     {
         if (!m_cardGroups[i])
         {
-            m_cardGroups[i] = Satori::CARD_HAS_REFERENCES;
+            m_cardGroups[i] = Satori::CARD_INTERESTING;
         }
     }
 
     if (!m_cardState)
     {
-        m_cardState = Satori::CARD_HAS_REFERENCES;
+        m_cardState = Satori::CARD_INTERESTING;
     }
 }
 
