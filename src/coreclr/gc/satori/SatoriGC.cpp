@@ -17,6 +17,7 @@
 #include "SatoriHeap.h"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
+#include "../gceventstatus.h"
 
 bool SatoriGC::IsValidSegmentSize(size_t size)
 {
@@ -420,42 +421,52 @@ Object* SatoriGC::GetContainingObject(void* pInteriorPtr, bool fCollectedGenOnly
 
 void SatoriGC::DiagWalkObject(Object* obj, walk_fn fn, void* context)
 {
+    // __UNREACHABLE();
 }
 
 void SatoriGC::DiagWalkObject2(Object* obj, walk_fn2 fn, void* context)
 {
+    // __UNREACHABLE();
 }
 
 void SatoriGC::DiagWalkHeap(walk_fn fn, void* context, int gen_number, bool walk_large_object_heap_p)
 {
+    // __UNREACHABLE();
 }
 
 void SatoriGC::DiagWalkSurvivorsWithType(void* gc_context, record_surv_fn fn, void* diag_context, walk_surv_type type, int gen_number)
 {
+    // __UNREACHABLE();
 }
 
 void SatoriGC::DiagWalkFinalizeQueue(void* gc_context, fq_walk_fn fn)
 {
+    // __UNREACHABLE();
 }
 
 void SatoriGC::DiagScanFinalizeQueue(fq_scan_fn fn, ScanContext* context)
 {
+    // __UNREACHABLE();
 }
 
 void SatoriGC::DiagScanHandles(handle_scan_fn fn, int gen_number, ScanContext* context)
 {
+    // __UNREACHABLE();
 }
 
 void SatoriGC::DiagScanDependentHandles(handle_scan_fn fn, int gen_number, ScanContext* context)
 {
+    __UNREACHABLE();
 }
 
 void SatoriGC::DiagDescrGenerations(gen_walk_fn fn, void* context)
 {
+    // __UNREACHABLE();
 }
 
 void SatoriGC::DiagTraceGCSegments()
 {
+    // __UNREACHABLE();
 }
 
 bool SatoriGC::StressHeap(gc_alloc_context* acontext)
@@ -481,10 +492,12 @@ bool SatoriGC::IsInFrozenSegment(Object* object)
 
 void SatoriGC::ControlEvents(GCEventKeyword keyword, GCEventLevel level)
 {
+    GCEventStatus::Set(GCEventProvider_Default, keyword, level);
 }
 
 void SatoriGC::ControlPrivateEvents(GCEventKeyword keyword, GCEventLevel level)
 {
+    GCEventStatus::Set(GCEventProvider_Private, keyword, level);
 }
 
 // This is not used much. Where it is used, the assumption is that it returns #procs
