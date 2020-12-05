@@ -57,7 +57,7 @@ public:
     SatoriPage* PageForAddressChecked(size_t address)
     {
         size_t mapIndex = address >> Satori::PAGE_BITS;
-        if ((unsigned int)mapIndex < (unsigned int)m_committedMapSize)
+        if (mapIndex < m_committedMapSize)
         {
         tryAgain:
             switch (m_pageMap[mapIndex])
