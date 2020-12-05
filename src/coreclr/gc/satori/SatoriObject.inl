@@ -257,15 +257,11 @@ inline void SatoriObject::ForEachObjectRef(F& lambda, bool includeCollectibleAll
             size_t refPtr = (size_t)this + cur->GetSeriesOffset();
             size_t refPtrStop = refPtr + size + cur->GetSeriesSize();
 
-            // immediately check. this could be a zero-element array
-            // TODO: VS cant't use simple "while" here. Compiler bug?
-            if (refPtr < refPtrStop)
+            // top check loop. this could be a zero-element array
+            while (refPtr < refPtrStop)
             {
-                do
-                {
-                    lambda((SatoriObject**)refPtr);
-                    refPtr += sizeof(size_t);
-                } while (refPtr < refPtrStop);
+                lambda((SatoriObject**)refPtr);
+                refPtr += sizeof(size_t);
             }
             cur--;
         } while (cur >= last);
@@ -328,19 +324,16 @@ inline void SatoriObject::ForEachObjectRef(F& lambda, size_t start, size_t end)
 
             refPtr = max(refPtr, start);
 
-            // TODO: VS make ordinary while
-            if (refPtr < refPtrStop)
+            // top check loop. this could be a zero-element array
+            while (refPtr < refPtrStop)
             {
-                do
+                if (refPtr >= end)
                 {
-                    if (refPtr >= end)
-                    {
-                        return;
-                    }
+                    return;
+                }
 
-                    lambda((SatoriObject**)refPtr);
-                    refPtr += sizeof(size_t);
-                } while (refPtr < refPtrStop);
+                lambda((SatoriObject**)refPtr);
+                refPtr += sizeof(size_t);
             }
 
             cur--;
