@@ -102,11 +102,13 @@ tryAgain:
     return nullptr;
 }
 
+//TODO: VS when Return and when Add?
 void SatoriAllocator::ReturnRegion(SatoriRegion* region)
 {
-    //TUNING: is this too aggressive, or should coalesce with prev too?
+    //TUNING: is this too aggressive?
     region->TryCoalesceWithNext();
     region->SetGeneration(-1);
+    region->TryDecommit();
 
     // TODO: VS select by current core
     m_queues[SizeToBucket(region->Size())]->Push(region);
@@ -114,9 +116,10 @@ void SatoriAllocator::ReturnRegion(SatoriRegion* region)
 
 void SatoriAllocator::AddRegion(SatoriRegion* region)
 {
-    //TUNING: is this too aggressive, or should coalesce with prev too?
+    //TUNING: is this too aggressive?
     region->TryCoalesceWithNext();
     region->SetGeneration(-1);
+    region->TryDecommit();
 
     // TODO: VS select by current core
     m_queues[SizeToBucket(region->Size())]->Enqueue(region);
@@ -212,8 +215,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             }
 
             // try get from the free list
-            size_t desiredFreeSpace = max(size + Satori::MIN_FREE_SIZE, Satori::MIN_REGULAR_ALLOC);
-            if (region->StartAllocating(desiredFreeSpace))
+            if (region->StartAllocating(size))
             {
                 // we have enough free space in the region to continue
                 context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
@@ -237,7 +239,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                 {
                     // perform thread local collection and see if we have enough space after that.
                     region->ThreadLocalCollect();
-                    if (region->StartAllocating(desiredFreeSpace))
+                    if (region->StartAllocating(size))
                     {
                         // we have enough free space in the region to continue
                         context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
