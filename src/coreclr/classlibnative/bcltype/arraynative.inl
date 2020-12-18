@@ -311,7 +311,7 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
 
     if (len >= sizeof(size_t))
     {
-        CheckEscapeSatoriRange(dest, (size_t)src, len);
+        CheckEscapeSatoriRange((size_t)dest, (size_t)src, len);
     }
 
     // To be able to copy forwards, the destination buffer cannot start inside the source buffer

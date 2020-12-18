@@ -1237,7 +1237,9 @@ void Ref_CheckReachable(uint32_t condemned, uint32_t maxgen, ScanContext *sc)
 DhContext *Ref_GetDependentHandleContext(ScanContext* sc)
 {
     WRAPPER_NO_CONTRACT;
-    return &g_pDependentHandleContexts[getSlotNumber(sc)];
+    DhContext* dhc = &g_pDependentHandleContexts[getSlotNumber(sc)];
+    dhc->m_pScanContext = sc;
+    return dhc;
 }
 
 // Scan the dependent handle table promoting any secondary object whose associated primary object is promoted.

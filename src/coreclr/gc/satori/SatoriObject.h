@@ -42,7 +42,7 @@ public:
     void ClearPinnedAndMarked();
     bool IsEscaped();
     bool IsEscapedOrPinned();
-    int GetMarkBitAndOffset(size_t* bitmapIndex);
+    int GetMarkBitAndWord(size_t* bitmapIndex);
 
     void SetPermanentlyPinned();
     bool IsPermanentlyPinned();
