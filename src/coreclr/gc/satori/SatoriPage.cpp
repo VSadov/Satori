@@ -76,19 +76,6 @@ void SatoriPage::RegionInitialized(SatoriRegion* region)
     }
 }
 
-void SatoriPage::RegionDestroyed(SatoriRegion* region)
-{
-    _ASSERTE((size_t)region > Start() && (size_t)region < End());
-    size_t startIndex = (region->Start() - Start()) >> Satori::REGION_BITS;
-    size_t mapCount = region->Size() >> Satori::REGION_BITS;
-    for (int i = 0; i < mapCount; i++)
-    {
-        DWORD log2;
-        BitScanReverse(&log2, i);
-        RegionMap()[startIndex + i] = (uint8_t)(log2 + 2);
-    }
-}
-
 SatoriRegion* SatoriPage::RegionForAddress(size_t address)
 {
     _ASSERTE(address >= Start() && address < End());
@@ -122,12 +109,6 @@ SatoriRegion* SatoriPage::NextInPage(SatoriRegion* region)
 
     size_t address = region->End();
     if (address >= End())
-    {
-        return nullptr;
-    }
-
-    size_t mapIndex = (address - Start()) >> Satori::REGION_BITS;
-    if (RegionMap()[mapIndex] == 0)
     {
         return nullptr;
     }
