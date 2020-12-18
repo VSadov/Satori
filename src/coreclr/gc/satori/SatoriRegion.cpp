@@ -11,6 +11,10 @@
 #include "../env/gcenv.os.h"
 #include "../env/gcenv.ee.h"
 
+#if !defined(_DEBUG)
+//#pragma optimize("gty", on)
+#endif
+
 #include "SatoriGC.h"
 #include "SatoriAllocator.h"
 #include "SatoriRecycler.h"
@@ -23,10 +27,6 @@
 #include "SatoriPage.inl"
 #include "SatoriQueue.h"
 #include "SatoriMarkChunk.h"
-
-#if !defined(_DEBUG)
-// #pragma optimize("gty", on)
-#endif
 
 SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used)
 {
@@ -201,14 +201,16 @@ static const int FREE_LIST_NEXT_OFFSET = sizeof(ArrayBase);
 
 void SatoriRegion::AddFreeSpace(SatoriObject* freeObj)
 {
-    size_t size = freeObj->Size();
-    if (size < Satori::MIN_FREELIST_SIZE)
+    // allocSize is smaller than size to make sure the span can always be made parseable
+    // after allocating objects in it.
+    ptrdiff_t allocSize = freeObj->Size() - Satori::MIN_FREE_SIZE;
+    if (allocSize < Satori::MIN_FREELIST_SIZE)
     {
         return;
     }
 
     DWORD bucket;
-    BitScanReverse64(&bucket, size);
+    BitScanReverse64(&bucket, allocSize);
     bucket -= (Satori::MIN_FREELIST_SIZE_BITS);
     _ASSERTE(bucket >= 0);
     _ASSERTE(bucket < Satori::FREELIST_COUNT);
@@ -217,17 +219,17 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj)
     m_freeLists[bucket] = freeObj;
 }
 
-size_t SatoriRegion::StartAllocating(size_t minSize)
+size_t SatoriRegion::StartAllocating(size_t minAllocSize)
 {
     _ASSERTE(!IsAllocating());
 
     DWORD bucket;
-    BitScanReverse64(&bucket, minSize);
+    BitScanReverse64(&bucket, minAllocSize);
 
-    // when minSize is not a power of two we could search through the current bucket,
+    // when minAllocSize is not a power of two we could search through the current bucket,
     // which may have a large enough obj,
     // but we will just use the next bucket, which guarantees it fits
-    if (minSize & (minSize - 1))
+    if (minAllocSize & (minAllocSize - 1))
     {
         bucket++;
     }
@@ -244,6 +246,7 @@ size_t SatoriRegion::StartAllocating(size_t minSize)
             m_freeLists[bucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
             m_allocStart = freeObj->Start();
             m_allocEnd = freeObj->End();
+            _ASSERTE(AllocRemaining() >= minAllocSize);
             return m_allocStart;
         }
     }
@@ -263,7 +266,7 @@ size_t SatoriRegion::MaxAllocEstimate()
     {
         if (m_freeLists[bucket])
         {
-            maxRemaining = max(maxRemaining, ((size_t)1 << (bucket + Satori::MIN_FREELIST_SIZE_BITS)) - Satori::MIN_FREE_SIZE);
+            maxRemaining = max(maxRemaining, ((size_t)1 << (bucket + Satori::MIN_FREELIST_SIZE_BITS)));
         }
     }
 
@@ -295,7 +298,7 @@ SatoriRegion* SatoriRegion::Split(size_t regionSize)
     size_t nextStart, nextCommitted, nextUsed;
     SplitCore(regionSize, nextStart, nextCommitted, nextUsed);
 
-    // format the rest as a new region
+    // format the rest as a new region 
     SatoriRegion* result = InitializeAt(m_containingPage, nextStart, regionSize, nextCommitted, nextUsed);
     _ASSERTE(result->ValidateBlank());
     return result;
@@ -309,9 +312,9 @@ SatoriRegion* SatoriRegion::NextInPage()
 void SatoriRegion::TryCoalesceWithNext()
 {
     SatoriRegion* next = NextInPage();
-    if (next && CanCoalesce(next))
+    if (next)
     {
-        auto queue = next->m_containingQueue;
+        auto queue = VolatileLoadWithoutBarrier(&next->m_containingQueue);
         if (queue && queue->Kind() == QueueKind::Allocator)
         {
             if (queue->TryRemove(next))
@@ -322,26 +325,45 @@ void SatoriRegion::TryCoalesceWithNext()
     }
 }
 
-bool SatoriRegion::CanCoalesce(SatoriRegion* other)
-{
-    return m_committed == other->Start();
-}
-
 void SatoriRegion::Coalesce(SatoriRegion* next)
 {
-    _ASSERTE(ValidateBlank());
-    _ASSERTE(next->ValidateBlank());
-    _ASSERTE(next->m_prev == next->m_next);
     _ASSERTE(next->m_containingQueue == nullptr);
     _ASSERTE(next->m_containingPage == m_containingPage);
-    _ASSERTE(CanCoalesce(next));
+    _ASSERTE(next->m_prev == next->m_next);
+    _ASSERTE(m_end == next->Start());
+    _ASSERTE(ValidateBlank());
+    _ASSERTE(next->ValidateBlank());
 
     m_end = next->m_end;
-    m_committed = next->m_committed;
-    m_used = next->m_used;
     m_allocEnd = next->m_allocEnd;
 
+    if (m_committed == next->Start())
+    {
+        m_committed = next->m_committed;
+        m_used = next->m_used;
+    }
+    else
+    {
+        size_t toDecommit = next->m_committed - next->Start();
+        _ASSERTE(toDecommit > 0);
+        _ASSERTE(toDecommit % Satori::CommitGranularity() == 0);
+        GCToOSInterface::VirtualDecommit(next, toDecommit);
+    }
+
     m_containingPage->RegionInitialized(this);
+}
+
+void SatoriRegion::TryDecommit()
+{
+    size_t decommitStart = ALIGN_UP((size_t)&m_syncBlock, Satori::CommitGranularity());
+    _ASSERTE(m_committed >= decommitStart);
+
+    size_t decommitSize = m_committed - decommitStart;
+    if (decommitSize > Satori::REGION_SIZE_GRANULARITY / 8)
+    {
+        GCToOSInterface::VirtualDecommit((void*)decommitStart, decommitSize);
+        m_committed = m_used = decommitStart;
+    }
 }
 
 size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
@@ -624,10 +646,10 @@ void SatoriRegion::SetExposed(SatoriObject** location)
     // set the mark bit corresponding to the location to indicate that it is globally exposed
     // same as: ((SatoriObject*)location)->SetMarked();
 
-    size_t word = (size_t)location;
-    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
-    size_t mask = (size_t)1 << ((word >> 3) & 63);
+    size_t bitmapIndex;
+    int offset = ((SatoriObject*)location)->GetMarkBitAndWord(&bitmapIndex);
 
+    size_t mask = (size_t)1 << offset;
     m_bitmap[bitmapIndex] |= mask;
 }
 
@@ -638,11 +660,46 @@ bool SatoriRegion::IsExposed(SatoriObject** location)
     // check the mark bit corresponding to the location
     //same as: return ((SatoriObject*)location)->IsMarked();
 
-    size_t word = (size_t)location;
-    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
-    size_t mask = (size_t)1 << ((word >> 3) & 63);
+    size_t bitmapIndex;
+    int offset = ((SatoriObject*)location)->GetMarkBitAndWord(&bitmapIndex);
 
+    size_t mask = (size_t)1 << offset;
     return m_bitmap[bitmapIndex] & mask;
+}
+
+bool SatoriRegion::AnyExposed(size_t first, size_t length)
+{
+    _ASSERTE(length % 8 == 0);
+
+    size_t last = first + length - sizeof(size_t);
+    _ASSERTE(((SatoriObject*)first)->ContainingRegion() == this);
+    _ASSERTE(((SatoriObject*)last)->ContainingRegion() == this);
+
+    size_t bitmapIndexF;
+    size_t maskF = (size_t)-1 << ((SatoriObject*)first)->GetMarkBitAndWord(&bitmapIndexF);
+
+    size_t bitmapIndexL;
+    size_t maskL = (size_t)-1 >> (63 - ((SatoriObject*)last)->GetMarkBitAndWord(&bitmapIndexL));
+
+    if (bitmapIndexF == bitmapIndexL)
+    {
+        return m_bitmap[bitmapIndexF] & maskF & maskL;
+    }
+
+    if (m_bitmap[bitmapIndexF] & maskF)
+    {
+        return true;
+    }
+
+    for (size_t i = bitmapIndexF + 1; i < bitmapIndexL; i++)
+    {
+        if (m_bitmap[i])
+        {
+            return true;
+        }
+    }
+
+    return m_bitmap[bitmapIndexL] & maskL;
 }
 
 void SatoriRegion::EscapeRecursively(SatoriObject* o)
@@ -779,7 +836,7 @@ void SatoriRegion::ThreadLocalMark()
             obj->Validate();
 
             // skip the object
-            markBitOffset = obj->Next()->GetMarkBitAndOffset(&bitmapIndex);
+            markBitOffset = obj->Next()->GetMarkBitAndWord(&bitmapIndex);
         }
         else
         {
@@ -1093,7 +1150,7 @@ void SatoriRegion::ThreadLocalUpdatePointers()
             }
 
             // skip the object
-            markBitOffset = obj->Next()->GetMarkBitAndOffset(&bitmapIndex);
+            markBitOffset = obj->Next()->GetMarkBitAndWord(&bitmapIndex);
         }
         else
         {
@@ -1363,12 +1420,12 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
 {
     _ASSERTE(from->Start() < End());
     size_t bitmapIndex;
-    int markBitOffset = from->GetMarkBitAndOffset(&bitmapIndex);
+    int markBitOffset = from->GetMarkBitAndWord(&bitmapIndex);
 
     DWORD offset;
     if (BitScanForward64(&offset, m_bitmap[bitmapIndex] >> markBitOffset))
     {
-        // got reachable object.
+        // got mark bit
         markBitOffset += offset;
     }
     else
@@ -1379,7 +1436,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
             bitmapIndex++;
             if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
             {
-                // got reachable object.
+                // got mark bit
                 markBitOffset = offset;
                 break;
             }
@@ -1393,12 +1450,12 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
 {
     _ASSERTE(from->Start() < End());
     size_t bitmapIndex;
-    int markBitOffset = from->GetMarkBitAndOffset(&bitmapIndex);
+    int markBitOffset = from->GetMarkBitAndWord(&bitmapIndex);
 
     DWORD offset;
     if (BitScanForward64(&offset, m_bitmap[bitmapIndex] >> markBitOffset))
     {
-        // got reachable object.
+        // got mark bit
         markBitOffset += offset;
     }
     else
@@ -1411,7 +1468,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
             bitmapIndex++;
             if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
             {
-                // got reachable object.
+                // got mark bit
                 markBitOffset = offset;
                 break;
             }

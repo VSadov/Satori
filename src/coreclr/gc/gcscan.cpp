@@ -56,7 +56,6 @@ void GCScan::GcDhInitialScan(promote_func* fn, int condemned, int max_gen, ScanC
     pDhContext->m_pfnPromoteFunction = fn;
     pDhContext->m_iCondemned = condemned;
     pDhContext->m_iMaxGen = max_gen;
-    pDhContext->m_pScanContext = sc;
 
     // Look for dependent handle whose primary has been promoted but whose secondary has not. Promote the
     // secondary in those cases. Additionally this scan sets the m_fUnpromotedPrimaries and m_fPromoted state
