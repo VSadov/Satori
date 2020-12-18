@@ -33,9 +33,10 @@ public:
     void WipeCards();
 
     SatoriRegion* Split(size_t regionSize);
-    bool CanCoalesce(SatoriRegion* other);
     void TryCoalesceWithNext();
     void Coalesce(SatoriRegion* next);
+
+    void TryDecommit();
 
     size_t AllocStart();
     size_t AllocRemaining();
@@ -74,6 +75,7 @@ public:
     void UpdatePointers();
 
     bool IsExposed(SatoriObject** location);
+    bool AnyExposed(size_t from, size_t length);
     void EscapeRecursively(SatoriObject* obj);
 
     void EscapeShallow(SatoriObject* o);
