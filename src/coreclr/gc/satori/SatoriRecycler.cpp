@@ -55,6 +55,9 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_gen1Count = m_gen2Count = 0;
     m_condemnedGeneration = 0;
+
+    m_gen1Threshold = 5;
+    m_gen1Budget = 0;
 }
 
 // not interlocked. this is not done concurrently. 
@@ -89,10 +92,19 @@ int SatoriRecycler::CondemnedGeneration()
     return m_condemnedGeneration;
 }
 
+int SatoriRecycler::Gen1RegionCount()
+{
+    return m_ephemeralFinalizationTrackingRegions->Count() + m_ephemeralRegions->Count();
+}
+
+int SatoriRecycler::Gen2RegionCount()
+{
+    return m_tenuredFinalizationTrackingRegions->Count() + m_tenuredRegions->Count();
+}
+
 int SatoriRecycler::RegionCount()
 {
-    return m_ephemeralFinalizationTrackingRegions->Count() + m_ephemeralRegions->Count() +
-        m_tenuredFinalizationTrackingRegions->Count() + m_tenuredRegions->Count();
+    return Gen1RegionCount() + Gen2RegionCount();
 }
 
 void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
@@ -116,9 +128,9 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 // TODO: VS this should be moved to heuristics.
 void SatoriRecycler::MaybeTriggerGC()
 {
-    int count = RegionCount();
+    int count1 = Gen1RegionCount();
 
-    if (count - m_prevRegionCount > 10)
+    if (count1 > m_gen1Threshold)
     {
         if (m_gcInProgress)
         {
@@ -126,11 +138,38 @@ void SatoriRecycler::MaybeTriggerGC()
         }
         else if (Interlocked::CompareExchange(&m_gcInProgress, 1, 0) == 0)
         {
-            // for now just do every 16th scan (every 8 global GCs)
-            int generation = (m_scanCount + 1) % 16 == 0 ? 2 : 1;
-            Collect(generation, /*force*/ false);
+            // for now just do every 16th Gen1
+            // int generation = (m_gen1Count + 1) % 16 == 0 ? 2 : 1;
+            // Collect(generation, /*force*/ false);
+
+            if (m_gen1Budget <= 0)
+            {
+                Collect2();
+            }
+            else
+            {
+                Collect1();
+            }
         }
     }
+}
+
+NOINLINE
+void SatoriRecycler::Collect1()
+{
+    Collect(1, false);
+
+    m_condemnedGeneration = 0;
+    m_gcInProgress = false;
+}
+
+NOINLINE
+void SatoriRecycler::Collect2()
+{
+    Collect(2, false);
+
+    m_condemnedGeneration = 0;
+    m_gcInProgress = false;
 }
 
 void SatoriRecycler::Collect(int generation, bool force)
@@ -144,24 +183,41 @@ void SatoriRecycler::Collect(int generation, bool force)
     // become coop again (it will not block since VM is done suspending)
     GCToEEInterface::DisablePreemptiveGC();
 
-    int count = RegionCount();
-    if (count - m_prevRegionCount > 10 || force)
+    int count1 = Gen1RegionCount();
+    if (count1 > m_gen1Threshold || force)
     {
         m_condemnedGeneration = generation;
+        m_isCompacting = true;
+
         DeactivateAllStacks();
+
+        m_condemnedRegionsCount = m_condemnedGeneration == 2 ?
+            RegionCount() :
+            Gen1RegionCount();
+
         Mark();
         Sweep();
         Compact();
         UpdatePointers();
 
         m_gen1Count++;
+
         if (m_condemnedGeneration == 2)
         {
             m_gen2Count++;
         }
 
         // TODO: update stats and heuristics.
-        m_prevRegionCount = RegionCount();
+        if (m_condemnedGeneration == 2)
+        {
+            m_gen1Budget = Gen2RegionCount();
+        }
+        else
+        {
+            m_gen1Budget -= Gen1RegionCount();
+        }
+
+        m_gen1Threshold = Gen1RegionCount() + max(5, Gen2RegionCount() / 4);
     }
 
     m_condemnedGeneration = 0;
@@ -464,7 +520,7 @@ void SatoriRecycler::DrainMarkQueues()
                     }
                 },
                 /* includeCollectibleAllocator */ true
-                    );
+            );
         }
 
         // done with srcChunk
@@ -867,8 +923,6 @@ void SatoriRecycler::Sweep()
 
 void SatoriRecycler::SweepRegions(SatoriRegionQueue* regions)
 {
-    bool compacting = true;
-
     SatoriRegion* curRegion;
     while (curRegion = regions->TryPop())
     {
@@ -885,7 +939,7 @@ void SatoriRecycler::SweepRegions(SatoriRegionQueue* regions)
         {
             _ASSERTE(curRegion->Generation() != 2);
             // when not compacting, gen1 GC does not need to sweep.
-            canRecycle = compacting ?
+            canRecycle = m_isCompacting ?
                 curRegion->Sweep(/*turnMarkedIntoEscaped*/ false) :
                 curRegion->NothingMarked();
         }
@@ -898,7 +952,7 @@ void SatoriRecycler::SweepRegions(SatoriRegionQueue* regions)
         else
         {
             // if not compacting, we are done here
-            if (!compacting)
+            if (!m_isCompacting)
             {
                 m_stayingRegions->Push(curRegion);
                 continue;
@@ -937,25 +991,41 @@ void SatoriRecycler::AddRelocationTarget(SatoriRegion* region)
 
 void SatoriRecycler::Compact()
 {
+    if (m_relocatingRegions->Count() < m_condemnedRegionsCount / 2)
+    {
+        m_isCompacting = false;
+    }
+
     SatoriRegion* curRegion;
     while (curRegion = m_relocatingRegions->TryPop())
     {
-        RelocateRegion(curRegion);
+        if (m_isCompacting)
+        {
+            RelocateRegion(curRegion);
+        }
+        else
+        {
+            m_stayingRegions->Push(curRegion);
+        }
     }
 }
 
-SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t minSize, bool existingRegionOnly)
+SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool existingRegionOnly)
 {
     //make this occasionally fail in debug to be sure we can handle low memory case.
 #if _DEBUG
-    if (minSize % 1024 == 0)
+    if (allocSize % 1024 == 0)
     {
         return nullptr;
     }
 #endif
 
     DWORD bucket;
-    BitScanReverse64(&bucket, minSize);
+    BitScanReverse64(&bucket, allocSize);
+
+    // we could search through this bucket, which may have a large enough obj,
+    // but we will just use the next queue, which guarantees it fits
+    bucket++;
 
     bucket = bucket > Satori::MIN_FREELIST_SIZE_BITS ?
         bucket - Satori::MIN_FREELIST_SIZE_BITS :
@@ -972,7 +1042,8 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t minSize, bool existi
             SatoriRegion* region = queue->TryPop();
             if (region)
             {
-                region->StartAllocating(minSize);
+                size_t allocStart = region->StartAllocating(allocSize);
+                _ASSERTE(allocStart);
                 return region;
             }
         }
@@ -983,7 +1054,7 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t minSize, bool existi
         return nullptr;
     }
 
-    SatoriRegion* newRegion = m_heap->Allocator()->GetRegion(ALIGN_UP(minSize, Satori::REGION_SIZE_GRANULARITY));
+    SatoriRegion* newRegion = m_heap->Allocator()->GetRegion(ALIGN_UP(allocSize, Satori::REGION_SIZE_GRANULARITY));
     if (newRegion)
     {
         newRegion->SetGeneration(m_condemnedGeneration);
@@ -1108,43 +1179,46 @@ void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t
 
 void SatoriRecycler::UpdatePointers()
 {
-    ScanContext sc;
-    sc.promotion = FALSE;
-    MarkContext c = MarkContext(this);
-    sc._unused1 = &c;
-
-    //TODO: VS there should be only one thread with "thread_number == 0"
-    //TODO: VS implement two-pass scheme with preferred vs. any stacks
-    IncrementScanCount();
-
-    //generations are meaningless here, so we pass -1
-    GCToEEInterface::GcScanRoots(UpdateFn, -1, -1, &sc);
-
-    // concurrent, per thread/heap
-    // relies on thread_number to select handle buckets and specialcases #0
-    GCScan::GcScanHandles(UpdateFn, m_condemnedGeneration, 2, &sc);
-    _ASSERTE(c.m_markChunk == nullptr);
-
-    // update refs in finalization queue
-    if (m_heap->FinalizationQueue()->HasItems())
+    if (m_isCompacting)
     {
-        // add finalization queue to mark list
-        m_heap->FinalizationQueue()->ForEachObjectRef(
-            [&](SatoriObject** ppObject)
-            {
-                SatoriObject* o = *ppObject;
-                ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
-                if (ptr < 0)
+        ScanContext sc;
+        sc.promotion = FALSE;
+        MarkContext c = MarkContext(this);
+        sc._unused1 = &c;
+
+        //TODO: VS there should be only one thread with "thread_number == 0"
+        //TODO: VS implement two-pass scheme with preferred vs. any stacks
+        IncrementScanCount();
+
+        //generations are meaningless here, so we pass -1
+        GCToEEInterface::GcScanRoots(UpdateFn, -1, -1, &sc);
+
+        // concurrent, per thread/heap
+        // relies on thread_number to select handle buckets and specialcases #0
+        GCScan::GcScanHandles(UpdateFn, m_condemnedGeneration, 2, &sc);
+        _ASSERTE(c.m_markChunk == nullptr);
+
+        // update refs in finalization queue
+        if (m_heap->FinalizationQueue()->HasItems())
+        {
+            // add finalization queue to mark list
+            m_heap->FinalizationQueue()->ForEachObjectRef(
+                [&](SatoriObject** ppObject)
                 {
-                    *ppObject = (SatoriObject*)-ptr;
+                    SatoriObject* o = *ppObject;
+                    ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
+                    if (ptr < 0)
+                    {
+                        *ppObject = (SatoriObject*)-ptr;
+                    }
                 }
-            }
-        );
-    }
+            );
+        }
 
-    if (m_condemnedGeneration != 2)
-    {
-        UpdatePointersThroughCards();
+        if (m_condemnedGeneration != 2)
+        {
+            UpdatePointersThroughCards();
+        }
     }
 
     // return target regions
@@ -1171,7 +1245,11 @@ void SatoriRecycler::UpdatePointersInRegions(SatoriRegionQueue* queue)
     SatoriRegion* curRegion;
     while (curRegion = queue->TryPop())
     {
-        curRegion->UpdatePointers();
+        if (m_isCompacting)
+        {
+            curRegion->UpdatePointers();
+        }
+
         if (curRegion->Generation() == 0)
         {
             continue;
