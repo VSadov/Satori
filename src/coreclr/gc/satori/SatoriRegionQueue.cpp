@@ -58,14 +58,15 @@ SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*
 
         m_lock.Leave();
 
-        if (result->Size() > regionSize)
-        {
-            // if there is a diff split it off and put back to appropriate queue.
-            putBack = result->Split(result->Size() - regionSize);
-        }
-
         _ASSERTE(result->m_prev == nullptr);
         result->m_next = nullptr;
+
+        if (result->Size() > regionSize)
+        {
+            // if there is a diff split what is needed and put the rest back to appropriate queue.
+            putBack = result;
+            result = putBack->Split(regionSize);
+        }
     }
 
     return result;
@@ -131,14 +132,15 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
 
         m_lock.Leave();
 
-        if (result->Size() > regionSize)
-        {
-            // if there is a diff split it off and put back to appropriate queue.
-            putBack = result->Split(result->Size() - regionSize);
-        }
-
         result->m_prev = nullptr;
         result->m_next = nullptr;
+
+        if (result->Size() > regionSize)
+        {
+            // if there is a diff split what is needed and put the rest back to appropriate queue.
+            putBack = result;
+            result = putBack->Split(regionSize);
+        }
     }
 
     return result;
