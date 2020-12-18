@@ -36,7 +36,7 @@ namespace Satori
     const static int INDEX_GRANULARITY = 1 << INDEX_GRANULARITY_BITS;
     const static int INDEX_LENGTH = REGION_SIZE_GRANULARITY / INDEX_GRANULARITY;
 
-    static const int BUCKET_COUNT = PAGE_BITS - REGION_BITS;
+    static const int ALLOCATOR_BUCKET_COUNT = PAGE_BITS - REGION_BITS;
 
     // objects smaller than this go into regular region. A random big number.
     static const int LARGE_OBJECT_THRESHOLD = 85000;
@@ -72,7 +72,7 @@ namespace Satori
     static const int CARD_BYTES_IN_CARD_GROUP = Satori::REGION_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;
 
     static const int8_t CARD_BLANK = 0;
-    static const int8_t CARD_HAS_REFERENCES = 1;
+    static const int8_t CARD_INTERESTING = 1;
     static const int8_t CARD_PROCESSING = 2;
     static const int8_t CARD_DIRTY = 3;
 
@@ -80,6 +80,10 @@ namespace Satori
     // Assuming minimum sized objects, when 1/8 escapes, stop tracking escapes
     // The actual value may not matter a lot. Still may be worth revisiting.
     static const int MAX_TRACKED_ESCAPES = REGION_SIZE_GRANULARITY / MIN_FREE_SIZE / 8;
+
+    static const int MIN_FREELIST_SIZE_BITS = 12;
+    static const size_t MIN_FREELIST_SIZE = 1 << MIN_FREELIST_SIZE_BITS;
+    static const int FREELIST_COUNT = Satori::REGION_BITS - MIN_FREELIST_SIZE_BITS;
 }
 
 class SatoriUtil

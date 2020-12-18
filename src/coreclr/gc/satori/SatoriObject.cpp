@@ -47,14 +47,18 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
     _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY);
 
     SatoriObject* obj = SatoriObject::At(location);
+    _ASSERTE(obj->ContainingRegion()->m_used > location + ArrayBase::GetOffsetOfNumComponents() + sizeof(size_t));
+
+#ifdef JUNK_FILL_FREE_SPACE
+    size_t dirtySize = min(size, obj->ContainingRegion()->m_used - location);
+    memset((void*)(location - sizeof(size_t)), 0xAC, dirtySize);
+#endif
+
     obj->CleanSyncBlock();
     obj->RawSetMethodTable(s_emptyObjectMt);
 
-    // deduct the size of Array header + syncblock
+    // deduct the size of Array header + syncblock and set the size of the free bytes.
     ((DWORD*)obj)[ArrayBase::GetOffsetOfNumComponents() / sizeof(DWORD)] = (DWORD)(size - (sizeof(ArrayBase) + sizeof(size_t)));
-
-    _ASSERTE(obj->ContainingRegion()->m_used > location + ArrayBase::GetOffsetOfNumComponents() + sizeof(size_t));
-
     return obj;
 }
 
@@ -82,7 +86,7 @@ void SatoriObject::DirtyCardsForContent()
 void SatoriObject::Validate()
 {
 #ifdef _DEBUG
-    _ASSERTE(this->GetReloc() == 0);
+    // _ASSERTE(this->GetReloc() == 0);
     _ASSERTE(this->Size() >= Satori::MIN_FREE_SIZE);
 
     if (ContainingRegion()->OwnedByCurrentThread())

@@ -48,6 +48,8 @@ public:
 
     size_t StartAllocating(size_t minSize);
 
+    bool HasFreeSpaceInTopBucket();
+
     bool IsAllocating();
     void StopEscapeTracking();
 
@@ -64,14 +66,12 @@ public:
     SatoriObject* FirstObject();
     SatoriObject* FindObject(size_t location);
 
-    void ThreadLocalMark();
-    size_t ThreadLocalPlan();
-    void ThreadLocalUpdatePointers();
     SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
     bool Sweep(bool turnMarkedIntoEscaped);
+    void TakeFinalizerInfoFrom(SatoriRegion* other);
     bool NothingMarked();
-    void ThreadLocalCompact();
+    void UpdatePointers();
 
     bool IsExposed(SatoriObject** location);
     void EscapeRecursively(SatoriObject* obj);
@@ -82,8 +82,12 @@ public:
     template<typename F>
     void ForEachFinalizable(F& lambda);
     bool RegisterForFinalization(SatoriObject* finalizable);
-    bool HasFinalizables();
+    bool EverHadFinalizables();
     bool& HasPendingFinalizables();
+
+    size_t Occupancy();
+
+    bool HasPinnedObjects();
 
     void ClearMarks();
     void PromoteToGen1();
@@ -100,9 +104,6 @@ private:
     // The first actually useful index is offsetof(m_firstObject) / sizeof(size_t) / 8,
     static const int BITMAP_START = (BITMAP_LENGTH + Satori::INDEX_LENGTH + 2) / sizeof(size_t) / 8;
 
-    static const int MIN_FREELIST_BUCKET_BITS = 12;
-    static const size_t MIN_FREELIST_BUCKET = 1 << MIN_FREELIST_BUCKET_BITS;
-    static const int NUM_FREELIST_BUCKETS = Satori::REGION_BITS - MIN_FREELIST_BUCKET_BITS;
     union
     {
         // object metadata - one bit per size_t
@@ -131,8 +132,9 @@ private:
             SatoriRegion* m_prev;
             SatoriRegion* m_next;
             SatoriQueue<SatoriRegion>* m_containingQueue;
-            SatoriMarkChunk* m_finalizables;
+            SatoriMarkChunk* m_finalizableTrackers;
 
+            bool m_everHadFinalizables;
             bool m_hasPendingFinalizables;
 
             // active allocation may happen in the following range.
@@ -145,12 +147,13 @@ private:
             int32_t m_markStack;
 
             // counting escaped objects
-            // when number goes to high, we stop escaping and do not do local GC.
+            // when number goes too high, we stop escaping and do not do local GC.
             int32_t m_escapeCounter;
 
             size_t m_occupancy;
+            size_t m_hasPinnedObjects;
 
-            SatoriObject* m_freeLists[NUM_FREELIST_BUCKETS];
+            SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
         };
     };
 
@@ -166,12 +169,18 @@ private:
 
     static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
 
+    void ThreadLocalMark();
+    size_t ThreadLocalPlan();
+    void ThreadLocalUpdatePointers();
+    void ThreadLocalCompact();
+    void ThreadLocalPendFinalizables();
+
     SatoriAllocator* Allocator();
 
     void PushToMarkStack(SatoriObject* obj);
     SatoriObject* PopFromMarkStack();
     SatoriObject* ObjectForMarkBit(size_t bitmapIndex, int offset);
-    void CompactFinalizables();
+    void CompactFinalizableTrackers();
 
     void SetExposed(SatoriObject** location);
 };

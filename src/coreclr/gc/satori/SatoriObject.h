@@ -11,6 +11,9 @@
 #include "common.h"
 #include "../gc.h"
 
+// overwrite freed space with junk for debugging purposes.
+// #define JUNK_FILL_FREE_SPACE
+
 class SatoriObject : public Object
 {
     friend class SatoriRegion;
@@ -41,8 +44,8 @@ public:
     bool IsEscapedOrPinned();
     int GetMarkBitAndOffset(size_t* bitmapIndex);
 
-    void SetPOH();
-    bool IsPOH();
+    void SetPermanentlyPinned();
+    bool IsPermanentlyPinned();
 
     void DirtyCardsForContent();
 

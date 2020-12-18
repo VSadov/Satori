@@ -26,7 +26,7 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
     m_heap = heap;
 
-    for (int i = 0; i < Satori::BUCKET_COUNT; i++)
+    for (int i = 0; i < Satori::ALLOCATOR_BUCKET_COUNT; i++)
     {
         m_queues[i] = new SatoriRegionQueue(QueueKind::Allocator);
     }
@@ -51,7 +51,7 @@ tryAgain:
         return region;
     }
 
-    while (++bucket < Satori::BUCKET_COUNT)
+    while (++bucket < Satori::ALLOCATOR_BUCKET_COUNT)
     {
         region = m_queues[bucket]->TryPopWithSize(regionSize, putBack);
         if (region)
@@ -106,6 +106,7 @@ void SatoriAllocator::ReturnRegion(SatoriRegion* region)
 {
     //TUNING: is this too aggressive, or should coalesce with prev too?
     region->TryCoalesceWithNext();
+    region->SetGeneration(-1);
 
     // TODO: VS select by current core
     m_queues[SizeToBucket(region->Size())]->Push(region);
@@ -115,6 +116,7 @@ void SatoriAllocator::AddRegion(SatoriRegion* region)
 {
     //TUNING: is this too aggressive, or should coalesce with prev too?
     region->TryCoalesceWithNext();
+    region->SetGeneration(-1);
 
     // TODO: VS select by current core
     m_queues[SizeToBucket(region->Size())]->Enqueue(region);
@@ -126,7 +128,6 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 
     SatoriObject* result;
 
-    // TODO: VS special region for POH, AllocLarge is ok for now
     if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
     {
         result = AllocLarge(context, size, flags);
@@ -155,7 +156,7 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 
     if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
     {
-        result->SetPOH();
+        result->SetPermanentlyPinned();
     }
 
     return result;
@@ -221,13 +222,27 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
             if (region->IsThreadLocal())
             {
-                // perform thread local colletion and see if we have enough space after that.
-                region->ThreadLocalCollect();
-                if (region->StartAllocating(desiredFreeSpace))
+                // a thread allocating in a tight loop may ignore suspension for a very long time.
+                // check if suspension is requested.
+                GCToEEInterface::GcPoll();
+
+                // if full GC happened, we could have lost the region ownership, check for that.
+                if (context->RegularRegion() == nullptr)
                 {
-                    // we have enough free space in the region to continue
-                    context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
+                    region = nullptr;
                     continue;
+                }
+
+                if (region->OwnedByCurrentThread())
+                {
+                    // perform thread local collection and see if we have enough space after that.
+                    region->ThreadLocalCollect();
+                    if (region->StartAllocating(desiredFreeSpace))
+                    {
+                        // we have enough free space in the region to continue
+                        context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
+                        continue;
+                    }
                 }
             }
 
@@ -235,7 +250,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             context->alloc_ptr = context->alloc_limit = nullptr;
             region->ClearMarks();
             region->PromoteToGen1();
-            m_heap->Recycler()->AddRegion(region);
+            m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
         m_heap->Recycler()->MaybeTriggerGC();
@@ -248,6 +263,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
         _ASSERTE(region->NothingMarked());
         context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
+        region->SetGeneration(0);
         region->m_ownerThreadTag = SatoriUtil::GetCurrentThreadTag();
         context->RegularRegion() = region;
     }
@@ -280,7 +296,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
             }
         }
 
-        // handle huge allocation. It can't be form the current region.
+        // handle huge allocation. It can't be from the current region.
         size_t regionSize = ALIGN_UP(size + sizeof(SatoriRegion) + Satori::MIN_FREE_SIZE, Satori::REGION_SIZE_GRANULARITY);
         if (regionSize > Satori::REGION_SIZE_GRANULARITY)
         {
@@ -305,7 +321,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
 
             context->LargeRegion() = nullptr;
             region->PromoteToGen1();
-            m_heap->Recycler()->AddRegion(region);
+            m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
         // get a new region.
@@ -318,6 +334,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
         }
 
         _ASSERTE(region->NothingMarked());
+        region->SetGeneration(0);
         context->LargeRegion() = region;
     }
 }
@@ -333,6 +350,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
         return nullptr;
     }
 
+    hugeRegion->SetGeneration(0);
     bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
     SatoriObject* result = SatoriObject::At(hugeRegion->AllocateHuge(size, zeroInitialize));
     if (!result)
@@ -359,7 +377,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
                 curLarge->StopAllocating(/* allocPtr */ 0);
             }
             curLarge->PromoteToGen1();
-            m_heap->Recycler()->AddRegion(curLarge);
+            m_heap->Recycler()->AddEphemeralRegion(curLarge);
         }
 
         context->LargeRegion() = hugeRegion;

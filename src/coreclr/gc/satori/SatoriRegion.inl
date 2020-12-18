@@ -83,7 +83,7 @@ void SatoriRegion::ForEachFinalizable(F& lambda)
 {
     size_t items = 0;
     size_t nulls = 0;
-    SatoriMarkChunk* chunk = m_finalizables;
+    SatoriMarkChunk* chunk = m_finalizableTrackers;
     while (chunk)
     {
         items += chunk->Count();
@@ -107,26 +107,42 @@ void SatoriRegion::ForEachFinalizable(F& lambda)
             }
         }
 
+        // unfilled slots in the tail chunks count as nulls
+        if (chunk != m_finalizableTrackers)
+        {
+            nulls += chunk->FreeSpace();
+        }
+
         chunk = chunk->Next();
     }
 
     // typically the list is short, so having some dead entries is not a big deal.
-    // compacting at 1/2 occupancy should be good enough (
-    // (50% overhead limit at O(N) maintenance cost)
-    if (nulls * 2 >= items)
+    // compacting at 1/2 occupancy should be good enough.
+    // (50% max overhead at O(N) maintenance cost)
+    if (nulls * 2 > items)
     {
-       CompactFinalizables();
+       CompactFinalizableTrackers();
     }
 }
 
-inline bool SatoriRegion::HasFinalizables()
+inline bool SatoriRegion::EverHadFinalizables()
 {
-    return m_finalizables;
+    return m_everHadFinalizables;
 }
 
 inline bool& SatoriRegion::HasPendingFinalizables()
 {
     return m_hasPendingFinalizables;
+}
+
+inline size_t SatoriRegion::Occupancy()
+{
+    return m_occupancy;
+}
+
+inline bool SatoriRegion::HasPinnedObjects()
+{
+    return m_hasPinnedObjects;
 }
 
 #endif

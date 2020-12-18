@@ -229,7 +229,11 @@ SatoriObject* SatoriHeap::ObjectForAddressChecked(size_t address)
     SatoriPage* page = PageForAddressChecked(address);
     if (page)
     {
-        return page->RegionForAddress(address)->FindObject(address);
+        SatoriRegion* region = page->RegionForAddressChecked(address);
+        if (region)
+        {
+            return region->FindObject(address);
+        }
     }
 
     return nullptr;

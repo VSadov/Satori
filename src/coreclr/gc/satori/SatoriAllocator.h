@@ -31,13 +31,13 @@ public:
     void AddRegion(SatoriRegion* region);
     Object* Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
-    //TODO: VS do we need not-allocating version for recycler? (it should be able to handle failures)
+    //TODO: VS when understand constraints we need not-allocating version for recycler (recycler is able to handle failures)
     SatoriMarkChunk* TryGetMarkChunk();
     void ReturnMarkChunk(SatoriMarkChunk* chunk);
 
 private:
     SatoriHeap* m_heap;
-    SatoriRegionQueue* m_queues[Satori::BUCKET_COUNT];
+    SatoriRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
 
     SatoriMarkChunkQueue* m_markChunks;
 
@@ -55,7 +55,7 @@ private:
 #else
         BitScanReverse(&highestBit, value);
 #endif
-        return min(highestBit - Satori::REGION_BITS, Satori::BUCKET_COUNT - 1);
+        return min(highestBit - Satori::REGION_BITS, Satori::ALLOCATOR_BUCKET_COUNT - 1);
     }
 
     bool AddMoreMarkChunks();
