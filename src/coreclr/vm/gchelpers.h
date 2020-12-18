@@ -70,7 +70,7 @@ void ErectWriteBarrier(OBJECTREF* dst, OBJECTREF ref);
 #if FEATURE_SATORI_GC
 bool IsInHeapSatori(void* ptr);
 void CheckEscapeSatori(Object** dst, Object* ref);
-void CheckEscapeSatoriRange(void* dst, size_t src, size_t len);
+void CheckEscapeSatoriRange(size_t dst, size_t src, size_t len);
 #endif
 
 void SetCardsAfterBulkCopy(Object** dst, Object **src, size_t len);
