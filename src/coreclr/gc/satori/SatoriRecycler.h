@@ -25,9 +25,16 @@ public:
     void AddEphemeralRegion(SatoriRegion* region);
     void MaybeTriggerGC();
 
+    void Collect1();
+    void Collect2();
+
     int GetScanCount();
     int64_t GetCollectionCount(int gen);
     int CondemnedGeneration();
+
+    int Gen1RegionCount();
+
+    int Gen2RegionCount();
 
     void Collect(int generation, bool force);
 private:
@@ -35,14 +42,11 @@ private:
 
     // used to ensure each thread is scanned once per scan round.
     int m_scanCount;
-
-    int64_t m_gen1Count;
-    int64_t m_gen2Count;
     int m_condemnedGeneration;
-
-    // region count at the end of last GC, used in a crude GC triggering heuristic.
-    int m_prevRegionCount;
+    bool m_isCompacting;
     int m_gcInProgress;
+
+    SatoriMarkChunkQueue* m_workList;
 
     // temporary store for Gen0 regions
     SatoriRegionQueue* m_nurseryRegions;
@@ -62,7 +66,12 @@ private:
     SatoriRegionQueue* m_relocationTargets[Satori::FREELIST_COUNT];
     SatoriRegionQueue* m_relocatedRegions;
 
-    SatoriMarkChunkQueue* m_workList;
+    int64_t m_gen1Count;
+    int64_t m_gen2Count;
+
+    int m_gen1Threshold;
+    int m_gen1Budget;
+    int m_condemnedRegionsCount;
 
     static void DeactivateFn(gc_alloc_context* context, void* param);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
