@@ -25,7 +25,6 @@ public:
     SatoriRegion* MakeInitialRegion();
 
     void RegionInitialized(SatoriRegion* region);
-    void RegionDestroyed(SatoriRegion* region);
 
     SatoriRegion* RegionForAddress(size_t address);
     SatoriRegion* RegionForAddressChecked(size_t address);
