@@ -1325,50 +1325,70 @@ void CheckEscapeSatori(Object** dst, Object* ref)
     }
 }
 
-void CheckEscapeSatoriRange(void* dst, size_t src, size_t len)
+void CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
 {
-    SatoriPage* page = PageForAddressCheckedSatori((void*)src);
-    if (!page)
+    SatoriRegion* curRegion = (SatoriRegion * )GCToEEInterface::GetAllocContext()->gc_reserved_1;
+    if (!curRegion || !curRegion->IsThreadLocal())
     {
+        // not tracking escapes
         return;
     }
 
-    SatoriRegion* srcRegion = page->RegionForAddressChecked((size_t)src);
-    if (!srcRegion->OwnedByCurrentThread())
-    {
-        return;
-    }
+    _ASSERTE(curRegion->OwnedByCurrentThread());
 
-    // TODO: VS the following IsEscaped checks could be done faster by scanning bitmaps
-
-    // if move is within a region, check if the dest is escaped.
-    if ((((size_t)dst ^ (size_t)src) >> 21) == 0)
+    // if dst is within the current region and is not exposed, we are done
+    if (((dst ^ curRegion->Start()) >> 21) == 0)
     {
-        SatoriObject* containingDstObj = srcRegion->FindObject((size_t)dst);
-        if (!containingDstObj->IsEscaped())
+        if (!curRegion->AnyExposed(dst, len))
         {
             return;
         }
     }
 
-    SatoriObject* containingSrcObj = srcRegion->FindObject((size_t)src);
-    if (containingSrcObj->IsEscaped())
+    if (!PageForAddressCheckedSatori((void*)dst))
     {
+        // dest not in heap
         return;
     }
 
-    containingSrcObj->ForEachObjectRef(
-        [&](SatoriObject** ref)
+    if (((src ^ curRegion->Start()) >> 21) == 0)
+    {
+        // if src is already escaped, we are done
+        if (!curRegion->AnyExposed(src, len))
         {
-            SatoriObject* child = *ref;
-            if (child->ContainingRegion() == srcRegion)
-            {
-                srcRegion->EscapeRecursively(child);
-            }
-        },
-        src,
-        src + len
-    );
+            SatoriObject* containingSrcObj = curRegion->FindObject(src);
+            containingSrcObj->ForEachObjectRef(
+                [&](SatoriObject** ref)
+                {
+                    SatoriObject* child = *ref;
+                    if (child->ContainingRegion() == curRegion)
+                    {
+                        curRegion->EscapeRecursively(child);
+                    }
+                },
+                src,
+                src + len
+            );
+        }
+        return;
+    }
+
+    if (PageForAddressCheckedSatori((void*)src))
+    {
+        // src is not in current region but in heap, it can't escape anything that belong to current thread
+        return;
+    }
+
+    // very rare case where we are copying refs out of non-heap area like stack or native heap.
+    // we do not have a containing type and that would be somewhat inconvenient.
+    // one way to handle this is by concervatively escaping any value that matches an unescaped pointer in curRegion.
+    // 
+    // in practice, while theoretically possible, I do not know a code path that could lead here.
+    // as a particular concern, boxing copy typically uses a newly allocated and not yet escaped target.
+    //
+    // in case if this is reachable we will simply stop tracking if this ever occurs.
+    _ASSERTE(!"escaping by copying from outside of heap, we can handle this, but it is unexpected");
+    curRegion->StopEscapeTracking();
 }
 #endif
 
