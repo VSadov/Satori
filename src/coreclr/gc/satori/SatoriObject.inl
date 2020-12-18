@@ -198,7 +198,7 @@ inline void SatoriObject::CleanSyncBlock()
     ((size_t*)this)[-1] = 0;
 }
 
-inline int SatoriObject::GetMarkBitAndOffset(size_t* bitmapIndex)
+inline int SatoriObject::GetMarkBitAndWord(size_t* bitmapIndex)
 {
     size_t start = Start();
     *bitmapIndex = (start >> 9) & (SatoriRegion::BITMAP_LENGTH - 1); // % words in the bitmap
@@ -207,12 +207,12 @@ inline int SatoriObject::GetMarkBitAndOffset(size_t* bitmapIndex)
 
 inline void SatoriObject::SetPermanentlyPinned()
 {
-    GetHeader()->SetGCBit();
+    ((DWORD*)this)[-1] |= BIT_SBLK_GC_RESERVE;
 }
 
 inline bool SatoriObject::IsPermanentlyPinned()
 {
-   return GetHeader()->GetBits() & BIT_SBLK_GC_RESERVE;
+    return ((DWORD*)this)[-1] & BIT_SBLK_GC_RESERVE;
 }
 
 template<typename F>
