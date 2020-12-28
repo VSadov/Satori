@@ -61,7 +61,7 @@ bool SatoriFinalizationQueue::TryScheduleForFinalization(SatoriObject* finalizab
 }
 
 // called by STW GC when no other producers or consumers are running.
-bool SatoriFinalizationQueue::TryScheduleForFinalizationExclusive(SatoriObject* finalizable)
+bool SatoriFinalizationQueue::TryScheduleForFinalizationSTW(SatoriObject* finalizable)
 {
     int enq = m_enqueue;
     Entry* e = &m_data[enq & m_sizeMask];
