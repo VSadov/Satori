@@ -40,7 +40,11 @@ tryAgain:
     SatoriRegion* putBack = nullptr;
 
     int bucket = SizeToBucket(regionSize);
-    SatoriRegion* region = m_queues[bucket]->TryRemoveWithSize(regionSize, putBack);
+
+    SatoriRegion* region = (bucket == 0) ?
+                            m_queues[bucket]->TryPop():
+                            m_queues[bucket]->TryRemoveWithSize(regionSize, putBack);
+
     if (region)
     {
         if (putBack)
@@ -225,8 +229,9 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             if (region->IsThreadLocal())
             {
                 // a thread allocating in a tight loop may ignore suspension for a very long time.
-                // check if suspension is requested.
-                GCToEEInterface::GcPoll();
+                // check if full GC is starting.
+                // TODO: VS maybe move before StartAllocating above? (we are parseable there)
+                m_heap->Recycler()->MaybeTriggerGC();
 
                 // if full GC happened, we could have lost the region ownership, check for that.
                 if (context->RegularRegion() == nullptr)
@@ -250,7 +255,6 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
             context->RegularRegion() = nullptr;
             context->alloc_ptr = context->alloc_limit = nullptr;
-            region->ClearMarks();
             region->PromoteToGen1();
             m_heap->Recycler()->AddEphemeralRegion(region);
         }
@@ -273,6 +277,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
 SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
+    // TODO: VS check with recycler about help/collecting?
     SatoriRegion* region = context->LargeRegion();
 
     while (true)

@@ -395,17 +395,8 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
     AssignAndMarkCards:
         mov     [rcx], rdx
 
-    ; 1) check if the src and dst are from the same region
-        mov     rax, rdx
-        xor     rax, rcx
-        shr     rax, 21
-        jz      Exit                    ; same segment no need for barrier.
-
-    ; 2) check if the src is already in gen2
-        cmp     word ptr [r8+16], 1     ; r8 is region, r8+16 is its generation
-        jg      Exit                    ; src is in gen2 region, no need for barriers
-
-    ; SETTING CARD FOR RCX
+    ; TODO: VS BARRIER_UPDATE
+     ; SETTING CARD FOR RCX
         mov     r8,  rcx
         mov     r9 , [g_card_table]     ; fetch the page map
         mov     rax, rcx
@@ -426,24 +417,13 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         mov     rdx,r8
 
         shr     r8, 9     ; card offset
-        cmp     byte ptr [rax + r8], 0
-        je      SetCard
-        REPRET
-     SetCard:
-        mov     byte ptr [rax + r8], 1        
-
+     DirtyCard:
+        mov     byte ptr [rax + r8], 3
         shr     rdx, 21    ; group offset
-        cmp     byte ptr [rax + rdx + 80h], 0
-        je      SetGroup
-        REPRET
-     SetGroup:
-        mov     byte ptr [rax + rdx + 80h], 1
-
-        cmp     byte ptr [rax], 0
-        je      SetPage
-        REPRET
-     SetPage:
-        mov     byte ptr [rax], 1              ; set page
+     DirtyGroup:
+        mov     byte ptr [rax + rdx + 80h], 3
+     DirtyPage:
+        mov     byte ptr [rax], 3
 
     Exit:
         ret

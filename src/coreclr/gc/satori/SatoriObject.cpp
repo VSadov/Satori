@@ -66,20 +66,13 @@ void SatoriObject::DirtyCardsForContent()
 {
     _ASSERTE(IsMarked());
     MethodTable* mt = RawGetMethodTable();
-    if (mt->ContainsPointers())
+    if (mt->ContainsPointersOrCollectible())
     {
         SatoriPage* page = ContainingRegion()->m_containingPage;
-        page->DirtyCardsForRange(Start(), End());
-    }
-
-    if (mt->Collectible())
-    {
-        SatoriObject* o = (SatoriObject*)GCToEEInterface::GetLoaderAllocatorObjectForGC(this);
-        if (!o->IsMarked())
-        {
-            o->SetMarked();
-            o->DirtyCardsForContent();
-        }
+        // if dealing with a collectible type, include MT in the dirty range
+        // to be treated as a "reference" to the collectible allocator.
+        size_t rangeStart = mt->Collectible() ? Start() : Start() + sizeof(size_t);
+        page->DirtyCardsForRange(rangeStart, End());
     }
 }
 
