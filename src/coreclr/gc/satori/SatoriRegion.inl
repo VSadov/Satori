@@ -74,8 +74,16 @@ inline SatoriObject* SatoriRegion::FirstObject()
 
 inline void SatoriRegion::StopEscapeTracking()
 {
-    m_ownerThreadTag = 0;
-    m_escapeFunc = nullptr;
+    if (IsThreadLocal())
+    {
+        ClearMarks();
+        m_escapeFunc = nullptr;
+
+        // must clear ownership after clearing marks
+        // to make sure concurrent marking does not start marking before we clear
+        // NB: marking does not need a pair for this fence, since writes cannot be speculative
+        VolatileStore(&m_ownerThreadTag, (size_t)0);
+    }
 }
 
 template<typename F>
