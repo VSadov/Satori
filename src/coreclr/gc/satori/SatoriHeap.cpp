@@ -224,16 +224,23 @@ SatoriObject* SatoriHeap::ObjectForAddress(size_t address)
     return PageForAddress(address)->RegionForAddress(address)->FindObject(address);
 }
 
-SatoriObject* SatoriHeap::ObjectForAddressChecked(size_t address)
+SatoriRegion* SatoriHeap::RegionForAddressChecked(size_t address)
 {
     SatoriPage* page = PageForAddressChecked(address);
     if (page)
     {
-        SatoriRegion* region = page->RegionForAddressChecked(address);
-        if (region)
-        {
-            return region->FindObject(address);
-        }
+        return page->RegionForAddressChecked(address);
+    }
+
+    return nullptr;
+}
+
+SatoriObject* SatoriHeap::ObjectForAddressChecked(size_t address)
+{
+    SatoriRegion* region = RegionForAddressChecked(address);
+    if (region)
+    {
+        return region->FindObject(address);
     }
 
     return nullptr;

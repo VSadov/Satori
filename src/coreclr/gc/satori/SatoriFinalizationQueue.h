@@ -19,7 +19,7 @@ public:
     void Initialize();
 
     bool TryScheduleForFinalization(SatoriObject* finalizable);
-    bool TryScheduleForFinalizationExclusive(SatoriObject* finalizable);
+    bool TryScheduleForFinalizationSTW(SatoriObject* finalizable);
     SatoriObject* TryGetNextItem();
     bool HasItems();
 
