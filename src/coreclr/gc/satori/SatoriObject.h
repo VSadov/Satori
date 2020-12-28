@@ -37,8 +37,10 @@ public:
     bool IsMarked();
     bool IsMarkedOrOlderThan(int generation);
     void SetMarked();
+    void SetMarkedAtomic();
     bool IsPinned();
     void SetPinned();
+    void SetPinnedAtomic();
     void ClearPinnedAndMarked();
     bool IsEscaped();
     bool IsEscapedOrPinned();
@@ -52,6 +54,8 @@ public:
     void EscapeCheck();
 
     bool IsFinalizationSuppressed();
+    void SuppressFinalization();
+    void UnSuppressFinalization();
 
     int32_t GetNextInMarkStack();
     void SetNextInMarkStack(int32_t);
@@ -75,6 +79,7 @@ private:
     static void Initialize();
 
     void SetBit(int offset);
+    void SetBitAtomic(int offset);
     void ClearBit(int offset);
     bool CheckBit(int offset);
     void SetEscaped();
