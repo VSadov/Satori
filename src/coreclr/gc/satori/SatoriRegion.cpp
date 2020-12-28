@@ -166,8 +166,8 @@ bool SatoriRegion::ValidateIndexEmpty()
 {
     for (int i = 0; i < Satori::INDEX_LENGTH; i += Satori::INDEX_LENGTH / 4)
     {
-        _ASSERTE(m_index[i] == nullptr);
-        if (m_index[i] != nullptr)
+        _ASSERTE(m_index[i] == 0);
+        if (m_index[i] != 0)
         {
             return false;
         }
@@ -302,6 +302,11 @@ SatoriRegion* SatoriRegion::Split(size_t regionSize)
     SatoriRegion* result = InitializeAt(m_containingPage, nextStart, regionSize, nextCommitted, nextUsed);
     _ASSERTE(result->ValidateBlank());
     return result;
+}
+
+SatoriPage* SatoriRegion::ContainingPage()
+{
+    return m_containingPage;
 }
 
 SatoriRegion* SatoriRegion::NextInPage()
@@ -528,9 +533,10 @@ SatoriObject* SatoriRegion::FindObject(size_t location)
     size_t limit = LocationToIndex(obj->Start());
     for (size_t current = LocationToIndex(location); current > limit; current--)
     {
-        SatoriObject* indexed = m_index[current];
-        if (indexed != nullptr)
+        int offset = m_index[current];
+        if (offset)
         {
+            SatoriObject* indexed = SatoriObject::At(Start() + offset);
             if (indexed->Start() > obj->Start())
             {
                 obj = indexed;
@@ -555,7 +561,7 @@ SatoriObject* SatoriRegion::FindObject(size_t location)
             size_t last = LocationToIndex(next->Start());
             do
             {
-                m_index[i++] = obj;
+                m_index[i++] = (int)(obj->Start() - Start());
             }
             while (i <= last);
         }
@@ -594,8 +600,8 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
 
     if (!o->IsMarked())
     {
-        region->PushToMarkStack(o);
         o->SetMarked();
+        region->PushToMarkStack(o);
     }
 
     if (flags & GC_CALL_PINNED)
