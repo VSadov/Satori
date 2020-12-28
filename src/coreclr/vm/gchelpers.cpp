@@ -1401,18 +1401,18 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
     STATIC_CONTRACT_GC_NOTRIGGER;
 
 #if FEATURE_SATORI_GC
+    // TODO: VS BARRIER_UPDATE
+    //SatoriObject* obj = (SatoriObject*)OBJECTREFToObject(ref);
+    //if ((((size_t)dst ^ (size_t)obj) >> 21) == 0)
+    //{
+    //    // same region
+    //    return;
+    //}
 
-    SatoriObject* obj = (SatoriObject*)OBJECTREFToObject(ref);
-    if ((((size_t)dst ^ (size_t)obj) >> 21) == 0)
-    {
-        // same region
-        return;
-    }
-
-    if (!obj || obj->ContainingRegion()->Generation() == 2)
-    {
-        return;
-    }
+    //if (!obj || obj->ContainingRegion()->Generation() == 2)
+    //{
+    //    return;
+    //}
 
     SatoriPage* page = PageForAddressCheckedSatori(dst);
     if (!page)
@@ -1421,7 +1421,9 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
         return;
     }
 
-    page->SetCardForAddress((size_t)dst);
+    // TODO: VS BARRIER_UPDATE
+    // page->SetCardForAddress((size_t)dst);
+    page->DirtyCardForAddress((size_t)dst);
 
 #else
     // if the dst is outside of the heap (unboxed value classes) then we
@@ -1539,8 +1541,9 @@ SetCardsAfterBulkCopy(Object** dst, Object **src, size_t len)
             // not assigning to heap
             return;
         }
-
-        page->SetCardsForRange((size_t)dst, (size_t)dst + len);
+        // TODO: VS BARRIER_UPDATE
+        //page->SetCardsForRange((size_t)dst, (size_t)dst + len);
+        page->DirtyCardsForRange((size_t)dst, (size_t)dst + len);
 #else
         InlinedSetCardsAfterBulkCopyHelper(dst, len);
 #endif
