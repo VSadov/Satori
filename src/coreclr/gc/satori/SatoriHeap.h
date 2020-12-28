@@ -87,7 +87,7 @@ public:
     }
 
     SatoriObject* ObjectForAddress(size_t address);
-
+    SatoriRegion* RegionForAddressChecked(size_t address);
     SatoriObject* ObjectForAddressChecked(size_t address);
 
     template<typename F>
