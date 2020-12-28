@@ -32,7 +32,7 @@ namespace Satori
     const static int REGION_BITS = 21;
     const static size_t REGION_SIZE_GRANULARITY = 1 << REGION_BITS;
 
-    const static int INDEX_GRANULARITY_BITS = 12;
+    const static int INDEX_GRANULARITY_BITS = 11;
     const static int INDEX_GRANULARITY = 1 << INDEX_GRANULARITY_BITS;
     const static int INDEX_LENGTH = REGION_SIZE_GRANULARITY / INDEX_GRANULARITY;
 
