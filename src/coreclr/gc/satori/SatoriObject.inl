@@ -75,6 +75,27 @@ inline void SatoriObject::SetBit(int offset)
     ContainingRegion()->m_bitmap[bitmapIndex] |= mask;
 }
 
+inline void SatoriObject::SetBitAtomic(int offset)
+{
+    size_t word = Start() + offset * sizeof(size_t);
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t bit = ((word >> 3) & 63);
+
+#ifdef _MSC_VER
+#ifdef HOST_64BIT
+    _interlockedbittestandset64((long long*)&ContainingRegion()->m_bitmap[bitmapIndex], bit);
+#else
+    _interlockedbittestandset((long*)&ContainingRegion()->m_bitmap[bitmapIndex], bit);
+#endif
+#else
+    //NB: this does not need to be a full fence, if possible. 
+    //    just need to set a bit atomically. (i.e. LDSET on ARM 8.1)
+    //    ordering WRT other writes is unimportant, as long as the bit is set.
+    size_t mask = (size_t)1 << bit;
+    __sync_or_and_fetch(&ContainingRegion()->m_bitmap[bitmapIndex], mask);
+#endif
+}
+
 inline void SatoriObject::ClearBit(int offset)
 {
     size_t word = Start() + offset * sizeof(size_t);
@@ -98,7 +119,7 @@ inline bool SatoriObject::IsMarked()
     return CheckBit(0);
 }
 
-inline bool SatoriObject::IsMarkedOrOlderThan(int generation)
+FORCEINLINE bool SatoriObject::IsMarkedOrOlderThan(int generation)
 {
     return ContainingRegion()->Generation() > generation || IsMarked();
 }
@@ -106,6 +127,11 @@ inline bool SatoriObject::IsMarkedOrOlderThan(int generation)
 inline void SatoriObject::SetMarked()
 {
     SetBit(0);
+}
+
+inline void SatoriObject::SetMarkedAtomic()
+{
+    SetBitAtomic(0);
 }
 
 inline bool SatoriObject::IsPinned()
@@ -116,6 +142,11 @@ inline bool SatoriObject::IsPinned()
 inline void SatoriObject::SetPinned()
 {
     SetBit(2);
+}
+
+inline void SatoriObject::SetPinnedAtomic()
+{
+    SetBitAtomic(2);
 }
 
 inline void SatoriObject::ClearPinnedAndMarked()
@@ -146,6 +177,16 @@ inline bool SatoriObject::IsEscapedOrPinned()
 inline bool SatoriObject::IsFinalizationSuppressed()
 {
     return GetHeader()->GetBits() & BIT_SBLK_FINALIZER_RUN;
+}
+
+inline void SatoriObject::SuppressFinalization()
+{
+    GetHeader()->SetBit(BIT_SBLK_FINALIZER_RUN);
+}
+
+inline void SatoriObject::UnSuppressFinalization()
+{
+    GetHeader()->ClrBit(BIT_SBLK_FINALIZER_RUN);
 }
 
 //
@@ -293,6 +334,15 @@ template<typename F>
 inline void SatoriObject::ForEachObjectRef(F& lambda, size_t start, size_t end)
 {
     MethodTable* mt = RawGetMethodTable();
+
+    if (start <= Start() && mt->Collectible())
+    {
+        uint8_t* loaderAllocator = GCToEEInterface::GetLoaderAllocatorObjectForGC(this);
+        // NB: Allocator ref location is fake. The actual location is a handle).
+        //     it is ok to "update" the ref, but it will have no effect
+        lambda((SatoriObject**)&loaderAllocator);
+    }
+
     if (!mt->ContainsPointers())
     {
         return;
