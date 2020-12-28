@@ -30,7 +30,6 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
             region->StopAllocating(allocPtr);
         }
 
-        region->ClearMarks();
         if (detach || !region->IsThreadLocal())
         {
             region->PromoteToGen1();
