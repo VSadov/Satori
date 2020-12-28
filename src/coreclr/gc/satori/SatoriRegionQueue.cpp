@@ -45,6 +45,7 @@ SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*
     else 
     {
         // take out the result
+        m_count--;
         result->m_containingQueue = nullptr;
         m_head = result->m_next;
         if (m_head == nullptr)
@@ -111,6 +112,7 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
     else
     {
         // take out the result
+        m_count--;
         result->m_containingQueue = nullptr;
         if (result->m_prev == nullptr)
         {
