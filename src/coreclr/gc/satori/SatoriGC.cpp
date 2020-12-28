@@ -170,7 +170,13 @@ HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
     generation = (generation < 0) ? 2 : min(generation, 2);
     generation = max(1, generation);
 
-    m_heap->Recycler()->Collect(generation, /*force*/ true);
+    // TODO: VS forced compaction
+    // only blocking collection is an observable contract
+    if (mode & collection_mode::collection_blocking)
+    {
+        m_heap->Recycler()->Collect(generation, /*force*/ true);
+    }
+
     return S_OK;
 }
 
@@ -181,20 +187,21 @@ unsigned SatoriGC::GetMaxGeneration()
 
 void SatoriGC::SetFinalizationRun(Object* obj)
 {
-    obj->GetHeader()->SetBit(BIT_SBLK_FINALIZER_RUN);
+    ((SatoriObject*)obj)->SuppressFinalization();
 }
 
 bool SatoriGC::RegisterForFinalization(int gen, Object* obj)
 {
-    _ASSERTE(obj->RawGetMethodTable()->HasFinalizer());
-    if (obj->GetHeader()->GetBits() & BIT_SBLK_FINALIZER_RUN)
+    SatoriObject* so = (SatoriObject*)obj;
+    _ASSERTE(so->RawGetMethodTable()->HasFinalizer());
+
+    if (so->IsFinalizationSuppressed())
     {
-        obj->GetHeader()->ClrBit(BIT_SBLK_FINALIZER_RUN);
+        so->UnSuppressFinalization();
         return true;
     }
     else
-    {
-        SatoriObject* so = (SatoriObject*)obj;
+    {        
         return so->ContainingRegion()->RegisterForFinalization(so);
     }
 }
