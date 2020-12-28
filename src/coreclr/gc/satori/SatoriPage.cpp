@@ -200,6 +200,7 @@ void SatoriPage::DirtyCardForAddress(size_t address)
     VolatileStore(&this->m_cardState, Satori::CARD_DIRTY);
 }
 
+// TODO: VS barrier dirtying could be unordered?
 void SatoriPage::DirtyCardsForRange(size_t start, size_t end)
 {
     size_t firstByteOffset = start - Start();
