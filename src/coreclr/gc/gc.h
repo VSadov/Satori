@@ -345,6 +345,16 @@ inline bool IsServerHeap()
 #endif // FEATURE_SVR_GC
 }
 
+inline bool IsSatoriHeap()
+{
+#ifdef FEATURE_SATORI_GC
+    assert(g_gc_heap_type != GC_HEAP_INVALID);
+    return g_gc_heap_type == GC_HEAP_SATORI;
+#else // FEATURE_SVR_GC
+    return false;
+#endif // FEATURE_SVR_GC
+}
+
 #ifndef MAX_LONGPATH
 #define MAX_LONGPATH 1024
 #endif // MAX_LONGPATH
@@ -479,16 +489,6 @@ void GCLog (const char *fmt, ... );
 #if defined(TRACE_GC) || defined(GC_CONFIG_DRIVEN)
 FILE* CreateLogFile(const GCConfigStringHolder& temp_logfile_name, bool is_config);
 #endif //TRACE_GC || GC_CONFIG_DRIVEN
-
-inline bool IsSatoriHeap()
-{
-#ifdef FEATURE_SATORI_GC
-    assert(g_gc_heap_type != GC_HEAP_INVALID);
-    return g_gc_heap_type == GC_HEAP_SATORI;
-#else // FEATURE_SVR_GC
-    return false;
-#endif // FEATURE_SVR_GC
-}
 
 void log_init_error_to_host (const char* format, ...);
 
