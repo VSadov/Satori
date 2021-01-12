@@ -514,6 +514,7 @@ set(GC_SOURCES_WKS
     ../gc/softwarewritewatch.cpp
     ../gc/handletablecache.cpp
     ../gc/satori/SatoriGC.cpp
+    ../gc/satori/SatoriHandlePartitioner.cpp
     ../gc/satori/SatoriHeap.cpp
     ../gc/satori/SatoriPage.cpp
     ../gc/satori/SatoriObject.cpp
