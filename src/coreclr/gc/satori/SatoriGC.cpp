@@ -10,6 +10,7 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 
+#include "SatoriHandlePartitioner.h"
 #include "SatoriObject.h"
 #include "SatoriObject.inl"
 #include "SatoriGC.h"
@@ -222,6 +223,7 @@ HRESULT SatoriGC::Initialize()
 {
     m_perfCounterFrequency = GCToOSInterface::QueryPerformanceFrequency();
     SatoriObject::Initialize();
+    SatoriHandlePartitioner::Initialize();
     m_heap = SatoriHeap::Create();
     if (m_heap == nullptr)
     {
@@ -507,18 +509,14 @@ void SatoriGC::ControlPrivateEvents(GCEventKeyword keyword, GCEventLevel level)
     GCEventStatus::Set(GCEventProvider_Private, keyword, level);
 }
 
-// This is not used much. Where it is used, the assumption is that it returns #procs
-// see: SyncBlockCacheWeakPtrScan and getNumberOfSlots
 int SatoriGC::GetNumberOfHeaps()
 {
-    return GCToOSInterface::GetTotalProcessorCount();;
+    return SatoriHandlePartitioner::PartitionCount();
 }
 
 int SatoriGC::GetHomeHeapNumber()
 {
-    // TODO: Satori   this is a number in [0, procNum) associated with thread
-    //                it is implementable, do 0 for now.
-    return 0;
+    return SatoriHandlePartitioner::CurrentThreadPartition();
 }
 
 size_t SatoriGC::GetPromotedBytes(int heap_index)
