@@ -33,6 +33,7 @@ public:
     void Collect2();
 
     int GetScanCount();
+    uint8_t GetNextScanTicket();
     int64_t GetCollectionCount(int gen);
     int CondemnedGeneration();
 
@@ -44,7 +45,7 @@ public:
 private:
     SatoriHeap* m_heap;
 
-    // used to ensure each thread is scanned once per scan round.
+    // used to ensure each thread or handle partition is scanned once per scan round.
     int m_scanCount;
     int m_condemnedGeneration;
     bool m_isCompacting;
@@ -87,8 +88,9 @@ private:
     void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
     void MarkOwnStack();
     void MarkOtherStacks();
-    void MarkFinalizableQueue();
+    void MarkFinalizationQueue();
     void IncrementScanCount();
+    uint8_t GetScanTicket();
     void DrainMarkQueues(SatoriMarkChunk* srcChunk = nullptr);
     void DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk = nullptr);
     bool MarkThroughCards(int8_t minState);
@@ -107,9 +109,11 @@ private:
     void Sweep();
     void Compact();
     void RelocateRegion(SatoriRegion* region);
-    void UpdatePointers();
+    void Finish();
 
-    void UpdatePointersInRegions(SatoriRegionQueue* queue);
+    void UpdateFinalizationQueue();
+
+    void FinishRegions(SatoriRegionQueue* queue);
     void UpdatePointersThroughCards();
     void SweepRegions(SatoriRegionQueue* regions);
     void AddRelocationTarget(SatoriRegion* region);
