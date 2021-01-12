@@ -10,6 +10,7 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 
+#include "SatoriHandlePartitioner.h"
 #include "SatoriHeap.h"
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
@@ -26,6 +27,9 @@
 #ifdef memcpy
 #undef memcpy
 #endif //memcpy
+
+#define CONCURRENT true
+//#define CONCURRENT false
 
 void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
@@ -58,22 +62,29 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_gen1Threshold = 5;
     m_gen1Budget = 0;
-    m_isConcurrent = true;
+    m_isConcurrent = CONCURRENT;
 }
 
 // not interlocked. this is not done concurrently. 
 void SatoriRecycler::IncrementScanCount()
 {
     m_scanCount++;
+
+    // make sure the ticket is not 0
+    if (!GetScanTicket())
+    {
+        m_scanCount++;
+    }
 }
 
-// CONSISTENCY: no synchronization needed
-// there is only one writer (thread that initiates GC)
-// and treads reading this are guarantee to see it
-// since they need to know that there is GC in progress in the first place
 int SatoriRecycler::GetScanCount()
 {
     return m_scanCount;
+}
+
+uint8_t SatoriRecycler::GetScanTicket()
+{
+    return (uint8_t)m_scanCount;
 }
 
 int64_t SatoriRecycler::GetCollectionCount(int gen)
@@ -145,6 +156,7 @@ void SatoriRecycler::Help()
         //       to help in blocking GC.
         if (m_isConcurrent)
         {
+            MarkHandles();
             MarkOwnStack();
         }
     }
@@ -162,10 +174,12 @@ void SatoriRecycler::TryStartGC(int generation)
             //             but it is a relatively fast part. 
             //             draining concurrently needs IU barrier.
             IncrementScanCount();
+            SatoriHandlePartitioner::StartNextScan();
         }
 
         Help();
 
+        // TODO: VS this should happen when help did not make progress.
         if (m_condemnedGeneration == 1)
         {
             Collect1();
@@ -223,7 +237,7 @@ void SatoriRecycler::Collect1()
     BlockingCollect();
 
     // this is just to prevent tailcalls
-    m_isConcurrent = true;
+    m_isConcurrent = CONCURRENT;
 }
 
 NOINLINE
@@ -232,7 +246,7 @@ void SatoriRecycler::Collect2()
     BlockingCollect();
 
     // this is just to prevent tailcalls
-    m_isConcurrent = true;
+    m_isConcurrent = CONCURRENT;
 }
 
 void SatoriRecycler::BlockingCollect()
@@ -261,7 +275,7 @@ void SatoriRecycler::BlockingCollect()
     Mark();
     Sweep();
     Compact();
-    UpdatePointers();
+    Finish();
 
     m_gen1Count++;
 
@@ -270,7 +284,7 @@ void SatoriRecycler::BlockingCollect()
         m_gen2Count++;
     }
 
-    // TODO: update stats and heuristics
+    // TODO: VS update stats and heuristics
     if (m_condemnedGeneration == 2)
     {
         m_gen1Budget = Gen2RegionCount();
@@ -284,7 +298,7 @@ void SatoriRecycler::BlockingCollect()
 
     m_condemnedGeneration = 0;
     m_gcInProgress = false;
-    m_isConcurrent = true;
+    m_isConcurrent = CONCURRENT;
 
     // restart VM
     GCToEEInterface::RestartEE(true);
@@ -293,19 +307,20 @@ void SatoriRecycler::BlockingCollect()
 void SatoriRecycler::Mark()
 {
     IncrementScanCount();
+    SatoriHandlePartitioner::StartNextScan();
 
     MarkOwnStack();
     //TODO: VS MarkOwnHandles?
 
     //TODO: VS should reuse a context for the following?
     MarkOtherStacks();
-    MarkFinalizableQueue();
     MarkHandles();
+    MarkFinalizationQueue();
 
     // mark through all cards that have interesting refs (remembered set).
     bool revisitCards = m_condemnedGeneration == 1 ?
         MarkThroughCards(/* minState */ Satori::CARD_INTERESTING) :
-        false;
+        CONCURRENT;
 
     while (m_workList->Count() > 0 || revisitCards)
     {
@@ -610,9 +625,6 @@ void SatoriRecycler::MarkOtherStacks()
     MarkContext c = MarkContext(this);
     sc._unused1 = &c;
 
-    //TODO: VS there should be only one thread with "thread_number == 0"
-    //TODO: VS implement two-pass scheme with preferred vs. any stacks
-
     //generations are meaningless here, so we pass -1
     GCToEEInterface::GcScanRoots(MarkFn, -1, -1, &sc);
 
@@ -622,7 +634,7 @@ void SatoriRecycler::MarkOtherStacks()
     }
 }
 
-void SatoriRecycler::MarkFinalizableQueue()
+void SatoriRecycler::MarkFinalizationQueue()
 {
     if (!m_heap->FinalizationQueue()->HasItems())
     {
@@ -886,14 +898,25 @@ void SatoriRecycler::MarkHandles()
 {
     ScanContext sc;
     sc.promotion = TRUE;
-    sc.thread_number = 0;
-
+    sc.concurrent = m_isConcurrent;
     MarkContext c = MarkContext(this);
     sc._unused1 = &c;
 
-    // concurrent, per thread/heap
-    // relies on thread_number to select handle buckets and specialcases #0
-    GCScan::GcScanHandles(MarkFn, m_condemnedGeneration, 2, &sc);
+    int partition = SatoriHandlePartitioner::TryGetOwnPartitionToScan();
+    if (partition != -1)
+    {
+        sc.thread_number = partition;
+        GCScan::GcScanHandles(m_isConcurrent ? MarkFnConcurrent : MarkFn, m_condemnedGeneration, 2, &sc);
+        //TODO: VS drain own
+    }
+
+    SatoriHandlePartitioner::ForEachUnscannedPartition(
+        [&](int p)
+        {
+            sc.thread_number = p;
+            GCScan::GcScanHandles(m_isConcurrent ? MarkFnConcurrent : MarkFn, m_condemnedGeneration, 2, &sc);
+        }
+    );
 
     if (c.m_markChunk != nullptr)
     {
@@ -905,19 +928,22 @@ void SatoriRecycler::WeakPtrScan(bool isShort)
 {
     ScanContext sc;
     sc.promotion = TRUE;
-    sc.thread_number = 0;
 
-    // concurrent, per thread/heap
-    // relies on thread_number to select handle buckets and specialcases #0
-    // null out the target of short weakref that were not promoted.
-    if (isShort)
-    {
-        GCScan::GcShortWeakPtrScan(nullptr, m_condemnedGeneration, 2, &sc);
-    }
-    else
-    {
-        GCScan::GcWeakPtrScan(nullptr, m_condemnedGeneration, 2, &sc);
-    }
+    SatoriHandlePartitioner::StartNextScan();
+    SatoriHandlePartitioner::ForEachUnscannedPartition(
+        [&](int p)
+        {
+            sc.thread_number = p;
+            if (isShort)
+            {
+                GCScan::GcShortWeakPtrScan(nullptr, m_condemnedGeneration, 2, &sc);
+            }
+            else
+            {
+                GCScan::GcWeakPtrScan(nullptr, m_condemnedGeneration, 2, &sc);
+            }
+        }
+    );
 }
 
 void SatoriRecycler::WeakPtrScanBySingleThread()
@@ -1057,14 +1083,17 @@ void SatoriRecycler::DependentHandlesInitialScan()
 {
     ScanContext sc;
     sc.promotion = TRUE;
-    sc.thread_number = 0;
-
     MarkContext c = MarkContext(this);
     sc._unused1 = &c;
 
-    // concurrent, per thread/heap
-    // relies on thread_number to select handle buckets and specialcases #0
-    GCScan::GcDhInitialScan(MarkFn, m_condemnedGeneration, 2, &sc);
+    SatoriHandlePartitioner::StartNextScan();
+    SatoriHandlePartitioner::ForEachUnscannedPartition(
+        [&](int p)
+        {
+            sc.thread_number = p;
+            GCScan::GcDhInitialScan(MarkFn, m_condemnedGeneration, 2, &sc);
+        }
+    );
 
     if (c.m_markChunk != nullptr)
     {
@@ -1076,17 +1105,20 @@ void SatoriRecycler::DependentHandlesRescan()
 {
     ScanContext sc;
     sc.promotion = TRUE;
-    sc.thread_number = 0;
-
     MarkContext c = MarkContext(this);
     sc._unused1 = &c;
 
-    // concurrent, per thread/heap
-    // relies on thread_number to select handle buckets and specialcases #0
-    if (GCScan::GcDhUnpromotedHandlesExist(&sc))
-    {
-        GCScan::GcDhReScan(&sc);
-    }
+    SatoriHandlePartitioner::StartNextScan();
+    SatoriHandlePartitioner::ForEachUnscannedPartition(
+        [&](int p)
+        {
+            sc.thread_number = p;
+            if (GCScan::GcDhUnpromotedHandlesExist(&sc))
+            {
+                GCScan::GcDhReScan(&sc);
+            }
+        }
+    );
 
     if (c.m_markChunk != nullptr)
     {
@@ -1098,6 +1130,8 @@ void SatoriRecycler::PromoteSurvivedHandles()
 {
     ScanContext sc;
     sc.promotion = TRUE;
+
+    // only thread #0 does the work. this is not concurrent.
     sc.thread_number = 0;
 
     // no need for context. we do not create more work here.
@@ -1395,58 +1429,46 @@ void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t
     }
 };
 
-void SatoriRecycler::UpdatePointers()
+void SatoriRecycler::Finish()
 {
     if (m_isCompacting)
     {
+        IncrementScanCount();
+        SatoriHandlePartitioner::StartNextScan();
+
         ScanContext sc;
         sc.promotion = FALSE;
         MarkContext c = MarkContext(this);
         sc._unused1 = &c;
 
-        //TODO: VS there should be only one thread with "thread_number == 0"
-        //TODO: VS implement two-pass scheme with preferred vs. any stacks
-        IncrementScanCount();
-
         //generations are meaningless here, so we pass -1
         GCToEEInterface::GcScanRoots(UpdateFn, -1, -1, &sc);
 
-        // concurrent, per thread/heap
-        // relies on thread_number to select handle buckets and specialcases #0
-        GCScan::GcScanHandles(UpdateFn, m_condemnedGeneration, 2, &sc);
+        SatoriHandlePartitioner::ForEachUnscannedPartition(
+            [&](int p)
+            {
+                sc.thread_number = p;
+                GCScan::GcScanHandles(UpdateFn, m_condemnedGeneration, 2, &sc);
+            }
+        );
+
         _ASSERTE(c.m_markChunk == nullptr);
 
-        // update refs in finalization queue
-        if (m_heap->FinalizationQueue()->HasItems())
-        {
-            // add finalization queue to mark list
-            m_heap->FinalizationQueue()->ForEachObjectRef(
-                [&](SatoriObject** ppObject)
-                {
-                    SatoriObject* o = *ppObject;
-                    ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
-                    if (ptr < 0)
-                    {
-                        *ppObject = (SatoriObject*)-ptr;
-                    }
-                }
-            );
-        }
-
+        UpdateFinalizationQueue();
         if (m_condemnedGeneration != 2)
         {
             UpdatePointersThroughCards();
         }
     }
 
-    // return target regions
+    // finish and return target regions
     for (int i = 0; i < Satori::FREELIST_COUNT; i++)
     {
-        UpdatePointersInRegions(m_relocationTargets[i]);
+        FinishRegions(m_relocationTargets[i]);
     }
 
-    // return staying regions
-    UpdatePointersInRegions(m_stayingRegions);
+    // finish and return staying regions
+    FinishRegions(m_stayingRegions);
 
     // recycle relocated regions.
     SatoriRegion* curRegion;
@@ -1458,7 +1480,27 @@ void SatoriRecycler::UpdatePointers()
     }
 }
 
-void SatoriRecycler::UpdatePointersInRegions(SatoriRegionQueue* queue)
+void SatoriRecycler::UpdateFinalizationQueue()
+{
+    // update refs in finalization queue
+    if (m_heap->FinalizationQueue()->HasItems())
+    {
+        // add finalization queue to mark list
+        m_heap->FinalizationQueue()->ForEachObjectRef(
+            [&](SatoriObject** ppObject)
+            {
+                SatoriObject* o = *ppObject;
+                ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
+                if (ptr < 0)
+                {
+                    *ppObject = (SatoriObject*)-ptr;
+                }
+            }
+        );
+    }
+}
+
+void SatoriRecycler::FinishRegions(SatoriRegionQueue* queue)
 {
     SatoriRegion* curRegion;
     while (curRegion = queue->TryPop())
