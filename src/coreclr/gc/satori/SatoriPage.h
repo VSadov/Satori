@@ -44,14 +44,19 @@ public:
     void DirtyCardsForRange(size_t start, size_t length);
     void WipeCardsForRange(size_t start, size_t end);
 
-    int8_t& CardState()
+    volatile int8_t& CardState()
     {
         return m_cardState;
     }
 
-    bool TrySetClean()
+    volatile int8_t& ScanTicket()
     {
-        return Interlocked::CompareExchange(&m_cardState, Satori::CARD_INTERESTING, Satori::CARD_PROCESSING) != Satori::CARD_DIRTY;
+        return m_scanTicket;
+    }
+
+    bool TryCleanCardState()
+    {
+        return Interlocked::CompareExchange(&m_cardState, Satori::CardState::REMEMBERED, Satori::CardState::PROCESSING) != Satori::CardState::DIRTY;
     }
 
     size_t CardGroupCount()
@@ -59,14 +64,19 @@ public:
         return (End() - Start()) >> Satori::REGION_BITS;
     }
 
-    int8_t& CardGroup(size_t i)
+    volatile int8_t& CardGroupState(size_t i)
     {
-        return m_cardGroups[i];
+        return m_cardGroups[i * 2];
     }
 
-    bool TryResetGroup(size_t i)
+    volatile int8_t& CardGroupScanTicket(size_t i)
     {
-        return Interlocked::CompareExchange(&m_cardGroups[i], Satori::CARD_BLANK, Satori::CARD_INTERESTING) == Satori::CARD_INTERESTING;
+        return m_cardGroups[i * 2 + 1];
+    }
+
+    bool TryEraseCardGroupState(size_t i)
+    {
+        return Interlocked::CompareExchange(&m_cardGroups[i * 2], Satori::CardState::BLANK, Satori::CardState::REMEMBERED) == Satori::CardState::REMEMBERED;
     }
 
     int8_t* CardsForGroup(size_t i)
@@ -95,6 +105,7 @@ private:
         struct
         {
             int8_t m_cardState;
+            int8_t m_scanTicket;
             size_t m_end;
             size_t m_initialCommit;
             size_t m_firstRegion;
@@ -106,7 +117,7 @@ private:
             size_t m_cardTableSize;
             size_t m_cardTableStart;
 
-            // -----  we can have a few more fields above as long as m_cardsStatus starts at offset 128.
+            // -----  we can have a few more fields above as long as m_cardGroups starts at offset 128.
             //        that can be adjusted if needed
 
             // computed size,
@@ -115,8 +126,8 @@ private:
             uint8_t* m_regionMap;
 
             // computed size,
-            // 1byte per region
-            // 512 bytes per 1Gb
+            // 2byte per region
+            // 1024 bytes per 1Gb
             DECLSPEC_ALIGN(128)
             int8_t m_cardGroups[1];
         };

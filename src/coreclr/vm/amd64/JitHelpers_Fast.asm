@@ -421,7 +421,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         mov     byte ptr [rax + r8], 3
         shr     rdx, 21    ; group offset
      DirtyGroup:
-        mov     byte ptr [rax + rdx + 80h], 3
+        mov     byte ptr [rax + rdx * 2 + 80h], 3
      DirtyPage:
         mov     byte ptr [rax], 3
 
