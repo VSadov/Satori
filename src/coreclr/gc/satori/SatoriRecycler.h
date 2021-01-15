@@ -93,7 +93,8 @@ private:
     uint8_t GetScanTicket();
     void DrainMarkQueues(SatoriMarkChunk* srcChunk = nullptr);
     void DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk = nullptr);
-    bool MarkThroughCards(int8_t minState);
+    bool MarkThroughCards(bool isConcurrent);
+    bool CleanCards();
     void MarkHandles();
     void WeakPtrScan(bool isShort);
     void WeakPtrScanBySingleThread();
