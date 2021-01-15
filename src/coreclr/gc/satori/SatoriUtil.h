@@ -71,10 +71,13 @@ namespace Satori
     static const int BYTES_PER_CARD_BYTE = 512;
     static const int CARD_BYTES_IN_CARD_GROUP = Satori::REGION_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;
 
-    static const int8_t CARD_BLANK = 0;
-    static const int8_t CARD_INTERESTING = 1;
-    static const int8_t CARD_PROCESSING = 2;
-    static const int8_t CARD_DIRTY = 3;
+    namespace CardState
+    {
+        static const int8_t BLANK = 0;
+        static const int8_t REMEMBERED = 1;
+        static const int8_t PROCESSING = 2;
+        static const int8_t DIRTY = 3;
+    }
 
     // TUNING: this is just a threshold for cases when clearly too many objects have escaped already.
     // Assuming minimum sized objects, when 1/8 escapes, stop tracking escapes
