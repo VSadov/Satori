@@ -157,6 +157,11 @@ void SatoriRecycler::Help()
         if (m_isConcurrent)
         {
             MarkHandles();
+            if (m_condemnedGeneration == 1)
+            {
+                MarkThroughCards(/* isConcurrent */ true);
+            }
+
             MarkOwnStack();
         }
     }
@@ -317,15 +322,14 @@ void SatoriRecycler::Mark()
     MarkHandles();
     MarkFinalizationQueue();
 
-    // mark through all cards that have interesting refs (remembered set).
     bool revisitCards = m_condemnedGeneration == 1 ?
-        MarkThroughCards(/* minState */ Satori::CARD_INTERESTING) :
+        MarkThroughCards(/* isConcurrent */ false) :
         CONCURRENT;
 
     while (m_workList->Count() > 0 || revisitCards)
     {
         DrainMarkQueues();
-        revisitCards = MarkThroughCards(/* minState */ Satori::CARD_DIRTY);
+        revisitCards = CleanCards();
     }
 
     // all strongly reachable objects are marked here
@@ -337,7 +341,7 @@ void SatoriRecycler::Mark()
         do
         {
             DrainMarkQueues();
-            revisitCards = MarkThroughCards(/* minState */ Satori::CARD_DIRTY);
+            revisitCards = CleanCards();
         } while (m_workList->Count() > 0 || revisitCards);
 
         DependentHandlesRescan();
@@ -356,7 +360,7 @@ void SatoriRecycler::Mark()
         do
         {
             DrainMarkQueues();
-            revisitCards = MarkThroughCards(/* minState */ Satori::CARD_DIRTY);
+            revisitCards = CleanCards();
         } while (m_workList->Count() > 0 || revisitCards);
 
         DependentHandlesRescan();
@@ -383,7 +387,7 @@ void SatoriRecycler::AssertNoWork()
     m_heap->ForEachPage(
         [&](SatoriPage* page)
         {
-            _ASSERTE(page->CardState() < Satori::CARD_PROCESSING);
+            _ASSERTE(page->CardState() < Satori::CardState::PROCESSING);
         }
     );
 }
@@ -686,7 +690,7 @@ void SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk)
                         {
                             // if ref is outside of the object, it is a fake ref to collectible allocator.
                             // dirty the MT location as if it points to the allocator object
-                            // technically it does reference, by indirection.
+                            // technically it does reference the allocator, by indirection.
                             if ((size_t)ref - o->Start() > o->End())
                             {
                                 ref = (SatoriObject**)o->Start();
@@ -786,15 +790,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriMarkChunk* srcChunk)
     }
 }
 
-//TODO: VS Re: concurrency
-//      if card Marking done with EE suspended, then IU barriers do not need
-//      to order card writes. byte writes are atomic and will just accumulate.
-//      However marking/clearing itself may cause overflows and that could happen concurrently, thus:
-//      - IU barriers can use regular writes to dirty cards/groups/pages
-//      - Ovf dirtying must use write fences, but those should be very rare
-//      - card marking/clearing must use read fences, not a lot though - per page and per group.
-
-bool SatoriRecycler::MarkThroughCards(int8_t minState)
+bool SatoriRecycler::MarkThroughCards(bool isConcurrent)
 {
     SatoriMarkChunk* dstChunk = nullptr;
     bool revisit = false;
@@ -802,37 +798,63 @@ bool SatoriRecycler::MarkThroughCards(int8_t minState)
     m_heap->ForEachPage(
         [&](SatoriPage* page)
         {
-            // VolatileLoad to allow concurent card clearing.
-            // Since we may concurrently make cards dirty due to overflow,
-            // page must be checked first, then group, then cards.
-            // Dirtying due to overflow will have to do writes in the opposite order.
-            int8_t pageState = VolatileLoad(&page->CardState());
-            if (pageState >= minState)
+            int8_t pageState = page->CardState();
+            if (pageState != Satori::CardState::BLANK)
             {
-                page->CardState() = Satori::CARD_PROCESSING;
+                revisit |= page->CardState() == Satori::CardState::DIRTY;
+                int8_t currentScanTicket = GetScanTicket();
+                if (page->ScanTicket() == currentScanTicket)
+                {
+                    return;
+                }
+
+                if (!isConcurrent)
+                {
+                    page->CardState() = Satori::CardState::PROCESSING;
+                }
+
                 size_t groupCount = page->CardGroupCount();
-                // TODO: VS when stealing is implemented we should start from a random location
                 for (size_t i = 0; i < groupCount; i++)
                 {
-                    // VolatileLoad, see the comment above regading page/group/card read order
-                    int8_t groupState = VolatileLoad(&page->CardGroup(i));
-                    if (groupState >= minState)
+                    int8_t groupState = page->CardGroupState(i);
+                    if (groupState && page->CardGroupScanTicket(i) != currentScanTicket)
                     {
-                        SatoriRegion* region = page->RegionForCardGroup(i);
+                        // claim the group, now we have to finish
+                        page->CardGroupScanTicket(i) = currentScanTicket;
 
-                        //ephemeral regions are not interesting here unless they are dirty.
-                        if (groupState < Satori::CARD_DIRTY && region->Generation() < 2)
+                        SatoriRegion* region = page->RegionForCardGroup(i);
+                        // do not mark from gen1 region
+                        if (region->Generation() < 2)
                         {
-                            //optimization - to not look at this again.
-                            page->TryResetGroup(i);
+                            // TODO: VS simplify comment
+                            // This is optimization. Not needed for correctness.
+                            // If not dirty, we wipe the group, to not look at this again in the next scans.
+                            // must use interlocked, even if not concurrent - in case it gets dirty by parallel mark (it can since it is gen1)
+                            // wiping actual cards does not matter, we will look at them only if group is dirty,
+                            // and then we will reset them appropriately.
+                            if (groupState != Satori::CardState::DIRTY)
+                            {
+                                _ASSERTE(!"we should not get here unless use regular non-dirtying barrier.");
+                                _ASSERTE(groupState == Satori::CardState::REMEMBERED);
+                                page->CardGroupScanTicket(i) = 0;
+                                page->TryEraseCardGroupState(i);
+                            }
+                            else
+                            {
+                                // This group needs cleaning, page should stay dirty.
+                                page->CardState() = Satori::CardState::DIRTY;
+                            }
+
                             continue;
                         }
 
-                        int8_t resetValue = region->Generation() == 2 ? Satori::CARD_INTERESTING : Satori::CARD_BLANK;
-                        bool considerAllMarked = region->Generation() > m_condemnedGeneration;
-
+                        const int8_t resetValue = Satori::CardState::REMEMBERED;
                         int8_t* cards = page->CardsForGroup(i);
-                        page->CardGroup(i) = resetValue;
+                        if (!isConcurrent)
+                        {
+                            page->CardGroupState(i) = resetValue;
+                        }
+
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
                         {
                             // cards are often sparsely set, if j is aligned, check the entire size_t for 0
@@ -842,7 +864,140 @@ bool SatoriRecycler::MarkThroughCards(int8_t minState)
                                 continue;
                             }
 
-                            if (cards[j] < minState)
+                            // skip empty cards
+                            if (!cards[j])
+                            {
+                                continue;
+                            }
+
+                            size_t start = page->LocationForCard(&cards[j]);
+                            do
+                            {
+                                if (cards[j] != resetValue)
+                                {
+                                    if (isConcurrent)
+                                    {
+                                        // We can clean cards in concurrent mode because writes in barriers are ordered
+                                        // before card dirtying, but must use interlocked - to make sure we read after the clean
+                                        // TUNING: is this profitable?
+                                        Interlocked::CompareExchange(&cards[j], resetValue, Satori::CardState::DIRTY);
+                                    }
+                                    else
+                                    {
+                                        cards[j] = resetValue;
+                                    }
+                                }
+                                j++;
+                            } while (j < Satori::CARD_BYTES_IN_CARD_GROUP && cards[j]);
+
+                            size_t end = page->LocationForCard(&cards[j]);
+                            size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
+                            SatoriObject* o = region->FindObject(start);
+                            do
+                            {
+                                o->ForEachObjectRef(
+                                    [&](SatoriObject** ref)
+                                    {
+                                        SatoriObject* child = *ref;
+
+                                        // TODO: VS similar pattern to Drain? 
+                                        // cannot mark stuff in thread local regions. just mark as dirty to visit later.
+                                        if (isConcurrent && child && child->ContainingRegion()->IsThreadLocal())
+                                        {
+                                            // if ref is outside of the object, it is a fake ref to collectible allocator.
+                                            // dirty the MT location as if it points to the allocator object
+                                            // technically it does reference the allocator, by indirection.
+                                            if ((size_t)ref - o->Start() > o->End())
+                                            {
+                                                ref = (SatoriObject**)o->Start();
+                                            }
+
+                                            o->ContainingRegion()->ContainingPage()->DirtyCardForAddress((size_t)ref);
+                                        }
+                                        else if (child && !child->IsMarkedOrOlderThan(m_condemnedGeneration))
+                                        {
+                                            child->SetMarkedAtomic();
+                                            if (!dstChunk || !dstChunk->TryPush(child))
+                                            {
+                                                this->PushToMarkQueuesSlow(dstChunk, child);
+                                            }
+                                        }
+                                    }, start, end);
+                                o = o->Next();
+                            } while (o->Start() < objLimit);
+                        }
+                    }
+                }
+
+                // All groups/cards are accounted in this page - either visited or claimed.
+                // No marking work is left here, set the ticket to indicate that.
+                // NB: setting page/group tickets is a perf, not a correctness feature.
+                //  We do not rely on tickets for exclusive access in marking thus ordering
+                //  WRT cleaning is unimportant.
+                page->ScanTicket() = currentScanTicket;
+
+                // we went through the entire page, there is no more cleaning work to be found.
+                // if it is still processing, move it to clean
+                // if it is dirty, record a missed clean to revisit the page later.
+                if (!isConcurrent)
+                {
+                    revisit |= !page->TryCleanCardState();
+                }
+            }
+        }
+    );
+
+    if (dstChunk)
+    {
+        m_workList->Push(dstChunk);
+    }
+
+    return revisit;
+}
+
+// cleaning is not concurrent, but could be parallel
+bool SatoriRecycler::CleanCards()
+{
+    SatoriMarkChunk* dstChunk = nullptr;
+    bool revisit = false;
+
+    m_heap->ForEachPage(
+        [&](SatoriPage* page)
+        {
+            // VolatileLoad to allow parallel card clearing.
+            // Since we may concurrently make cards dirty due to overflow,
+            // page must be checked first, then group, then cards.
+            // Dirtying due to overflow will have to do writes in the opposite order.
+            int8_t pageState = VolatileLoad(&page->CardState());
+            if (pageState == Satori::CardState::DIRTY)
+            {
+                page->CardState() = Satori::CardState::PROCESSING;
+                size_t groupCount = page->CardGroupCount();
+
+                // TODO: VS when stealing is implemented we should start from a random location
+                for (size_t i = 0; i < groupCount; i++)
+                {
+                    // VolatileLoad, see the comment above regading page/group/card read order
+                    int8_t groupState = VolatileLoad(&page->CardGroupState(i));
+                    if (groupState == Satori::CardState::DIRTY)
+                    {
+                        SatoriRegion* region = page->RegionForCardGroup(i);
+
+                        const int8_t resetValue = region->Generation() == 2 ? Satori::CardState::REMEMBERED : Satori::CardState::BLANK;
+                        bool considerAllMarked = region->Generation() > m_condemnedGeneration;
+
+                        int8_t* cards = page->CardsForGroup(i);
+                        page->CardGroupState(i) = resetValue;
+                        for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
+                        {
+                            // cards are often sparsely set, if j is aligned, check the entire size_t for 0
+                            if (((j & (sizeof(size_t) - 1)) == 0) && *((size_t*)&cards[j]) == 0)
+                            {
+                                j += sizeof(size_t) - 1;
+                                continue;
+                            }
+
+                            if (cards[j] != Satori::CardState::DIRTY)
                             {
                                 continue;
                             }
@@ -851,7 +1006,7 @@ bool SatoriRecycler::MarkThroughCards(int8_t minState)
                             do
                             {
                                 cards[j++] = resetValue;
-                            } while (j < Satori::CARD_BYTES_IN_CARD_GROUP && cards[j] >= minState);
+                            } while (j < Satori::CARD_BYTES_IN_CARD_GROUP && cards[j] == Satori::CardState::DIRTY);
 
                             size_t end = page->LocationForCard(&cards[j]);
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
@@ -881,7 +1036,7 @@ bool SatoriRecycler::MarkThroughCards(int8_t minState)
                 }
 
                 // record a missed clean to revisit the whole deal. 
-                revisit = !page->TrySetClean();
+                revisit |= !page->TryCleanCardState();
             }
         }
     );
@@ -892,6 +1047,78 @@ bool SatoriRecycler::MarkThroughCards(int8_t minState)
     }
 
     return revisit;
+}
+
+void SatoriRecycler::UpdatePointersThroughCards()
+{
+    SatoriMarkChunk* dstChunk = nullptr;
+    m_heap->ForEachPage(
+        [&](SatoriPage* page)
+        {
+            int8_t pageState = page->CardState();
+            _ASSERTE(pageState != Satori::CardState::DIRTY);
+            if (pageState == Satori::CardState::REMEMBERED)
+            {
+                size_t groupCount = page->CardGroupCount();
+                // TODO: VS when stealing is implemented we should start from a random location
+                for (size_t i = 0; i < groupCount; i++)
+                {
+                    int8_t groupState = page->CardGroupState(i);
+                    _ASSERTE(groupState != Satori::CardState::DIRTY);
+                    if (groupState == Satori::CardState::REMEMBERED)
+                    {
+                        SatoriRegion* region = page->RegionForCardGroup(i);
+                        _ASSERTE(region->Generation() == 2);
+
+                        int8_t* cards = page->CardsForGroup(i);
+                        for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
+                        {
+                            // cards are often sparsely set, if j is aligned, check the entire size_t for 0
+                            if (((j & (sizeof(size_t) - 1)) == 0) && *((size_t*)&cards[j]) == 0)
+                            {
+                                j += sizeof(size_t) - 1;
+                                continue;
+                            }
+
+                            _ASSERTE(cards[j] <= Satori::CardState::REMEMBERED);
+                            if (cards[j] == Satori::CardState::BLANK)
+                            {
+                                continue;
+                            }
+
+                            size_t start = page->LocationForCard(&cards[j]);
+                            do
+                            {
+                                _ASSERTE(cards[j] <= Satori::CardState::REMEMBERED);
+                                j++;
+                            } while (j < Satori::CARD_BYTES_IN_CARD_GROUP && cards[j] == Satori::CardState::REMEMBERED);
+
+                            size_t end = page->LocationForCard(&cards[j]);
+                            size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
+                            SatoriObject* obj = region->FindObject(start);
+                            do
+                            {
+                                obj->ForEachObjectRef(
+                                    [&](SatoriObject** ppObject)
+                                    {
+                                        SatoriObject* o = *ppObject;
+                                        if (o)
+                                        {
+                                            ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
+                                            if (ptr < 0)
+                                            {
+                                                *ppObject = (SatoriObject*)-ptr;
+                                            }
+                                        }
+                                    }, start, end);
+                                obj = obj->Next();
+                            } while (obj->Start() < objLimit);
+                        }
+                    }
+                }
+            }
+        }
+    );
 }
 
 void SatoriRecycler::MarkHandles()
@@ -1527,94 +1754,4 @@ void SatoriRecycler::FinishRegions(SatoriRegionQueue* queue)
             (curRegion->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
         }
     }
-}
-
-// TODO: VS how to steal? same for marking need a way to claim card groups, even/odd counter?
-//              perhaps leave for later - need to handle numa/cores too,
-//              maybe push pages/groups to WL)
-void SatoriRecycler::UpdatePointersThroughCards()
-{
-    SatoriMarkChunk* dstChunk = nullptr;
-    bool revisit = false;
-
-    m_heap->ForEachPage(
-        [&](SatoriPage* page)
-        {
-            int8_t pageState = page->CardState();
-            if (pageState >= Satori::CARD_INTERESTING)
-            {
-                //TODO: VS claim the page
-                page->CardState() = Satori::CARD_PROCESSING;
-
-                size_t groupCount = page->CardGroupCount();
-                // TODO: VS when stealing is implemented we should start from a random location
-                for (size_t i = 0; i < groupCount; i++)
-                {
-                    int8_t groupState = page->CardGroup(i);
-                    if (groupState >= Satori::CARD_INTERESTING)
-                    {
-                        SatoriRegion* region = page->RegionForCardGroup(i);
-
-                        //ephemeral regions are not interesting here.
-                        if (region->Generation() < 2)
-                        {
-                            continue;
-                        }
-
-                        // TODO: VS claim the group
-                        int8_t resetValue = Satori::CARD_INTERESTING;
-
-                        int8_t* cards = page->CardsForGroup(i);
-                        page->CardGroup(i) = resetValue;
-                        for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
-                        {
-                            // cards are often sparsely set, if j is aligned, check the entire size_t for 0
-                            if (((j & (sizeof(size_t) - 1)) == 0) && *((size_t*)&cards[j]) == 0)
-                            {
-                                j += sizeof(size_t) - 1;
-                                continue;
-                            }
-
-                            if (cards[j] < Satori::CARD_INTERESTING)
-                            {
-                                continue;
-                            }
-
-                            size_t start = page->LocationForCard(&cards[j]);
-                            do
-                            {
-                                _ASSERTE(cards[j] <= Satori::CARD_INTERESTING);
-                                j++;
-                            } while (j < Satori::CARD_BYTES_IN_CARD_GROUP && cards[j] >= Satori::CARD_INTERESTING);
-
-                            size_t end = page->LocationForCard(&cards[j]);
-                            size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
-                            SatoriObject* obj = region->FindObject(start);
-                            do
-                            {
-                                obj->ForEachObjectRef(
-                                    [&](SatoriObject** ppObject)
-                                    {
-                                        SatoriObject* o = *ppObject;
-                                        if (o)
-                                        {
-                                            ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
-                                            if (ptr < 0)
-                                            {
-                                                *ppObject = (SatoriObject*)-ptr;
-                                            }
-                                        }
-                                    }, start, end);
-                                obj = obj->Next();
-                            } while (obj->Start() < objLimit);
-                        }
-                    }
-                }
-
-                // record a missed clean to revisit the whole deal. 
-                revisit = !page->TrySetClean();
-                _ASSERTE(revisit == false);
-            }
-        }
-    );
 }
