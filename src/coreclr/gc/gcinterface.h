@@ -52,7 +52,11 @@ enum class WriteBarrierOp
     StompEphemeral,
     Initialize,
     SwitchToWriteWatch,
-    SwitchToNonWriteWatch
+    SwitchToNonWriteWatch,
+#if FEATURE_SATORI_GC
+    StartConcurrentMarkingSatori,
+    StopConcurrentMarkingSatori,
+#endif
 };
 
 // Arguments to GCToEEInterface::StompWriteBarrier

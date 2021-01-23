@@ -395,8 +395,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
     AssignAndMarkCards:
         mov     [rcx], rdx
 
-    ; TODO: VS BARRIER_UPDATE
-     ; SETTING CARD FOR RCX
+    ; fetch card location for rcx
         mov     r8,  rcx
         mov     r9 , [g_card_table]     ; fetch the page map
         mov     rax, rcx
@@ -404,19 +403,42 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
      CheckPageMap:                               
         movzx   ecx, byte ptr [r9 + rax]
         cmp     cl, 1
-        je      HasPage
+        je      PageFound
         add     cl, -2
         mov     edx, 1
         shl     rdx, cl
         sub     rax, rdx
         jmp     CheckPageMap
-     HasPage:
+     PageFound:
         shl     rax, 30   ; page
-
         sub     r8, rax   ; offset in page
         mov     rdx,r8
-
         shr     r8, 9     ; card offset
+
+    ; check if concurrent marking is in progress
+        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
+        jne     DirtyCard
+
+    ; SETTING CARD FOR RCX
+        cmp     byte ptr [rax + r8], 0
+        je      SetCard
+        REPRET
+     SetCard:
+        mov     byte ptr [rax + r8], 1        
+        shr     rdx, 21    ; group offset
+        cmp     byte ptr [rax + rdx * 2 + 80h], 0
+        je      SetGroup
+        REPRET
+     SetGroup:
+        mov     byte ptr [rax + rdx * 2 + 80h], 1
+        cmp     byte ptr [rax], 0
+        je      SetPage
+        REPRET
+     SetPage:
+        mov     byte ptr [rax], 1              ; set page
+        ret
+
+    ; DIRTYING CARD FOR RCX
      DirtyCard:
         mov     byte ptr [rax + r8], 3
         shr     rdx, 21    ; group offset
