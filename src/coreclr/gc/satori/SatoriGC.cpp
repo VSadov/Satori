@@ -293,7 +293,7 @@ bool SatoriGC::IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, in
     while (true)
     {
         int threadScanCount = acontext->alloc_count;
-        int currentScanCount = m_heap->Recycler()->GetScanCount();
+        int currentScanCount = m_heap->Recycler()->GetStackScanCount();
         if (threadScanCount >= currentScanCount)
         {
             break;
