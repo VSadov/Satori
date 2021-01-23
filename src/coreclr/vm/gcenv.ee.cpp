@@ -1147,8 +1147,7 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         g_card_table = args->card_table;
 
 #ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
-        //TODO: Satori
-        //assert(g_card_bundle_table == nullptr);
+        assert(g_card_bundle_table == nullptr);
         g_card_bundle_table = args->card_bundle_table;
 #endif
 
@@ -1197,6 +1196,21 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         assert(!"should never be called without FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP");
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
         break;
+
+    case WriteBarrierOp::StartConcurrentMarkingSatori:
+        g_sw_ww_enabled_for_gc_heap = true;
+        if (!is_runtime_suspended)
+        {
+            // If runtime is not suspended, force all threads to see the changed state before
+            // observing future allocations.
+            FlushProcessWriteBuffers();
+        }
+        return;
+
+    case WriteBarrierOp::StopConcurrentMarkingSatori:
+        assert(args->is_runtime_suspended && "the runtime must be suspended here!");
+        g_sw_ww_enabled_for_gc_heap = false;
+        return;
 
     default:
         assert(!"unknown WriteBarrierOp enum");

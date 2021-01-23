@@ -31,6 +31,11 @@
 #define CONCURRENT true
 //#define CONCURRENT false
 
+#define COMPACTING true
+//#define COMPACTING false
+
+#define GEN1_MIN_THRESHOLD 5
+
 void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
     m_heap = heap;
@@ -60,31 +65,35 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_gen1Count = m_gen2Count = 0;
     m_condemnedGeneration = 0;
 
-    m_gen1Threshold = 5;
+    m_gen1Threshold = GEN1_MIN_THRESHOLD;
     m_gen1Budget = 0;
     m_isConcurrent = CONCURRENT;
 }
 
 // not interlocked. this is not done concurrently. 
-void SatoriRecycler::IncrementScanCount()
+void SatoriRecycler::IncrementStackScanCount()
 {
-    m_scanCount++;
+    m_stackScanCount++;
+}
 
+void SatoriRecycler::IncrementCardScanTicket()
+{
+    m_cardScanTicket++;
     // make sure the ticket is not 0
-    if (!GetScanTicket())
+    if (!m_cardScanTicket)
     {
-        m_scanCount++;
+        m_cardScanTicket++;
     }
 }
 
-int SatoriRecycler::GetScanCount()
+int SatoriRecycler::GetStackScanCount()
 {
-    return m_scanCount;
+    return m_stackScanCount;
 }
 
-uint8_t SatoriRecycler::GetScanTicket()
+uint8_t SatoriRecycler::GetCardScanTicket()
 {
-    return (uint8_t)m_scanCount;
+    return m_cardScanTicket;
 }
 
 int64_t SatoriRecycler::GetCollectionCount(int gen)
@@ -147,68 +156,87 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 
 void SatoriRecycler::Help()
 {
-    // help routine
-    if (m_gcInProgress)
+    // TODO: VS this should have more states and "helping" should be time-boxed
+    //       so that threads could do a chunk of work and continue until blocked in the poll.
+    //       worker threads will not need to timebox and will not poll, but may have extra states
+    //       to help in blocking GC.
+    if (m_condemnedGeneration)
     {
-        // TODO: VS this should have more states and "helping" should be time-boxed
-        //       so that threads could do a chunk of work and continue until blocked in the poll.
-        //       worker threads will not need to timebox and will not poll, but may have extra states
-        //       to help in blocking GC.
-        if (m_isConcurrent)
+        MarkHandles();
+        if (m_condemnedGeneration == 1)
         {
-            MarkHandles();
-            if (m_condemnedGeneration == 1)
-            {
-                MarkThroughCards(/* isConcurrent */ true);
-            }
-
-            MarkOwnStack();
+            MarkThroughCards(/* isConcurrent */ true);
         }
+
+        MarkOwnStack();
     }
+}
+
+void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
+{
+    WriteBarrierParameters args = {};
+    args.operation = concurrent ?
+        WriteBarrierOp::StartConcurrentMarkingSatori :
+        WriteBarrierOp::StopConcurrentMarkingSatori;
+
+    args.is_runtime_suspended = eeSuspended;
+    GCToEEInterface::StompWriteBarrier(&args);
 }
 
 void SatoriRecycler::TryStartGC(int generation)
 {
     if (Interlocked::CompareExchange(&m_gcInProgress, 1, 0) == 0)
     {
-        m_condemnedGeneration = generation;
+        // Here we have a short window when other threads may notice that gc is in progress,
+        // but will find no helping opportunities until we set m_condemnedGeneration.
+        // that is ok.
+
+        // card scan is incremental, thus concurrent and STW card scan use the same ticket
+        // and we update it unconditionally
+        IncrementCardScanTicket();
         if (m_isConcurrent)
         {
-            // TODO: VS turn on IU barrier
-            //       note: stack scaning may use regular barrier, since it does not go into fields
-            //             but it is a relatively fast part. 
-            //             draining concurrently needs IU barrier.
-            IncrementScanCount();
+            IncrementStackScanCount();
             SatoriHandlePartitioner::StartNextScan();
+
+            // toggle the barrier before setting m_condemnedGeneration
+            // this is a PW fence
+            ToggleWriteBarrier(true, /* eeSuspended */ false);
         }
 
+        // generation must be published after toggling the barrier
+        // this will enable helping
+        m_condemnedGeneration = generation;
+
+        // TODO: VS should we help when not concurrent? Should we HelpOnce when concurrent?
         Help();
 
-        // TODO: VS this should happen when help did not make progress.
-        if (m_condemnedGeneration == 1)
-        {
-            Collect1();
-        }
-        else
-        {
-            Collect2();
-        }
+        // int64_t time = GCToOSInterface::QueryPerformanceCounter();
+
+        // TODO: VS this should happen in Help when it did not make progress.
+        BlockingCollect();
+
+        //time = (GCToOSInterface::QueryPerformanceCounter() - time) * 1000000 / GCToOSInterface::QueryPerformanceFrequency();
+        // printf("###########> Gen%i: %i \n", generation, (int)time);
+    }
+}
+
+void SatoriRecycler::HelpOnce()
+{
+    if (m_gcInProgress)
+    {
+        Help();
+        GCToEEInterface::GcPoll();
     }
 }
 
 void SatoriRecycler::MaybeTriggerGC()
 {
-    Help();
-
-    GCToEEInterface::GcPoll();
+    HelpOnce();
 
     int count1 = Gen1RegionCount();
     if (count1 > m_gen1Threshold)
     {
-        // for testing do every 16th Gen1
-        // int generation = (m_gen1Count + 1) % 16 == 0 ? 2 : 1;
-        // Collect(generation, /*force*/ false);
-
         int generation = m_gen1Budget > 0 ? 1 : 2;
         TryStartGC(generation);
     }
@@ -231,27 +259,8 @@ void SatoriRecycler::Collect(int generation, bool force)
             break;
         }
 
-        Help();
-        GCToEEInterface::GcPoll();
+        HelpOnce();
     }
-}
-
-NOINLINE
-void SatoriRecycler::Collect1()
-{
-    BlockingCollect();
-
-    // this is just to prevent tailcalls
-    m_isConcurrent = CONCURRENT;
-}
-
-NOINLINE
-void SatoriRecycler::Collect2()
-{
-    BlockingCollect();
-
-    // this is just to prevent tailcalls
-    m_isConcurrent = CONCURRENT;
 }
 
 void SatoriRecycler::BlockingCollect()
@@ -262,14 +271,14 @@ void SatoriRecycler::BlockingCollect()
     // stop other threads.
     GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
 
-    // TODO: VS restore barrier
+    ToggleWriteBarrier(false, /* eeSuspended */ true);
     m_isConcurrent = false;
 
     // become coop again (it will not block since VM is done suspending)
     GCToEEInterface::DisablePreemptiveGC();
 
     // assume that we will compact. we will rethink later.
-    m_isCompacting = true;
+    m_isCompacting = COMPACTING;
 
     DeactivateAllStacks();
 
@@ -299,7 +308,7 @@ void SatoriRecycler::BlockingCollect()
         m_gen1Budget -= Gen1RegionCount();
     }
 
-    m_gen1Threshold = Gen1RegionCount() + max(5, Gen2RegionCount() / 4);
+    m_gen1Threshold = Gen1RegionCount() + max(GEN1_MIN_THRESHOLD, Gen2RegionCount() / 4);
 
     m_condemnedGeneration = 0;
     m_gcInProgress = false;
@@ -311,7 +320,8 @@ void SatoriRecycler::BlockingCollect()
 
 void SatoriRecycler::Mark()
 {
-    IncrementScanCount();
+    // stack and handles do not track dirtying writes, therefore we must rescan
+    IncrementStackScanCount();
     SatoriHandlePartitioner::StartNextScan();
 
     MarkOwnStack();
@@ -590,7 +600,7 @@ void SatoriRecycler::MarkOwnStack()
     while (true)
     {
         int threadScanCount = aContext->alloc_count;
-        int currentScanCount = GetScanCount();
+        int currentScanCount = GetStackScanCount();
         if (threadScanCount >= currentScanCount)
         {
             return;
@@ -802,7 +812,7 @@ bool SatoriRecycler::MarkThroughCards(bool isConcurrent)
             if (pageState != Satori::CardState::BLANK)
             {
                 revisit |= page->CardState() == Satori::CardState::DIRTY;
-                int8_t currentScanTicket = GetScanTicket();
+                int8_t currentScanTicket = GetCardScanTicket();
                 if (page->ScanTicket() == currentScanTicket)
                 {
                     return;
@@ -834,7 +844,6 @@ bool SatoriRecycler::MarkThroughCards(bool isConcurrent)
                             // and then we will reset them appropriately.
                             if (groupState != Satori::CardState::DIRTY)
                             {
-                                _ASSERTE(!"we should not get here unless use regular non-dirtying barrier.");
                                 _ASSERTE(groupState == Satori::CardState::REMEMBERED);
                                 page->CardGroupScanTicket(i) = 0;
                                 page->TryEraseCardGroupState(i);
@@ -1660,8 +1669,9 @@ void SatoriRecycler::Finish()
 {
     if (m_isCompacting)
     {
-        IncrementScanCount();
+        IncrementStackScanCount();
         SatoriHandlePartitioner::StartNextScan();
+        IncrementCardScanTicket();
 
         ScanContext sc;
         sc.promotion = FALSE;

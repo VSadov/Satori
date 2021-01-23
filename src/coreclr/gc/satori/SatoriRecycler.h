@@ -25,28 +25,25 @@ public:
     void AddEphemeralRegion(SatoriRegion* region);
     void Help();
     void TryStartGC(int generation);
+    void HelpOnce();
     void MaybeTriggerGC();
 
     void Collect(int generation, bool force);
+    void BlockingCollect();
 
-    void Collect1();
-    void Collect2();
-
-    int GetScanCount();
-    uint8_t GetNextScanTicket();
+    int GetStackScanCount();
     int64_t GetCollectionCount(int gen);
     int CondemnedGeneration();
 
     int Gen1RegionCount();
-
     int Gen2RegionCount();
 
-    void BlockingCollect();
 private:
     SatoriHeap* m_heap;
 
-    // used to ensure each thread or handle partition is scanned once per scan round.
-    int m_scanCount;
+    int m_stackScanCount;
+    uint8_t m_cardScanTicket;
+
     int m_condemnedGeneration;
     bool m_isCompacting;
     bool m_isConcurrent;
@@ -89,8 +86,9 @@ private:
     void MarkOwnStack();
     void MarkOtherStacks();
     void MarkFinalizationQueue();
-    void IncrementScanCount();
-    uint8_t GetScanTicket();
+    void IncrementStackScanCount();
+    void IncrementCardScanTicket();
+    uint8_t GetCardScanTicket();
     void DrainMarkQueues(SatoriMarkChunk* srcChunk = nullptr);
     void DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk = nullptr);
     bool MarkThroughCards(bool isConcurrent);
