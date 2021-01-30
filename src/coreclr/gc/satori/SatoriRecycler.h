@@ -23,13 +23,11 @@ class SatoriRecycler
 public:
     void Initialize(SatoriHeap* heap);
     void AddEphemeralRegion(SatoriRegion* region);
-    void Help();
     void TryStartGC(int generation);
     void HelpOnce();
     void MaybeTriggerGC();
 
-    void Collect(int generation, bool force);
-    void BlockingCollect();
+    void Collect(int generation, bool force, bool blocking);
 
     int GetStackScanCount();
     int64_t GetCollectionCount(int gen);
@@ -39,6 +37,10 @@ public:
     int Gen2RegionCount();
 
 private:
+    static const int GC_STATE_NONE = 0;
+    static const int GC_STATE_CONCURRENT = 1;
+    static const int GC_STATE_BLOCKING = 2;
+
     SatoriHeap* m_heap;
 
     int m_stackScanCount;
@@ -47,17 +49,18 @@ private:
     int m_condemnedGeneration;
     bool m_isCompacting;
     bool m_isConcurrent;
-    int m_gcInProgress;
+    int m_gcState;
 
     SatoriMarkChunkQueue* m_workList;
 
-    // temporary store for Gen0 regions
-    SatoriRegionQueue* m_nurseryRegions;
+    // regions owned by recycler
     SatoriRegionQueue* m_ephemeralRegions;
     SatoriRegionQueue* m_ephemeralFinalizationTrackingRegions;
-
     SatoriRegionQueue* m_tenuredRegions;
     SatoriRegionQueue* m_tenuredFinalizationTrackingRegions;
+
+    // temporary store for Gen0 regions
+    SatoriRegionQueue* m_nurseryRegions;
 
     // temporary store while processing finalizables
     SatoriRegionQueue* m_finalizationScanCompleteRegions;
@@ -83,17 +86,17 @@ private:
 
     void DeactivateAllStacks();
     void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
-    void MarkOwnStack();
+    bool MarkOwnStackAndDrainQueues(int64_t deadline = 0);
     void MarkOtherStacks();
     void MarkFinalizationQueue();
     void IncrementStackScanCount();
     void IncrementCardScanTicket();
     uint8_t GetCardScanTicket();
     void DrainMarkQueues(SatoriMarkChunk* srcChunk = nullptr);
-    void DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk = nullptr);
-    bool MarkThroughCards(bool isConcurrent);
+    bool DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk = nullptr, int64_t deadline = 0);
+    bool MarkThroughCards(bool isConcurrent, int64_t deadline = 0);
     bool CleanCards();
-    void MarkHandles();
+    bool MarkHandles(int64_t deadline = 0);
     void WeakPtrScan(bool isShort);
     void WeakPtrScanBySingleThread();
     void ScanFinalizables();
@@ -104,6 +107,9 @@ private:
     void PromoteSurvivedHandles();
     void SweepNurseryRegions();
 
+    bool HelpImpl();
+
+    void BlockingCollect();
     void Mark();
     void Sweep();
     void Compact();
