@@ -28,8 +28,8 @@
 #undef memcpy
 #endif //memcpy
 
-#define CONCURRENT true
-//#define CONCURRENT false
+#define ENABLE_CONCURRENT true
+//#define ENABLE_CONCURRENT false
 
 #define COMPACTING true
 //#define COMPACTING false
@@ -60,14 +60,14 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     }
 
     m_workList = new SatoriMarkChunkQueue();
-    m_gcInProgress = 0;
+    m_gcState = GC_STATE_NONE;
 
     m_gen1Count = m_gen2Count = 0;
     m_condemnedGeneration = 0;
 
     m_gen1Threshold = GEN1_MIN_THRESHOLD;
     m_gen1Budget = 0;
-    m_isConcurrent = CONCURRENT;
+    m_isConcurrent = ENABLE_CONCURRENT;
 }
 
 // not interlocked. this is not done concurrently. 
@@ -154,24 +154,6 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
     }
 }
 
-void SatoriRecycler::Help()
-{
-    // TODO: VS this should have more states and "helping" should be time-boxed
-    //       so that threads could do a chunk of work and continue until blocked in the poll.
-    //       worker threads will not need to timebox and will not poll, but may have extra states
-    //       to help in blocking GC.
-    if (m_condemnedGeneration)
-    {
-        MarkHandles();
-        if (m_condemnedGeneration == 1)
-        {
-            MarkThroughCards(/* isConcurrent */ true);
-        }
-
-        MarkOwnStack();
-    }
-}
-
 void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
 {
     WriteBarrierParameters args = {};
@@ -185,7 +167,7 @@ void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
 
 void SatoriRecycler::TryStartGC(int generation)
 {
-    if (Interlocked::CompareExchange(&m_gcInProgress, 1, 0) == 0)
+    if (Interlocked::CompareExchange(&m_gcState, GC_STATE_CONCURRENT, GC_STATE_NONE) == GC_STATE_NONE)
     {
         // Here we have a short window when other threads may notice that gc is in progress,
         // but will find no helping opportunities until we set m_condemnedGeneration.
@@ -207,25 +189,57 @@ void SatoriRecycler::TryStartGC(int generation)
         // generation must be published after toggling the barrier
         // this will enable helping
         m_condemnedGeneration = generation;
-
-        // TODO: VS should we help when not concurrent? Should we HelpOnce when concurrent?
-        Help();
-
-        // int64_t time = GCToOSInterface::QueryPerformanceCounter();
-
-        // TODO: VS this should happen in Help when it did not make progress.
-        BlockingCollect();
-
-        //time = (GCToOSInterface::QueryPerformanceCounter() - time) * 1000000 / GCToOSInterface::QueryPerformanceFrequency();
-        // printf("###########> Gen%i: %i \n", generation, (int)time);
     }
+}
+
+bool SatoriRecycler::HelpImpl()
+{
+    if (m_condemnedGeneration)
+    {
+        int64_t deadline = GCToOSInterface::QueryPerformanceCounter();// +
+            //GCToOSInterface::QueryPerformanceFrequency() / 10000; // 0.1 msec.
+
+        if (m_condemnedGeneration == 1)
+        {
+            if (MarkThroughCards(/* isConcurrent */ true, deadline))
+            {
+                return true;
+            }
+        }
+
+        if (MarkHandles(deadline))
+        {
+            return true;
+        }
+
+        if (MarkOwnStackAndDrainQueues(deadline))
+        {
+            return true;
+        }
+
+        // no more work
+        return false;
+    }
+
+    // work has not started yet.
+    return true;
 }
 
 void SatoriRecycler::HelpOnce()
 {
-    if (m_gcInProgress)
+    if (m_gcState != GC_STATE_NONE)
     {
-        Help();
+        if (m_gcState == GC_STATE_CONCURRENT)
+        {
+            bool revisit = HelpImpl();
+            // if done helping, try initiating the blocking stage
+            if (!revisit &&
+                Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
+            {
+                BlockingCollect();
+            }
+        }
+
         GCToEEInterface::GcPoll();
     }
 }
@@ -242,24 +256,27 @@ void SatoriRecycler::MaybeTriggerGC()
     }
 }
 
-void SatoriRecycler::Collect(int generation, bool force)
+void SatoriRecycler::Collect(int generation, bool force, bool blocking)
 {
-    // TODO: VS perhaps treat non-force as heuristics override
-    //       reduce budgets correspondingly (or set a flag)
-    //       and try once ?
+    // only blocked & forced GC is strictly observable - via finalization.
+    // otherwise it is kind of a suggestion to maybe start collecting
+
+    if (!force)
+    {
+        // just check if it is time
+        MaybeTriggerGC();
+        return;
+    }
 
     int64_t& collectionNumRef = (generation == 1 ? m_gen1Count : m_gen2Count);
-
     int64_t collectionNum = collectionNumRef;
-    while (collectionNum == collectionNumRef)
+    while (blocking && (collectionNum == collectionNumRef))
     {
         TryStartGC(generation);
-        if (collectionNum != collectionNumRef)
-        {
-            break;
-        }
-
         HelpOnce();
+        //TODO: VS this could be a long pause for the caller if no helpers
+        //      when GC is parallel, consider initiating blocking GC
+        //      after a few helps and if the right generation
     }
 }
 
@@ -298,7 +315,6 @@ void SatoriRecycler::BlockingCollect()
         m_gen2Count++;
     }
 
-    // TODO: VS update stats and heuristics
     if (m_condemnedGeneration == 2)
     {
         m_gen1Budget = Gen2RegionCount();
@@ -311,8 +327,8 @@ void SatoriRecycler::BlockingCollect()
     m_gen1Threshold = Gen1RegionCount() + max(GEN1_MIN_THRESHOLD, Gen2RegionCount() / 4);
 
     m_condemnedGeneration = 0;
-    m_gcInProgress = false;
-    m_isConcurrent = CONCURRENT;
+    m_gcState = GC_STATE_NONE;
+    m_isConcurrent = ENABLE_CONCURRENT;
 
     // restart VM
     GCToEEInterface::RestartEE(true);
@@ -324,17 +340,14 @@ void SatoriRecycler::Mark()
     IncrementStackScanCount();
     SatoriHandlePartitioner::StartNextScan();
 
-    MarkOwnStack();
-    //TODO: VS MarkOwnHandles?
-
-    //TODO: VS should reuse a context for the following?
-    MarkOtherStacks();
+    MarkOwnStackAndDrainQueues();
     MarkHandles();
     MarkFinalizationQueue();
+    MarkOtherStacks();
 
     bool revisitCards = m_condemnedGeneration == 1 ?
         MarkThroughCards(/* isConcurrent */ false) :
-        CONCURRENT;
+        ENABLE_CONCURRENT;
 
     while (m_workList->Count() > 0 || revisitCards)
     {
@@ -343,6 +356,7 @@ void SatoriRecycler::Mark()
     }
 
     // all strongly reachable objects are marked here
+    //       sync
     AssertNoWork();
 
     DependentHandlesInitialScan();
@@ -547,7 +561,6 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         // byrefs may point to stack, use checked here
         containingRegion = context->m_heap->RegionForAddressChecked(location);
 
-        // TODO: VS regions from current thread context are parseable
         if (!containingRegion || containingRegion->Generation() == 0)
         {
             return;
@@ -592,42 +605,37 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     }
 };
 
-void SatoriRecycler::MarkOwnStack()
+bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
 {
     gc_alloc_context* aContext = GCToEEInterface::GetAllocContext();
-
-    // claim our own stack for scanning
-    while (true)
-    {
-        int threadScanCount = aContext->alloc_count;
-        int currentScanCount = GetStackScanCount();
-        if (threadScanCount >= currentScanCount)
-        {
-            return;
-        }
-
-        if (Interlocked::CompareExchange(&aContext->alloc_count, currentScanCount, threadScanCount) == threadScanCount)
-        {
-            break;
-        }
-    }
-
-    // mark roots for the current stack
     ScanContext sc;
     sc.promotion = TRUE;
 
     MarkContext c = MarkContext(this);
     sc._unused1 = &c;
-    GCToEEInterface::GcScanCurrentStackRoots(m_isConcurrent? MarkFnConcurrent: MarkFn, &sc);
 
+    int threadScanCount = aContext->alloc_count;
+    int currentScanCount = GetStackScanCount();
+    if (threadScanCount != currentScanCount)
+    {
+        // claim our own stack for scanning
+        if (Interlocked::CompareExchange(&aContext->alloc_count, currentScanCount, threadScanCount) == threadScanCount)
+        {
+            GCToEEInterface::GcScanCurrentStackRoots(m_isConcurrent ? MarkFnConcurrent : MarkFn, &sc);
+        }
+    }
+
+    bool revisit = false;
     if (m_isConcurrent)
     {
-        DrainMarkQueuesConcurrent(c.m_markChunk);
+        revisit = DrainMarkQueuesConcurrent(c.m_markChunk, deadline);
     }
     else
     {
         DrainMarkQueues(c.m_markChunk);
     }
+
+    return revisit;
 }
 
 void SatoriRecycler::MarkOtherStacks()
@@ -674,19 +682,33 @@ void SatoriRecycler::MarkFinalizationQueue()
     }
 }
 
-void SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk)
+bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_t deadline)
 {
     if (!srcChunk)
     {
         srcChunk = m_workList->TryPop();
     }
 
+    size_t count = 0;
+    bool revisit = false;
     SatoriMarkChunk* dstChunk = nullptr;
     while (srcChunk)
     {
+        count += srcChunk->Count();
         // drain srcChunk to dst chunk
         while (srcChunk->Count() > 0)
         {
+            // if trying to block for GC, do not be a long pole
+            if (m_gcState == GC_STATE_BLOCKING)
+            {
+                m_workList->Push(srcChunk);
+                if (dstChunk)
+                {
+                    m_workList->Push(dstChunk);
+                }
+                return true;
+            }
+
             SatoriObject* o = srcChunk->Pop();
             _ASSERTE(o->IsMarked());
             o->ForEachObjectRef(
@@ -722,7 +744,7 @@ void SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk)
             );
         }
 
-        // done with srcChunk
+        // done with srcChunk       
         // if we have nonempty dstChunk (i.e. produced more work),
         // swap src and dst and continue
         if (dstChunk && dstChunk->Count() > 0)
@@ -736,6 +758,23 @@ void SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk)
             m_heap->Allocator()->ReturnMarkChunk(srcChunk);
             srcChunk = m_workList->TryPop();
         }
+
+        // every once in a while check for the deadline
+        // the number here is to
+        // - amortize cost of QueryPerformanceCounter()
+        // - establish the minimum amount of work per help quantum
+        //
+        //TUNING: I picked this to be roughly just less than 0.1 msec on my machine
+        if (count > Satori::REGION_SIZE_GRANULARITY / 512)
+        {
+            count = 0;
+            if (deadline && srcChunk && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
+            {
+                m_workList->Push(srcChunk);
+                revisit = true;
+                break;
+            }
+        }
     }
 
     if (dstChunk)
@@ -743,6 +782,8 @@ void SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk)
         _ASSERTE(dstChunk->Count() == 0);
         m_heap->Allocator()->ReturnMarkChunk(dstChunk);
     }
+
+    return revisit;
 }
 
 void SatoriRecycler::DrainMarkQueues(SatoriMarkChunk* srcChunk)
@@ -800,22 +841,35 @@ void SatoriRecycler::DrainMarkQueues(SatoriMarkChunk* srcChunk)
     }
 }
 
-bool SatoriRecycler::MarkThroughCards(bool isConcurrent)
+// Just a number that is likely be different for different threads
+// making the same call.
+size_t ThreadSpecificNumber()
+{
+    size_t result = ((size_t)&result * 11400714819323198485llu) >> 32;
+    return result;
+}
+
+bool SatoriRecycler::MarkThroughCards(bool isConcurrent, int64_t deadline)
 {
     SatoriMarkChunk* dstChunk = nullptr;
     bool revisit = false;
 
-    m_heap->ForEachPage(
+    m_heap->ForEachPageUntil(
         [&](SatoriPage* page)
         {
             int8_t pageState = page->CardState();
             if (pageState != Satori::CardState::BLANK)
             {
-                revisit |= page->CardState() == Satori::CardState::DIRTY;
+                if (!isConcurrent)
+                {
+                    revisit |= page->CardState() == Satori::CardState::DIRTY;
+                }
+
                 int8_t currentScanTicket = GetCardScanTicket();
                 if (page->ScanTicket() == currentScanTicket)
                 {
-                    return;
+                    // do not stop
+                    return false;
                 }
 
                 if (!isConcurrent)
@@ -824,8 +878,11 @@ bool SatoriRecycler::MarkThroughCards(bool isConcurrent)
                 }
 
                 size_t groupCount = page->CardGroupCount();
-                for (size_t i = 0; i < groupCount; i++)
+                // add thread specific offset, to separate somewhat what threads read
+                size_t offset = ThreadSpecificNumber();
+                for (size_t ii = 0; ii < groupCount; ii++)
                 {
+                    size_t i = (offset + ii) % groupCount;
                     int8_t groupState = page->CardGroupState(i);
                     if (groupState && page->CardGroupScanTicket(i) != currentScanTicket)
                     {
@@ -836,7 +893,6 @@ bool SatoriRecycler::MarkThroughCards(bool isConcurrent)
                         // do not mark from gen1 region
                         if (region->Generation() < 2)
                         {
-                            // TODO: VS simplify comment
                             // This is optimization. Not needed for correctness.
                             // If not dirty, we wipe the group, to not look at this again in the next scans.
                             // must use interlocked, even if not concurrent - in case it gets dirty by parallel mark (it can since it is gen1)
@@ -909,7 +965,6 @@ bool SatoriRecycler::MarkThroughCards(bool isConcurrent)
                                     {
                                         SatoriObject* child = *ref;
 
-                                        // TODO: VS similar pattern to Drain? 
                                         // cannot mark stuff in thread local regions. just mark as dirty to visit later.
                                         if (isConcurrent && child && child->ContainingRegion()->IsThreadLocal())
                                         {
@@ -935,6 +990,13 @@ bool SatoriRecycler::MarkThroughCards(bool isConcurrent)
                                 o = o->Next();
                             } while (o->Start() < objLimit);
                         }
+
+                        if (isConcurrent && deadline && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
+                        {
+                            // timed out, there could be more work
+                            revisit = true;
+                            return true;
+                        }
                     }
                 }
 
@@ -953,6 +1015,9 @@ bool SatoriRecycler::MarkThroughCards(bool isConcurrent)
                     revisit |= !page->TryCleanCardState();
                 }
             }
+
+            // do not stop
+            return false;
         }
     );
 
@@ -983,9 +1048,11 @@ bool SatoriRecycler::CleanCards()
                 page->CardState() = Satori::CardState::PROCESSING;
                 size_t groupCount = page->CardGroupCount();
 
-                // TODO: VS when stealing is implemented we should start from a random location
-                for (size_t i = 0; i < groupCount; i++)
+                // add thread specific offset, to separate somewhat what threads read
+                size_t offset = ThreadSpecificNumber();
+                for (size_t ii = 0; ii < groupCount; ii++)
                 {
+                    size_t i = (offset + ii) % groupCount;
                     // VolatileLoad, see the comment above regading page/group/card read order
                     int8_t groupState = VolatileLoad(&page->CardGroupState(i));
                     if (groupState == Satori::CardState::DIRTY)
@@ -1069,9 +1136,12 @@ void SatoriRecycler::UpdatePointersThroughCards()
             if (pageState == Satori::CardState::REMEMBERED)
             {
                 size_t groupCount = page->CardGroupCount();
-                // TODO: VS when stealing is implemented we should start from a random location
-                for (size_t i = 0; i < groupCount; i++)
+
+                // add thread specific offset, to separate somewhat what threads read
+                size_t offset = ThreadSpecificNumber();
+                for (size_t ii = 0; ii < groupCount; ii++)
                 {
+                    size_t i = (offset + ii) % groupCount;
                     int8_t groupState = page->CardGroupState(i);
                     _ASSERTE(groupState != Satori::CardState::DIRTY);
                     if (groupState == Satori::CardState::REMEMBERED)
@@ -1126,11 +1196,13 @@ void SatoriRecycler::UpdatePointersThroughCards()
                     }
                 }
             }
+            // do not stop
+            return false;
         }
     );
 }
 
-void SatoriRecycler::MarkHandles()
+bool SatoriRecycler::MarkHandles(int64_t deadline)
 {
     ScanContext sc;
     sc.promotion = TRUE;
@@ -1138,26 +1210,21 @@ void SatoriRecycler::MarkHandles()
     MarkContext c = MarkContext(this);
     sc._unused1 = &c;
 
-    int partition = SatoriHandlePartitioner::TryGetOwnPartitionToScan();
-    if (partition != -1)
-    {
-        sc.thread_number = partition;
-        GCScan::GcScanHandles(m_isConcurrent ? MarkFnConcurrent : MarkFn, m_condemnedGeneration, 2, &sc);
-        //TODO: VS drain own
-    }
-
-    SatoriHandlePartitioner::ForEachUnscannedPartition(
+    bool revisit = SatoriHandlePartitioner::ForEachUnscannedPartition(
         [&](int p)
         {
             sc.thread_number = p;
             GCScan::GcScanHandles(m_isConcurrent ? MarkFnConcurrent : MarkFn, m_condemnedGeneration, 2, &sc);
-        }
+        },
+        deadline
     );
 
     if (c.m_markChunk != nullptr)
     {
         m_workList->Push(c.m_markChunk);
     }
+
+    return revisit;
 }
 
 void SatoriRecycler::WeakPtrScan(bool isShort)
@@ -1588,10 +1655,6 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         size_t size = obj->Size();
         if (obj->IsMarked())
         {
-            // TODO: VS this may be optimized by copying contiguous objects at once. Copying is a relatively cheap operation.
-            //       Is there actually enough gain vs. touching src twice?
-            //       Setting reloc data after copying could be tricky. Can use mark bits.
-            //
             memcpy((void*)(dstPtr - sizeof(size_t)), (void*)(obj->Start() - sizeof(size_t)), size);
             // record the new location of the object by storing it in the syncblock space.
             // make it negative so it is different from a normal syncblock.
