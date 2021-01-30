@@ -186,6 +186,7 @@ void SatoriPage::SetCardsForRange(size_t start, size_t end)
     }
 }
 
+// TODO: VS barrier dirtying could be unordered since we do not clean concurrently with mutator
 void SatoriPage::DirtyCardForAddress(size_t address)
 {
     size_t offset = address - Start();
@@ -201,7 +202,6 @@ void SatoriPage::DirtyCardForAddress(size_t address)
     VolatileStore(&this->m_cardState, Satori::CardState::DIRTY);
 }
 
-// TODO: VS barrier dirtying could be unordered?
 void SatoriPage::DirtyCardsForRange(size_t start, size_t end)
 {
     size_t firstByteOffset = start - Start();
