@@ -109,6 +109,28 @@ public:
         }
     }
 
+    template<typename F>
+    void ForEachPageUntil(F& lambda)
+    {
+        size_t mapIndex = m_nextPageIndex - 1;
+        while (mapIndex > 0)
+        {
+            switch (m_pageMap[mapIndex])
+            {
+            case 1:
+                if (lambda((SatoriPage*)(mapIndex << Satori::PAGE_BITS)))
+                {
+                    return;
+                }
+            case 0:
+                mapIndex--;
+                continue;
+            default:
+                mapIndex -= ((size_t)1 << (m_pageMap[mapIndex] - 2));
+            }
+        }
+    }
+
 private:
     SatoriAllocator m_allocator;
     SatoriRecycler m_recycler;
