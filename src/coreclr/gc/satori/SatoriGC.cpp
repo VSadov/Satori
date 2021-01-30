@@ -172,11 +172,11 @@ HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
     generation = max(1, generation);
 
     // TODO: VS forced compaction
-    // only blocking collection is an observable contract
-    if (mode & collection_mode::collection_blocking)
-    {
-        m_heap->Recycler()->Collect(generation, /*force*/ true);
-    }
+    m_heap->Recycler()->Collect(
+        generation,
+        !(mode & collection_mode::collection_optimized),
+        mode & collection_mode::collection_blocking
+    );
 
     return S_OK;
 }
