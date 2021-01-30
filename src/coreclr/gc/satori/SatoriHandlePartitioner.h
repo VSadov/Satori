@@ -33,8 +33,6 @@ public:
         return s_partitionCount;
     }
 
-    // TODO: VS optimize % by making count pwr 2
-
     static int CurrentThreadPartition()
     {
         if (!s_partitionCount)
@@ -45,35 +43,29 @@ public:
         uint32_t value;
         if (GCToOSInterface::CanGetCurrentProcessorNumber())
         {
+            //TODO: VS this could be slow. We should cache this for handle creation.
+            //      this is for:
+            //      - balnce handle tables
+            //      - affinity when scanning handles
+            // 
+            //      it must be CPU related, since scan could be on a different thread.
+            //      it does not need to be very up to date though, just statistically close would be enough.
+            //      we just want to improve the likelyhood of finding it in cur proc table when scanning.
+            //
+            //      just invalidate the cache whe scan num moves forward? (it means the scan will get uncached value, which is ok)
             value = GCToOSInterface::GetCurrentProcessorNumber();
         }
         else
         {
             size_t thread = SatoriUtil::GetCurrentThreadTag();
-            // TODO: VS hash this?
-            value = (uint32_t)thread ^ (thread >> (sizeof(uint32_t) * 8));
+            value = (uint32_t)((thread * 11400714819323198485llu) >> 32);
         }
 
         return (int)(value % (uint32_t)s_partitionCount);
     }
 
-    static int TryGetOwnPartitionToScan()
-    {
-        int partition = CurrentThreadPartition();
-        uint8_t partitionTicket = VolatileLoadWithoutBarrier(&s_scanTickets[partition]);
-        if (partitionTicket != s_currentTicket)
-        {
-            if (Interlocked::CompareExchange(&s_scanTickets[partition], s_currentTicket, partitionTicket) == partitionTicket)
-            {
-                return partition;
-            }
-        }
-
-        return -1;
-    }
-
     template<typename F>
-    static void ForEachUnscannedPartition(F& lambda)
+    static bool ForEachUnscannedPartition(F& lambda, int64_t deadline = 0)
     {
         int startPartition = CurrentThreadPartition();
         //TODO: VS partition walk should be NUMA-aware, if possible
@@ -86,9 +78,18 @@ public:
                 if (Interlocked::CompareExchange(&s_scanTickets[partition], s_currentTicket, partitionTicket) == partitionTicket)
                 {
                     lambda(partition);
+
+                    if (deadline && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
+                    {
+                        // timed out, there could be more work
+                        return true;
+                    }
                 }
             }
         }
+
+        // done
+        return false;
     }
 
 private:
