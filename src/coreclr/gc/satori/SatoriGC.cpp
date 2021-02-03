@@ -10,6 +10,7 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 
+#include "SatoriHandlePartitioner.h"
 #include "SatoriObject.h"
 #include "SatoriObject.inl"
 #include "SatoriGC.h"
@@ -170,7 +171,13 @@ HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
     generation = (generation < 0) ? 2 : min(generation, 2);
     generation = max(1, generation);
 
-    m_heap->Recycler()->Collect(generation, /*force*/ true);
+    // TODO: VS forced compaction
+    m_heap->Recycler()->Collect(
+        generation,
+        !(mode & collection_mode::collection_optimized),
+        mode & collection_mode::collection_blocking
+    );
+
     return S_OK;
 }
 
@@ -181,20 +188,21 @@ unsigned SatoriGC::GetMaxGeneration()
 
 void SatoriGC::SetFinalizationRun(Object* obj)
 {
-    obj->GetHeader()->SetBit(BIT_SBLK_FINALIZER_RUN);
+    ((SatoriObject*)obj)->SuppressFinalization();
 }
 
 bool SatoriGC::RegisterForFinalization(int gen, Object* obj)
 {
-    _ASSERTE(obj->RawGetMethodTable()->HasFinalizer());
-    if (obj->GetHeader()->GetBits() & BIT_SBLK_FINALIZER_RUN)
+    SatoriObject* so = (SatoriObject*)obj;
+    _ASSERTE(so->RawGetMethodTable()->HasFinalizer());
+
+    if (so->IsFinalizationSuppressed())
     {
-        obj->GetHeader()->ClrBit(BIT_SBLK_FINALIZER_RUN);
+        so->UnSuppressFinalization();
         return true;
     }
     else
-    {
-        SatoriObject* so = (SatoriObject*)obj;
+    {        
         return so->ContainingRegion()->RegisterForFinalization(so);
     }
 }
@@ -215,6 +223,7 @@ HRESULT SatoriGC::Initialize()
 {
     m_perfCounterFrequency = GCToOSInterface::QueryPerformanceFrequency();
     SatoriObject::Initialize();
+    SatoriHandlePartitioner::Initialize();
     m_heap = SatoriHeap::Create();
     if (m_heap == nullptr)
     {
@@ -284,7 +293,7 @@ bool SatoriGC::IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, in
     while (true)
     {
         int threadScanCount = acontext->alloc_count;
-        int currentScanCount = m_heap->Recycler()->GetScanCount();
+        int currentScanCount = m_heap->Recycler()->GetStackScanCount();
         if (threadScanCount >= currentScanCount)
         {
             break;
@@ -500,18 +509,14 @@ void SatoriGC::ControlPrivateEvents(GCEventKeyword keyword, GCEventLevel level)
     GCEventStatus::Set(GCEventProvider_Private, keyword, level);
 }
 
-// This is not used much. Where it is used, the assumption is that it returns #procs
-// see: SyncBlockCacheWeakPtrScan and getNumberOfSlots
 int SatoriGC::GetNumberOfHeaps()
 {
-    return GCToOSInterface::GetTotalProcessorCount();;
+    return SatoriHandlePartitioner::PartitionCount();
 }
 
 int SatoriGC::GetHomeHeapNumber()
 {
-    // TODO: Satori   this is a number in [0, procNum) associated with thread
-    //                it is implementable, do 0 for now.
-    return 0;
+    return SatoriHandlePartitioner::CurrentThreadPartition();
 }
 
 size_t SatoriGC::GetPromotedBytes(int heap_index)

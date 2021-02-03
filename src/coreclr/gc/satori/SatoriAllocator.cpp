@@ -40,7 +40,11 @@ tryAgain:
     SatoriRegion* putBack = nullptr;
 
     int bucket = SizeToBucket(regionSize);
-    SatoriRegion* region = m_queues[bucket]->TryRemoveWithSize(regionSize, putBack);
+
+    SatoriRegion* region = (bucket == 0) ?
+                            m_queues[bucket]->TryPop():
+                            m_queues[bucket]->TryRemoveWithSize(regionSize, putBack);
+
     if (region)
     {
         if (putBack)
@@ -167,6 +171,7 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 
 SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
+    m_heap->Recycler()->HelpOnce();
     SatoriRegion* region = context->RegularRegion();
 
     while (true)
@@ -224,33 +229,18 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
             if (region->IsThreadLocal())
             {
-                // a thread allocating in a tight loop may ignore suspension for a very long time.
-                // check if suspension is requested.
-                GCToEEInterface::GcPoll();
-
-                // if full GC happened, we could have lost the region ownership, check for that.
-                if (context->RegularRegion() == nullptr)
+                // perform thread local collection and see if we have enough space after that.
+                region->ThreadLocalCollect();
+                if (region->StartAllocating(size))
                 {
-                    region = nullptr;
+                    // we have enough free space in the region to continue
+                    context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
                     continue;
-                }
-
-                if (region->OwnedByCurrentThread())
-                {
-                    // perform thread local collection and see if we have enough space after that.
-                    region->ThreadLocalCollect();
-                    if (region->StartAllocating(size))
-                    {
-                        // we have enough free space in the region to continue
-                        context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
-                        continue;
-                    }
                 }
             }
 
             context->RegularRegion() = nullptr;
             context->alloc_ptr = context->alloc_limit = nullptr;
-            region->ClearMarks();
             region->PromoteToGen1();
             m_heap->Recycler()->AddEphemeralRegion(region);
         }
@@ -273,6 +263,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
 SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
+    m_heap->Recycler()->HelpOnce();
     SatoriRegion* region = context->LargeRegion();
 
     while (true)

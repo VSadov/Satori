@@ -1378,15 +1378,16 @@ void CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
         return;
     }
 
-    // very rare case where we are copying refs out of non-heap area like stack or native heap.
-    // we do not have a containing type and that would be somewhat inconvenient.
-    // one way to handle this is by concervatively escaping any value that matches an unescaped pointer in curRegion.
+    // This is a very rare case where we are copying refs out of non-heap area like stack or native heap.
+    // We do not have a containing type and that is somewhat inconvenient.
     // 
-    // in practice, while theoretically possible, I do not know a code path that could lead here.
-    // as a particular concern, boxing copy typically uses a newly allocated and not yet escaped target.
-    //
-    // in case if this is reachable we will simply stop tracking if this ever occurs.
-    _ASSERTE(!"escaping by copying from outside of heap, we can handle this, but it is unexpected");
+    // There are not many scenarios that lead here. In particular, boxing uses a newly
+    // allocated and not yet escaped target, so it does not.
+    // One possible way to get here is a copy-back after a reflection call with a boxed nullable
+    // argument that happen to escape.
+    // 
+    // We could handle this is by concervatively escaping any value that matches an unescaped pointer in curRegion.
+    // However, considering how uncommon this is, we will just give up tracking.
     curRegion->StopEscapeTracking();
 }
 #endif
@@ -1401,26 +1402,33 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
 
 #if FEATURE_SATORI_GC
 
-    SatoriObject* obj = (SatoriObject*)OBJECTREFToObject(ref);
-    if ((((size_t)dst ^ (size_t)obj) >> 21) == 0)
+    if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
     {
-        // same region
-        return;
-    }
+        SatoriObject* obj = (SatoriObject*)OBJECTREFToObject(ref);
+        if ((((size_t)dst ^ (size_t)obj) >> 21) == 0)
+        {
+            // same region
+            return;
+        }
 
-    if (!obj || obj->ContainingRegion()->Generation() == 2)
-    {
-        return;
+        if (!obj || obj->ContainingRegion()->Generation() == 2)
+        {
+            return;
+        }
     }
 
     SatoriPage* page = PageForAddressCheckedSatori(dst);
-    if (!page)
+    if (page)
     {
-        // not assigning to heap
-        return;
+        if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
+        {
+            page->SetCardForAddress((size_t)dst);
+        }
+        else
+        {
+            page->DirtyCardForAddress((size_t)dst);
+        }
     }
-
-    page->SetCardForAddress((size_t)dst);
 
 #else
     // if the dst is outside of the heap (unboxed value classes) then we
@@ -1467,8 +1475,7 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref)
 
 #if FEATURE_SATORI_GC
 
-    // Satori has no special behaviors for large objects.
-    // Noting bypasses gen1.
+    // Satori large objects are allocated in gen0. No barrier is needed.
 
 #else
 #ifdef WRITE_BARRIER_CHECK
@@ -1533,13 +1540,18 @@ SetCardsAfterBulkCopy(Object** dst, Object **src, size_t len)
     {
 #if FEATURE_SATORI_GC
         SatoriPage* page = PageForAddressCheckedSatori(dst);
-        if (!page)
+        if (page)
         {
-            // not assigning to heap
-            return;
+            if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
+            {
+                page->SetCardsForRange((size_t)dst, (size_t)dst + len);
+            }
+            else
+            {
+                page->DirtyCardsForRange((size_t)dst, (size_t)dst + len);
+            }
         }
 
-        page->SetCardsForRange((size_t)dst, (size_t)dst + len);
 #else
         InlinedSetCardsAfterBulkCopyHelper(dst, len);
 #endif

@@ -23,38 +23,44 @@ class SatoriRecycler
 public:
     void Initialize(SatoriHeap* heap);
     void AddEphemeralRegion(SatoriRegion* region);
+    void TryStartGC(int generation);
+    void HelpOnce();
     void MaybeTriggerGC();
 
-    void Collect1();
-    void Collect2();
+    void Collect(int generation, bool force, bool blocking);
 
-    int GetScanCount();
+    int GetStackScanCount();
     int64_t GetCollectionCount(int gen);
     int CondemnedGeneration();
 
     int Gen1RegionCount();
-
     int Gen2RegionCount();
 
-    void Collect(int generation, bool force);
 private:
+    static const int GC_STATE_NONE = 0;
+    static const int GC_STATE_CONCURRENT = 1;
+    static const int GC_STATE_BLOCKING = 2;
+
     SatoriHeap* m_heap;
 
-    // used to ensure each thread is scanned once per scan round.
-    int m_scanCount;
+    int m_stackScanCount;
+    uint8_t m_cardScanTicket;
+
     int m_condemnedGeneration;
     bool m_isCompacting;
-    int m_gcInProgress;
+    bool m_isConcurrent;
+    int m_gcState;
 
     SatoriMarkChunkQueue* m_workList;
 
-    // temporary store for Gen0 regions
-    SatoriRegionQueue* m_nurseryRegions;
+    // regions owned by recycler
     SatoriRegionQueue* m_ephemeralRegions;
     SatoriRegionQueue* m_ephemeralFinalizationTrackingRegions;
-
     SatoriRegionQueue* m_tenuredRegions;
     SatoriRegionQueue* m_tenuredFinalizationTrackingRegions;
+
+    // temporary store for Gen0 regions
+    SatoriRegionQueue* m_nurseryRegions;
 
     // temporary store while processing finalizables
     SatoriRegionQueue* m_finalizationScanCompleteRegions;
@@ -75,33 +81,44 @@ private:
 
     static void DeactivateFn(gc_alloc_context* context, void* param);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+    static void MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
     static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 
     void DeactivateAllStacks();
     void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
-    void MarkOwnStack();
+    bool MarkOwnStackAndDrainQueues(int64_t deadline = 0);
     void MarkOtherStacks();
-    void IncrementScanCount();
-    void DrainMarkQueues();
-    bool MarkThroughCards(int8_t minState);
-    void MarkHandles();
+    void MarkFinalizationQueue();
+    void IncrementStackScanCount();
+    void IncrementCardScanTicket();
+    uint8_t GetCardScanTicket();
+    void DrainMarkQueues(SatoriMarkChunk* srcChunk = nullptr);
+    bool DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk = nullptr, int64_t deadline = 0);
+    bool MarkThroughCards(bool isConcurrent, int64_t deadline = 0);
+    bool CleanCards();
+    bool MarkHandles(int64_t deadline = 0);
     void WeakPtrScan(bool isShort);
     void WeakPtrScanBySingleThread();
     void ScanFinalizables();
-    void ScanFinalizableRegions(SatoriRegionQueue* regions);
+    void ScanFinalizableRegions(SatoriRegionQueue* regions, MarkContext* c);
 
     void DependentHandlesInitialScan();
     void DependentHandlesRescan();
     void PromoteSurvivedHandles();
     void SweepNurseryRegions();
 
+    bool HelpImpl();
+
+    void BlockingCollect();
     void Mark();
     void Sweep();
     void Compact();
     void RelocateRegion(SatoriRegion* region);
-    void UpdatePointers();
+    void Finish();
 
-    void UpdatePointersInRegions(SatoriRegionQueue* queue);
+    void UpdateFinalizationQueue();
+
+    void FinishRegions(SatoriRegionQueue* queue);
     void UpdatePointersThroughCards();
     void SweepRegions(SatoriRegionQueue* regions);
     void AddRelocationTarget(SatoriRegion* region);

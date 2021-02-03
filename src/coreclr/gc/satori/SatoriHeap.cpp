@@ -23,17 +23,14 @@ void InitWriteBarrier(uint8_t* segmentTable, size_t highest_address)
     WriteBarrierParameters args = {};
     args.operation = WriteBarrierOp::Initialize;
     args.is_runtime_suspended = true;
-    args.requires_upper_bounds_check = false;
     args.card_table = (uint32_t*)segmentTable;
-
-#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
-    args.card_bundle_table = nullptr;
-#endif
-
-    args.lowest_address = (uint8_t*)1;
     args.highest_address = (uint8_t*)highest_address;
+
+    // dummy values to make asserts happy, we will not use this
+    args.lowest_address = (uint8_t*)1;
     args.ephemeral_low = (uint8_t*)-1;
     args.ephemeral_high = (uint8_t*)-1;
+
     GCToEEInterface::StompWriteBarrier(&args);
 }
 
@@ -42,17 +39,15 @@ void UpdateWriteBarrier(uint8_t* segmentTable, size_t highest_address)
     WriteBarrierParameters args = {};
     args.operation = WriteBarrierOp::StompResize;
     args.is_runtime_suspended = false;
-    args.requires_upper_bounds_check = false;
     args.card_table = (uint32_t*)segmentTable;
-
-#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
-    args.card_bundle_table = nullptr;
-#endif
-
-    args.lowest_address = (uint8_t*)1;
     args.highest_address = (uint8_t*)highest_address;
+
+    // dummy values to make asserts happy, we will not use this
+    args.lowest_address = (uint8_t*)1;
     args.ephemeral_low = (uint8_t*)-1;
     args.ephemeral_high = (uint8_t*)-1;
+    args.card_bundle_table = (uint32_t*)-1;
+
     GCToEEInterface::StompWriteBarrier(&args);
 }
 
@@ -224,16 +219,23 @@ SatoriObject* SatoriHeap::ObjectForAddress(size_t address)
     return PageForAddress(address)->RegionForAddress(address)->FindObject(address);
 }
 
-SatoriObject* SatoriHeap::ObjectForAddressChecked(size_t address)
+SatoriRegion* SatoriHeap::RegionForAddressChecked(size_t address)
 {
     SatoriPage* page = PageForAddressChecked(address);
     if (page)
     {
-        SatoriRegion* region = page->RegionForAddressChecked(address);
-        if (region)
-        {
-            return region->FindObject(address);
-        }
+        return page->RegionForAddressChecked(address);
+    }
+
+    return nullptr;
+}
+
+SatoriObject* SatoriHeap::ObjectForAddressChecked(size_t address)
+{
+    SatoriRegion* region = RegionForAddressChecked(address);
+    if (region)
+    {
+        return region->FindObject(address);
     }
 
     return nullptr;
