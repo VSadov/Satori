@@ -89,6 +89,8 @@ public:
 
     size_t Occupancy();
 
+    void SetHasPinnedObjects();
+
     bool HasPinnedObjects();
 
     void ClearMarks();

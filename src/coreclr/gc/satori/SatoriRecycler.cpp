@@ -548,7 +548,7 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
 
         if (flags & GC_CALL_PINNED)
         {
-            o->SetPinnedAtomic();
+            o->ContainingRegion()->SetHasPinnedObjects();
         }
     }
 };
@@ -615,7 +615,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
 
         if (flags & GC_CALL_PINNED)
         {
-            o->SetPinnedAtomic();
+            o->ContainingRegion()->SetHasPinnedObjects();
         }
     }
 };

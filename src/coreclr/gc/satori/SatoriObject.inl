@@ -144,6 +144,7 @@ inline void SatoriObject::SetPinned()
     SetBit(2);
 }
 
+//TODO: VS unused? 
 inline void SatoriObject::SetPinnedAtomic()
 {
     SetBitAtomic(2);

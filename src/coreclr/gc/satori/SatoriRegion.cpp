@@ -1520,7 +1520,6 @@ bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
     m_escapeCounter = 0;
     size_t foundFree = 0;
     bool sawMarked = false;
-    m_hasPinnedObjects = false;
 
     SatoriObject* cur = FirstObject();
     do
@@ -1534,8 +1533,7 @@ bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
                 cur->ClearPinnedAndMarked();
                 this->EscapeShallow(cur);
             }
-            else if (!m_hasPinnedObjects &&
-                (cur->IsPinned() || cur->IsPermanentlyPinned()))
+            else if (!m_hasPinnedObjects && cur->IsPermanentlyPinned())
             {
                 m_hasPinnedObjects = true;
             }
@@ -1644,6 +1642,7 @@ bool SatoriRegion::NothingMarked()
 
 void SatoriRegion::ClearMarks()
 {
+    m_hasPinnedObjects = false;
     memset(&m_bitmap[BITMAP_START], 0, (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
 }
 
