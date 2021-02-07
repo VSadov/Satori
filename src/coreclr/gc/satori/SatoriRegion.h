@@ -69,16 +69,19 @@ public:
 
     SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
-    bool Sweep(bool turnMarkedIntoEscaped);
+
     void TakeFinalizerInfoFrom(SatoriRegion* other);
+    void UpdateFinalizibleTrackers();
     bool NothingMarked();
     void UpdatePointers();
+    bool Sweep();
+    bool SweepAndUpdatePointers();
 
     bool IsExposed(SatoriObject** location);
     bool AnyExposed(size_t from, size_t length);
     void EscapeRecursively(SatoriObject* obj);
 
-    void EscapeShallow(SatoriObject* o);
+    void ClearMarkedAndEscapeShallow(SatoriObject* o);
     void ReportOccupancy(size_t occupancy);
 
     template<typename F>
@@ -89,7 +92,11 @@ public:
 
     size_t Occupancy();
 
+    void SetHasPinnedObjects();
     bool HasPinnedObjects();
+
+    void SetMayHaveDeadObjects(bool value);
+    bool MayHaveDeadObjects();
 
     void ClearMarks();
     void PromoteToGen1();
@@ -137,9 +144,6 @@ private:
             SatoriQueue<SatoriRegion>* m_containingQueue;
             SatoriMarkChunk* m_finalizableTrackers;
 
-            bool m_everHadFinalizables;
-            bool m_hasPendingFinalizables;
-
             // active allocation may happen in the following range.
             // the range may not be parseable as sequence of objects
             // NB: the range is in terms of objects,
@@ -152,9 +156,12 @@ private:
             // counting escaped objects
             // when number goes too high, we stop escaping and do not do local GC.
             int32_t m_escapeCounter;
-
             size_t m_occupancy;
-            size_t m_hasPinnedObjects;
+
+            bool m_everHadFinalizables;
+            bool m_hasPendingFinalizables;
+            bool m_hasPinnedObjects;
+            bool m_mayHaveDeadObjects;
 
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
         };
