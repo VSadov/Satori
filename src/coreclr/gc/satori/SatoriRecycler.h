@@ -29,6 +29,8 @@ public:
 
     void Collect(int generation, bool force, bool blocking);
 
+    bool IsConcurrent();
+
     int GetStackScanCount();
     int64_t GetCollectionCount(int gen);
     int CondemnedGeneration();
@@ -40,6 +42,7 @@ private:
     static const int GC_STATE_NONE = 0;
     static const int GC_STATE_CONCURRENT = 1;
     static const int GC_STATE_BLOCKING = 2;
+    static const int GC_STATE_BLOCKED = 3;
 
     SatoriHeap* m_heap;
 
@@ -48,7 +51,6 @@ private:
 
     int m_condemnedGeneration;
     bool m_isCompacting;
-    bool m_isConcurrent;
     int m_gcState;
 
     SatoriMarkChunkQueue* m_workList;
@@ -59,18 +61,18 @@ private:
     SatoriRegionQueue* m_tenuredRegions;
     SatoriRegionQueue* m_tenuredFinalizationTrackingRegions;
 
-    // temporary store for Gen0 regions
-    SatoriRegionQueue* m_nurseryRegions;
-
     // temporary store while processing finalizables
     SatoriRegionQueue* m_finalizationScanCompleteRegions;
     SatoriRegionQueue* m_finalizationPendingRegions;
 
-    // temporary store while planning
+    // temporary store for planning and relocating
     SatoriRegionQueue* m_stayingRegions;
     SatoriRegionQueue* m_relocatingRegions;
     SatoriRegionQueue* m_relocationTargets[Satori::FREELIST_COUNT];
     SatoriRegionQueue* m_relocatedRegions;
+
+    // store regions for concurrent sweep
+    SatoriRegionQueue* m_deferredSweepRegions;
 
     int64_t m_gen1Count;
     int64_t m_gen2Count;
@@ -78,6 +80,8 @@ private:
     int m_gen1Threshold;
     int m_gen1Budget;
     int m_condemnedRegionsCount;
+    int m_deferredSweepCount;
+    int m_regionsAddedSinceLastCollection;
 
     static void DeactivateFn(gc_alloc_context* context, void* param);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
@@ -105,13 +109,12 @@ private:
     void DependentHandlesInitialScan();
     void DependentHandlesRescan();
     void PromoteSurvivedHandles();
-    void SweepNurseryRegions();
 
     bool HelpImpl();
 
     void BlockingCollect();
     void Mark();
-    void Sweep();
+    void AfterMarkPass();
     void Compact();
     void RelocateRegion(SatoriRegion* region);
     void Finish();
@@ -119,8 +122,11 @@ private:
     void UpdateFinalizationQueue();
 
     void FinishRegions(SatoriRegionQueue* queue);
+    void ReturnRegion(SatoriRegion* curRegion);
+    bool DrainDeferredSweepQueue(int64_t deadline = 0);
+    void SweepAndReturnRegion(SatoriRegion* curRegion);
     void UpdatePointersThroughCards();
-    void SweepRegions(SatoriRegionQueue* regions);
+    void AfterMarkPassThroughRegions(SatoriRegionQueue* regions);
     void AddRelocationTarget(SatoriRegion* region);
 
     SatoriRegion* TryGetRelocationTarget(size_t size, bool existingRegionOnly);
