@@ -37,10 +37,10 @@ public:
     bool IsMarked();
     bool IsMarkedOrOlderThan(int generation);
     void SetMarked();
+    void ClearMarked();
     void SetMarkedAtomic();
     bool IsPinned();
     void SetPinned();
-    void SetPinnedAtomic();
     void ClearPinnedAndMarked();
     bool IsEscaped();
     bool IsEscapedOrPinned();
