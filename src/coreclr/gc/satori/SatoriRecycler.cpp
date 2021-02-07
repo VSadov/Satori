@@ -67,7 +67,6 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_gen1Threshold = GEN1_MIN_THRESHOLD;
     m_gen1Budget = 0;
-    m_isConcurrent = ENABLE_CONCURRENT;
 }
 
 // not interlocked. this is not done concurrently. 
@@ -167,28 +166,37 @@ void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
 
 void SatoriRecycler::TryStartGC(int generation)
 {
-    if (Interlocked::CompareExchange(&m_gcState, GC_STATE_CONCURRENT, GC_STATE_NONE) == GC_STATE_NONE)
+    if (ENABLE_CONCURRENT)
     {
-        // Here we have a short window when other threads may notice that gc is in progress,
-        // but will find no helping opportunities until we set m_condemnedGeneration.
-        // that is ok.
-
-        // card scan is incremental, thus concurrent and STW card scan use the same ticket
-        // and we update it unconditionally
-        IncrementCardScanTicket();
-        if (m_isConcurrent)
+        if (Interlocked::CompareExchange(&m_gcState, GC_STATE_CONCURRENT, GC_STATE_NONE) == GC_STATE_NONE)
         {
+            // Here we have a short window when other threads may notice that gc is in progress,
+            // but will find no helping opportunities until we set m_condemnedGeneration.
+            // that is ok.
+
+            IncrementCardScanTicket();
             IncrementStackScanCount();
             SatoriHandlePartitioner::StartNextScan();
 
             // toggle the barrier before setting m_condemnedGeneration
             // this is a PW fence
             ToggleWriteBarrier(true, /* eeSuspended */ false);
-        }
 
-        // generation must be published after toggling the barrier
-        // this will enable helping
-        m_condemnedGeneration = generation;
+            // generation must be published after toggling the barrier
+            // this will enable helping
+            m_condemnedGeneration = generation;
+        }
+    }
+    else
+    {
+        if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_NONE) == GC_STATE_NONE)
+        {
+            // card scan is incremental, thus concurrent and STW scans use the same ticket
+            // and we update it before entering blocking collect
+            IncrementCardScanTicket();
+            m_condemnedGeneration = generation;
+            BlockingCollect();
+        }
     }
 }
 
@@ -280,6 +288,11 @@ void SatoriRecycler::Collect(int generation, bool force, bool blocking)
     }
 }
 
+bool SatoriRecycler::IsConcurrent()
+{
+    return m_gcState != GC_STATE_BLOCKED;
+}
+
 void SatoriRecycler::BlockingCollect()
 {
     bool wasCoop = GCToEEInterface::EnablePreemptiveGC();
@@ -288,14 +301,17 @@ void SatoriRecycler::BlockingCollect()
     // stop other threads.
     GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
 
-    ToggleWriteBarrier(false, /* eeSuspended */ true);
-    m_isConcurrent = false;
-
     // become coop again (it will not block since VM is done suspending)
     GCToEEInterface::DisablePreemptiveGC();
 
+    if (ENABLE_CONCURRENT)
+    {
+        ToggleWriteBarrier(false, /* eeSuspended */ true);
+    }
+
     // assume that we will compact. we will rethink later.
     m_isCompacting = COMPACTING;
+    m_gcState = GC_STATE_BLOCKED;
 
     DeactivateAllStacks();
 
@@ -328,7 +344,6 @@ void SatoriRecycler::BlockingCollect()
 
     m_condemnedGeneration = 0;
     m_gcState = GC_STATE_NONE;
-    m_isConcurrent = ENABLE_CONCURRENT;
 
     // restart VM
     GCToEEInterface::RestartEE(true);
@@ -621,12 +636,12 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
         // claim our own stack for scanning
         if (Interlocked::CompareExchange(&aContext->alloc_count, currentScanCount, threadScanCount) == threadScanCount)
         {
-            GCToEEInterface::GcScanCurrentStackRoots(m_isConcurrent ? MarkFnConcurrent : MarkFn, &sc);
+            GCToEEInterface::GcScanCurrentStackRoots(IsConcurrent() ? MarkFnConcurrent : MarkFn, &sc);
         }
     }
 
     bool revisit = false;
-    if (m_isConcurrent)
+    if (IsConcurrent())
     {
         revisit = DrainMarkQueuesConcurrent(c.m_markChunk, deadline);
     }
@@ -1206,7 +1221,7 @@ bool SatoriRecycler::MarkHandles(int64_t deadline)
 {
     ScanContext sc;
     sc.promotion = TRUE;
-    sc.concurrent = m_isConcurrent;
+    sc.concurrent = IsConcurrent();
     MarkContext c = MarkContext(this);
     sc._unused1 = &c;
 
@@ -1214,7 +1229,7 @@ bool SatoriRecycler::MarkHandles(int64_t deadline)
         [&](int p)
         {
             sc.thread_number = p;
-            GCScan::GcScanHandles(m_isConcurrent ? MarkFnConcurrent : MarkFn, m_condemnedGeneration, 2, &sc);
+            GCScan::GcScanHandles(IsConcurrent() ? MarkFnConcurrent : MarkFn, m_condemnedGeneration, 2, &sc);
         },
         deadline
     );

@@ -29,6 +29,8 @@ public:
 
     void Collect(int generation, bool force, bool blocking);
 
+    bool IsConcurrent();
+
     int GetStackScanCount();
     int64_t GetCollectionCount(int gen);
     int CondemnedGeneration();
@@ -40,6 +42,7 @@ private:
     static const int GC_STATE_NONE = 0;
     static const int GC_STATE_CONCURRENT = 1;
     static const int GC_STATE_BLOCKING = 2;
+    static const int GC_STATE_BLOCKED = 3;
 
     SatoriHeap* m_heap;
 
@@ -48,7 +51,6 @@ private:
 
     int m_condemnedGeneration;
     bool m_isCompacting;
-    bool m_isConcurrent;
     int m_gcState;
 
     SatoriMarkChunkQueue* m_workList;
