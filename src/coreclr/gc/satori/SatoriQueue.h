@@ -32,6 +32,8 @@ enum class QueueKind
     RecyclerRelocating,
     RecyclerRelocated,
     RecyclerRelocationTarget,
+
+    RecyclerDeferredSweep,
 };
 
 template<class T>
@@ -167,6 +169,7 @@ protected:
     SatoriLock m_lock;
     T* m_head;
     T* m_tail;
+    //TODO: VS should be size_t
     int m_count;
 };
 
