@@ -129,6 +129,11 @@ inline void SatoriObject::SetMarked()
     SetBit(0);
 }
 
+inline void SatoriObject::ClearMarked()
+{
+    ClearBit(0);
+}
+
 inline void SatoriObject::SetMarkedAtomic()
 {
     SetBitAtomic(0);
@@ -144,14 +149,9 @@ inline void SatoriObject::SetPinned()
     SetBit(2);
 }
 
-inline void SatoriObject::SetPinnedAtomic()
-{
-    SetBitAtomic(2);
-}
-
 inline void SatoriObject::ClearPinnedAndMarked()
 {
-    ClearBit(0);
+    ClearMarked();
     if (IsPinned())
     {
         // this would be rare. do not inline.
