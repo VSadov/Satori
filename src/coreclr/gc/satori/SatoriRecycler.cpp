@@ -1239,13 +1239,9 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                     [&](SatoriObject** ppObject)
                                     {
                                         SatoriObject* o = *ppObject;
-                                        if (o)
+                                        if (o && o->ContainingRegion()->IsEvacuated())
                                         {
-                                            ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
-                                            if (ptr < 0)
-                                            {
-                                                *ppObject = (SatoriObject*)-ptr;
-                                            }
+                                            *ppObject = ((SatoriObject**)o)[-1];
                                         }
                                     }, start, end);
                                 obj = obj->Next();
@@ -1725,7 +1721,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
             memcpy((void*)(dstPtr - sizeof(size_t)), (void*)(obj->Start() - sizeof(size_t)), size);
             // record the new location of the object by storing it in the syncblock space.
             // make it negative so it is different from a normal syncblock.
-            ((ptrdiff_t*)obj)[-1] = -(ptrdiff_t)dstPtr;
+            ((size_t*)obj)[-1] = dstPtr;
             dstPtr += size;
         }
 
@@ -1742,6 +1738,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     }
 
     // the region is now relocated.
+    relocationSource->SetIsEvacuated(true);
     m_relocatedRegions->Push(relocationSource);
 }
 
@@ -1773,18 +1770,9 @@ void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t
 #endif
     }
 
-    // TODO: VS this check does not look like worth it
-    //       revisit when have good banchmarks
-    //MarkContext* context = (MarkContext*)sc->_unused1;
-    //if (o->ContainingRegion()->Generation() > context->m_condemnedGeneration)
-    //{
-    //    return;
-    //}
-
-    ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
-    if (ptr < 0)
+    if (o->ContainingRegion()->IsEvacuated())
     {
-        ptr = -ptr;
+        size_t ptr = ((size_t*)o)[-1];
         if (flags & GC_CALL_INTERIOR)
         {
             *ppObject = (PTR_Object)(location + (ptr - o->Start()));
@@ -1858,10 +1846,9 @@ void SatoriRecycler::UpdateFinalizationQueue()
             [&](SatoriObject** ppObject)
             {
                 SatoriObject* o = *ppObject;
-                ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
-                if (ptr < 0)
+                if (o->ContainingRegion()->IsEvacuated())
                 {
-                    *ppObject = (SatoriObject*)-ptr;
+                    *ppObject = ((SatoriObject**)o)[-1];
                 }
             }
         );

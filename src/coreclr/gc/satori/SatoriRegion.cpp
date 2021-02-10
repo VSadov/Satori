@@ -103,7 +103,9 @@ void SatoriRegion::MakeBlank()
 
     m_everHadFinalizables = false;
     m_hasPinnedObjects = false;
+
     m_mayHaveDeadObjects = false;
+    m_isEvacuated = false;
 
     //clear index and free list
     memset(&m_freeLists, 0, sizeof(m_freeLists));
@@ -1577,13 +1579,9 @@ void SatoriRegion::UpdatePointers()
                 [](SatoriObject** ppObject)
                 {
                     SatoriObject* o = *ppObject;
-                    if (o)
+                    if (o && o->ContainingRegion()->IsEvacuated())
                     {
-                        ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
-                        if (ptr < 0)
-                        {
-                            *ppObject = (SatoriObject*)-ptr;
-                        }
+                        *ppObject = ((SatoriObject**)o)[-1];
                     }
                 }
             );
@@ -1597,13 +1595,10 @@ void SatoriRegion::UpdatePointers()
         ForEachFinalizable(
             [&](SatoriObject* finalizable)
             {
-                if (finalizable)
+                if (finalizable && finalizable->ContainingRegion()->IsEvacuated())
                 {
                     ptrdiff_t ptr = ((ptrdiff_t*)finalizable)[-1];
-                    if (ptr < 0)
-                    {
-                        finalizable = (SatoriObject*)-ptr;
-                    }
+                    finalizable = ((SatoriObject**)finalizable)[-1];
 
                     _ASSERTE(finalizable->ContainingRegion() == this);
                 }

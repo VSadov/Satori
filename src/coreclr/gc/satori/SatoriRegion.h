@@ -95,6 +95,9 @@ public:
     void SetMayHaveDeadObjects(bool value);
     bool MayHaveDeadObjects();
 
+    void SetIsEvacuated(bool value);
+    bool IsEvacuated();
+
     void ClearMarks();
     void PromoteToGen1();
 
@@ -159,6 +162,7 @@ private:
             bool m_hasPendingFinalizables;
             bool m_hasPinnedObjects;
             bool m_mayHaveDeadObjects;
+            bool m_isEvacuated;
 
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
         };

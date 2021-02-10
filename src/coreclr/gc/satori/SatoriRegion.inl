@@ -168,4 +168,13 @@ inline bool SatoriRegion::MayHaveDeadObjects()
     return m_mayHaveDeadObjects;
 }
 
+inline void SatoriRegion::SetIsEvacuated(bool value)
+{
+    m_isEvacuated = value;
+}
+
+inline bool SatoriRegion::IsEvacuated()
+{
+    return m_isEvacuated;
+}
 #endif
