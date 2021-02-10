@@ -97,9 +97,13 @@ void SatoriRegion::MakeBlank()
     m_generation = -1;
     m_allocStart = (size_t)&m_firstObject;
     m_allocEnd = End();
-    m_occupancy = 0;
-    m_escapeCounter = 0;
     m_markStack = 0;
+    m_escapeCounter = 0;
+    m_occupancy = 0;
+
+    m_everHadFinalizables = false;
+    m_hasPinnedObjects = false;
+    m_mayHaveDeadObjects = false;
 
     //clear index and free list
     memset(&m_freeLists, 0, sizeof(m_freeLists));
@@ -775,7 +779,7 @@ void SatoriRegion::EscapeShallow(SatoriObject* o)
 
 void SatoriRegion::ReportOccupancy(size_t occupancy)
 {
-    _ASSERTE(occupancy < (Size() - offsetof(SatoriRegion, m_firstObject)));
+    _ASSERTE(occupancy <= (Size() - offsetof(SatoriRegion, m_firstObject)));
     m_occupancy = occupancy;
 
     // TUNING: heuristic needed
@@ -1491,6 +1495,9 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
 
 bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
 {
+    // we should onlysweep when we have new marks and only once
+    _ASSERTE(MayHaveDeadObjects());
+
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     size_t largeObjTailSize = 0;
 
@@ -1533,10 +1540,6 @@ bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
                 cur->ClearPinnedAndMarked();
                 this->EscapeShallow(cur);
             }
-            else if (!m_hasPinnedObjects && cur->IsPermanentlyPinned())
-            {
-                m_hasPinnedObjects = true;
-            }
 
             cur = cur->Next();
             continue;
@@ -1554,6 +1557,8 @@ bool SatoriRegion::Sweep(bool turnMarkedIntoEscaped)
     }
     while (cur->Start() < objLimit);
 
+    //TODO: VS we could clean marks here. also could make "Sweeped" a state.
+    SetMayHaveDeadObjects(false);
     ReportOccupancy(Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree + largeObjTailSize);
     return !sawMarked;
 }
@@ -1564,24 +1569,25 @@ void SatoriRegion::UpdatePointers()
     SatoriObject* obj = FirstObject();
     do
     {
-        //NB: walking objects without bitmap.
-        //     - we need to get MTs for all live objects anyways
-        //     - free objects are near optimal since we have just swept the region
-        //     - besides, relocated objects would have to be marked, which is extra work.
-        obj->ForEachObjectRef(
-            [](SatoriObject** ppObject)
-            {
-                SatoriObject* o = *ppObject;
-                if (o)
+        //TODO: VS walking objects without bitmap.
+        //      should have a special "MayHaveDeadObjects" version that uses bitmap and sweeps.
+        if (!MayHaveDeadObjects() || obj->IsMarked())
+        {
+            obj->ForEachObjectRef(
+                [](SatoriObject** ppObject)
                 {
-                    ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
-                    if (ptr < 0)
+                    SatoriObject* o = *ppObject;
+                    if (o)
                     {
-                        *ppObject = (SatoriObject*)-ptr;
+                        ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
+                        if (ptr < 0)
+                        {
+                            *ppObject = (SatoriObject*)-ptr;
+                        }
                     }
                 }
-            }
-        );
+            );
+        }
         obj = obj->Next();
     } while (obj->Start() < objLimit);
 
@@ -1610,6 +1616,7 @@ void SatoriRegion::UpdatePointers()
 
 void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
 {
+    _ASSERTE(!other->m_hasPinnedObjects);
     m_everHadFinalizables |= other->m_everHadFinalizables;
     SatoriMarkChunk* otherFinalizables = other->m_finalizableTrackers;
     if (otherFinalizables)

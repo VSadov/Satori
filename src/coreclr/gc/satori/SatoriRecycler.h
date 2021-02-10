@@ -74,12 +74,17 @@ private:
     SatoriRegionQueue* m_relocationTargets[Satori::FREELIST_COUNT];
     SatoriRegionQueue* m_relocatedRegions;
 
+    // store regions for concurrent sweep
+    SatoriRegionQueue* m_deferredSweepRegions;
+
     int64_t m_gen1Count;
     int64_t m_gen2Count;
 
     int m_gen1Threshold;
     int m_gen1Budget;
     int m_condemnedRegionsCount;
+    int m_deferredSweepCount;
+    int m_regionsAddedSinceLastCollection;
 
     static void DeactivateFn(gc_alloc_context* context, void* param);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
@@ -113,7 +118,7 @@ private:
 
     void BlockingCollect();
     void Mark();
-    void Sweep();
+    void AfterMarkPass();
     void Compact();
     void RelocateRegion(SatoriRegion* region);
     void Finish();
@@ -121,8 +126,11 @@ private:
     void UpdateFinalizationQueue();
 
     void FinishRegions(SatoriRegionQueue* queue);
+    void ReturnRegion(SatoriRegion* curRegion);
+    bool DrainDeferredSweepQueue(int64_t deadline = 0);
+    void SweepAndReturnRegion(SatoriRegion* curRegion);
     void UpdatePointersThroughCards();
-    void SweepRegions(SatoriRegionQueue* regions);
+    void AfterMarkPassThroughRegions(SatoriRegionQueue* regions);
     void AddRelocationTarget(SatoriRegion* region);
 
     SatoriRegion* TryGetRelocationTarget(size_t size, bool existingRegionOnly);

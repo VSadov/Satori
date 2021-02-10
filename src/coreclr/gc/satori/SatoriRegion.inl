@@ -158,4 +158,14 @@ inline bool SatoriRegion::HasPinnedObjects()
     return m_hasPinnedObjects;
 }
 
+inline void SatoriRegion::SetMayHaveDeadObjects(bool value)
+{
+    m_mayHaveDeadObjects = value;
+}
+
+inline bool SatoriRegion::MayHaveDeadObjects()
+{
+    return m_mayHaveDeadObjects;
+}
+
 #endif
