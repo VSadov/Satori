@@ -1737,33 +1737,30 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
 
 #if FEATURE_SATORI_GC
 
-    if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
-    {
-        SatoriObject* obj = (SatoriObject*)OBJECTREFToObject(ref);
-        if ((((size_t)dst ^ (size_t)obj) >> 21) == 0)
-        {
-            // same region
-            return;
-        }
+    SatoriObject* obj = (SatoriObject*)OBJECTREFToObject(ref);
+    if (!obj)
+        return;
 
-        if (!obj || obj->ContainingRegion()->Generation() == 2)
-        {
+    // check for obj in the same region or in gen2
+    if (((((size_t)dst ^ (size_t)obj) >> 21) == 0) ||
+        (obj->ContainingRegion()->Generation() == 2))
+    {
+        if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
             return;
-        }
     }
 
     SatoriPage* page = PageForAddressCheckedSatori(dst);
-    if (page)
+    if (!page)
+        return;
+
+    if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
     {
+        page->SetCardForAddress((size_t)dst);
         if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
-        {
-            page->SetCardForAddress((size_t)dst);
-        }
-        else
-        {
-            page->DirtyCardForAddress((size_t)dst);
-        }
+            return;
     }
+
+    page->DirtyCardForAddress((size_t)dst);
 
 #else
     // if the dst is outside of the heap (unboxed value classes) then we
