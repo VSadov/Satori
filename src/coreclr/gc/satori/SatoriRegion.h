@@ -74,7 +74,8 @@ public:
     void UpdateFinalizibleTrackers();
     bool NothingMarked();
     void UpdatePointers();
-    bool Sweep();
+    void UpdatePointersInPromotedObjects();
+    bool Sweep(bool keepMarked = false);
     bool SweepAndUpdatePointers();
 
     bool IsExposed(SatoriObject** location);
@@ -82,7 +83,7 @@ public:
     void EscapeRecursively(SatoriObject* obj);
 
     void ClearMarkedAndEscapeShallow(SatoriObject* o);
-    void ReportOccupancy(size_t occupancy);
+    void SetOccupancy(size_t occupancy);
 
     template<typename F>
     void ForEachFinalizable(F& lambda);
@@ -97,8 +98,12 @@ public:
 
     void SetMayHaveDeadObjects(bool value);
     bool MayHaveDeadObjects();
+    void SetAcceptedPromotedObjects(bool value);
+    bool AcceptedPromotedObjects();
 
     void ClearMarks();
+    void ClearIndex();
+    void ClearFreeLists();
     void PromoteToGen1();
 
     void ThreadLocalCollect();
@@ -162,6 +167,7 @@ private:
             bool m_hasPendingFinalizables;
             bool m_hasPinnedObjects;
             bool m_mayHaveDeadObjects;
+            bool m_acceptedPromotedObjects;
 
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
         };
