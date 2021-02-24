@@ -81,13 +81,15 @@ SatoriAllocator* SatoriRegion::Allocator()
 
 void SatoriRegion::WipeCards()
 {
+    //TODO: VS perhaps check if containing page is not empty
     m_containingPage->WipeCardsForRange(Start(), End());
 }
 
 void SatoriRegion::MakeBlank()
 {
-    _ASSERT(!m_hasPendingFinalizables);
-    _ASSERT(!m_finalizableTrackers);
+    _ASSERTE(!m_hasPendingFinalizables);
+    _ASSERTE(!m_finalizableTrackers);
+    _ASSERTE(!m_acceptedPromotedObjects);
     _ASSERTE(NothingMarked());
 
     WipeCards();
@@ -106,8 +108,8 @@ void SatoriRegion::MakeBlank()
     m_mayHaveDeadObjects = false;
 
     //clear index and free list
-    memset(&m_freeLists, 0, sizeof(m_freeLists));
-    memset(&m_index, 0, sizeof(m_index));
+    ClearFreeLists();
+    ClearIndex();
 
 #ifdef JUNK_FILL_FREE_SPACE
     memset(&m_syncBlock, 0xFE, m_used - (size_t)&m_syncBlock);
@@ -781,7 +783,7 @@ void SatoriRegion::ClearMarkedAndEscapeShallow(SatoriObject* o)
     );
 }
 
-void SatoriRegion::ReportOccupancy(size_t occupancy)
+void SatoriRegion::SetOccupancy(size_t occupancy)
 {
     _ASSERTE(occupancy <= (Size() - offsetof(SatoriRegion, m_firstObject)));
     m_occupancy = occupancy;
@@ -956,7 +958,7 @@ size_t SatoriRegion::ThreadLocalPlan()
     // planning will coalesce free objects.
     // that alone does not invalidate the index, unless we fill free objects with junk.
 #ifdef JUNK_FILL_FREE_SPACE
-    memset(&m_index, 0, sizeof(m_index));
+    ClearIndex();
 #endif
 
     // what we want to move
@@ -1208,9 +1210,9 @@ void SatoriRegion::ThreadLocalCompact()
     size_t foundFree = 0;
 
     // we will be building new free lists
-    memset(m_freeLists, 0, sizeof(m_freeLists));
+    ClearFreeLists();
     // compacting may invalidate indices, since objects move around.
-    memset(&m_index, 0, sizeof(m_index));
+    ClearIndex();
 
     // when d1 reaches the end everything is copied or swept
     while (d1->Start() < End())
@@ -1295,7 +1297,7 @@ void SatoriRegion::ThreadLocalCompact()
     }
 
     Verify();
-    ReportOccupancy(Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree);
+    SetOccupancy(Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree);
 }
 
 enum class FinalizationPendState
@@ -1344,7 +1346,6 @@ tryAgain:
                 }
                 else
                 {
-                    printf("#");
                     if (pendState != FinalizationPendState::PendCritical)
                     {
                         missedRegularPend = true;
@@ -1497,7 +1498,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
     return result;
 }
 
-bool SatoriRegion::Sweep()
+bool SatoriRegion::Sweep(bool keepMarked)
 {
     // we should only sweep when we have new marks and only once
     _ASSERTE(MayHaveDeadObjects());
@@ -1524,9 +1525,9 @@ bool SatoriRegion::Sweep()
     }
 
     // we will be building new free lists
-    memset(m_freeLists, 0, sizeof(m_freeLists));
+    ClearFreeLists();
     // sweeping invalidates indices, since free objects get coalesced
-    memset(&m_index, 0, sizeof(m_index));
+    ClearIndex();
 
     m_escapeCounter = 0;
     size_t foundFree = 0;
@@ -1562,13 +1563,16 @@ bool SatoriRegion::Sweep()
     }
     while (obj->Start() < objLimit);
 
-    SetMayHaveDeadObjects(false);
-    if (!this->IsThreadLocal())
+    if (!keepMarked)
     {
-        this->ClearMarks();
+        SetMayHaveDeadObjects(false);
+        if (!this->IsThreadLocal())
+        {
+            this->ClearMarks();
+        }
     }
 
-    ReportOccupancy(Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree + largeObjTailSize);
+    SetOccupancy(Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree + largeObjTailSize);
     return !cannotRecycle;
 }
 
@@ -1621,6 +1625,44 @@ void SatoriRegion::UpdatePointers()
     } while (obj->Start() < objLimit);
 }
 
+void SatoriRegion::UpdatePointersInPromotedObjects()
+{
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+    SatoriObject* obj = FirstObject();
+    do
+    {
+        if (obj->IsMarked())
+        {
+            ptrdiff_t r = ((ptrdiff_t*)obj)[-1];
+            _ASSERTE(r < 0);
+            SatoriObject* relocated = (SatoriObject*)-r;
+            _ASSERTE(relocated->RawGetMethodTable() == obj->RawGetMethodTable());
+            _ASSERTE(!relocated->IsFree());
+
+            relocated->ForEachObjectRef(
+                [](SatoriObject** ppObject)
+                {
+                    SatoriObject* o = *ppObject;
+                    if (o)
+                    {
+                        ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
+                        if (ptr < 0)
+                        {
+                            *ppObject = (SatoriObject*)-ptr;
+                        }
+                    }
+                }
+            );
+
+            obj = obj->Next();
+        }
+        else
+        {
+            obj = SkipUnmarked(obj);
+        }
+    } while (obj->Start() < objLimit);
+}
+
 bool SatoriRegion::SweepAndUpdatePointers()
 {
     // we should only sweep when we have new marks and only once
@@ -1648,9 +1690,9 @@ bool SatoriRegion::SweepAndUpdatePointers()
     }
 
     // we will be building new free lists
-    memset(m_freeLists, 0, sizeof(m_freeLists));
+    ClearFreeLists();
     // sweeping invalidates indices, since free objects get coalesced
-    memset(&m_index, 0, sizeof(m_index));
+    ClearIndex();
 
     m_escapeCounter = 0;
     size_t foundFree = 0;
@@ -1707,7 +1749,7 @@ bool SatoriRegion::SweepAndUpdatePointers()
         this->ClearMarks();
     }
 
-    ReportOccupancy(Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree + largeObjTailSize);
+    SetOccupancy(Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree + largeObjTailSize);
     return !cannotRecycle;
 }
 
@@ -1748,6 +1790,16 @@ void SatoriRegion::ClearMarks()
 {
     m_hasPinnedObjects = false;
     memset(&m_bitmap[BITMAP_START], 0, (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
+}
+
+void SatoriRegion::ClearIndex()
+{
+    memset(&m_index, 0, sizeof(m_index));
+}
+
+void SatoriRegion::ClearFreeLists()
+{
+    memset(m_freeLists, 0, sizeof(m_freeLists));
 }
 
 void SatoriRegion::Verify(bool allowMarked)
