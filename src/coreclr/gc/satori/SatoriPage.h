@@ -54,9 +54,11 @@ public:
         return m_scanTicket;
     }
 
-    bool TryCleanCardState()
+    bool UnsetProcessing()
     {
-        return Interlocked::CompareExchange(&m_cardState, Satori::CardState::REMEMBERED, Satori::CardState::PROCESSING) != Satori::CardState::DIRTY;
+        int8_t origState = Interlocked::CompareExchange(&m_cardState, Satori::CardState::REMEMBERED, Satori::CardState::PROCESSING);
+        _ASSERTE(origState != Satori::CardState::BLANK);
+        return origState != Satori::CardState::DIRTY;
     }
 
     size_t CardGroupCount()
