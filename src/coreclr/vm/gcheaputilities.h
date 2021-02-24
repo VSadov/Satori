@@ -273,7 +273,7 @@ public:
     {
         WRAPPER_NO_CONTRACT;
 
-        return g_sw_ww_enabled_for_gc_heap;
+        return VolatileLoadWithoutBarrier(&g_sw_ww_enabled_for_gc_heap);
     }
 
     // In accordance with the SoftwareWriteWatch scheme, marks a given address as

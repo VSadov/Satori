@@ -395,6 +395,17 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
     AssignAndMarkCards:
         mov     [rcx], rdx
 
+    ; TODO: VS for throughput tuning a nonconcurrent and concurrent paths could be separated 
+    ;       need to suspend EE when swapping barriers, but GCs in that mode should be relatily rare.
+
+    ; check if src is in gen2
+        cmp     dword ptr [r8 + 16], 2
+        jne     SrcEphemeral
+        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
+        jne     SrcEphemeral
+        REPRET
+
+    SrcEphemeral:
     ; fetch card location for rcx
         mov     r8,  rcx
         mov     r9 , [g_card_table]     ; fetch the page map
@@ -414,34 +425,35 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         sub     r8, rax   ; offset in page
         mov     rdx,r8
         shr     r8, 9     ; card offset
+        shr     rdx, 21   ; group offset
 
     ; check if concurrent marking is in progress
         cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
         jne     DirtyCard
 
     ; SETTING CARD FOR RCX
-        cmp     byte ptr [rax + r8], 0
-        je      SetCard
-        REPRET
      SetCard:
-        mov     byte ptr [rax + r8], 1        
-        shr     rdx, 21    ; group offset
-        cmp     byte ptr [rax + rdx * 2 + 80h], 0
-        je      SetGroup
-        REPRET
+        cmp     byte ptr [rax + r8], 0
+        jne     CardSet
+        mov     byte ptr [rax + r8], 1
      SetGroup:
+        cmp     byte ptr [rax + rdx * 2 + 80h], 0
+        jne     CardSet
         mov     byte ptr [rax + rdx * 2 + 80h], 1
-        cmp     byte ptr [rax], 0
-        je      SetPage
-        REPRET
      SetPage:
-        mov     byte ptr [rax], 1              ; set page
-        ret
+        cmp     byte ptr [rax], 0
+        jne     CardSet
+        mov     byte ptr [rax], 1
+
+     CardSet:
+    ; check if concurrent marking is still not in progress
+        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
+        jne     DirtyCard
+        REPRET
 
     ; DIRTYING CARD FOR RCX
      DirtyCard:
         mov     byte ptr [rax + r8], 3
-        shr     rdx, 21    ; group offset
      DirtyGroup:
         mov     byte ptr [rax + rdx * 2 + 80h], 3
      DirtyPage:

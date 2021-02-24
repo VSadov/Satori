@@ -51,6 +51,7 @@ private:
 
     int m_condemnedGeneration;
     bool m_isCompacting;
+    bool m_isPromoting;
     int m_gcState;
 
     SatoriMarkChunkQueue* m_workList;
@@ -70,6 +71,7 @@ private:
     SatoriRegionQueue* m_relocatingRegions;
     SatoriRegionQueue* m_relocationTargets[Satori::FREELIST_COUNT];
     SatoriRegionQueue* m_relocatedRegions;
+    SatoriRegionQueue* m_relocatedToHigherGenRegions;
 
     // store regions for concurrent sweep
     SatoriRegionQueue* m_deferredSweepRegions;
@@ -77,11 +79,14 @@ private:
     int64_t m_gen1Count;
     int64_t m_gen2Count;
 
-    int m_gen1Threshold;
+    int m_gen1MinorBudget;
     int m_gen1Budget;
+    int m_gen2Budget;
     int m_condemnedRegionsCount;
     int m_deferredSweepCount;
     int m_regionsAddedSinceLastCollection;
+    int m_prevCondemnedGeneration;
+    int m_gen1CountAtLastGen2;
 
     static void DeactivateFn(gc_alloc_context* context, void* param);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
@@ -120,6 +125,8 @@ private:
     void Finish();
 
     void UpdateFinalizationQueue();
+
+    void UpdatePointersInPromotedObjects();
 
     void FinishRegions(SatoriRegionQueue* queue);
     void ReturnRegion(SatoriRegion* curRegion);
