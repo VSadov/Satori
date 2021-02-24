@@ -168,4 +168,14 @@ inline bool SatoriRegion::MayHaveDeadObjects()
     return m_mayHaveDeadObjects;
 }
 
+inline void SatoriRegion::SetAcceptedPromotedObjects(bool value)
+{
+    m_acceptedPromotedObjects = value;
+}
+
+inline bool SatoriRegion::AcceptedPromotedObjects()
+{
+    return m_acceptedPromotedObjects;
+}
+
 #endif
