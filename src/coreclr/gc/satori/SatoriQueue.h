@@ -31,6 +31,7 @@ enum class QueueKind
     RecyclerStaying,
     RecyclerRelocating,
     RecyclerRelocated,
+    RecyclerRelocatedToHigherGen,
     RecyclerRelocationTarget,
 
     RecyclerDeferredSweep,
