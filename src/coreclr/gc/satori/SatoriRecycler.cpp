@@ -36,6 +36,9 @@
 
 //#define TIMED
 
+static GCEvent* m_backgroundGCGate;
+static int m_activeWorkers;
+
 void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
 {
     WriteBarrierParameters args = {};
@@ -75,6 +78,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_workList = new SatoriMarkChunkQueue();
     m_gcState = GC_STATE_NONE;
+    m_isBarrierConcurrent = false;
 
     m_gen1Count = m_gen2Count = 0;
     m_condemnedGeneration = 0;
@@ -85,6 +89,26 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_gen1MinorBudget = 6;
     m_gen1Budget = 12;
     m_gen2Budget = 4;
+}
+
+void SatoriRecycler::BackgroundGcFn(void* param)
+{
+    SatoriRecycler* recycler = (SatoriRecycler*)param;
+    Interlocked::Increment(&m_activeWorkers);
+
+    for (;;)
+    {
+        // should not be in cooperative mode while blocked
+        GCToEEInterface::EnablePreemptiveGC();
+        Interlocked::Decrement(&m_activeWorkers);
+        m_backgroundGCGate->Wait(INFINITE, FALSE);
+        Interlocked::Increment(&m_activeWorkers);
+        GCToEEInterface::DisablePreemptiveGC();
+
+        while (recycler->HelpOnce())
+        {
+        }
+    }
 }
 
 // not interlocked. this is not done concurrently. 
@@ -147,73 +171,103 @@ int SatoriRecycler::RegionCount()
 
 // NOTE: recycler owns nursery regions only temporarily for the duration of GC when mutators are stopped
 //       we do not keep them always since an active nursery region may change its classification
-//       concurrently by becoming gen1 or by allocating a finalizable object
-void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
+//       concurrently by becoming gen1 or by allocating a finalizable object.
+void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region, bool keep)
 {
     _ASSERTE(region->AllocStart() == 0);
     _ASSERTE(region->AllocRemaining() == 0);
     _ASSERTE(region->Generation() == 0 || region->Generation() == 1);
     _ASSERTE(!region->MayHaveDeadObjects());
 
-    if (region->IsThreadLocal())
+    (region->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions: m_ephemeralRegions)->Push(region);
+    Interlocked::Increment(&m_regionsAddedSinceLastCollection);
+
+    // if we want to keep it, we have to promote it.
+    if (keep)
     {
-        _ASSERTE(m_gcState == GC_STATE_BLOCKED);
+        _ASSERTE(region->Generation() == 0);
+        // following two writes must happen after all allocations have concluded,
+        // previous adding to a queue ensures such ordering.
+        region->StopEscapeTracking();
+        region->SetGeneration(1);
+    }
+    else if (region->IsThreadLocal())
+    {
+        // order is unimportant. noone will touch threadlocal region until STW
         region->ClearMarks();
     }
 
-    // we may have started marking, when concurrent
-    region->Verify(/* allowMarked */ ENABLE_CONCURRENT);
+    // we may have marks already, when concurrent marking is allowed
+    region->Verify(/* allowMarked */ ENABLE_CONCURRENT && !region->IsThreadLocal());
 
     // the region has just done allocating, so real occupancy will be known only after we sweep.
-    // for now assume the region is completely full
+    // for now put 0 and treat the region as completely full
     // that is a fair estimate for promoted regions anyways and for nursery regions
     // it does not matter, since they will not participate in compaction
     region->SetOccupancy(0);
-    (region->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions: m_ephemeralRegions)->Push(region);
-    Interlocked::Increment(&m_regionsAddedSinceLastCollection);
+}
+
+void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
+{
+    _ASSERTE(region->AllocStart() == 0);
+    _ASSERTE(region->AllocRemaining() == 0);
+    _ASSERTE(!region->IsThreadLocal());
+    _ASSERTE(!region->MayHaveDeadObjects());
+
+    region->Verify();
+    (region->EverHadFinalizables() ? m_tenuredFinalizationTrackingRegions : m_tenuredRegions)->Push(region);
+
+    // always promote these, we always keep them.
+    _ASSERTE(region->Generation() == 0);
+
+    // must happen after all allocations have concluded,
+    // previous adding to a queue ensures such ordering.
+    region->SetGeneration(2);
 }
 
 void SatoriRecycler::TryStartGC(int generation)
 {
-    if (ENABLE_CONCURRENT)
+    int newState = ENABLE_CONCURRENT ? GC_STATE_CONCURRENT : GC_STATE_BLOCKING;
+    if (Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
     {
-        if (Interlocked::CompareExchange(&m_gcState, GC_STATE_CONCURRENT, GC_STATE_NONE) == GC_STATE_NONE)
-        {
-            // Here we have a short window when other threads may notice that gc is in progress,
-            // but will find no helping opportunities until we set m_condemnedGeneration.
-            // that is ok.
+        // Here we have a short window when other threads may notice that gc is in progress,
+        // but will find no helping opportunities until we set m_condemnedGeneration.
+        // that is ok.
 
+        // in concurrent case there is an extra pass over stacks and handles
+        // which happens before the blocking stage
+        if (newState == GC_STATE_CONCURRENT)
+        {
             IncrementStackScanCount();
             SatoriHandlePartitioner::StartNextScan();
 
-            if (generation != 2)
+            if (!m_backgroundGCGate)
             {
-                IncrementCardScanTicket();
+                GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
+
+                //TODO: VS this should be published when fully initialized.
+                m_backgroundGCGate = new (nothrow) GCEvent;
+                m_backgroundGCGate->CreateAutoEventNoThrow(false);
+
+                for (int i = 0; i < 8; i++)
+                {
+                    GCToEEInterface::CreateThread(BackgroundGcFn, this, true, ".NET BGC");
+                }
+
+                GCToEEInterface::RestartEE(false);
             }
-
-            // toggle the barrier before setting m_condemnedGeneration
-            // this is a PW fence
-            ToggleWriteBarrier(true, /* eeSuspended */ false);
-
-            // generation must be published after toggling the barrier
-            // this will enable helping
-            m_condemnedGeneration = generation;
         }
-    }
-    else
-    {
-        if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_NONE) == GC_STATE_NONE)
+
+        // card scan is incremental and one pass spans concurrent and blocking stages
+        if (generation != 2)
         {
-            // card scan is incremental, thus in either case the ticket is set at
-            // the start of the collection and not updated when entering blocking mode.
-            if (generation != 2)
-            {
-                IncrementCardScanTicket();
-            }
-
-            m_condemnedGeneration = generation;
-            BlockingCollect();
+            IncrementCardScanTicket();
         }
+
+        // publishing condemned generation will enable helping.
+        // it should happen after the writes above.
+        // just to make sure it is all published when the barrier is updated, which is fully synchronizing.
+        VolatileStore(&m_condemnedGeneration, generation);
     }
 }
 
@@ -221,12 +275,24 @@ bool SatoriRecycler::HelpImpl()
 {
     if (m_condemnedGeneration)
     {
+        //TODO: VS helping with gen2 carries some risk of pauses.
+        //      although cards seems fine grained regardless and handles are generally fast.
+        //      perhaps skip handles and bail from draining when gen2. Similar to what we do in Sweep
+
         int64_t deadline = GCToOSInterface::QueryPerformanceCounter() +
             GCToOSInterface::QueryPerformanceFrequency() / 10000; // 0.1 msec.
 
         if (DrainDeferredSweepQueue(deadline))
         {
             return true;
+        }
+
+        if (!m_isBarrierConcurrent)
+        {
+            // toggle the barrier before setting m_condemnedGeneration
+            // this is a PW fence
+            ToggleWriteBarrier(true, /* eeSuspended */ false);
+            m_isBarrierConcurrent = true;
         }
 
         if (m_condemnedGeneration == 1)
@@ -255,28 +321,43 @@ bool SatoriRecycler::HelpImpl()
     return true;
 }
 
-void SatoriRecycler::HelpOnce()
+bool SatoriRecycler::HelpOnce()
 {
+    bool moreWork = false;
+
     if (m_gcState != GC_STATE_NONE)
     {
         if (m_gcState == GC_STATE_CONCURRENT)
         {
-            bool revisit = HelpImpl();
-            // if done helping, try initiating the blocking stage
-            if (!revisit &&
-                Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
+            moreWork = HelpImpl();
+
+            if (moreWork)
             {
-                BlockingCollect();
+                // there is more work, we could use help
+                if (m_backgroundGCGate && m_activeWorkers < 8)
+                {
+                    m_backgroundGCGate->Set();
+                }
+            }
+            else
+            {
+                // we see no work, if workers are done, initiate blocking stage
+                if ((m_activeWorkers == 0) &&
+                    Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
+                {
+                    BlockingCollect();
+                }
             }
         }
 
         GCToEEInterface::GcPoll();
     }
+
+    return moreWork;
 }
 
 void SatoriRecycler::MaybeTriggerGC()
 {
-    HelpOnce();
     if (m_regionsAddedSinceLastCollection > m_gen1MinorBudget)
     {
         int generation = Gen2RegionCount() > m_gen2Budget ? 2 : 1;
@@ -289,6 +370,8 @@ void SatoriRecycler::MaybeTriggerGC()
 
         TryStartGC(generation);
     }
+
+    HelpOnce();
 }
 
 void SatoriRecycler::Collect(int generation, bool force, bool blocking)
@@ -319,9 +402,6 @@ void SatoriRecycler::Collect(int generation, bool force, bool blocking)
     {
         TryStartGC(generation);
         HelpOnce();
-        //TODO: VS this could be a long pause for the caller if no helpers
-        //      when GC is parallel, consider initiating a blocking GC
-        //      after a few helps and if the right generation
     } while (blocking && (desiredCollectionNum > collectionNumRef));
 }
 
@@ -338,16 +418,21 @@ void SatoriRecycler::BlockingCollect()
     // stop other threads.
     GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
 
-    // become coop again (it will not block since VM is done suspending)
-    GCToEEInterface::DisablePreemptiveGC();
-
 #ifdef TIMED
     size_t time = GCToOSInterface::QueryPerformanceCounter();
 #endif
 
-    if (ENABLE_CONCURRENT)
+    // become coop again (it will not block since VM is done suspending)
+    GCToEEInterface::DisablePreemptiveGC();
+
+    // tell EE that we are starting
+    // this needs to be called on a "GC" thread while EE is stopped.
+    GCToEEInterface::GcStartWork(m_condemnedGeneration, max_generation);
+
+    if (m_isBarrierConcurrent)
     {
         ToggleWriteBarrier(false, /* eeSuspended */ true);
+        m_isBarrierConcurrent = false;
     }
 
     // assume that we will compact. we will rethink later.
@@ -399,6 +484,10 @@ void SatoriRecycler::BlockingCollect()
         m_gen2Count++;
     }
 
+    // we may still have some deferred sweeping to do, but
+    // that is unobservable to EE, so tell EE that we are done
+    GCToEEInterface::GcDone(m_condemnedGeneration);
+
     m_prevCondemnedGeneration = m_condemnedGeneration;
     m_condemnedGeneration = 0;
     m_gcState = GC_STATE_NONE;
@@ -409,6 +498,8 @@ void SatoriRecycler::BlockingCollect()
     time = (GCToOSInterface::QueryPerformanceCounter() - time) * 1000000 / GCToOSInterface::QueryPerformanceFrequency();
     printf("%zu\n", time);
 #endif
+
+    // TODO: VS callouts for before sweep, after sweep
 
     // restart VM
     GCToEEInterface::RestartEE(true);
@@ -472,6 +563,10 @@ void SatoriRecycler::Mark()
 
     //       sync 
     AssertNoWork();
+
+    // tell EE we have scanned roots
+    ScanContext sc;
+    GCToEEInterface::AfterGcScanRoots(m_condemnedGeneration, max_generation, &sc);
 
     WeakPtrScan(/*isShort*/ false);
     WeakPtrScanBySingleThread();
@@ -641,7 +736,9 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         containingRegion = context->m_heap->RegionForAddressChecked(location);
 
         // concurrent FindObject is safe only in gen1/gen2 regions
-        if (!containingRegion || containingRegion->Generation() < 1)
+        // gen0->gen1+ for a region can happen concurrently,
+        // make sure we read generation before doing FindObject
+        if (!containingRegion || containingRegion->GenerationAcquire() < 1)
         {
             return;
         }
@@ -657,13 +754,14 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     else
     {
         containingRegion = o->ContainingRegion();
-        // can't mark in regions which are tracking escapes
-        if (containingRegion->IsThreadLocal())
+        // can't mark in regions which are tracking escapes, bitmap is in use
+        if (containingRegion->IsThreadLocalAcquire())
         {
             return;
         }
     }
 
+    // no need for fences here. a published obj cannot become gen2 concurrently. 
     if (containingRegion->Generation() <= context->m_condemnedGeneration)
     {
         if (!o->IsMarked())
@@ -763,24 +861,33 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
         srcChunk = m_workList->TryPop();
     }
 
-    size_t count = 0;
-    bool revisit = false;
+    // just a crude measure of work performed to remind us to check for the deadline
+    size_t objectCount = 0;
     SatoriMarkChunk* dstChunk = nullptr;
     while (srcChunk)
     {
-        count += srcChunk->Count();
+        objectCount += srcChunk->Count();
         // drain srcChunk to dst chunk
         while (srcChunk->Count() > 0)
         {
-            // if trying to block for GC, do not be a long pole
-            if (m_gcState == GC_STATE_BLOCKING)
+            // every once in a while check for the deadline
+            // the number here is to
+            // - amortize cost of QueryPerformanceCounter() and
+            // - establish the minimum amount of work per help quantum
+            if (objectCount > 4096)
             {
-                m_workList->Push(srcChunk);
-                if (dstChunk)
+                objectCount = 0;
+                // printf(".");
+                if (deadline && srcChunk && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
                 {
-                    m_workList->Push(dstChunk);
+                    // printf("+");
+                    m_workList->Push(srcChunk);
+                    if (dstChunk)
+                    {
+                        m_workList->Push(dstChunk);
+                    }
+                    return true;
                 }
-                return true;
             }
 
             SatoriObject* o = srcChunk->Pop();
@@ -796,27 +903,31 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
                     SatoriObject* child = *ref;
                     if (child)
                     {
-                        // cannot mark stuff in thread local regions. just mark as dirty to visit later.
-                        if (child->ContainingRegion()->IsThreadLocal())
+                        objectCount++;
+                        SatoriRegion* childRegion = child->ContainingRegion();
+                        if (!childRegion->IsThreadLocalAcquire())
                         {
-                            // if ref is outside of the object, it is a fake ref to collectible allocator.
-                            // dirty the MT location as if it points to the allocator object
-                            // technically it does reference the allocator, by indirection.
-                            if ((size_t)ref - o->Start() > o->End())
+                            if (!child->IsMarkedOrOlderThan(m_condemnedGeneration))
                             {
-                                ref = (SatoriObject**)o->Start();
+                                child->SetMarkedAtomic();
+                                if (!dstChunk || !dstChunk->TryPush(child))
+                                {
+                                    this->PushToMarkQueuesSlow(dstChunk, child);
+                                }
                             }
+                            return;
+                        }
 
-                            o->ContainingRegion()->ContainingPage()->DirtyCardForAddress((size_t)ref);
-                        }
-                        else if (!child->IsMarkedOrOlderThan(m_condemnedGeneration))
+                        // cannot mark stuff in thread local regions. just mark as dirty to visit later.
+                        // if ref is outside of the object, it is a fake ref to collectible allocator.
+                        // dirty the MT location as if it points to the allocator object
+                        // technically it does reference the allocator, by indirection.
+                        if ((size_t)ref - o->Start() > o->End())
                         {
-                            child->SetMarkedAtomic();
-                            if (!dstChunk || !dstChunk->TryPush(child))
-                            {
-                                this->PushToMarkQueuesSlow(dstChunk, child);
-                            }
+                            ref = (SatoriObject**)o->Start();
                         }
+
+                        o->ContainingRegion()->ContainingPage()->DirtyCardForAddress((size_t)ref);
                     }
                 },
                 /* includeCollectibleAllocator */ true
@@ -837,23 +948,6 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
             m_heap->Allocator()->ReturnMarkChunk(srcChunk);
             srcChunk = m_workList->TryPop();
         }
-
-        // every once in a while check for the deadline
-        // the number here is to
-        // - amortize cost of QueryPerformanceCounter()
-        // - establish the minimum amount of work per help quantum
-        //
-        //TUNING: I picked this to be roughly just less than 0.1 msec on my machine
-        if (count > Satori::REGION_SIZE_GRANULARITY / 512)
-        {
-            count = 0;
-            if (deadline && srcChunk && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
-            {
-                m_workList->Push(srcChunk);
-                revisit = true;
-                break;
-            }
-        }
     }
 
     if (dstChunk)
@@ -862,7 +956,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
         m_heap->Allocator()->ReturnMarkChunk(dstChunk);
     }
 
-    return revisit;
+    return false;
 }
 
 void SatoriRecycler::DrainMarkQueues(SatoriMarkChunk* srcChunk)
@@ -1065,7 +1159,7 @@ bool SatoriRecycler::MarkThroughCards(bool isConcurrent, int64_t deadline)
                                         SatoriObject* child = *ref;
 
                                         // cannot mark stuff in thread local regions. just mark as dirty to visit later.
-                                        if (isConcurrent && child && child->ContainingRegion()->IsThreadLocal())
+                                        if (isConcurrent && child && child->ContainingRegion()->IsThreadLocalAcquire())
                                         {
                                             // if ref is outside of the object, it is a fake ref to collectible allocator.
                                             // dirty the MT location as if it points to the allocator object
@@ -1353,8 +1447,11 @@ void SatoriRecycler::WeakPtrScan(bool isShort)
 void SatoriRecycler::WeakPtrScanBySingleThread()
 {
     // scan for deleted entries in the syncblk cache
-    // does not use a context, so we pass nullptr
-    GCScan::GcWeakPtrScanBySingleThread(m_condemnedGeneration, 2, nullptr);
+    // sc is not really used, but must have "promotion == TRUE" if HeapVerify is on.
+    ScanContext sc;
+    sc.promotion = TRUE;
+
+    GCScan::GcWeakPtrScanBySingleThread(m_condemnedGeneration, 2, &sc);
 }
 
 void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* regions, MarkContext* c)
@@ -2027,8 +2124,12 @@ void SatoriRecycler::ReturnRegion(SatoriRegion* curRegion)
 
 bool SatoriRecycler::DrainDeferredSweepQueue(int64_t deadline)
 {
+    bool isGCThread = GCToEEInterface::IsGCThread();
+
     SatoriRegion* curRegion;
     while ((m_deferredSweepCount > 0) &&
+        // decomitting may block, so leave this to GC threads, if possible.
+        (isGCThread || !m_activeWorkers) &&
         (curRegion = m_deferredSweepRegions->TryPop()))
     {
         SweepAndReturnRegion(curRegion);
