@@ -73,6 +73,10 @@ inline void SatoriObject::SetBit(int offset)
     size_t mask = (size_t)1 << ((word >> 3) & 63);
 
     ContainingRegion()->m_bitmap[bitmapIndex] |= mask;
+
+    //TODO: VS consider on x64
+    //size_t bitIndex = (Start() & Satori::REGION_SIZE_GRANULARITY - 1) / sizeof(size_t) + offset;
+    //_bittestandset64((long long*)ContainingRegion()->m_bitmap, bitIndex);
 }
 
 inline void SatoriObject::SetBitAtomic(int offset)
@@ -112,6 +116,10 @@ inline bool SatoriObject::CheckBit(int offset)
     size_t mask = (size_t)1 << ((word >> 3) & 63);
 
     return ContainingRegion()->m_bitmap[bitmapIndex] & mask;
+
+    //TODO: VS consider on x64
+    //size_t bitIndex = (Start() & Satori::REGION_SIZE_GRANULARITY - 1) / sizeof(size_t) + offset;
+    //return _bittest64((long long*)ContainingRegion()->m_bitmap, bitIndex);
 }
 
 inline bool SatoriObject::IsMarked()
