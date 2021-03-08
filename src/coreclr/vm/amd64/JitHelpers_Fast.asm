@@ -361,17 +361,14 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         mov     rax, rdx
         xor     rax, rcx
         shr     rax, 21
-        jnz     RecordEscape             ; cross region assignment. definitely escaping
+        jnz     RecordEscape            ; cross region assignment. definitely escaping
 
     ; 3) check if the target is exposed
         mov     rax, rcx
-        mov     r9,  rcx
+        and     rax, 01FFFFFh
         shr     rax, 3
-        and     rax,03Fh
-        shr     r9, 9
-        and     r9, 0FFFh
-        bt      qword ptr [r8+r9*8], rax
-        jb      RecordEscape             ; target is exposed. record an escape.
+        bt      qword ptr [r8], rax
+        jb      RecordEscape            ; target is exposed. record an escape.
 
     JustAssign:
         mov     [rcx], rdx              ; threadlocal assignment of unescaped object
