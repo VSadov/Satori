@@ -31,8 +31,8 @@ private:
     int64_t m_perfCounterFrequency;
     SatoriHeap* m_heap;
 
-    // what is the difference between these two?
-    // should these be volatile
+    // TODO: VS what is the difference between these two?
+    // should these be volatile?
     bool    m_gcInProgress;
     bool    m_suspensionPending;
 
