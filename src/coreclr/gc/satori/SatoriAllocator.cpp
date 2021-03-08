@@ -241,8 +241,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
             context->RegularRegion() = nullptr;
             context->alloc_ptr = context->alloc_limit = nullptr;
-            region->PromoteToGen1();
-            m_heap->Recycler()->AddEphemeralRegion(region);
+            m_heap->Recycler()->AddEphemeralRegion(region, /* keep */ true);
         }
 
         m_heap->Recycler()->MaybeTriggerGC();
@@ -313,8 +312,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
             }
 
             context->LargeRegion() = nullptr;
-            region->PromoteToGen1();
-            m_heap->Recycler()->AddEphemeralRegion(region);
+            m_heap->Recycler()->AddEphemeralRegion(region, /* keep */ true);
         }
 
         // get a new region.
@@ -343,6 +341,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
         return nullptr;
     }
 
+    // gen0 since we are still allocating
     hugeRegion->SetGeneration(0);
     bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
     SatoriObject* result = SatoriObject::At(hugeRegion->AllocateHuge(size, zeroInitialize));
@@ -356,34 +355,10 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     result->CleanSyncBlock();
     context->alloc_bytes_uoh += size;
 
-    // hugeRegion may have a lot of remaining space.
-    // if by a rough estimate it is better than what we have in LargeRegion,
-    // then replace LargeRegion 
-    SatoriRegion* curLarge = context->LargeRegion();
-    if (!curLarge ||
-        curLarge->MaxAllocEstimate() < hugeRegion->MaxAllocEstimate())
-    {
-        if (curLarge)
-        {
-            if (curLarge->IsAllocating())
-            {
-                curLarge->StopAllocating(/* allocPtr */ 0);
-            }
-            curLarge->PromoteToGen1();
-            m_heap->Recycler()->AddEphemeralRegion(curLarge);
-        }
-
-        context->LargeRegion() = hugeRegion;
-    }
-    else
-    {
-        // we cannot add hugeRegion to recycler yet since the new object has no MethodTable
-        // and region is not parseable.
-        // we will make it gen1 already and add it to recycler later in PublishObject.
-        hugeRegion->StopAllocating(/* allocPtr */ 0);
-        hugeRegion->PromoteToGen1();
-    }
-
+    // we cannot promote out of Gen0 yet since the new object has no MethodTable
+    // and region is not parseable.
+    // we will stop allocating here and promote later in PublishObject.
+    hugeRegion->StopAllocating(/* allocPtr */ 0);
     return result;
 }
 
