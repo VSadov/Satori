@@ -195,9 +195,10 @@ void SatoriRecycler::TryStartGC(int generation)
             // this is a PW fence
             ToggleWriteBarrier(true, /* eeSuspended */ false);
 
-            // generation must be published after toggling the barrier
-            // this will enable helping
+            // publishing generation will enable helping
             m_condemnedGeneration = generation;
+            // tell EE that we are starting
+            GCToEEInterface::GcStartWork(generation, max_generation);
         }
     }
     else
@@ -212,6 +213,8 @@ void SatoriRecycler::TryStartGC(int generation)
             }
 
             m_condemnedGeneration = generation;
+            // tell EE that we are starting
+            GCToEEInterface::GcStartWork(generation, max_generation);
             BlockingCollect();
         }
     }
@@ -399,6 +402,10 @@ void SatoriRecycler::BlockingCollect()
         m_gen2Count++;
     }
 
+    // we may still have some deferred sweeping to do, but
+    // that is unobservable to EE, so tell EE that we are done
+    GCToEEInterface::GcDone(m_condemnedGeneration);
+
     m_prevCondemnedGeneration = m_condemnedGeneration;
     m_condemnedGeneration = 0;
     m_gcState = GC_STATE_NONE;
@@ -472,6 +479,10 @@ void SatoriRecycler::Mark()
 
     //       sync 
     AssertNoWork();
+
+    // tell EE we have scanned roots
+    ScanContext sc;
+    GCToEEInterface::AfterGcScanRoots(m_condemnedGeneration, max_generation, &sc);
 
     WeakPtrScan(/*isShort*/ false);
     WeakPtrScanBySingleThread();
