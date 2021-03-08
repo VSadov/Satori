@@ -17,6 +17,7 @@
 #include "SatoriAllocationContext.h"
 #include "SatoriHeap.h"
 #include "SatoriRegion.h"
+#include "SatoriPage.h"
 #include "SatoriRegion.inl"
 #include "../gceventstatus.h"
 
@@ -49,7 +50,7 @@ void SatoriGC::WaitUntilConcurrentGCComplete()
 
 bool SatoriGC::IsConcurrentGCInProgress()
 {
-    // Satori may move thread local objects asyncronously,
+    // Satori may move thread local objects asynchronously,
     // but noone should see that (that is the point).
     //
     // The only thing that may get to TL objects is object verification.
@@ -387,13 +388,31 @@ void SatoriGC::PublishObject(uint8_t* obj)
     SatoriObject* so = (SatoriObject*)obj;
     SatoriRegion* region = so->ContainingRegion();
 
-    // we do not retain huge regions in allocator,
-    // but can't drop them in recycler until object has a MethodTable.
+    // we do not retain huge regions in the nursery,
+    // but we can't promote them until the object has a MethodTable.
     // do that here.
-    if (region->Generation() != 0)
+    if (!region->IsAllocating())
     {
         _ASSERTE(region->Size() > Satori::REGION_SIZE_GRANULARITY);
-        m_heap->Recycler()->AddEphemeralRegion(region);
+        if (!so->RawGetMethodTable()->ContainsPointers())
+        {
+            // this is a single-object region with no pointers.
+            // it is rather cheap to have in gen1, so give it a chance to collect early.
+            m_heap->Recycler()->AddEphemeralRegion(region, /* keep */ true);
+        }
+        else
+        {
+            // the region has seen no writes, so no need to worry about cards.
+            // unless the obj has a collectible type.
+            // in such case we simulate retroactive write by dirtying the card for the MT location.
+            if (so->RawGetMethodTable()->Collectible())
+            {
+                region->ContainingPage()->DirtyCardForAddress(so->Start());
+            }
+
+            region->SetOccupancy(so->Size());
+            m_heap->Recycler()->AddTenuredRegion(region);
+        }
     }
 }
 
