@@ -55,9 +55,11 @@ public:
     void StopEscapeTracking();
 
     bool IsThreadLocal();
+    bool IsThreadLocalAcquire();
     bool OwnedByCurrentThread();
 
     int Generation();
+    int GenerationAcquire();
     void SetGeneration(int generation);
 
     size_t Start();
@@ -104,7 +106,6 @@ public:
     void ClearMarks();
     void ClearIndex();
     void ClearFreeLists();
-    void PromoteToGen1();
 
     void ThreadLocalCollect();
 
