@@ -17,9 +17,9 @@ class SatoriRecycler;
 
 void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
 {
-    if (RegularRegion() != nullptr)
+    SatoriRegion* region = RegularRegion();
+    if (region != nullptr)
     {
-        SatoriRegion* region = RegularRegion();
         size_t allocPtr = (size_t)this->alloc_ptr;
 
         this->alloc_bytes -= this->alloc_limit - this->alloc_ptr;
@@ -30,13 +30,12 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
             region->StopAllocating(allocPtr);
         }
 
-        if (detach || !region->IsThreadLocal())
+        if (detach)
         {
-            region->PromoteToGen1();
             RegularRegion() = nullptr;
         }
 
-        recycler->AddEphemeralRegion(region);
+        recycler->AddEphemeralRegion(region, detach);
     }
     else
     {
@@ -44,10 +43,9 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
         _ASSERTE(this->alloc_ptr == nullptr);
     }
 
-    if (LargeRegion() != nullptr)
+    region = LargeRegion();
+    if (region != nullptr)
     {
-        SatoriRegion* region = LargeRegion();
-
         if (region->IsAllocating())
         {
             region->StopAllocating(/* allocPtr */ 0);
@@ -55,10 +53,9 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
 
         if (detach)
         {
-            region->PromoteToGen1();
             LargeRegion() = nullptr;
         }
 
-        recycler->AddEphemeralRegion(region);
+        recycler->AddEphemeralRegion(region, detach);
     }
  }
