@@ -75,6 +75,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_workList = new SatoriMarkChunkQueue();
     m_gcState = GC_STATE_NONE;
+    m_isBarrierConcurrent = false;
 
     m_gen1Count = m_gen2Count = 0;
     m_condemnedGeneration = 0;
@@ -175,48 +176,30 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 
 void SatoriRecycler::TryStartGC(int generation)
 {
-    if (ENABLE_CONCURRENT)
+    int newState = ENABLE_CONCURRENT ? GC_STATE_CONCURRENT : GC_STATE_BLOCKING;
+    if (Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
     {
-        if (Interlocked::CompareExchange(&m_gcState, GC_STATE_CONCURRENT, GC_STATE_NONE) == GC_STATE_NONE)
-        {
-            // Here we have a short window when other threads may notice that gc is in progress,
-            // but will find no helping opportunities until we set m_condemnedGeneration.
-            // that is ok.
+        // Here we have a short window when other threads may notice that gc is in progress,
+        // but will find no helping opportunities until we set m_condemnedGeneration.
+        // that is ok.
 
+        // in concurrent case there is an extra pass over stacks and handles
+        // which happens before blocking stage
+        if (newState == GC_STATE_CONCURRENT)
+        {
             IncrementStackScanCount();
             SatoriHandlePartitioner::StartNextScan();
-
-            if (generation != 2)
-            {
-                IncrementCardScanTicket();
-            }
-
-            // toggle the barrier before setting m_condemnedGeneration
-            // this is a PW fence
-            ToggleWriteBarrier(true, /* eeSuspended */ false);
-
-            // publishing generation will enable helping
-            m_condemnedGeneration = generation;
-            // tell EE that we are starting
-            GCToEEInterface::GcStartWork(generation, max_generation);
+            //TODO: VS ask for help here.
         }
-    }
-    else
-    {
-        if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_NONE) == GC_STATE_NONE)
+
+        // card scan is incremental and one pass spans concurrent and blocking stages
+        if (generation != 2)
         {
-            // card scan is incremental, thus in either case the ticket is set at
-            // the start of the collection and not updated when entering blocking mode.
-            if (generation != 2)
-            {
-                IncrementCardScanTicket();
-            }
-
-            m_condemnedGeneration = generation;
-            // tell EE that we are starting
-            GCToEEInterface::GcStartWork(generation, max_generation);
-            BlockingCollect();
+            IncrementCardScanTicket();
         }
+
+        // publishing generation will enable helping
+        m_condemnedGeneration = generation;
     }
 }
 
@@ -230,6 +213,14 @@ bool SatoriRecycler::HelpImpl()
         if (DrainDeferredSweepQueue(deadline))
         {
             return true;
+        }
+
+        if (!m_isBarrierConcurrent)
+        {
+            // toggle the barrier before setting m_condemnedGeneration
+            // this is a PW fence
+            ToggleWriteBarrier(true, /* eeSuspended */ false);
+            m_isBarrierConcurrent = true;
         }
 
         if (m_condemnedGeneration == 1)
@@ -341,16 +332,21 @@ void SatoriRecycler::BlockingCollect()
     // stop other threads.
     GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
 
-    // become coop again (it will not block since VM is done suspending)
-    GCToEEInterface::DisablePreemptiveGC();
-
 #ifdef TIMED
     size_t time = GCToOSInterface::QueryPerformanceCounter();
 #endif
 
-    if (ENABLE_CONCURRENT)
+    // become coop again (it will not block since VM is done suspending)
+    GCToEEInterface::DisablePreemptiveGC();
+
+    // tell EE that we are starting
+    // this needs to be called on a "GC" thread while EE is stopped.
+    GCToEEInterface::GcStartWork(m_condemnedGeneration, max_generation);
+
+    if (m_isBarrierConcurrent)
     {
         ToggleWriteBarrier(false, /* eeSuspended */ true);
+        m_isBarrierConcurrent = false;
     }
 
     // assume that we will compact. we will rethink later.

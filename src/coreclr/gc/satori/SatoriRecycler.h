@@ -53,6 +53,7 @@ private:
     bool m_isCompacting;
     bool m_isPromoting;
     int m_gcState;
+    int m_isBarrierConcurrent;
 
     SatoriMarkChunkQueue* m_workList;
 
