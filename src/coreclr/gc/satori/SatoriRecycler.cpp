@@ -413,6 +413,10 @@ void SatoriRecycler::BlockingCollect()
     printf("%zu\n", time);
 #endif
 
+    // this needs to be called when EE is stopped.
+    // EE will some verification. if enabled.
+    GCToEEInterface::GcBeforeBGCSweepWork();
+
     // restart VM
     GCToEEInterface::RestartEE(true);
 }
@@ -1360,8 +1364,11 @@ void SatoriRecycler::WeakPtrScan(bool isShort)
 void SatoriRecycler::WeakPtrScanBySingleThread()
 {
     // scan for deleted entries in the syncblk cache
-    // does not use a context, so we pass nullptr
-    GCScan::GcWeakPtrScanBySingleThread(m_condemnedGeneration, 2, nullptr);
+    // sc is not really used, but must have "promotion == TRUE" if HeapVerify is on.
+    ScanContext sc;
+    sc.promotion = TRUE;
+
+    GCScan::GcWeakPtrScanBySingleThread(m_condemnedGeneration, 2, &sc);
 }
 
 void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* regions, MarkContext* c)
