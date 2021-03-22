@@ -808,12 +808,6 @@ void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion*
     }
 }
 
-void SatoriRegion::PromoteToGen1()
-{
-    StopEscapeTracking();
-    SetGeneration(1);
-}
-
 void SatoriRegion::ThreadLocalCollect()
 {
     ThreadLocalMark();

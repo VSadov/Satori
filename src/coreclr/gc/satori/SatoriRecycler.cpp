@@ -171,30 +171,58 @@ int SatoriRecycler::RegionCount()
 
 // NOTE: recycler owns nursery regions only temporarily for the duration of GC when mutators are stopped
 //       we do not keep them always since an active nursery region may change its classification
-//       concurrently by becoming gen1 or by allocating a finalizable object
-void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
+//       concurrently by becoming gen1 or by allocating a finalizable object.
+void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region, bool keep)
 {
     _ASSERTE(region->AllocStart() == 0);
     _ASSERTE(region->AllocRemaining() == 0);
     _ASSERTE(region->Generation() == 0 || region->Generation() == 1);
     _ASSERTE(!region->MayHaveDeadObjects());
 
-    if (region->IsThreadLocal())
+    (region->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions: m_ephemeralRegions)->Push(region);
+    Interlocked::Increment(&m_regionsAddedSinceLastCollection);
+
+    // if we want to keep it, we have to promote it.
+    if (keep)
     {
-        _ASSERTE(m_gcState == GC_STATE_BLOCKED);
+        _ASSERTE(region->Generation() == 0);
+        // following two writes must happen after all allocations have concluded,
+        // previous adding to a queue ensures such ordering.
+        region->StopEscapeTracking();
+        region->SetGeneration(1);
+    }
+    else if (region->IsThreadLocal())
+    {
+        // order is unimportant. noone will touch threadlocal region until STW
         region->ClearMarks();
     }
 
-    // we may have started marking, when concurrent
-    region->Verify(/* allowMarked */ ENABLE_CONCURRENT);
+    // we may have marks already, when concurrent marking is allowed
+    region->Verify(/* allowMarked */ ENABLE_CONCURRENT && !region->IsThreadLocal());
 
     // the region has just done allocating, so real occupancy will be known only after we sweep.
-    // for now assume the region is completely full
+    // for now put 0 and treat the region as completely full
     // that is a fair estimate for promoted regions anyways and for nursery regions
     // it does not matter, since they will not participate in compaction
     region->SetOccupancy(0);
-    (region->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions: m_ephemeralRegions)->Push(region);
-    Interlocked::Increment(&m_regionsAddedSinceLastCollection);
+}
+
+void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
+{
+    _ASSERTE(region->AllocStart() == 0);
+    _ASSERTE(region->AllocRemaining() == 0);
+    _ASSERTE(!region->IsThreadLocal());
+    _ASSERTE(!region->MayHaveDeadObjects());
+
+    region->Verify();
+    (region->EverHadFinalizables() ? m_tenuredFinalizationTrackingRegions : m_tenuredRegions)->Push(region);
+
+    // always promote these, we always keep them.
+    _ASSERTE(region->Generation() == 0);
+
+    // must happen after all allocations have concluded,
+    // previous adding to a queue ensures such ordering.
+    region->SetGeneration(2);
 }
 
 void SatoriRecycler::TryStartGC(int generation)
@@ -207,7 +235,7 @@ void SatoriRecycler::TryStartGC(int generation)
         // that is ok.
 
         // in concurrent case there is an extra pass over stacks and handles
-        // which happens before blocking stage
+        // which happens before the blocking stage
         if (newState == GC_STATE_CONCURRENT)
         {
             IncrementStackScanCount();
@@ -236,8 +264,10 @@ void SatoriRecycler::TryStartGC(int generation)
             IncrementCardScanTicket();
         }
 
-        // publishing generation will enable helping
-        m_condemnedGeneration = generation;
+        // publishing condemned generation will enable helping.
+        // it should happen after the writes above.
+        // just to make sure it is all published when the barrier is updated, which is fully synchronizing.
+        VolatileStore(&m_condemnedGeneration, generation);
     }
 }
 
@@ -245,6 +275,10 @@ bool SatoriRecycler::HelpImpl()
 {
     if (m_condemnedGeneration)
     {
+        //TODO: VS helping with gen2 carries some risk of pauses.
+        //      although cards seems fine grained regardless and handles are generally fast.
+        //      perhaps skip handles and bail from draining when gen2. Similar to what we do in Sweep
+
         int64_t deadline = GCToOSInterface::QueryPerformanceCounter() +
             GCToOSInterface::QueryPerformanceFrequency() / 10000; // 0.1 msec.
 
@@ -704,7 +738,9 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         containingRegion = context->m_heap->RegionForAddressChecked(location);
 
         // concurrent FindObject is safe only in gen1/gen2 regions
-        if (!containingRegion || containingRegion->Generation() < 1)
+        // gen0->gen1+ for a region can happen concurrently,
+        // make sure we read generation before doing FindObject
+        if (!containingRegion || containingRegion->GenerationAcquire() < 1)
         {
             return;
         }
@@ -720,13 +756,14 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     else
     {
         containingRegion = o->ContainingRegion();
-        // can't mark in regions which are tracking escapes
-        if (containingRegion->IsThreadLocal())
+        // can't mark in regions which are tracking escapes, bitmap is in use
+        if (containingRegion->IsThreadLocalAcquire())
         {
             return;
         }
     }
 
+    // no need for fences here. a published obj cannot become gen2 concurrently. 
     if (containingRegion->Generation() <= context->m_condemnedGeneration)
     {
         if (!o->IsMarked())
@@ -870,7 +907,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
                     {
                         objectCount++;
                         SatoriRegion* childRegion = child->ContainingRegion();
-                        if (!childRegion->IsThreadLocal())
+                        if (!childRegion->IsThreadLocalAcquire())
                         {
                             if (!child->IsMarkedOrOlderThan(m_condemnedGeneration))
                             {
@@ -1124,7 +1161,7 @@ bool SatoriRecycler::MarkThroughCards(bool isConcurrent, int64_t deadline)
                                         SatoriObject* child = *ref;
 
                                         // cannot mark stuff in thread local regions. just mark as dirty to visit later.
-                                        if (isConcurrent && child && child->ContainingRegion()->IsThreadLocal())
+                                        if (isConcurrent && child && child->ContainingRegion()->IsThreadLocalAcquire())
                                         {
                                             // if ref is outside of the object, it is a fake ref to collectible allocator.
                                             // dirty the MT location as if it points to the allocator object

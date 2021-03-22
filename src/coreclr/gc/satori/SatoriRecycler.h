@@ -22,7 +22,8 @@ class SatoriRecycler
 
 public:
     void Initialize(SatoriHeap* heap);
-    void AddEphemeralRegion(SatoriRegion* region);
+    void AddEphemeralRegion(SatoriRegion* region, bool keep);
+    void AddTenuredRegion(SatoriRegion* region);
     void TryStartGC(int generation);
     bool HelpOnce();
     void MaybeTriggerGC();
