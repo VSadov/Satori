@@ -236,6 +236,7 @@ namespace System.Tests
                 Assert.True(Environment.WorkingSet > 0, "Expected positive WorkingSet value");
         }
 
+        [ActiveIssue("Satori: noisy test, breaks into debugger")]
         [Trait(XunitConstants.Category, XunitConstants.IgnoreForCI)] // fail fast crashes the process
         [OuterLoop]
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
@@ -258,6 +259,7 @@ namespace System.Tests
             }
         }
 
+        [ActiveIssue("Satori: noisy test, breaks into debugger")]
         [Trait(XunitConstants.Category, XunitConstants.IgnoreForCI)] // fail fast crashes the process
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         public void FailFast_ExceptionStackTrace_ArgumentException()
@@ -279,6 +281,7 @@ namespace System.Tests
             }
         }
 
+        [ActiveIssue("Satori: noisy test, breaks into debugger")]
         [Trait(XunitConstants.Category, XunitConstants.IgnoreForCI)] // fail fast crashes the process
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         public void FailFast_ExceptionStackTrace_StackOverflowException()
@@ -301,6 +304,7 @@ namespace System.Tests
             }
         }
 
+        [ActiveIssue("Satori: noisy test, breaks into debugger")]
         [Trait(XunitConstants.Category, XunitConstants.IgnoreForCI)] // fail fast crashes the process
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         public void FailFast_ExceptionStackTrace_InnerException()

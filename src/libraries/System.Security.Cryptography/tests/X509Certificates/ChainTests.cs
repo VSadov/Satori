@@ -238,7 +238,7 @@ namespace System.Security.Cryptography.X509Certificates.Tests
             }
         }
 
-        [Theory]
+        [Theory][OuterLoop("Satori: disabling for local runs")]
         // Tests that the chain fails when a system trust certificate is added to the custom root trust, but its root isn't.
         [InlineData(true)]
         // Tests that the chain fails when no certificates are added to the custom root trust.
