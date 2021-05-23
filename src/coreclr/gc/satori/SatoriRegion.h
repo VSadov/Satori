@@ -89,6 +89,14 @@ public:
 
     template<typename F>
     void ForEachFinalizable(F& lambda);
+
+    // used for exclusive access to trackers when accessing concurrently with user threads
+    void LockFinalizableTrackers();
+    void UnlockFinalizableTrackers();
+
+    template<typename F>
+    void ForEachFinalizableThreadLocal(F& lambda);
+
     bool RegisterForFinalization(SatoriObject* finalizable);
     bool EverHadFinalizables();
     bool& HasPendingFinalizables();
@@ -149,6 +157,7 @@ private:
             SatoriRegion* m_next;
             SatoriQueue<SatoriRegion>* m_containingQueue;
             SatoriMarkChunk* m_finalizableTrackers;
+            int m_finalizableTrackersLock;
 
             // active allocation may happen in the following range.
             // the range may not be parseable as sequence of objects
