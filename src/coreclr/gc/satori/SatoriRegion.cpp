@@ -71,6 +71,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     result->m_containingPage->RegionInitialized(result);
     result->m_escapeFunc = EscapeFn;
     result->m_generation = -1;
+    result->m_finalizableTrackersLock = 0;
     return result;
 }
 
@@ -895,7 +896,7 @@ void SatoriRegion::ThreadLocalMark()
         // - mark obj as reachable
         // - push to mark stack
         // - re-trace to mark children that are now F-reachable
-        ForEachFinalizable(
+        ForEachFinalizableThreadLocal(
             [this](SatoriObject* finalizable)
             {
                 _ASSERTE(((size_t)finalizable & Satori::FINALIZATION_PENDING) == 0);
@@ -1173,7 +1174,7 @@ void SatoriRegion::ThreadLocalUpdatePointers()
     // update finalizables if we have them
     if (m_finalizableTrackers)
     {
-        ForEachFinalizable(
+        ForEachFinalizableThreadLocal(
             [this](SatoriObject* finalizable)
             {
                 // save the pending bit, will reapply back later
@@ -1309,7 +1310,7 @@ void SatoriRegion::ThreadLocalPendFinalizables()
     bool missedRegularPend = false;
 
 tryAgain:
-    ForEachFinalizable(
+    ForEachFinalizableThreadLocal(
         [&](SatoriObject* finalizable)
         {
             if ((size_t)finalizable & Satori::FINALIZATION_PENDING)
@@ -1362,15 +1363,12 @@ tryAgain:
     GCToEEInterface::EnableFinalization(true);
 }
 
-//TODO: VS this can be called concurrently, we need a spinlock
-//      concurrent use here is highly unlikely, since this is generally
-//      called only by allocating or finalizing threads.
-//      it is still possible, so need a lock.
-//      a simplest lock possible will do fine here.
 bool SatoriRegion::RegisterForFinalization(SatoriObject* finalizable)
 {
     _ASSERTE(finalizable->ContainingRegion() == this);
     _ASSERTE(this->m_everHadFinalizables || this->Generation() == 0);
+
+    LockFinalizableTrackers();
 
     if (!m_finalizableTrackers || !m_finalizableTrackers->TryPush(finalizable))
     {
@@ -1378,7 +1376,8 @@ bool SatoriRegion::RegisterForFinalization(SatoriObject* finalizable)
         SatoriMarkChunk* markChunk = Allocator()->TryGetMarkChunk();
         if (!markChunk)
         {
-            // OOM
+            // OOM 
+            UnlockFinalizableTrackers();
             return false;
         }
 
@@ -1387,7 +1386,26 @@ bool SatoriRegion::RegisterForFinalization(SatoriObject* finalizable)
         markChunk->Push(finalizable);
     }
 
+    UnlockFinalizableTrackers();
     return true;
+}
+
+// Finalizable trackers are generally accessed exclusively when EE stopped
+// The only case where we can have contention is when a user thread re-registers
+// concurrently with another thread doing the same or
+// concurrently with thread local collection.
+// It is extremely unlikely to have such contention, so a simplest spinlock is ok
+void SatoriRegion::LockFinalizableTrackers()
+{
+    while (Interlocked::CompareExchange(&m_finalizableTrackersLock, 1, 0) != 0)
+    {
+        YieldProcessor();
+    };
+}
+
+void SatoriRegion::UnlockFinalizableTrackers()
+{
+    VolatileStore(&m_finalizableTrackersLock, 0);
 }
 
 void SatoriRegion::CompactFinalizableTrackers()
