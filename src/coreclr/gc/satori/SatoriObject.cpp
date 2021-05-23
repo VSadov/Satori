@@ -43,11 +43,11 @@ void SatoriObject::EscapeCheck()
 SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
 {
     _ASSERTE(location == ALIGN_UP(location, Satori::OBJECT_ALIGNMENT));
-    _ASSERTE(size >= sizeof(Object) + sizeof(size_t));
+    _ASSERTE(size >= Satori::MIN_FREE_SIZE);
     _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY);
 
     SatoriObject* obj = SatoriObject::At(location);
-    _ASSERTE(obj->ContainingRegion()->m_used > location + ArrayBase::GetOffsetOfNumComponents() + sizeof(size_t));
+    _ASSERTE(obj->ContainingRegion()->m_used > location + 2 * sizeof(size_t));
 
 #ifdef JUNK_FILL_FREE_SPACE
     size_t dirtySize = min(size, obj->ContainingRegion()->m_used - location);
@@ -58,7 +58,7 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
     obj->RawSetMethodTable(s_emptyObjectMt);
 
     // deduct the size of Array header + syncblock and set the size of the free bytes.
-    ((DWORD*)obj)[ArrayBase::GetOffsetOfNumComponents() / sizeof(DWORD)] = (DWORD)(size - (sizeof(ArrayBase) + sizeof(size_t)));
+    ((size_t*)obj)[1] = size - Satori::MIN_FREE_SIZE;
     return obj;
 }
 
