@@ -493,6 +493,7 @@ VOID Object::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
     STATIC_CONTRACT_CANNOT_TAKE_LOCK;
 
     //TODO: Satori
+    _ASSERTE(this->GetSize() > 0);
     return;
     if (g_fEEShutDown & ShutDown_Phase2)
     {

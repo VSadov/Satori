@@ -26,6 +26,9 @@ public:
     void AddTenuredRegion(SatoriRegion* region);
     void TryStartGC(int generation);
     bool HelpOnce();
+    void ConcurrentHelp();
+    bool HelpOnceCore();
+    void MaybeAskForHelp();
     void MaybeTriggerGC();
 
     void Collect(int generation, bool force, bool blocking);
@@ -50,10 +53,12 @@ private:
     int m_stackScanCount;
     uint8_t m_cardScanTicket;
 
+    void(SatoriRecycler::* m_activeHelper)();
+
     int m_condemnedGeneration;
     bool m_isCompacting;
     bool m_isPromoting;
-    int m_gcState;
+    volatile int m_gcState;
     int m_isBarrierConcurrent;
 
     SatoriMarkChunkQueue* m_workList;
@@ -94,7 +99,7 @@ private:
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
     static void MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
     static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
-    static void BackgroundGcFn(void* param);
+    static void HelperThreadFn(void* param);
 
     void DeactivateAllStacks();
     void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
@@ -106,10 +111,12 @@ private:
     uint8_t GetCardScanTicket();
     void DrainMarkQueues(SatoriMarkChunk* srcChunk = nullptr);
     bool DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk = nullptr, int64_t deadline = 0);
-    bool MarkThroughCards(bool isConcurrent, int64_t deadline = 0);
+    void MarkThroughCards();
+    bool MarkThroughCardsConcurrent(int64_t deadline);
     bool CleanCards();
     bool MarkHandles(int64_t deadline = 0);
-    void WeakPtrScan(bool isShort);
+    void ShortWeakPtrScan();
+    void LongWeakPtrScan();
     void WeakPtrScanBySingleThread();
     void ScanFinalizables();
     void ScanFinalizableRegions(SatoriRegionQueue* regions, MarkContext* c);
@@ -118,10 +125,13 @@ private:
     void DependentHandlesRescan();
     void PromoteSurvivedHandles();
 
-    bool HelpImpl();
-
     void BlockingCollect();
-    void Mark();
+    void RunWithHelp(void(SatoriRecycler::* method)());
+    void BlockingMark();
+    void MarkNewReachable();
+    void DependentHandlesScan();
+    void MarkStrongReferences();
+    void DrainAndClean();
     void AfterMarkPass();
     void Compact();
     void RelocateRegion(SatoriRegion* region);
