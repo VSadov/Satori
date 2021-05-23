@@ -56,13 +56,6 @@ public:
         return m_scanTicket;
     }
 
-    bool UnsetProcessing()
-    {
-        int8_t origState = Interlocked::CompareExchange(&m_cardState, Satori::CardState::REMEMBERED, Satori::CardState::PROCESSING);
-        _ASSERTE(origState != Satori::CardState::BLANK);
-        return origState != Satori::CardState::DIRTY;
-    }
-
     size_t CardGroupCount()
     {
         return (End() - Start()) >> Satori::REGION_BITS;
@@ -78,11 +71,6 @@ public:
     volatile int8_t& CardGroupScanTicket(size_t i)
     {
         return m_cardGroups[i * 2 + 1];
-    }
-
-    bool TryEraseCardGroupState(size_t i)
-    {
-        return Interlocked::CompareExchange(&m_cardGroups[i * 2], Satori::CardState::BLANK, Satori::CardState::REMEMBERED) == Satori::CardState::REMEMBERED;
     }
 
     int8_t* CardsForGroup(size_t i)
