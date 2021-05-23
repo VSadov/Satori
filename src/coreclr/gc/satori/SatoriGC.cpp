@@ -68,11 +68,12 @@ void SatoriGC::TemporaryDisableConcurrentGC()
 
 bool SatoriGC::IsConcurrentGCEnabled()
 {
-    return false;
+    return true;
 }
 
 HRESULT SatoriGC::WaitUntilConcurrentGCCompleteAsync(int millisecondsTimeout)
 {
+    // TODO: VS wait until blocking gc state or none
     return S_OK;
 }
 
