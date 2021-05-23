@@ -142,6 +142,16 @@ void SatoriRegion::ForEachFinalizable(F& lambda)
     }
 }
 
+// Used by threadlocal GC concurrently with user threads,
+// thus must lock - in case a user thread tries to reregister an object for finalization
+template<typename F>
+void SatoriRegion::ForEachFinalizableThreadLocal(F& lambda)
+{
+    LockFinalizableTrackers();
+    ForEachFinalizable(lambda);
+    UnlockFinalizableTrackers();
+}
+
 inline bool SatoriRegion::EverHadFinalizables()
 {
     return m_everHadFinalizables;
