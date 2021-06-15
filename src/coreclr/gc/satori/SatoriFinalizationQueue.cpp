@@ -17,6 +17,7 @@ void SatoriFinalizationQueue::Initialize()
 {
     m_enqueue = 0;
     m_dequeue = 0;
+    m_scanTicket = 0;
     m_sizeMask = (1 << 20) - 1;
     m_data = new Entry[1 << 20];
     for (int i = 0; i <= m_sizeMask; i++)
@@ -24,6 +25,22 @@ void SatoriFinalizationQueue::Initialize()
         m_data[i].version = i;
     }
 }
+
+bool SatoriFinalizationQueue::TryUpdateScanTicket(int currentScanTicket)
+{
+    int queueScanTicket = VolatileLoadWithoutBarrier(&m_scanTicket);
+    if (queueScanTicket != currentScanTicket)
+    {
+        // claim the queue for scanning
+        if (Interlocked::CompareExchange(&m_scanTicket, currentScanTicket, queueScanTicket) == queueScanTicket)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 
 // We are using MPSC circular queue with item versioning inspired by the algorithm outlined at:
 // http://www.1024cores.net/home/lock-free-algorithms/queues/bounded-mpmc-queue
