@@ -17,7 +17,7 @@ class SatoriFinalizationQueue
 {
 public:
     void Initialize();
-
+    bool TryUpdateScanTicket(int currentScanTicket);
     bool TryScheduleForFinalization(SatoriObject* finalizable);
     bool TryScheduleForFinalizationSTW(SatoriObject* finalizable);
     SatoriObject* TryGetNextItem();
@@ -42,6 +42,7 @@ private:
     int m_enqueue;
     int m_dequeue;
     int m_sizeMask;
+    int m_scanTicket;
     Entry* m_data;
 };
 

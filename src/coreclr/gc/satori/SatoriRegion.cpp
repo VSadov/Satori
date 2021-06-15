@@ -1588,7 +1588,7 @@ bool SatoriRegion::Sweep(bool keepMarked)
     return !cannotRecycle;
 }
 
-void SatoriRegion::UpdateFinalizibleTrackers()
+void SatoriRegion::UpdateFinalizableTrackers()
 {
     // if any finalizable trackers point outside,
     // their objects have been relocated to this region
