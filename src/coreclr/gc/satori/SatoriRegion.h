@@ -73,7 +73,7 @@ public:
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
 
     void TakeFinalizerInfoFrom(SatoriRegion* other);
-    void UpdateFinalizibleTrackers();
+    void UpdateFinalizableTrackers();
     bool NothingMarked();
     void UpdatePointers();
     void UpdatePointersInPromotedObjects();
