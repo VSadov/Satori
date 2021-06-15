@@ -291,17 +291,12 @@ bool SatoriGC::IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, in
     //       also need to assign numbers to threads when scanning.
     //       at very least there is dependency on 0 being unique.
 
-    // for now we just return true if given context has not been scanned up to the current scan count. 
-    while (true)
+    // for now we just return true if given context has not been scanned for the current scan ticket. 
+    int currentScanTicket = m_heap->Recycler()->GetRootScanTicket();
+    int threadScanTicket = VolatileLoadWithoutBarrier(&acontext->alloc_count);
+    if (threadScanTicket != currentScanTicket)
     {
-        int threadScanCount = acontext->alloc_count;
-        int currentScanCount = m_heap->Recycler()->GetStackScanCount();
-        if (threadScanCount >= currentScanCount)
-        {
-            break;
-        }
-
-        if (Interlocked::CompareExchange(&acontext->alloc_count, currentScanCount, threadScanCount) == threadScanCount)
+        if (Interlocked::CompareExchange(&acontext->alloc_count, currentScanTicket, threadScanTicket) == threadScanTicket)
         {
             return true;
         }
