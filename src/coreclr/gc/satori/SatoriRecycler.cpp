@@ -36,9 +36,9 @@
 
 //#define TIMED
 
-static GCEvent* m_backgroundGCGate;
-volatile static int m_activeWorkers;
-volatile static int m_totalWorkers;
+static GCEvent* m_helpersGate;
+volatile static int m_activeHelpers;
+volatile static int m_totalHelpers;
 
 void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
 {
@@ -53,8 +53,8 @@ void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
 
 void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
-    m_backgroundGCGate = new (nothrow) GCEvent;
-    m_backgroundGCGate->CreateAutoEventNoThrow(false);
+    m_helpersGate = new (nothrow) GCEvent;
+    m_helpersGate->CreateAutoEventNoThrow(false);
 
     m_heap = heap;
 
@@ -102,20 +102,20 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 void SatoriRecycler::HelperThreadFn(void* param)
 {
     SatoriRecycler* recycler = (SatoriRecycler*)param;
-    Interlocked::Increment(&m_activeWorkers);
+    Interlocked::Increment(&m_activeHelpers);
 
     for (;;)
     {
-        Interlocked::Decrement(&m_activeWorkers);
+        Interlocked::Decrement(&m_activeHelpers);
 
-        uint32_t waitResult = m_backgroundGCGate->Wait(1000, FALSE);
+        uint32_t waitResult = m_helpersGate->Wait(1000, FALSE);
         if (waitResult != WAIT_OBJECT_0)
         {
-            Interlocked::Decrement(&m_totalWorkers);
+            Interlocked::Decrement(&m_totalHelpers);
             return;
         }
 
-        Interlocked::Increment(&m_activeWorkers);
+        Interlocked::Increment(&m_activeHelpers);
         auto activeHelper = VolatileLoadWithoutBarrier(&recycler->m_activeHelper);
         if (activeHelper)
         {
@@ -256,6 +256,7 @@ void SatoriRecycler::TryStartGC(int generation)
         // which happens before the blocking stage
         if (newState == GC_STATE_CONCURRENT)
         {
+            m_ccStackMarkState = CC_MARK_STATE_NONE;
             IncrementRootScanTicket();
             SatoriHandlePartitioner::StartNextScan();
             m_activeHelper = &SatoriRecycler::ConcurrentHelp;
@@ -280,12 +281,23 @@ void SatoriRecycler::TryStartGC(int generation)
     }
 }
 
+bool IsHelperThread()
+{
+    return GCToEEInterface::GetThread() == nullptr;
+}
+
 bool SatoriRecycler::HelpOnceCore()
 {
     if (m_condemnedGeneration == 0)
     {
         // work has not started yet, come again later.
         return true;
+    }
+
+    if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
+    {
+        // help with marking stacks and f-queue, this is urgent since EE is stopped for this.
+        MarkAllStacksAndFinalizationQueueConcurrent();
     }
 
     //TODO: VS helping with gen2 carries some risk of pauses.
@@ -321,6 +333,11 @@ bool SatoriRecycler::HelpOnceCore()
         return true;
     }
 
+    if (m_ccStackMarkState == CC_MARK_STATE_NONE)
+    {
+        StartMarkingAllStacksAndFinalizationQueue();
+    }
+
     if (m_condemnedGeneration == 1)
     {
         if (MarkThroughCardsConcurrent(deadline))
@@ -334,8 +351,50 @@ bool SatoriRecycler::HelpOnceCore()
         return true;
     }
 
+    if (m_ccStackMarkState != CC_MARK_STATE_DONE)
+    {
+        if (IsHelperThread())
+        {
+            GCToOSInterface::YieldThread(0);
+        }
+
+        return true;
+    }
+
     // no more work
     return false;
+}
+
+void SatoriRecycler::MarkAllStacksAndFinalizationQueueConcurrent()
+{
+    Interlocked::Increment(&m_ccMarkingThreadsNum);
+    // check state again it could have changed if there were no marking threads
+    if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
+    {
+        MarkAllStacksAndFinalizationQueue();
+    }
+    Interlocked::Decrement(&m_ccMarkingThreadsNum);
+}
+
+void SatoriRecycler::StartMarkingAllStacksAndFinalizationQueue()
+{
+    if (Interlocked::CompareExchange(&m_ccStackMarkState, CC_MARK_STATE_SUSPENDING_EE, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
+    {
+        GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
+        m_ccStackMarkState = CC_MARK_STATE_MARKING;
+        MarkAllStacksAndFinalizationQueue();
+        Interlocked::Exchange(&m_ccStackMarkState, CC_MARK_STATE_DONE);
+        while (m_ccMarkingThreadsNum)
+        {
+            // since we are waiting anyways, try helping
+            if (!HelpOnceCore())
+            {
+                YieldProcessor();
+            }
+        }
+
+        GCToEEInterface::RestartEE(false);
+    }
 }
 
 bool SatoriRecycler::HelpOnce()
@@ -368,12 +427,12 @@ bool SatoriRecycler::HelpOnce()
 
 void SatoriRecycler::ConcurrentHelp()
 {
-    while (HelpOnceCore());
+    while ((m_gcState == GC_STATE_CONCURRENT) && HelpOnceCore());
 }
 
 void SatoriRecycler::MaybeAskForHelp()
 {
-    if (m_activeHelper && m_activeWorkers < SatoriHandlePartitioner::PartitionCount())
+    if (m_activeHelper && m_activeHelpers < SatoriHandlePartitioner::PartitionCount())
     {
         AskForHelp();
     }
@@ -381,15 +440,15 @@ void SatoriRecycler::MaybeAskForHelp()
 
 void SatoriRecycler::AskForHelp()
 {
-    int totalWorkers = m_totalWorkers;
-    if (m_activeWorkers >= totalWorkers &&
-        totalWorkers < (SatoriHandlePartitioner::PartitionCount() - 1) &&
-        Interlocked::CompareExchange(&m_totalWorkers, totalWorkers + 1, totalWorkers) == totalWorkers)
+    int totalHelpers = m_totalHelpers;
+    if (m_activeHelpers >= totalHelpers &&
+        totalHelpers < (SatoriHandlePartitioner::PartitionCount() - 1) &&
+        Interlocked::CompareExchange(&m_totalHelpers, totalHelpers + 1, totalHelpers) == totalHelpers)
     {
         GCToEEInterface::CreateThread(HelperThreadFn, this, false, "Satori GC Helper Thread");
     }
 
-    m_backgroundGCGate->Set();
+    m_helpersGate->Set();
 }
 
 void SatoriRecycler::MaybeTriggerGC()
@@ -441,9 +500,9 @@ void SatoriRecycler::Collect(int generation, bool force, bool blocking)
     } while (blocking && (desiredCollectionNum > collectionNumRef));
 }
 
-bool SatoriRecycler::IsConcurrent()
+bool SatoriRecycler::IsEEStopped()
 {
-    return m_gcState != GC_STATE_BLOCKED;
+    return m_gcState == GC_STATE_BLOCKED;
 }
 
 void SatoriRecycler::BlockingCollect()
@@ -461,11 +520,13 @@ void SatoriRecycler::BlockingCollect()
     // become coop again (it will not block since VM is done suspending)
     GCToEEInterface::DisablePreemptiveGC();
 
-    while (m_activeWorkers > 0)
+    while (m_activeHelpers > 0)
     {
-        // since we are waiting for concurrent helpers to stop, we could as well try to help
-        HelpOnceCore();
-        YieldProcessor();
+        // since we are waiting for concurrent helpers to stop, we could as well try helping
+        if (!HelpOnceCore())
+        {
+            YieldProcessor();
+        }
     }
 
     if (m_isBarrierConcurrent)
@@ -551,7 +612,7 @@ void SatoriRecycler::RunWithHelp(void(SatoriRecycler::* method)())
     m_activeHelper = method;
     (this->*method)();
     m_activeHelper = nullptr;
-    while (m_activeWorkers > 0)
+    while (m_activeHelpers > 0)
     {
         YieldProcessor();
     }
@@ -571,9 +632,7 @@ void SatoriRecycler::BlockingMark()
     RunWithHelp(&SatoriRecycler::MarkStrongReferences);
     AssertNoWork();
 
-    // ##
     DependentHandlesScan();
-    // sync
     AssertNoWork();
 
     // tell EE we have done marking strong references before scanning finalizables
@@ -586,13 +645,8 @@ void SatoriRecycler::BlockingMark()
     ShortWeakPtrScan();
     // sync
 
-    // ##
     ScanFinalizables();
-    // sync
-
-    // ##
     MarkNewReachable();
-    // sync 
     AssertNoWork();
 
     // ##
@@ -624,7 +678,7 @@ void SatoriRecycler::MarkNewReachable()
     // or, simplest of all, just clean cards once unconditionally.
     while (m_workList->Count() > 0)
     {
-        DrainAndClean();
+        RunWithHelp(&SatoriRecycler::DrainAndClean);
         DependentHandlesRescan();
     }
 }
@@ -717,6 +771,7 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, Sa
     if (currentMarkChunk)
     {
         m_workList->Push(currentMarkChunk);
+        MaybeAskForHelp();
     }
 
 #ifdef _DEBUG
@@ -874,19 +929,19 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
             // claim our own stack for scanning
             if (Interlocked::CompareExchange(&aContext->alloc_count, currentScanTicket, threadScanTicket) == threadScanTicket)
             {
-                GCToEEInterface::GcScanCurrentStackRoots(IsConcurrent() ? MarkFnConcurrent : MarkFn, &sc);
+                GCToEEInterface::GcScanCurrentStackRoots(IsEEStopped() ? MarkFn : MarkFnConcurrent, &sc);
             }
         }
     }
 
     bool revisit = false;
-    if (IsConcurrent())
+    if (IsEEStopped())
     {
-        revisit = DrainMarkQueuesConcurrent(c.m_markChunk, deadline);
+        DrainMarkQueues(c.m_markChunk);
     }
     else
     {
-        DrainMarkQueues(c.m_markChunk);
+        revisit = DrainMarkQueuesConcurrent(c.m_markChunk, deadline);
     }
 
     return revisit;
@@ -902,7 +957,7 @@ void SatoriRecycler::MarkAllStacksAndFinalizationQueue()
     sc._unused1 = &c;
 
     //generations are meaningless here, so we pass -1
-    GCToEEInterface::GcScanRoots(MarkFn, -1, -1, &sc);
+    GCToEEInterface::GcScanRoots(IsEEStopped() ? MarkFn : MarkFnConcurrent, -1, -1, &sc);
 
     SatoriFinalizationQueue* fQueue = m_heap->FinalizationQueue();
     if (fQueue->TryUpdateScanTicket(this->GetRootScanTicket()) &&
@@ -952,11 +1007,11 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
             // the number here is to
             // - amortize cost of QueryPerformanceCounter() and
             // - establish the minimum amount of work per help quantum
-            if (objectCount > 4096)
+            if (deadline && objectCount > 4096)
             {
                 objectCount = 0;
                 // printf(".");
-                if (deadline && srcChunk && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
+                if ((GCToOSInterface::QueryPerformanceCounter() - deadline) > 0)
                 {
                     // printf("+");
                     m_workList->Push(srcChunk);
@@ -1626,7 +1681,7 @@ bool SatoriRecycler::MarkHandles(int64_t deadline)
 {
     ScanContext sc;
     sc.promotion = TRUE;
-    sc.concurrent = IsConcurrent();
+    sc.concurrent = !IsEEStopped();
     MarkContext c = MarkContext(this);
     sc._unused1 = &c;
 
@@ -1637,7 +1692,7 @@ bool SatoriRecycler::MarkHandles(int64_t deadline)
             MaybeAskForHelp();
 
             sc.thread_number = p;
-            GCScan::GcScanHandles(IsConcurrent() ? MarkFnConcurrent : MarkFn, m_condemnedGeneration, 2, &sc);
+            GCScan::GcScanHandles(IsEEStopped() ? MarkFn : MarkFnConcurrent, m_condemnedGeneration, 2, &sc);
         },
         deadline
     );
@@ -2421,12 +2476,12 @@ void SatoriRecycler::ReturnRegion(SatoriRegion* curRegion)
 
 bool SatoriRecycler::DrainDeferredSweepQueue(int64_t deadline)
 {
-    bool isGCThread = GCToEEInterface::IsGCThread();
+    bool isHelperGCThread = IsHelperThread();
 
     SatoriRegion* curRegion;
     while ((m_deferredSweepCount > 0) &&
-        // decomitting may block, so leave this to GC threads, if possible.
-        (isGCThread || !m_activeWorkers) &&
+        // decomitting may block, so leave this to helper threads, if possible.
+        (isHelperGCThread || !m_activeHelpers) &&
         (curRegion = m_deferredSweepRegions->TryPop()))
     {
         SweepAndReturnRegion(curRegion);
