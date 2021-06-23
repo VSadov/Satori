@@ -28,13 +28,15 @@ public:
     bool HelpOnce();
     void ConcurrentHelp();
     bool HelpOnceCore();
+    void MarkAllStacksAndFinalizationQueueConcurrent();
+    void StartMarkingAllStacksAndFinalizationQueue();
     void MaybeAskForHelp();
     void AskForHelp();
     void MaybeTriggerGC();
 
     void Collect(int generation, bool force, bool blocking);
 
-    bool IsConcurrent();
+    bool IsEEStopped();
 
     int GetRootScanTicket();
     int64_t GetCollectionCount(int gen);
@@ -44,23 +46,10 @@ public:
     int Gen2RegionCount();
 
 private:
-    static const int GC_STATE_NONE = 0;
-    static const int GC_STATE_CONCURRENT = 1;
-    static const int GC_STATE_BLOCKING = 2;
-    static const int GC_STATE_BLOCKED = 3;
-
     SatoriHeap* m_heap;
 
     int m_rootScanTicket;
     uint8_t m_cardScanTicket;
-
-    void(SatoriRecycler::* m_activeHelper)();
-
-    int m_condemnedGeneration;
-    bool m_isCompacting;
-    bool m_isPromoting;
-    volatile int m_gcState;
-    int m_isBarrierConcurrent;
 
     SatoriMarkChunkQueue* m_workList;
 
@@ -83,6 +72,28 @@ private:
 
     // store regions for concurrent sweep
     SatoriRegionQueue* m_deferredSweepRegions;
+
+    static const int GC_STATE_NONE = 0;
+    static const int GC_STATE_CONCURRENT = 1;
+    static const int GC_STATE_BLOCKING = 2;
+    static const int GC_STATE_BLOCKED = 3;
+
+    volatile int m_gcState;
+
+    static const int CC_MARK_STATE_NONE = 0;
+    static const int CC_MARK_STATE_SUSPENDING_EE = 1;
+    static const int CC_MARK_STATE_MARKING = 2;
+    static const int CC_MARK_STATE_DONE = 3;
+
+    volatile int m_ccStackMarkState;
+    volatile int m_ccMarkingThreadsNum;
+
+    void(SatoriRecycler::* m_activeHelper)();
+
+    int m_condemnedGeneration;
+    bool m_isCompacting;
+    bool m_isPromoting;
+    int m_isBarrierConcurrent;
 
     int64_t m_gen1Count;
     int64_t m_gen2Count;
