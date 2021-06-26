@@ -450,6 +450,10 @@ VOID Object::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
     STATIC_CONTRACT_MODE_COOPERATIVE;
     STATIC_CONTRACT_CANNOT_TAKE_LOCK;
 
+    //TODO: Satori
+    _ASSERTE(this->GetSize() > 0);
+    return;
+
     if (g_IBCLogger.InstrEnabled() && !GCStress<cfg_any>::IsEnabled())
     {
         // If we are instrumenting for IBC (and GCStress is not enabled)
@@ -457,10 +461,6 @@ VOID Object::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
         // instrument phase by an order of magnitude
         return;
     }
-
-    //TODO: Satori
-    _ASSERTE(this->GetSize() > 0);
-    return;
 
     if (g_fEEShutDown & ShutDown_Phase2)
     {
