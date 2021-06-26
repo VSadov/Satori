@@ -23,7 +23,7 @@ public:
         m_perfCounterFrequency = 0;
         m_heap = nullptr;
         m_gcInProgress = false;
-        m_suspensionPending = false;
+        m_shuttingDown = false;
         m_waitForGCEvent = nullptr;
     }
 
@@ -34,7 +34,7 @@ private:
     // TODO: VS what is the difference between these two?
     // should these be volatile?
     bool    m_gcInProgress;
-    bool    m_suspensionPending;
+    bool    m_shuttingDown;
 
     GCEvent* m_waitForGCEvent;
 
