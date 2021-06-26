@@ -35,10 +35,11 @@ SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*
         // split "size" and return as a new region
         size_t nextStart, nextCommitted, nextUsed;
         result->SplitCore(regionSize, nextStart, nextCommitted, nextUsed);
+        SatoriPage* containgPage = result->ContainingPage();
         _ASSERTE(result->ValidateBlank());
         m_lock.Leave();
 
-        result = SatoriRegion::InitializeAt(result->m_containingPage, nextStart, regionSize, nextCommitted, nextUsed);
+        result = SatoriRegion::InitializeAt(containgPage, nextStart, regionSize, nextCommitted, nextUsed);
         _ASSERTE(result->ValidateBlank());
         putBack = nullptr;
     }
@@ -64,6 +65,7 @@ SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*
 
         if (result->Size() > regionSize)
         {
+            // TODO: VS getting a large-ish region, should we take the head instead?
             // if there is a diff split what is needed and put the rest back to appropriate queue.
             putBack = result;
             result = putBack->Split(regionSize);
@@ -102,10 +104,11 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
         // split "size" and return as a new region
         size_t nextStart, nextCommitted, nextUsed;
         result->SplitCore(regionSize, nextStart, nextCommitted, nextUsed);
+        SatoriPage* containgPage = result->ContainingPage();
         _ASSERTE(result->ValidateBlank());
         m_lock.Leave();
 
-        result = SatoriRegion::InitializeAt(result->m_containingPage, nextStart, regionSize, nextCommitted, nextUsed);
+        result = SatoriRegion::InitializeAt(containgPage, nextStart, regionSize, nextCommitted, nextUsed);
         _ASSERTE(result->ValidateBlank());
         putBack = nullptr;
     }
@@ -139,6 +142,7 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
 
         if (result->Size() > regionSize)
         {
+            // TODO: VS getting a large-ish region, should we take the head?
             // if there is a diff split what is needed and put the rest back to appropriate queue.
             putBack = result;
             result = putBack->Split(regionSize);

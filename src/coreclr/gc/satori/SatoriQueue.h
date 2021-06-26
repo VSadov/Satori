@@ -48,9 +48,14 @@ public:
         m_lock.Initialize();
     };
 
-    int Push(T* item)
+    void Push(T* item)
     {
+        _ASSERTE(item->m_next == nullptr);
+        _ASSERTE(item->m_prev == nullptr);
+        _ASSERTE(item->m_containingQueue == nullptr);
+
         SatoriLockHolder<SatoriLock> holder(&m_lock);
+        m_count++;
         item->m_containingQueue = this;
         if (m_head == nullptr)
         {
@@ -63,8 +68,6 @@ public:
             m_head->m_prev = item;
             m_head = item;
         }
-
-        return ++m_count;
     }
 
     T* TryPop()
@@ -99,6 +102,10 @@ public:
 
     void Enqueue(T* item)
     {
+        _ASSERTE(item->m_next == nullptr);
+        _ASSERTE(item->m_prev == nullptr);
+        _ASSERTE(item->m_containingQueue == nullptr);
+
         SatoriLockHolder<SatoriLock> holder(&m_lock);
         m_count++;
         item->m_containingQueue = this;
