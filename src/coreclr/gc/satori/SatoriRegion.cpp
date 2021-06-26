@@ -323,6 +323,12 @@ SatoriRegion* SatoriRegion::NextInPage()
 
 void SatoriRegion::TryCoalesceWithNext()
 {
+    //TODO: VS consider CONCERVATIVE mode.
+    //      we cannot coalesce when marking stacks.
+    //      (splitting regions is ok, but destroying is not)
+    //      right now allocation may split, return tail and coalesce.
+
+    // TODO: VS should we do this in a loop?
     SatoriRegion* next = NextInPage();
     if (next)
     {
@@ -356,8 +362,8 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
     }
     else
     {
+        _ASSERTE(next->m_committed > next->Start());
         size_t toDecommit = next->m_committed - next->Start();
-        _ASSERTE(toDecommit > 0);
         _ASSERTE(toDecommit % Satori::CommitGranularity() == 0);
         GCToOSInterface::VirtualDecommit(next, toDecommit);
     }
@@ -1437,6 +1443,7 @@ void SatoriRegion::CompactFinalizableTrackers()
             continue;
         }
 
+        current->SetNext(nullptr);
         Allocator()->ReturnMarkChunk(current);
     }
 }
