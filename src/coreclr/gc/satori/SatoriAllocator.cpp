@@ -81,6 +81,7 @@ tryAgain:
             if (page)
             {
                 region = page->MakeInitialRegion();
+                // TODO: VS creating a small region, should we take the tail? (and the other way below?)
                 putBack = region->Split(region->Size() - regionSize);
                 AddRegion(putBack);
                 return region;
@@ -173,6 +174,8 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 {
     m_heap->Recycler()->HelpOnce();
     SatoriRegion* region = context->RegularRegion();
+
+    _ASSERTE(region == nullptr || region->Generation() == 0);
 
     while (true)
     {
