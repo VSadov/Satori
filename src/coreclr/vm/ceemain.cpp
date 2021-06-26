@@ -1635,7 +1635,8 @@ static void RuntimeThreadShutdown(void* thread)
         // For case where thread calls ExitThread directly, we need to reset the
         // frame pointer. Otherwise stackwalk would AV. We need to do it in cooperative mode.
         // We need to set m_GCOnTransitionsOK so this thread won't trigger GC when toggle GC mode
-        if (pThread->m_pFrame != FRAME_TOP)
+                //TODO: Satori Is the check for g_fForbidEnterEE needed?
+        if (thread->m_pFrame != FRAME_TOP && !g_fForbidEnterEE)
         {
 #ifdef _DEBUG
             pThread->m_GCOnTransitionsOK = FALSE;
