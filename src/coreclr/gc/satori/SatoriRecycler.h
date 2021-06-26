@@ -27,8 +27,9 @@ public:
     void TryStartGC(int generation);
     bool HelpOnce();
     void ConcurrentHelp();
+    void ShutDown();
     bool HelpOnceCore();
-    void MarkAllStacksAndFinalizationQueueConcurrent();
+    void MarkAllStacksAndFinalizationQueueHelper();
     void StartMarkingAllStacksAndFinalizationQueue();
     void MaybeAskForHelp();
     void AskForHelp();
@@ -36,7 +37,7 @@ public:
 
     void Collect(int generation, bool force, bool blocking);
 
-    bool IsEEStopped();
+    bool IsBlockingPhase();
 
     int GetRootScanTicket();
     int64_t GetCollectionCount(int gen);
@@ -88,12 +89,14 @@ private:
     volatile int m_ccStackMarkState;
     volatile int m_ccMarkingThreadsNum;
 
-    void(SatoriRecycler::* m_activeHelper)();
+    int m_syncBlockCacheScanDone;
+
+    void(SatoriRecycler::* m_activeHelperFn)();
 
     int m_condemnedGeneration;
     bool m_isCompacting;
     bool m_isPromoting;
-    int m_isBarrierConcurrent;
+    bool m_isBarrierConcurrent;
 
     int64_t m_gen1Count;
     int64_t m_gen2Count;
@@ -127,18 +130,23 @@ private:
     bool CleanCards();
     bool MarkHandles(int64_t deadline = 0);
     void ShortWeakPtrScan();
+    void ShortWeakPtrScanWorker();
     void LongWeakPtrScan();
-    void WeakPtrScanBySingleThread();
+    void LongWeakPtrScanWorker();
     void ScanFinalizables();
     void ScanFinalizableRegions(SatoriRegionQueue* regions, MarkContext* c);
 
-    void ScanAllFinalizableRegions();
+    void ScanAllFinalizableRegionsWorker();
 
-    void QueueCriticalFinalizables();
+    void QueueCriticalFinalizablesWorker();
 
     void DependentHandlesInitialScan();
+    void DependentHandlesInitialScanWorker();
     void DependentHandlesRescan();
-    void PromoteSurvivedHandles();
+    void DependentHandlesRescanWorker();
+    void PromoteSurvivedHandlesAndFreeRelocatedRegions();
+
+    void PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker();
 
     void BlockingCollect();
     void RunWithHelp(void(SatoriRecycler::* method)());
@@ -146,24 +154,27 @@ private:
     void MarkNewReachable();
     void DependentHandlesScan();
     void MarkStrongReferences();
-    void DrainAndClean();
+    void MarkStrongReferencesWorker();
+    void DrainAndCleanWorker();
     void Plan();
+    void PlanWorker();
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);
     void Update();
 
-    void FreeRelocatedRegions();
+    void FreeRelocatedRegionsWorker();
 
-    void UpdateRoots();
+    void UpdateRootsWorker();
 
-    void UpdateRegions();
+    void UpdateRegionsWorker();
 
     void UpdatePointersInPromotedObjects();
 
     void UpdateRegions(SatoriRegionQueue* queue);
     void ReturnRegion(SatoriRegion* curRegion);
-    bool DrainDeferredSweepQueue(int64_t deadline = 0);
+    void DrainDeferredSweepQueue();
+    bool DrainDeferredSweepQueueConcurrent(int64_t deadline = 0);
     void SweepAndReturnRegion(SatoriRegion* curRegion);
     void UpdatePointersThroughCards();
     void PlanRegions(SatoriRegionQueue* regions);
@@ -172,7 +183,7 @@ private:
     SatoriRegion* TryGetRelocationTarget(size_t size, bool existingRegionOnly);
 
     int RegionCount();
-    void AssertNoWork();
+    void ASSERT_NO_WORK();
 };
 
 #endif
