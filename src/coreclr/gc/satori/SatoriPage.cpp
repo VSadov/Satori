@@ -68,7 +68,8 @@ void SatoriPage::RegionInitialized(SatoriRegion* region)
     _ASSERTE((size_t)region > Start() && (size_t)region < End());
     size_t startIndex = (region->Start() - Start()) >> Satori::REGION_BITS;
     size_t mapCount = region->Size() >> Satori::REGION_BITS;
-    RegionMap()[startIndex] = 1;
+
+    VolatileStore(&RegionMap()[startIndex], (uint8_t)1);
     for (int i = 1; i < mapCount; i++)
     {
         DWORD log2;
@@ -85,6 +86,7 @@ SatoriRegion* SatoriPage::RegionForAddress(size_t address)
     {
         mapIndex -= ((size_t)1 << (RegionMap()[mapIndex] - 2));
     }
+
     return (SatoriRegion*)((mapIndex << Satori::REGION_BITS) + Start());
 }
 
@@ -92,16 +94,18 @@ SatoriRegion* SatoriPage::RegionForAddressChecked(size_t address)
 {
     _ASSERTE(address >= Start() && address < End());
     size_t mapIndex = (address - Start()) >> Satori::REGION_BITS;
-    if (RegionMap()[mapIndex])
+    while (RegionMap()[mapIndex] > 1)
     {
-        while (RegionMap()[mapIndex] > 1)
-        {
-            mapIndex -= ((size_t)1 << (RegionMap()[mapIndex] - 2));
-        }
-        return (SatoriRegion*)((mapIndex << Satori::REGION_BITS) + Start());
+        mapIndex -= ((size_t)1 << (RegionMap()[mapIndex] - 2));
     }
 
-    return nullptr;
+    if (VolatileLoad(&RegionMap()[mapIndex]) != 1)
+    {
+        // there is no region here yet.
+        return nullptr;
+    }
+
+    return (SatoriRegion*)((mapIndex << Satori::REGION_BITS) + Start());
 }
 
 SatoriRegion* SatoriPage::NextInPage(SatoriRegion* region)
@@ -111,6 +115,14 @@ SatoriRegion* SatoriPage::NextInPage(SatoriRegion* region)
     size_t address = region->End();
     if (address >= End())
     {
+        // this is the last region on this page, no next one.
+        return nullptr;
+    }
+
+    size_t mapIndex = (address - Start()) >> Satori::REGION_BITS;
+    if (VolatileLoad(&RegionMap()[mapIndex]) != 1)
+    {
+        // there is no region here yet.
         return nullptr;
     }
 
