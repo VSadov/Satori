@@ -2309,7 +2309,14 @@ void SatoriRecycler::FreeRelocatedRegions()
         MaybeAskForHelp();
         curRegion->ClearMarks();
         curRegion->MakeBlank();
-        m_heap->Allocator()->AddRegion(curRegion);
+        if (ENABLE_CONCURRENT)
+        {
+            m_deferredSweepRegions->Enqueue(curRegion);
+        }
+        else
+        {
+            m_heap->Allocator()->AddRegion(curRegion);
+        }
     }
 }
 
@@ -2410,7 +2417,15 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                 if (curRegion->SweepAndUpdatePointers())
                 {
                     curRegion->MakeBlank();
-                    m_heap->Allocator()->AddRegion(curRegion);
+                    if (ENABLE_CONCURRENT)
+                    {
+                        m_deferredSweepRegions->Enqueue(curRegion);
+                    }
+                    else
+                    {
+                        m_heap->Allocator()->AddRegion(curRegion);
+                    }
+
                     continue;
                 }
             }
@@ -2503,7 +2518,11 @@ bool SatoriRecycler::DrainDeferredSweepQueue(int64_t deadline)
 
 void SatoriRecycler::SweepAndReturnRegion(SatoriRegion* curRegion)
 {
-    if (curRegion->Sweep())
+    if (curRegion->Generation() == -1)
+    {
+        m_heap->Allocator()->AddRegion(curRegion);
+    }
+    else if (curRegion->Sweep())
     {
         curRegion->MakeBlank();
         m_heap->Allocator()->AddRegion(curRegion);
