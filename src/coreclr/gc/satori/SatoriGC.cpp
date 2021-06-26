@@ -347,7 +347,7 @@ bool SatoriGC::RuntimeStructuresValid()
 
 void SatoriGC::SetSuspensionPending(bool fSuspensionPending)
 {
-    m_suspensionPending = fSuspensionPending;
+    // noop, it makes no difference.
 }
 
 void SatoriGC::SetYieldProcessorScalingFactor(float yieldProcessorScalingFactor)
@@ -356,6 +356,8 @@ void SatoriGC::SetYieldProcessorScalingFactor(float yieldProcessorScalingFactor)
 
 void SatoriGC::Shutdown()
 {
+    m_shuttingDown = true;
+    m_heap->Recycler()->ShutDown();
 }
 
 size_t SatoriGC::GetLastGCStartTime(int generation)
@@ -438,9 +440,19 @@ Object* SatoriGC::NextObj(Object* object)
 
 Object* SatoriGC::GetContainingObject(void* pInteriorPtr, bool fCollectedGenOnly)
 {
-    return m_heap->ObjectForAddressChecked((size_t)pInteriorPtr);
+    SatoriRegion* region = m_heap->RegionForAddressChecked((size_t)pInteriorPtr);
+    if (!region)
+    {
+        return nullptr;
+    }
 
-    //TODO: Satori fCollectedGenOnly?
+    if (fCollectedGenOnly &&
+        region->Generation() > m_heap->Recycler()->CondemnedGeneration())
+    {
+        return nullptr;
+    }
+
+    return region->FindObject((size_t)pInteriorPtr);
 }
 
 void SatoriGC::DiagWalkObject(Object* obj, walk_fn fn, void* context)
