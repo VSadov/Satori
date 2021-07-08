@@ -55,9 +55,11 @@ public:
     void StopEscapeTracking();
 
     bool IsThreadLocal();
+    bool IsThreadLocalAcquire();
     bool OwnedByCurrentThread();
 
     int Generation();
+    int GenerationAcquire();
     void SetGeneration(int generation);
 
     size_t Start();
@@ -71,7 +73,7 @@ public:
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
 
     void TakeFinalizerInfoFrom(SatoriRegion* other);
-    void UpdateFinalizibleTrackers();
+    void UpdateFinalizableTrackers();
     bool NothingMarked();
     void UpdatePointers();
     void UpdatePointersInPromotedObjects();
@@ -87,6 +89,14 @@ public:
 
     template<typename F>
     void ForEachFinalizable(F& lambda);
+
+    // used for exclusive access to trackers when accessing concurrently with user threads
+    void LockFinalizableTrackers();
+    void UnlockFinalizableTrackers();
+
+    template<typename F>
+    void ForEachFinalizableThreadLocal(F& lambda);
+
     bool RegisterForFinalization(SatoriObject* finalizable);
     bool EverHadFinalizables();
     bool& HasPendingFinalizables();
@@ -104,7 +114,6 @@ public:
     void ClearMarks();
     void ClearIndex();
     void ClearFreeLists();
-    void PromoteToGen1();
 
     void ThreadLocalCollect();
 
@@ -148,6 +157,7 @@ private:
             SatoriRegion* m_next;
             SatoriQueue<SatoriRegion>* m_containingQueue;
             SatoriMarkChunk* m_finalizableTrackers;
+            int m_finalizableTrackersLock;
 
             // active allocation may happen in the following range.
             // the range may not be parseable as sequence of objects

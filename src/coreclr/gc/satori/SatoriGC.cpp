@@ -17,6 +17,7 @@
 #include "SatoriAllocationContext.h"
 #include "SatoriHeap.h"
 #include "SatoriRegion.h"
+#include "SatoriPage.h"
 #include "SatoriRegion.inl"
 #include "../gceventstatus.h"
 
@@ -49,7 +50,7 @@ void SatoriGC::WaitUntilConcurrentGCComplete()
 
 bool SatoriGC::IsConcurrentGCInProgress()
 {
-    // Satori may move thread local objects asyncronously,
+    // Satori may move thread local objects asynchronously,
     // but noone should see that (that is the point).
     //
     // The only thing that may get to TL objects is object verification.
@@ -67,11 +68,12 @@ void SatoriGC::TemporaryDisableConcurrentGC()
 
 bool SatoriGC::IsConcurrentGCEnabled()
 {
-    return false;
+    return true;
 }
 
 HRESULT SatoriGC::WaitUntilConcurrentGCCompleteAsync(int millisecondsTimeout)
 {
+    // TODO: VS wait until blocking gc state or none
     return S_OK;
 }
 
@@ -289,17 +291,12 @@ bool SatoriGC::IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, in
     //       also need to assign numbers to threads when scanning.
     //       at very least there is dependency on 0 being unique.
 
-    // for now we just return true if given context has not been scanned up to the current scan count. 
-    while (true)
+    // for now we just return true if given context has not been scanned for the current scan ticket. 
+    int currentScanTicket = m_heap->Recycler()->GetRootScanTicket();
+    int threadScanTicket = VolatileLoadWithoutBarrier(&acontext->alloc_count);
+    if (threadScanTicket != currentScanTicket)
     {
-        int threadScanCount = acontext->alloc_count;
-        int currentScanCount = m_heap->Recycler()->GetStackScanCount();
-        if (threadScanCount >= currentScanCount)
-        {
-            break;
-        }
-
-        if (Interlocked::CompareExchange(&acontext->alloc_count, currentScanCount, threadScanCount) == threadScanCount)
+        if (Interlocked::CompareExchange(&acontext->alloc_count, currentScanTicket, threadScanTicket) == threadScanTicket)
         {
             return true;
         }
@@ -350,7 +347,7 @@ bool SatoriGC::RuntimeStructuresValid()
 
 void SatoriGC::SetSuspensionPending(bool fSuspensionPending)
 {
-    m_suspensionPending = fSuspensionPending;
+    // noop, it makes no difference.
 }
 
 void SatoriGC::SetYieldProcessorScalingFactor(float yieldProcessorScalingFactor)
@@ -359,6 +356,8 @@ void SatoriGC::SetYieldProcessorScalingFactor(float yieldProcessorScalingFactor)
 
 void SatoriGC::Shutdown()
 {
+    m_shuttingDown = true;
+    m_heap->Recycler()->ShutDown();
 }
 
 size_t SatoriGC::GetLastGCStartTime(int generation)
@@ -387,13 +386,31 @@ void SatoriGC::PublishObject(uint8_t* obj)
     SatoriObject* so = (SatoriObject*)obj;
     SatoriRegion* region = so->ContainingRegion();
 
-    // we do not retain huge regions in allocator,
-    // but can't drop them in recycler until object has a MethodTable.
+    // we do not retain huge regions in the nursery,
+    // but we can't promote them until the object has a MethodTable.
     // do that here.
-    if (region->Generation() != 0)
+    if (!region->IsAllocating())
     {
         _ASSERTE(region->Size() > Satori::REGION_SIZE_GRANULARITY);
-        m_heap->Recycler()->AddEphemeralRegion(region);
+        if (!so->RawGetMethodTable()->ContainsPointers())
+        {
+            // this is a single-object region with no pointers.
+            // it is rather cheap to have in gen1, so give it a chance to collect early.
+            m_heap->Recycler()->AddEphemeralRegion(region, /* keep */ true);
+        }
+        else
+        {
+            // the region has seen no writes, so no need to worry about cards.
+            // unless the obj has a collectible type.
+            // in such case we simulate retroactive write by dirtying the card for the MT location.
+            if (so->RawGetMethodTable()->Collectible())
+            {
+                region->ContainingPage()->DirtyCardForAddress(so->Start());
+            }
+
+            region->SetOccupancy(so->Size());
+            m_heap->Recycler()->AddTenuredRegion(region);
+        }
     }
 }
 
@@ -423,9 +440,19 @@ Object* SatoriGC::NextObj(Object* object)
 
 Object* SatoriGC::GetContainingObject(void* pInteriorPtr, bool fCollectedGenOnly)
 {
-    return m_heap->ObjectForAddressChecked((size_t)pInteriorPtr);
+    SatoriRegion* region = m_heap->RegionForAddressChecked((size_t)pInteriorPtr);
+    if (!region)
+    {
+        return nullptr;
+    }
 
-    //TODO: Satori fCollectedGenOnly?
+    if (fCollectedGenOnly &&
+        region->Generation() > m_heap->Recycler()->CondemnedGeneration())
+    {
+        return nullptr;
+    }
+
+    return region->FindObject((size_t)pInteriorPtr);
 }
 
 void SatoriGC::DiagWalkObject(Object* obj, walk_fn fn, void* context)

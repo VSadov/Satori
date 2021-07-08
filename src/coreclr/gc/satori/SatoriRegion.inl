@@ -20,6 +20,11 @@ inline bool SatoriRegion::IsThreadLocal()
     return m_ownerThreadTag;
 }
 
+inline bool SatoriRegion::IsThreadLocalAcquire()
+{
+    return VolatileLoad(&m_ownerThreadTag);
+}
+
 inline bool SatoriRegion::OwnedByCurrentThread()
 {
     return m_ownerThreadTag == SatoriUtil::GetCurrentThreadTag();
@@ -28,6 +33,11 @@ inline bool SatoriRegion::OwnedByCurrentThread()
 inline int SatoriRegion::Generation()
 {
     return m_generation;
+}
+
+inline int SatoriRegion::GenerationAcquire()
+{
+    return VolatileLoad(&m_generation);
 }
 
 inline void SatoriRegion::SetGeneration(int generation)
@@ -81,7 +91,6 @@ inline void SatoriRegion::StopEscapeTracking()
 
         // must clear ownership after clearing marks
         // to make sure concurrent marking does not start marking before we clear
-        // NB: marking does not need a pair for this fence, since writes cannot be speculative
         VolatileStore(&m_ownerThreadTag, (size_t)0);
     }
 }
@@ -131,6 +140,16 @@ void SatoriRegion::ForEachFinalizable(F& lambda)
     {
        CompactFinalizableTrackers();
     }
+}
+
+// Used by threadlocal GC concurrently with user threads,
+// thus must lock - in case a user thread tries to reregister an object for finalization
+template<typename F>
+void SatoriRegion::ForEachFinalizableThreadLocal(F& lambda)
+{
+    LockFinalizableTrackers();
+    ForEachFinalizable(lambda);
+    UnlockFinalizableTrackers();
 }
 
 inline bool SatoriRegion::EverHadFinalizables()

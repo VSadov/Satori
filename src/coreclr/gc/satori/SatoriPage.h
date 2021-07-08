@@ -44,21 +44,16 @@ public:
     void DirtyCardsForRange(size_t start, size_t length);
     void WipeCardsForRange(size_t start, size_t end);
 
+    // order is unimportant, but we want to read it only once when we read it, thus volatile.
     volatile int8_t& CardState()
     {
         return m_cardState;
     }
 
+    // order is unimportant, but we want to read it only once when we read it, thus volatile.
     volatile int8_t& ScanTicket()
     {
         return m_scanTicket;
-    }
-
-    bool UnsetProcessing()
-    {
-        int8_t origState = Interlocked::CompareExchange(&m_cardState, Satori::CardState::REMEMBERED, Satori::CardState::PROCESSING);
-        _ASSERTE(origState != Satori::CardState::BLANK);
-        return origState != Satori::CardState::DIRTY;
     }
 
     size_t CardGroupCount()
@@ -66,19 +61,16 @@ public:
         return (End() - Start()) >> Satori::REGION_BITS;
     }
 
+    // order is unimportant, but we want to read it once when we read it, thus volatile.
     volatile int8_t& CardGroupState(size_t i)
     {
         return m_cardGroups[i * 2];
     }
 
+    // order is unimportant, but we want to read it once when we read it, thus volatile.
     volatile int8_t& CardGroupScanTicket(size_t i)
     {
         return m_cardGroups[i * 2 + 1];
-    }
-
-    bool TryEraseCardGroupState(size_t i)
-    {
-        return Interlocked::CompareExchange(&m_cardGroups[i * 2], Satori::CardState::BLANK, Satori::CardState::REMEMBERED) == Satori::CardState::REMEMBERED;
     }
 
     int8_t* CardsForGroup(size_t i)
