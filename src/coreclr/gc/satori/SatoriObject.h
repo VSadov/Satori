@@ -12,7 +12,13 @@
 #include "../gc.h"
 
 // overwrite freed space with junk for debugging purposes.
-// #define JUNK_FILL_FREE_SPACE
+#if _DEBUG
+#define JUNK_FILL_FREE_SPACE
+#endif
+
+// #define USE_SIZE_CACHE
+
+class SatoriRegion;
 
 class SatoriObject : public Object
 {
@@ -57,22 +63,22 @@ public:
     void SuppressFinalization();
     void UnSuppressFinalization();
 
-    int32_t GetNextInMarkStack();
-    void SetNextInMarkStack(int32_t);
-    void ClearNextInMarkStack();
+    int32_t GetNextInLocalMarkStack();
+    void SetNextInLocalMarkStack(int32_t);
+    void ClearNextInLocalMarkStack();
     void ClearMarkCompactStateForRelocation();
-    int32_t GetReloc();
-    void SetReloc(int32_t);
+    int32_t GetLocalReloc();
+    void SetLocalReloc(int32_t);
 
     void CleanSyncBlock();
 
     void Validate();
 
     template<typename F>
-    void ForEachObjectRef(F& lambda, bool includeCollectibleAllocator = false);
+    void ForEachObjectRef(F lambda, bool includeCollectibleAllocator = false);
 
     template<typename F>
-    void ForEachObjectRef(F& lambda, size_t start, size_t end);
+    void ForEachObjectRef(F lambda, size_t start, size_t end);
 
 private:
     static MethodTable* s_emptyObjectMt;

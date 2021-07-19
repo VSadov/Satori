@@ -39,6 +39,7 @@ public:
     SatoriHeap* Heap();
 
     void SetCardForAddress(size_t address);
+    void SetCardForAddressOnly(size_t address);
     void SetCardsForRange(size_t start, size_t end);
     void DirtyCardForAddress(size_t address);
     void DirtyCardsForRange(size_t start, size_t length);
@@ -82,6 +83,9 @@ public:
     {
         return Start() + ((size_t)cardPtr - Start()) * Satori::BYTES_PER_CARD_BYTE;
     }
+
+    template<typename F>
+    void ForEachRegion(F& lambda);
 
 private:
     union

@@ -12,18 +12,110 @@
 
 #include "SatoriFinalizationQueue.h"
 #include "SatoriObject.h"
+#include "SatoriHeap.h"
+#include "SatoriRegion.h"
+#include "SatoriRegion.inl"
 
-void SatoriFinalizationQueue::Initialize()
+// limit the queue size to some large value just to have a limit.
+// needing this many items is likely an indication that finalizer is not keeping up and nothing can help that.
+static const int MAX_SIZE = 1 << 25;
+
+#if DEBUG
+// smaller size in debug to have overflows
+static const int INITIAL_SIZE = 1 << 5;
+#else
+// 4K items (65Kb) - roughly the size of 2 region headers
+static const int INITIAL_SIZE = 1 << 12;
+#endif
+
+void SatoriFinalizationQueue::Initialize(SatoriHeap* heap)
 {
     m_enqueue = 0;
     m_dequeue = 0;
     m_scanTicket = 0;
-    m_sizeMask = (1 << 20) - 1;
-    m_data = new Entry[1 << 20];
-    for (int i = 0; i <= m_sizeMask; i++)
+    m_overflowedGen = 0;
+    m_heap = heap;
+
+    int size = INITIAL_SIZE;
+
+    m_sizeMask = size - 1;
+    size_t allocSize = size * sizeof(Entry);
+    size_t regionSize = SatoriRegion::RegionSizeForAlloc(allocSize);
+    m_region = m_heap->Allocator()->GetRegion(regionSize);
+    m_data = (Entry*)m_region->Allocate(allocSize, /*zeroInitialize*/false);
+
+    for (int i = 0; i < size; i++)
     {
         m_data[i].version = i;
     }
+}
+
+int SatoriFinalizationQueue::OverflowedGen()
+{
+    return m_overflowedGen;
+}
+
+
+void SatoriFinalizationQueue::SetOverflow(int generation)
+{
+    if (generation > m_overflowedGen)
+    {
+        m_overflowedGen = generation;
+    }
+}
+
+void SatoriFinalizationQueue::ResetOverflow(int generation)
+{
+    if (!m_overflowedGen || generation < m_overflowedGen)
+    {
+        return;
+    }
+
+    // try resizing
+    int size = (m_sizeMask + 1) * 2;
+    if (size <= MAX_SIZE)
+    {
+        size_t allocSize = size * sizeof(Entry);
+        size_t regionSize = SatoriRegion::RegionSizeForAlloc(allocSize);
+        SatoriRegion* newRegion = m_heap->Allocator()->GetRegion(regionSize);
+        if (newRegion)
+        {
+            newRegion->TryDecommit();
+            Entry* newData = (Entry*)newRegion->Allocate(allocSize, /*zeroInitialize*/false);
+            if (!newData)
+            {
+                m_heap->Allocator()->AddRegion(newRegion);
+                return;
+            }
+
+            // transfer items from the old queue
+            int dst = 0;
+            for (int src = m_dequeue; src != m_enqueue; src++)
+            {
+                newData[dst].value = m_data[src & m_sizeMask].value;
+                newData[dst].version = dst + 1;
+                dst++;
+            }
+
+            // format the rest of the items as empty
+            for (int i = dst; i < size; i++)
+            {
+                newData[i].version = i;
+            }
+
+            m_data = newData;
+            m_sizeMask = size - 1;
+            m_enqueue = dst;
+            m_dequeue = 0;
+
+            m_region->MakeBlank();
+            m_heap->Allocator()->AddRegion(m_region);
+            m_region = newRegion;
+        }
+    }
+
+    // either way we are not in an overflow unless we see a full queue again.
+    m_overflowedGen = 0;
 }
 
 bool SatoriFinalizationQueue::TryUpdateScanTicket(int currentScanTicket)
@@ -77,27 +169,6 @@ bool SatoriFinalizationQueue::TryScheduleForFinalization(SatoriObject* finalizab
     return true;
 }
 
-// called by STW GC when no other producers or consumers are running.
-bool SatoriFinalizationQueue::TryScheduleForFinalizationSTW(SatoriObject* finalizable)
-{
-    int enq = m_enqueue;
-    Entry* e = &m_data[enq & m_sizeMask];
-    int diff = e->version - enq;
-
-    if (diff < 0)
-    {
-        // TODO: VS handle resize?
-        return false;
-    }
-
-    // we are the only enqueuer, we cannot be behind.
-    _ASSERTE(diff == 0);
-    m_enqueue = enq + 1;
-    e->value = finalizable;
-    e->version = enq + 1;
-    return true;
-}
-
 // called by a single consuming thread
 SatoriObject* SatoriFinalizationQueue::TryGetNextItem()
 {
@@ -114,7 +185,7 @@ SatoriObject* SatoriFinalizationQueue::TryGetNextItem()
     }
     else
     {
-        // we are the only dequeuer, we cannot be behind.
+        // since there is only one dequeuer, it cannot fall behind another one.
         _ASSERTE(diff == 0);
         m_dequeue = deq + 1;
         VolatileStore(&e->version, deq + m_sizeMask + 1);
