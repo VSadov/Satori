@@ -393,7 +393,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         mov     [rcx], rdx
 
     ; TODO: VS for throughput tuning a nonconcurrent and concurrent paths could be separated 
-    ;       need to suspend EE when swapping barriers, but GCs in that mode should be relatily rare.
+    ;       need to suspend EE when swapping barriers, but GCs in that mode should be relatively rare
 
     ; check if src is in gen2
         cmp     dword ptr [r8 + 16], 2
