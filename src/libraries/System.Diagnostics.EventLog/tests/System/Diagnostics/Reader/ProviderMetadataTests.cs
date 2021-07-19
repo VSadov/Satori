@@ -90,6 +90,7 @@ namespace System.Diagnostics.Tests
             }
         }
 
+        [ActiveIssue("Satori: noisy test fails in baseline too")]
         [ConditionalFact(typeof(Helpers), nameof(Helpers.SupportsEventLogs))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/64153")]
         public void GetProviderNames_AssertProperties()
