@@ -14,6 +14,7 @@
 #include "../env/gcenv.os.h"
 #include "../env/gcenv.ee.h"
 #include "SatoriRegion.h"
+#include "SatoriMarkChunk.h"
 
 inline bool SatoriRegion::IsThreadLocal()
 {
@@ -77,6 +78,11 @@ inline size_t SatoriRegion::AllocRemaining()
     return diff > 0 ? (size_t)diff : 0;
 }
 
+inline size_t SatoriRegion::RegionSizeForAlloc(size_t allocSize)
+{
+    return ALIGN_UP(allocSize + offsetof(SatoriRegion, m_firstObject) + Satori::MIN_FREE_SIZE, Satori::REGION_SIZE_GRANULARITY);
+}
+
 inline SatoriObject* SatoriRegion::FirstObject()
 {
     return &m_firstObject;
@@ -86,6 +92,7 @@ inline void SatoriRegion::StopEscapeTracking()
 {
     if (IsThreadLocal())
     {
+        _ASSERTE(!HasPinnedObjects());
         ClearMarks();
         m_escapeFunc = nullptr;
 
@@ -96,7 +103,7 @@ inline void SatoriRegion::StopEscapeTracking()
 }
 
 template<typename F>
-void SatoriRegion::ForEachFinalizable(F& lambda)
+void SatoriRegion::ForEachFinalizable(F lambda)
 {
     size_t items = 0;
     size_t nulls = 0;
@@ -145,7 +152,7 @@ void SatoriRegion::ForEachFinalizable(F& lambda)
 // Used by threadlocal GC concurrently with user threads,
 // thus must lock - in case a user thread tries to reregister an object for finalization
 template<typename F>
-void SatoriRegion::ForEachFinalizableThreadLocal(F& lambda)
+void SatoriRegion::ForEachFinalizableThreadLocal(F lambda)
 {
     LockFinalizableTrackers();
     ForEachFinalizable(lambda);
@@ -167,34 +174,41 @@ inline size_t SatoriRegion::Occupancy()
     return m_occupancy;
 }
 
-inline void SatoriRegion::SetHasPinnedObjects()
-{
-    m_hasPinnedObjects = true;
-}
-
-inline bool SatoriRegion::HasPinnedObjects()
+inline bool& SatoriRegion::HasPinnedObjects()
 {
     return m_hasPinnedObjects;
 }
 
-inline void SatoriRegion::SetMayHaveDeadObjects(bool value)
+inline bool& SatoriRegion::HasMarksSet()
 {
-    m_mayHaveDeadObjects = value;
+    return m_hasMarksSet;
 }
 
-inline bool SatoriRegion::MayHaveDeadObjects()
-{
-    return m_mayHaveDeadObjects;
-}
-
-inline void SatoriRegion::SetAcceptedPromotedObjects(bool value)
-{
-    m_acceptedPromotedObjects = value;
-}
-
-inline bool SatoriRegion::AcceptedPromotedObjects()
+inline bool& SatoriRegion::AcceptedPromotedObjects()
 {
     return m_acceptedPromotedObjects;
+}
+
+inline SatoriQueue<SatoriRegion>* SatoriRegion::ContainingQueue()
+{
+    return VolatileLoadWithoutBarrier(&m_containingQueue);
+}
+
+inline void SatoriRegion::Attach(SatoriRegion** attachementPoint)
+{
+    _ASSERTE(!m_allocationContextAttachmentPoint);
+    _ASSERTE(!*attachementPoint);
+
+    *attachementPoint = this;
+    m_allocationContextAttachmentPoint = attachementPoint;
+}
+
+inline void SatoriRegion::Detach()
+{
+    _ASSERTE(*m_allocationContextAttachmentPoint == this);
+
+    *m_allocationContextAttachmentPoint = nullptr;
+    m_allocationContextAttachmentPoint = nullptr;
 }
 
 #endif
