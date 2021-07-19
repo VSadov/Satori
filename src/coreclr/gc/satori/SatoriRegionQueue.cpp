@@ -65,8 +65,7 @@ SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*
 
         if (result->Size() > regionSize)
         {
-            // TODO: VS getting a large-ish region, should we take the head instead?
-            // if there is a diff split what is needed and put the rest back to appropriate queue.
+            // if there is a diff, split what is needed and put the rest back to appropriate queue.
             putBack = result;
             result = putBack->Split(regionSize);
         }
@@ -142,8 +141,7 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
 
         if (result->Size() > regionSize)
         {
-            // TODO: VS getting a large-ish region, should we take the head?
-            // if there is a diff split what is needed and put the rest back to appropriate queue.
+             // if there is a diff, split what is needed and put the rest back to appropriate queue.
             putBack = result;
             result = putBack->Split(regionSize);
         }
