@@ -70,18 +70,20 @@ SatoriHeap* SatoriHeap::Create()
         return nullptr;
     }
 
-    SatoriHeap* result = (SatoriHeap*)reserved;
-    result->m_reservedMapSize = mapSize;
-    result->m_committedMapSize = (int)(commitSize - ((size_t)&result->m_pageMap - (size_t)result));
-    InitWriteBarrier(result->m_pageMap, result->m_committedMapSize * Satori::PAGE_SIZE_GRANULARITY);
-    result->m_mapLock.Initialize();
-    result->m_nextPageIndex = 1;
+    // TODO: VS under very low memory, some of the following Initialize calls may fail
+    //       do we care to handle that?
+    SatoriHeap* heap = (SatoriHeap*)reserved;
+    heap->m_reservedMapSize = mapSize;
+    heap->m_committedMapSize = (int)(commitSize - ((size_t)&heap->m_pageMap - (size_t)heap));
+    InitWriteBarrier(heap->m_pageMap, heap->m_committedMapSize * Satori::PAGE_SIZE_GRANULARITY);
+    heap->m_mapLock.Initialize();
+    heap->m_nextPageIndex = 1;
 
-    result->m_allocator.Initialize(result);
-    result->m_recycler.Initialize(result);
-    result->m_finalizationQueue.Initialize();
+    heap->m_allocator.Initialize(heap);
+    heap->m_recycler.Initialize(heap);
+    heap->m_finalizationQueue.Initialize(heap);
 
-    return result;
+    return heap;
 }
 
 bool SatoriHeap::CommitMoreMap(int currentlyCommitted)
@@ -115,24 +117,27 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
             break;
         }
 
-        size_t pageAddress = (size_t)i << Satori::PAGE_BITS;
-        newPage = SatoriPage::InitializeAt(pageAddress, Satori::PAGE_SIZE_GRANULARITY, this);
-        if (newPage)
+        if (m_pageMap[i] == 0)
         {
-            // SYNCRONIZATION:
-            // A page map update must be seen by all threads befeore seeing objects allocated
-            // in the new page or checked barriers may consider the objects not in the heap.
-            //
-            // If another thread checks if object is in heap, its read of the map element is dependent on object,
-            // therefore the read will happen after the object is obtained.
-            // Also the object must be published before other thread could see it, and publishing is a release.
-            // Thus an ordinary write is ok even for weak memory cases.
-            m_pageMap[i] = 1;
-            // ensure the next is advanced to at least i + 1
-            while ((nextPageIndex = m_nextPageIndex) < i + 1 &&
-                Interlocked::CompareExchange(&m_nextPageIndex, i + 1, nextPageIndex) != nextPageIndex);
+            size_t pageAddress = (size_t)i << Satori::PAGE_BITS;
+            newPage = SatoriPage::InitializeAt(pageAddress, Satori::PAGE_SIZE_GRANULARITY, this);
+            if (newPage)
+            {
+                // SYNCRONIZATION:
+                // A page map update must be seen by all threads befeore seeing objects allocated
+                // in the new page or checked barriers may consider the objects not in the heap.
+                //
+                // If another thread checks if object is in heap, its read of the map element is dependent on object,
+                // therefore the read will happen after the object is obtained.
+                // Also the object must be published before other thread could see it, and publishing is a release.
+                // Thus an ordinary write is ok even for weak memory cases.
+                m_pageMap[i] = 1;
+                // ensure the next is advanced to at least i + 1
+                while ((nextPageIndex = m_nextPageIndex) < i + 1 &&
+                    Interlocked::CompareExchange(&m_nextPageIndex, i + 1, nextPageIndex) != nextPageIndex);
 
-            return true;
+                return true;
+            }
         }
 
         // check if someone else added a page
@@ -177,37 +182,40 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
             }
         }
 
-        size_t pageAddress = (size_t)i << Satori::PAGE_BITS;
-        SatoriPage* newPage = SatoriPage::InitializeAt(pageAddress, minSize, this);
-        if (newPage)
+        if (m_pageMap[i] == 0)
         {
-            // mark the map, before an object can be allocated in the new page and
-            // may be seen in a GC barrier
-            m_pageMap[i] = 1;
-            for (int j = 1; j < mapMarkCount; j++)
+            size_t pageAddress = (size_t)i << Satori::PAGE_BITS;
+            SatoriPage* newPage = SatoriPage::InitializeAt(pageAddress, minSize, this);
+            if (newPage)
             {
-                DWORD log2;
-                BitScanReverse(&log2, j);
-                m_pageMap[i + j] = (uint8_t)(log2 + 2);
-            }
+                // mark the map, before an object can be allocated in the new page and
+                // may be seen in a GC barrier
+                m_pageMap[i] = 1;
+                for (int j = 1; j < mapMarkCount; j++)
+                {
+                    DWORD log2;
+                    BitScanReverse(&log2, j);
+                    m_pageMap[i + j] = (uint8_t)(log2 + 2);
+                }
 
-            // we also need to ensure that the other thread doing the barrier,
-            // reads the object before reading the updated map.
-            // on ARM this would require load fence in the barrier. We will do a processwide here instead.
+                // we also need to ensure that the other thread doing the barrier,
+                // reads the object before reading the updated map.
+                // on ARM this would require load fence in the barrier. We will do a processwide here instead.
+                //TODO: VS needed?
 #if defined(HOST_ARM64) || defined(HOST_ARM)
-            GCToOSInterface::FlushProcessWriteBuffers();
+                GCToOSInterface::FlushProcessWriteBuffers();
 #endif
 
+                // advance next if contiguous
+                // Note: it may become contiguous after we check, but it should be rare.
+                //       advancing is not needed for correctness, so we do not care.
+                if (i == m_nextPageIndex)
+                {
+                    Interlocked::CompareExchange(&m_nextPageIndex, i + mapMarkCount, i);
+                }
 
-            // advance next if contiguous
-            // Note: it may become contiguous after we check, but it should be rare.
-            //       advancing is not needed for correctness, so we do not care.
-            if (i == m_nextPageIndex)
-            {
-                Interlocked::CompareExchange(&m_nextPageIndex, i + mapMarkCount, i);
+                return newPage;
             }
-
-            return newPage;
         }
     }
 

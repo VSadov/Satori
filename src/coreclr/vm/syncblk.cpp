@@ -1856,12 +1856,14 @@ BOOL SyncBlock::TryGetLockInfo(DWORD *pThreadId, DWORD *pRecursionLevel)
 #if defined(HOST_64BIT) && defined(_DEBUG)
 void ObjHeader::IllegalAlignPad()
 {
+#if !FEATURE_SATORI_GC
     WRAPPER_NO_CONTRACT;
 #ifdef LOGGING
     void** object = ((void**) this) + 1;
     STRESS_LOG1(LF_ASSERT, LL_ALWAYS, "\n\n******** Illegal ObjHeader m_alignpad not 0, m_alignpad value: %d\n", m_alignpad);
 #endif
     _ASSERTE(m_alignpad == 0);
+#endif //!FEATURE_SATORI_GC
 }
 #endif // HOST_64BIT && _DEBUG
 
