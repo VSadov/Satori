@@ -1269,7 +1269,7 @@ HCIMPLEND_RAW
 static const int PAGE_BITS = 30;
 static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
 
-// same as SatoriGC::IsHeapPointer, just to avoid dependency on SatoriGC class.
+// same as SatoriGC::IsHeapPointer, just to avoid dependency on SatoriGC instance.
 bool IsInHeapSatori(void* ptr)
 {
     if ((uint8_t*)ptr > (uint8_t*)g_highest_address)
@@ -1282,7 +1282,7 @@ bool IsInHeapSatori(void* ptr)
     return pageMap[page];
 }
 
-// same as SatoriGC::PageForAddressChecked, just to avoid dependency on SatoriGC class.
+// same as SatoriGC::PageForAddressChecked, just to avoid dependency on SatoriGC instance.
 SatoriPage* PageForAddressCheckedSatori(void* address)
 {
     size_t mapIndex = (size_t)address >> PAGE_BITS;
@@ -1327,7 +1327,7 @@ void CheckEscapeSatori(Object** dst, Object* ref)
 
 void CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
 {
-    SatoriRegion* curRegion = (SatoriRegion * )GCToEEInterface::GetAllocContext()->gc_reserved_1;
+    SatoriRegion* curRegion = (SatoriRegion*)GCToEEInterface::GetAllocContext()->gc_reserved_1;
     if (!curRegion || !curRegion->IsThreadLocal())
     {
         // not tracking escapes
@@ -1336,7 +1336,7 @@ void CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
 
     _ASSERTE(curRegion->OwnedByCurrentThread());
 
-    // if dst is within the current region and is not exposed, we are done
+    // if dst is within the curRegion and is not exposed, we are done
     if (((dst ^ curRegion->Start()) >> 21) == 0)
     {
         if (!curRegion->AnyExposed(dst, len))
@@ -1353,7 +1353,7 @@ void CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
 
     if (((src ^ curRegion->Start()) >> 21) == 0)
     {
-        // if src is already escaped, we are done
+        // if src is not exposed, we are escaping the objects
         if (!curRegion->AnyExposed(src, len))
         {
             SatoriObject* containingSrcObj = curRegion->FindObject(src);
@@ -1370,6 +1370,7 @@ void CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
                 src + len
             );
         }
+
         return;
     }
 

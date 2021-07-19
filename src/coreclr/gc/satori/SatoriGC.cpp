@@ -85,7 +85,21 @@ size_t SatoriGC::GetNumberOfFinalizable()
 
 Object* SatoriGC::GetNextFinalizable()
 {
-    return m_heap->FinalizationQueue()->TryGetNextItem();
+    SatoriFinalizationQueue* queue = m_heap->FinalizationQueue();
+    Object* f = queue->TryGetNextItem();
+    if (f == nullptr)
+    {
+        // transient failure to enqueue finalizables in ephemeral GC is unobservable since objects
+        // could be promoted nondeterministicaly and stay alive anyways.
+        // with gen2 we need to see a clean collection before we can claim there is nothing pending.
+        if (queue->OverflowedGen() == 2)
+        {
+            m_heap->Recycler()->Collect(2, true, true);
+            f = queue->TryGetNextItem();
+        }
+    }
+
+    return f;
 }
 
 int SatoriGC::GetGcLatencyMode()
@@ -312,7 +326,7 @@ bool SatoriGC::IsEphemeral(Object* object)
 
 uint32_t SatoriGC::WaitUntilGCComplete(bool bConsiderGCStart)
 {
-    //TODO: VS bConsiderGCStart used by threadpool to wait if GC is imminent.
+    //NB: bConsiderGCStart does not make much sense for Satori
 
     if (m_gcInProgress)
     {
