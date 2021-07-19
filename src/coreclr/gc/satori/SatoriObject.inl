@@ -18,6 +18,18 @@
 
 FORCEINLINE size_t SatoriObject::Size()
 {
+#ifdef USE_SIZE_CACHE
+    int64_t sbBits = ((int64_t*)this)[-1];
+    if (sbBits > 0)
+    {
+        uint16_t cachedSize = (uint16_t)(sbBits >> 16) & ~3;
+        if (cachedSize != 0)
+        {
+            return cachedSize;
+        }
+    }
+#endif
+
     MethodTable* mt = RawGetMethodTable();
     size_t size = mt->GetBaseSize();
     if (mt->HasComponentSize())
@@ -25,6 +37,13 @@ FORCEINLINE size_t SatoriObject::Size()
         size += (size_t)((ArrayBase*)this)->GetNumComponents() * mt->RawGetComponentSize();
         size = ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
     }
+
+#ifdef USE_SIZE_CACHE
+    if (sbBits >= 0 && size < (1 << 16))
+    {
+        ((uint16_t*)this)[-3] |= size;
+    }
+#endif
 
     return size;
 }
@@ -124,16 +143,19 @@ inline bool SatoriObject::CheckBit(int offset)
 
 inline bool SatoriObject::IsMarked()
 {
+    _ASSERTE(this->Size() > 0);
     return CheckBit(0);
 }
 
 FORCEINLINE bool SatoriObject::IsMarkedOrOlderThan(int generation)
 {
+    _ASSERTE(this->Size() > 0);
     return ContainingRegion()->Generation() > generation || IsMarked();
 }
 
 inline void SatoriObject::SetMarked()
 {
+    _ASSERTE(!IsFree());
     SetBit(0);
 }
 
@@ -144,6 +166,7 @@ inline void SatoriObject::ClearMarked()
 
 inline void SatoriObject::SetMarkedAtomic()
 {
+    _ASSERTE(!IsFree());
     SetBitAtomic(0);
 }
 
@@ -199,45 +222,45 @@ inline void SatoriObject::UnSuppressFinalization()
 
 //
 // Implementation note on mark overflow and relocation - we could use temporary maps,
-// but we will use unused bits in the syncblock instead.
+// but we will use 18 unused bits in the syncblock instead.
 //
 
-inline int32_t SatoriObject::GetNextInMarkStack()
+inline int32_t SatoriObject::GetNextInLocalMarkStack()
 {
-    return ((int32_t*)this)[-2];
+    return (((int32_t*)this)[-2] << 3) & (Satori::REGION_SIZE_GRANULARITY - 1);
 }
 
-inline void SatoriObject::SetNextInMarkStack(int32_t next)
+inline void SatoriObject::SetNextInLocalMarkStack(int32_t next)
 {
-    _ASSERTE(GetNextInMarkStack() == 0);
-    ((int32_t*)this)[-2] = next;
+    _ASSERTE(GetNextInLocalMarkStack() == 0);
+    ((int32_t*)this)[-2] |= next >> 3;
 }
 
-inline void SatoriObject::ClearNextInMarkStack()
+inline void SatoriObject::ClearNextInLocalMarkStack()
 {
-    ((int32_t*)this)[-2] = 0;
+    ((int32_t*)this)[-2] &= ~(Satori::REGION_SIZE_GRANULARITY - 1) >> 3;
 }
 
-inline int32_t SatoriObject::GetReloc()
+inline int32_t SatoriObject::GetLocalReloc()
 {
-    // since relocation does not intersect with uses of mark stack
+    // since local relocation does not intersect with uses of mark stack
     // we will use the same bits.
-    return GetNextInMarkStack();
+    return GetNextInLocalMarkStack();
 }
 
-inline void SatoriObject::SetReloc(int32_t next)
+inline void SatoriObject::SetLocalReloc(int32_t next)
 {
-    // since relocation does not intersect with uses of mark stack
+    // since local relocation does not intersect with uses of mark stack
     // we will use the same bits.
-    SetNextInMarkStack(next);
+    SetNextInLocalMarkStack(next);
 }
 
 inline void SatoriObject::ClearMarkCompactStateForRelocation()
 {
     _ASSERTE(!IsEscaped());
-    // since relocation does not intersect with uses of mark stack
+    // since local relocation does not intersect with uses of mark stack
     // we will use the same bits.
-    ClearNextInMarkStack();
+    ClearNextInLocalMarkStack();
     ClearBit(0);
     ClearBit(2);
 }
@@ -265,7 +288,7 @@ inline bool SatoriObject::IsPermanentlyPinned()
 }
 
 template<typename F>
-inline void SatoriObject::ForEachObjectRef(F& lambda, bool includeCollectibleAllocator)
+inline void SatoriObject::ForEachObjectRef(F lambda, bool includeCollectibleAllocator)
 {
     MethodTable* mt = RawGetMethodTable();
 
@@ -339,7 +362,7 @@ inline void SatoriObject::ForEachObjectRef(F& lambda, bool includeCollectibleAll
 }
 
 template<typename F>
-inline void SatoriObject::ForEachObjectRef(F& lambda, size_t start, size_t end)
+inline void SatoriObject::ForEachObjectRef(F lambda, size_t start, size_t end)
 {
     MethodTable* mt = RawGetMethodTable();
 
@@ -444,4 +467,5 @@ inline void SatoriObject::ForEachObjectRef(F& lambda, size_t start, size_t end)
         }
     }
 }
+
 #endif
