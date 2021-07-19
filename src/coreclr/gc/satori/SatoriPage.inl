@@ -10,6 +10,7 @@
 
 #include "SatoriUtil.h"
 #include "SatoriPage.h"
+#include "SatoriRegion.h"
 
 inline size_t SatoriPage::Start()
 {
@@ -35,5 +36,18 @@ inline SatoriHeap* SatoriPage::Heap()
 {
     return m_heap;
 }
+
+template<typename F>
+    void SatoriPage::ForEachRegion(F& lambda)
+    {
+        SatoriRegion* region = (SatoriRegion*)this->End();
+
+        do
+        {
+            region = RegionForAddress(region->Start() - 1);
+            lambda(region);
+        }
+        while (region->Start() != m_firstRegion);
+    }
 
 #endif
