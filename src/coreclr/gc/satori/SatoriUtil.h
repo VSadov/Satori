@@ -107,8 +107,13 @@ public:
     static size_t GetCurrentThreadTag()
     {
         // must match what is used in barriers.
+#if TARGET_WINDOWS
         // we use linear address of TEB on NT
-        return (size_t)__readgsqword(0x30);
+        // return (size_t)__readgsqword(0x30);
+                return (size_t)__readgsqword(0x30);
+#else
+        return (size_t)-1;
+#endif
     }
 };
 
