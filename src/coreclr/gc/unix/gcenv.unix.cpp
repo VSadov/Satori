@@ -674,6 +674,12 @@ void* GCToOSInterface::VirtualReserve(size_t size, size_t alignment, uint32_t fl
     return VirtualReserveInner(size, alignment, flags);
 }
 
+void* GCToOSInterface::VirtualReserve(void* location, size_t size)
+{
+    uint32_t hugePagesFlag = 0;
+    return mmap(location, size, PROT_NONE, MAP_ANON | MAP_PRIVATE | hugePagesFlag, -1, 0);
+}
+
 // Release virtual memory range previously reserved using VirtualReserve
 // Parameters:
 //  address - starting virtual address
