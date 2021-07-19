@@ -72,6 +72,11 @@ public:
 
     T* TryPop()
     {
+        if (IsEmpty())
+        {
+            return nullptr;
+        }
+
         T* result;
         {
             SatoriLockHolder<SatoriLock> holder(&m_lock);
@@ -162,9 +167,14 @@ public:
         return item->m_containingQueue == this;
     }
 
-    int Count()
+    size_t Count()
     {
         return m_count;
+    }
+
+    bool IsEmpty()
+    {
+        return m_count == 0;
     }
 
     QueueKind Kind()
@@ -177,8 +187,7 @@ protected:
     SatoriLock m_lock;
     T* m_head;
     T* m_tail;
-    //TODO: VS should be size_t
-    int m_count;
+    size_t m_count;
 };
 
 #endif

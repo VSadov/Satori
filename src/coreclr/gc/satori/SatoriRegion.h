@@ -15,12 +15,17 @@
 #include "SatoriObject.h"
 
 class SatoriAllocator;
+class SatoriRegionQueue;
+class SatoriObject;
+class SatoriAllocationContext;
 
 class SatoriRegion
 {
     friend class SatoriRegionQueue;
     friend class SatoriObject;
     friend class SatoriAllocationContext;
+    friend class SatoriAllocator;
+    friend class SatoriQueue<SatoriRegion>;
 
 public:
     SatoriRegion() = delete;
@@ -33,13 +38,14 @@ public:
     void WipeCards();
 
     SatoriRegion* Split(size_t regionSize);
-    void TryCoalesceWithNext();
+    bool TryCoalesceWithNext();
     void Coalesce(SatoriRegion* next);
 
     void TryDecommit();
 
     size_t AllocStart();
     size_t AllocRemaining();
+    static size_t RegionSizeForAlloc(size_t allocSize);
     size_t MaxAllocEstimate();
     size_t Allocate(size_t size, bool zeroInitialize);
     size_t AllocateHuge(size_t size, bool zeroInitialize);
@@ -88,14 +94,14 @@ public:
     void SetOccupancy(size_t occupancy);
 
     template<typename F>
-    void ForEachFinalizable(F& lambda);
+    void ForEachFinalizable(F lambda);
+
+    template<typename F>
+    void ForEachFinalizableThreadLocal(F lambda);
 
     // used for exclusive access to trackers when accessing concurrently with user threads
     void LockFinalizableTrackers();
     void UnlockFinalizableTrackers();
-
-    template<typename F>
-    void ForEachFinalizableThreadLocal(F& lambda);
 
     bool RegisterForFinalization(SatoriObject* finalizable);
     bool EverHadFinalizables();
@@ -103,13 +109,14 @@ public:
 
     size_t Occupancy();
 
-    void SetHasPinnedObjects();
-    bool HasPinnedObjects();
+    bool& HasPinnedObjects();
+    bool& HasMarksSet();
+    bool& AcceptedPromotedObjects();
 
-    void SetMayHaveDeadObjects(bool value);
-    bool MayHaveDeadObjects();
-    void SetAcceptedPromotedObjects(bool value);
-    bool AcceptedPromotedObjects();
+    SatoriQueue<SatoriRegion>* ContainingQueue();
+
+    void Attach(SatoriRegion** attachementPoint);
+    void Detach();
 
     void ClearMarks();
     void ClearIndex();
@@ -156,6 +163,8 @@ private:
             SatoriRegion* m_prev;
             SatoriRegion* m_next;
             SatoriQueue<SatoriRegion>* m_containingQueue;
+            SatoriRegion** m_allocationContextAttachmentPoint;
+
             SatoriMarkChunk* m_finalizableTrackers;
             int m_finalizableTrackersLock;
 
@@ -176,14 +185,14 @@ private:
             bool m_everHadFinalizables;
             bool m_hasPendingFinalizables;
             bool m_hasPinnedObjects;
-            bool m_mayHaveDeadObjects;
+            bool m_hasMarksSet;
             bool m_acceptedPromotedObjects;
 
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
         };
     };
 
-    int m_index[Satori::INDEX_LENGTH + 2];
+    volatile int m_index[Satori::INDEX_LENGTH + 2];
 
     size_t m_syncBlock;
     SatoriObject m_firstObject;

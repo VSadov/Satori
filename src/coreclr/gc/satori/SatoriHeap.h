@@ -91,16 +91,19 @@ public:
     SatoriObject* ObjectForAddressChecked(size_t address);
 
     template<typename F>
-    void ForEachPage(F& lambda)
+    void ForEachPage(F lambda)
     {
-        size_t mapIndex = m_nextPageIndex - 1;
+        // TODO: VS implement a high watermark for this
+        size_t mapIndex = m_committedMapSize - 1;
         while (mapIndex > 0)
         {
             switch (m_pageMap[mapIndex])
             {
             case 1:
                 lambda((SatoriPage*)(mapIndex << Satori::PAGE_BITS));
+                goto fallthrough;
             case 0:
+                fallthrough:
                 mapIndex--;
                 continue;
             default:
@@ -110,9 +113,10 @@ public:
     }
 
     template<typename F>
-    void ForEachPageUntil(F& lambda)
+    void ForEachPageUntil(F lambda)
     {
-        size_t mapIndex = m_nextPageIndex - 1;
+        // TODO: VS implement a high watermark for this
+        size_t mapIndex = m_committedMapSize - 1;
         while (mapIndex > 0)
         {
             switch (m_pageMap[mapIndex])
@@ -122,7 +126,9 @@ public:
                 {
                     return;
                 }
+                goto fallthrough;
             case 0:
+                fallthrough:
                 mapIndex--;
                 continue;
             default:

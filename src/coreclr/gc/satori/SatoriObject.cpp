@@ -43,23 +43,35 @@ void SatoriObject::EscapeCheck()
 SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
 {
     _ASSERTE(location == ALIGN_UP(location, Satori::OBJECT_ALIGNMENT));
+    _ASSERTE(size == ALIGN_UP(size, Satori::OBJECT_ALIGNMENT));
     _ASSERTE(size >= Satori::MIN_FREE_SIZE);
     _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY);
 
-    SatoriObject* obj = SatoriObject::At(location);
-    _ASSERTE(obj->ContainingRegion()->m_used > location + 2 * sizeof(size_t));
+    SatoriObject* o = SatoriObject::At(location);
+    _ASSERTE(o->ContainingRegion()->m_used > location + 2 * sizeof(size_t));
 
 #ifdef JUNK_FILL_FREE_SPACE
-    size_t dirtySize = min(size, obj->ContainingRegion()->m_used - location);
+    size_t dirtySize = min(size, o->ContainingRegion()->m_used - location);
     memset((void*)(location - sizeof(size_t)), 0xAC, dirtySize);
 #endif
 
-    obj->CleanSyncBlock();
-    obj->RawSetMethodTable(s_emptyObjectMt);
+#ifdef USE_SIZE_CACHE
+    if (size < (1 << 16))
+    {
+        ((size_t*)location)[-1] = size << 16;
+    }
+    else
+#endif
+    {
+        o->CleanSyncBlock();
+    }
+
+    o->RawSetMethodTable(s_emptyObjectMt);
+    _ASSERTE(!o->IsMarked());
 
     // deduct the size of Array header + syncblock and set the size of the free bytes.
-    ((size_t*)obj)[1] = size - Satori::MIN_FREE_SIZE;
-    return obj;
+    ((size_t*)o)[1] = size - Satori::MIN_FREE_SIZE;
+    return o;
 }
 
 void SatoriObject::DirtyCardsForContent()
@@ -89,7 +101,7 @@ void SatoriObject::Validate()
             _ASSERTE(!IsFree());
 
             ForEachObjectRef(
-                [this](SatoriObject** ref)
+                [&](SatoriObject** ref)
                 {
                     _ASSERTE(ContainingRegion()->IsExposed(ref));
                     SatoriObject* child = *ref;

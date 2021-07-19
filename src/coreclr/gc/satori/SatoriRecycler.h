@@ -15,6 +15,7 @@
 
 class SatoriHeap;
 class SatoriRegion;
+class MarkContext;
 
 class SatoriRecycler
 {
@@ -43,8 +44,9 @@ public:
     int64_t GetCollectionCount(int gen);
     int CondemnedGeneration();
 
-    int Gen1RegionCount();
-    int Gen2RegionCount();
+    size_t Gen1RegionCount();
+    size_t Gen2RegionCount();
+    size_t RegionCount();
 
 private:
     SatoriHeap* m_heap;
@@ -93,22 +95,24 @@ private:
 
     void(SatoriRecycler::* m_activeHelperFn)();
 
+    int m_prevCondemnedGeneration;
     int m_condemnedGeneration;
-    bool m_isCompacting;
-    bool m_isPromoting;
+    bool m_isRelocating;   
+    bool m_isPromotingAllRegions;  
+    bool m_allowPromotingRelocations;
     bool m_isBarrierConcurrent;
 
     int64_t m_gen1Count;
     int64_t m_gen2Count;
 
-    int m_gen1MinorBudget;
-    int m_gen1Budget;
-    int m_gen2Budget;
-    int m_condemnedRegionsCount;
-    int m_deferredSweepCount;
-    int m_regionsAddedSinceLastCollection;
-    int m_prevCondemnedGeneration;
-    int m_gen1CountAtLastGen2;
+    size_t m_gen1MinorBudget;
+    size_t m_gen1Budget;
+    size_t m_gen2Budget;
+    size_t m_condemnedRegionsCount;
+    size_t m_condemnedNurseryRegionsCount;
+    size_t m_deferredSweepCount;
+    size_t m_regionsAddedSinceLastCollection;
+    size_t m_gen1CountAtLastGen2;
 
     static void DeactivateFn(gc_alloc_context* context, void* param);
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
@@ -144,7 +148,7 @@ private:
     void DependentHandlesInitialScanWorker();
     void DependentHandlesRescan();
     void DependentHandlesRescanWorker();
-    void PromoteSurvivedHandlesAndFreeRelocatedRegions();
+    void PromoteHandlesAndFreeRelocatedRegions();
 
     void PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker();
 
@@ -172,7 +176,7 @@ private:
     void UpdatePointersInPromotedObjects();
 
     void UpdateRegions(SatoriRegionQueue* queue);
-    void ReturnRegion(SatoriRegion* curRegion);
+    void KeepRegion(SatoriRegion* curRegion);
     void DrainDeferredSweepQueue();
     bool DrainDeferredSweepQueueConcurrent(int64_t deadline = 0);
     void SweepAndReturnRegion(SatoriRegion* curRegion);
@@ -182,7 +186,6 @@ private:
 
     SatoriRegion* TryGetRelocationTarget(size_t size, bool existingRegionOnly);
 
-    int RegionCount();
     void ASSERT_NO_WORK();
 };
 
