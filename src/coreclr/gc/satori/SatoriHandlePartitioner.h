@@ -43,9 +43,11 @@ public:
         uint32_t value;
         if (GCToOSInterface::CanGetCurrentProcessorNumber())
         {
-            //TODO: VS this could be slow. We should cache this for handle creation.
+            //TODO: VS GetCurrentProcessorNumber could be slow (can it actually? on platformas that matter?).
+            //      We could cache this for handle creation.
+            // 
             //      this is for:
-            //      - balnce handle tables
+            //      - balance handle tables
             //      - affinity when scanning handles
             // 
             //      it must be CPU related, since scan could be on a different thread.
@@ -65,7 +67,7 @@ public:
     }
 
     template<typename F>
-    static bool ForEachUnscannedPartition(F& lambda, int64_t deadline = 0)
+    static bool ForEachUnscannedPartition(F lambda, int64_t deadline = 0)
     {
         int startPartition = CurrentThreadPartition();
         //TODO: VS partition walk should be NUMA-aware, if possible

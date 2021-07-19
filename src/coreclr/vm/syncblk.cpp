@@ -2952,6 +2952,7 @@ void SyncBlock::SetEnCInfo(EnCSyncBlockInfo *pEnCInfo)
 #if defined(HOST_64BIT) && defined(_DEBUG)
 void ObjHeader::IllegalAlignPad()
 {
+#if !FEATURE_SATORI_GC
     WRAPPER_NO_CONTRACT;
 #ifdef LOGGING
     void** object = ((void**) this) + 1;
@@ -2959,6 +2960,7 @@ void ObjHeader::IllegalAlignPad()
                   DBG_ADDR(object));
 #endif
     _ASSERTE(m_alignpad == 0);
+#endif //!FEATURE_SATORI_GC
 }
 #endif // HOST_64BIT && _DEBUG
 
