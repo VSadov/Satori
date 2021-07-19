@@ -82,7 +82,6 @@ SatoriAllocator* SatoriRegion::Allocator()
 
 void SatoriRegion::WipeCards()
 {
-    //TODO: VS perhaps check if containing page is not empty
     m_containingPage->WipeCardsForRange(Start(), End());
 }
 
@@ -106,7 +105,7 @@ void SatoriRegion::MakeBlank()
 
     m_everHadFinalizables = false;
     m_hasPinnedObjects = false;
-    m_mayHaveDeadObjects = false;
+    m_hasMarksSet = false;
 
     //clear index and free list
     ClearFreeLists();
@@ -269,7 +268,7 @@ bool SatoriRegion::HasFreeSpaceInTopBucket()
 size_t SatoriRegion::MaxAllocEstimate()
 {
     size_t maxRemaining = AllocRemaining();
-    for (int bucket = Satori::FREELIST_COUNT - 1; bucket > 0; bucket--)
+    for (int bucket = Satori::FREELIST_COUNT - 1; bucket >= 0; bucket--)
     {
         if (m_freeLists[bucket])
         {
@@ -321,14 +320,8 @@ SatoriRegion* SatoriRegion::NextInPage()
     return m_containingPage->NextInPage(this);
 }
 
-void SatoriRegion::TryCoalesceWithNext()
+bool SatoriRegion::TryCoalesceWithNext()
 {
-    //TODO: VS consider CONCERVATIVE mode.
-    //      we cannot coalesce when marking stacks.
-    //      (splitting regions is ok, but destroying is not)
-    //      right now allocation may split, return tail and coalesce.
-
-    // TODO: VS should we do this in a loop?
     SatoriRegion* next = NextInPage();
     if (next)
     {
@@ -338,9 +331,12 @@ void SatoriRegion::TryCoalesceWithNext()
             if (queue->TryRemove(next))
             {
                 Coalesce(next);
+                return true;
             }
         }
     }
+
+    return false;
 }
 
 void SatoriRegion::Coalesce(SatoriRegion* next)
@@ -380,7 +376,8 @@ void SatoriRegion::TryDecommit()
     if (decommitSize > Satori::REGION_SIZE_GRANULARITY / 8)
     {
         GCToOSInterface::VirtualDecommit((void*)decommitStart, decommitSize);
-        m_committed = m_used = decommitStart;
+        m_committed = decommitStart;
+        m_used = min(m_used, decommitStart);
     }
 }
 
@@ -429,36 +426,21 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     _ASSERTE(AllocRemaining() >= size);
     _ASSERTE(m_allocEnd > Start() + Satori::REGION_SIZE_GRANULARITY);
 
-    size_t chunkStart;
-    size_t chunkEnd;
+    size_t chunkStart = m_allocStart;
+    size_t chunkEnd = chunkStart + size;
 
-    // if we can have enough space in front for a large object without committing,
-    // put the object as far as possible without committing.
-    if (AllocStart() + Satori::LARGE_OBJECT_THRESHOLD + size + Satori::MIN_FREE_SIZE < m_committed)
+    // TODO: VS consider always padding at the end (let the pad cross the granule)
+    // in rare cases the object does not cross into the last granule. (when it needs extra because of free obj padding).
+    // in such case pad it in front.
+    if (chunkEnd < End() - Satori::REGION_SIZE_GRANULARITY)
     {
-        chunkStart = m_committed - Satori::MIN_FREE_SIZE - size;
-        // ensure enough space at start to fit a free obj in the first granule
-        // That is useful in case if we split the region after the huge obj is unreachable.
-        chunkStart = min(chunkStart, Start() + Satori::REGION_SIZE_GRANULARITY - Satori::MIN_FREE_SIZE);
-    }
-    else
-    {
-        chunkStart = m_allocStart;
+        chunkStart += Satori::MIN_FREE_SIZE;
+        chunkEnd += Satori::MIN_FREE_SIZE;
     }
 
-    // in rare cases the object does not cross into the last tile. (when free obj padding is on the edge).
-    // in such case force the object to cross.
-    if (End() - (chunkStart + size) >= Satori::REGION_SIZE_GRANULARITY)
-    {
-        chunkStart += Satori::LARGE_OBJECT_THRESHOLD + Satori::MIN_FREE_SIZE;
-    }
-
-    chunkEnd = chunkStart + size;
-
-    // huge allocation should cross the end of the first tile, but have enough space between
-    // to be replacable with a free obj without using the next tile.
+    // huge allocation should cross the end of the first granule.
     _ASSERTE(chunkEnd > Start() + Satori::REGION_SIZE_GRANULARITY);
-    _ASSERTE(chunkStart <= Start() + Satori::REGION_SIZE_GRANULARITY - Satori::MIN_FREE_SIZE);
+    _ASSERTE(chunkStart <= Start() + Satori::REGION_SIZE_GRANULARITY);
 
     size_t ensureCommitted = chunkEnd + Satori::MIN_FREE_SIZE;
     if (ensureCommitted > m_committed)
@@ -483,9 +465,10 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
         }
     }
 
-    // if did not allocate from start, there could be some fillable space before the obj.
-    m_allocEnd = chunkStart;
     m_used = max(m_used, chunkEnd);
+
+    // if did not allocate from start, there could be MIN_FREE_SIZE fillable space before the obj.
+    m_allocEnd = chunkStart;
 
     // space after chunkEnd is a waste, no normal object can start there.
     // if there is dirty space after the chunkEnd,
@@ -538,24 +521,24 @@ SatoriObject* SatoriRegion::FindObject(size_t location)
 #endif
 
     // start search from the first object or after unparseable alloc gap
-    SatoriObject* obj = (IsAllocating() && (location >= m_allocEnd)) ?
+    SatoriObject* o = (IsAllocating() && (location >= m_allocEnd)) ?
                                  (SatoriObject*)m_allocEnd :
                                  FirstObject();
 
     // use a better start obj if we have one in the index
-    size_t limit = LocationToIndex(obj->Start());
+    size_t limit = LocationToIndex(o->Start());
     for (size_t current = LocationToIndex(location); current > limit; current--)
     {
         int offset = m_index[current];
         if (offset)
         {
             SatoriObject* indexed = SatoriObject::At(Start() + offset);
-            if (indexed->Start() > obj->Start())
+            if (indexed->Start() > o->Start())
             {
-                obj = indexed;
-                if (obj->End() > location)
+                o = indexed;
+                if (o->End() > location)
                 {
-                    return obj;
+                    return o;
                 }
             }
 
@@ -564,26 +547,26 @@ SatoriObject* SatoriRegion::FindObject(size_t location)
     }
 
     // walk to the location and update index on the way
-    SatoriObject* next = obj->Next();
+    SatoriObject* next = o->Next();
     while (next->Start() <= location)
     {
         // if object straddles index granules, record the object in corresponding indices
-        if ((obj->Start() ^ next->Start()) >> Satori::INDEX_GRANULARITY_BITS)
+        if ((o->Start() ^ next->Start()) >> Satori::INDEX_GRANULARITY_BITS)
         {
-            size_t i = LocationToIndex(obj->Start()) + 1;
+            size_t i = LocationToIndex(o->Start()) + 1;
             size_t last = LocationToIndex(next->Start());
             do
             {
-                m_index[i++] = (int)(obj->Start() - Start());
+                m_index[i++] = (int)(o->Start() - Start());
             }
             while (i <= last);
         }
 
-        obj = next;
+        o = next;
         next = next->Next();
     }
 
-    return obj;
+    return o;
 }
 
 void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
@@ -629,12 +612,12 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
 inline void SatoriRegion::PushToMarkStack(SatoriObject* obj)
 {
     _ASSERTE(obj->ContainingRegion() == this);
-    _ASSERTE(!obj->GetNextInMarkStack());
+    _ASSERTE(!obj->GetNextInLocalMarkStack());
 
     if (obj->RawGetMethodTable()->ContainsPointersOrCollectible())
     {
-        obj->SetNextInMarkStack(m_markStack);
-        _ASSERTE(m_markStack == obj->GetNextInMarkStack());
+        obj->SetNextInLocalMarkStack(m_markStack);
+        _ASSERTE(m_markStack == obj->GetNextInLocalMarkStack());
         m_markStack = (int32_t)(obj->Start() - this->Start());
     }
 }
@@ -643,10 +626,10 @@ inline SatoriObject* SatoriRegion::PopFromMarkStack()
 {
     if (m_markStack != 0)
     {
-        SatoriObject* obj = SatoriObject::At(this->Start() + m_markStack);
-        m_markStack = obj->GetNextInMarkStack();
-        obj->ClearNextInMarkStack();
-        return obj;
+        SatoriObject* o = SatoriObject::At(this->Start() + m_markStack);
+        m_markStack = o->GetNextInLocalMarkStack();
+        o->ClearNextInLocalMarkStack();
+        return o;
     }
 
     return nullptr;
@@ -849,11 +832,11 @@ void SatoriRegion::ThreadLocalMark()
             // set the mark bit
             m_bitmap[bitmapIndex + (markBitOffset >> 6)] |= ((size_t)1 << (markBitOffset & 63));
 
-            SatoriObject* obj = ObjectForMarkBit(bitmapIndex, markBitOffset);
-            obj->Validate();
+            SatoriObject* o = ObjectForMarkBit(bitmapIndex, markBitOffset);
+            o->Validate();
 
             // skip the object
-            markBitOffset = obj->Next()->GetMarkBitAndWord(&bitmapIndex);
+            markBitOffset = o->Next()->GetMarkBitAndWord(&bitmapIndex);
         }
         else
         {
@@ -1045,7 +1028,7 @@ size_t SatoriRegion::ThreadLocalPlan()
             if (reloc != 0)
             {
                 relocated += moveableSize;
-                moveable->SetReloc(reloc);
+                moveable->SetLocalReloc(reloc);
             }
 
             dstStart += moveableSize;
@@ -1111,7 +1094,7 @@ void SatoriRegion::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
 #endif
     }
 
-    size_t reloc = o->GetReloc();
+    size_t reloc = o->GetLocalReloc();
     if (reloc)
     {
         *ppObject = (Object*)(((size_t)*ppObject) - reloc);
@@ -1140,22 +1123,22 @@ void SatoriRegion::ThreadLocalUpdatePointers()
 
             int escapedOffset = markBitOffset + 1;
             bool escaped = m_bitmap[bitmapIndex + (escapedOffset >> 6)] & ((size_t)1 << (escapedOffset & 63));
-            SatoriObject* obj = ObjectForMarkBit(bitmapIndex, markBitOffset);
+            SatoriObject* o = ObjectForMarkBit(bitmapIndex, markBitOffset);
             if (escaped)
             {
-                _ASSERTE(ObjectForMarkBit(bitmapIndex, markBitOffset)->GetReloc() == 0);
+                _ASSERTE(ObjectForMarkBit(bitmapIndex, markBitOffset)->GetLocalReloc() == 0);
             }
             else
             {
-                obj->ForEachObjectRef(
+                o->ForEachObjectRef(
                     [this](SatoriObject** ppObject)
                     {
-                        SatoriObject* o = *ppObject;
+                        SatoriObject* child = *ppObject;
                         // ignore objects otside of the current region, we are not relocating those.
                         // (this also rejects nulls)
-                        if (o->ContainingRegion() == this)
+                        if (child->ContainingRegion() == this)
                         {
-                            size_t reloc = o->GetReloc();
+                            size_t reloc = child->GetLocalReloc();
                             if (reloc)
                             {
                                 *ppObject = (SatoriObject*)((size_t)*ppObject - reloc);
@@ -1167,7 +1150,7 @@ void SatoriRegion::ThreadLocalUpdatePointers()
             }
 
             // skip the object
-            markBitOffset = obj->Next()->GetMarkBitAndWord(&bitmapIndex);
+            markBitOffset = o->Next()->GetMarkBitAndWord(&bitmapIndex);
         }
         else
         {
@@ -1187,7 +1170,7 @@ void SatoriRegion::ThreadLocalUpdatePointers()
                 size_t finalizePending = (size_t)finalizable & Satori::FINALIZATION_PENDING;
                 (size_t&)finalizable &= ~Satori::FINALIZATION_PENDING;
 
-                size_t reloc = finalizable->GetReloc();
+                size_t reloc = finalizable->GetLocalReloc();
                 if (reloc)
                 {
                     finalizable = (SatoriObject*)((size_t)finalizable - reloc);
@@ -1223,7 +1206,7 @@ void SatoriRegion::ThreadLocalCompact()
         // "Next" is ok here because we coalesce unmarked objs when planning.
         for (s1 = s2; s1->Start() < End(); s1 = s1->Next())
         {
-            reloc = s1->GetReloc();
+            reloc = s1->GetLocalReloc();
             _ASSERTE(reloc >= 0);
             if (reloc != 0)
             {
@@ -1248,7 +1231,7 @@ void SatoriRegion::ThreadLocalCompact()
             else
             {
                 // clear Mark/Pinned, keep escaped, reloc should be 0, this object will stay around
-                _ASSERTE(d1->GetReloc() == 0);
+                _ASSERTE(d1->GetLocalReloc() == 0);
                 d1->ClearPinnedAndMarked();
             }
 
@@ -1259,7 +1242,7 @@ void SatoriRegion::ThreadLocalCompact()
         // find the end of the run of relocatable objects with the same reloc distance (we can copy all at once)
         for (s2 = s1; s2->Start() < End(); s2 = s2->Next())
         {
-            if (reloc != s2->GetReloc())
+            if (reloc != s2->GetLocalReloc())
             {
                 break;
             }
@@ -1321,8 +1304,8 @@ tryAgain:
         {
             if ((size_t)finalizable & Satori::FINALIZATION_PENDING)
             {
-                SatoriObject* obj = (SatoriObject*)((size_t)finalizable & ~Satori::FINALIZATION_PENDING);
-                if (pendState == FinalizationPendState::PendRegular && obj->RawGetMethodTable()->HasCriticalFinalizer())
+                SatoriObject* o = (SatoriObject*)((size_t)finalizable & ~Satori::FINALIZATION_PENDING);
+                if (pendState == FinalizationPendState::PendRegular && o->RawGetMethodTable()->HasCriticalFinalizer())
                 {
                     // within the same finalization set CF must finalize after ordinary F objects
                     pendState = FinalizationPendState::HasCritical;
@@ -1330,17 +1313,17 @@ tryAgain:
                 }
 
                 // we are escaping the finalizable to the queue from which it is globally reachable
-                EscapeRecursively(obj);
+                EscapeRecursively(o);
 
                 // in a rare case when an F object could not pend, we cannot pend any CFs from the same finalization set
                 // lest they may run before corresponding F objects.
                 // then we will just allow CFs to escape so they stay alive until global GC sorts this out.
-                if (missedRegularPend && obj->RawGetMethodTable()->HasCriticalFinalizer())
+                if (missedRegularPend && o->RawGetMethodTable()->HasCriticalFinalizer())
                 { 
                     return (SatoriObject*)nullptr;
                 }
 
-                if (m_containingPage->Heap()->FinalizationQueue()->TryScheduleForFinalization(obj))
+                if (m_containingPage->Heap()->FinalizationQueue()->TryScheduleForFinalization(o))
                 {
                     // this tracker has served its purpose.
                     finalizable = nullptr;
@@ -1352,7 +1335,7 @@ tryAgain:
                         missedRegularPend = true;
                     }
 
-                    finalizable = obj;
+                    finalizable = o;
                 }
             }
 
@@ -1519,23 +1502,31 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
 
 bool SatoriRegion::Sweep(bool keepMarked)
 {
-    // we should only sweep when we have new marks and only once
-    _ASSERTE(MayHaveDeadObjects());
+    // we should only sweep when we have marks
+    _ASSERTE(HasMarksSet());
 
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     size_t largeObjTailSize = 0;
 
-    // if region is huge and the last object is unreachable,
-    // we split off extra regions and return to allocator.
+    // we will be building new free lists
+    ClearFreeLists();
+
+    // if region is huge and the last object is unreachable, the region is all empty.
     if (End() > objLimit)
     {
         SatoriObject* last = FindObject(objLimit - 1);
         if (!last->IsMarked())
         {
-            SatoriObject* free = SatoriObject::FormatAsFree(last->Start(), objLimit - last->Start());
-            SatoriRegion* tail = this->Split(Size() - Satori::REGION_SIZE_GRANULARITY);
-            tail->WipeCards();
-            Allocator()->ReturnRegion(tail);
+            _ASSERTE(!this->IsThreadLocal());
+            _ASSERTE(this->NothingMarked());
+            _ASSERTE(!this->HasPinnedObjects());
+#if _DEBUG
+            size_t fistObjStart = FirstObject()->Start();
+            SatoriObject::FormatAsFree(fistObjStart, objLimit - fistObjStart);
+#endif
+            this->HasMarksSet() = false;
+            SetOccupancy(0);
+            return false;
         }
         else
         {
@@ -1543,36 +1534,34 @@ bool SatoriRegion::Sweep(bool keepMarked)
         }
     }
 
-    // we will be building new free lists
-    ClearFreeLists();
-    // sweeping invalidates indices, since free objects get coalesced
-    ClearIndex();
-
     m_escapeCounter = 0;
     size_t foundFree = 0;
     bool cannotRecycle = this->Generation() == 0;
     bool isEscapeTracking = this->IsThreadLocal();
 
-    SatoriObject* obj = FirstObject();
+    // sweeping invalidates indices, since free objects get coalesced
+    ClearIndex();
+
+    SatoriObject* o = FirstObject();
     do
     {
-        if (obj->IsMarked())
+        if (o->IsMarked())
         {
-            _ASSERTE(!obj->IsFree());
+            _ASSERTE(!o->IsFree());
             cannotRecycle = true;
             if (isEscapeTracking)
             {
                 // turn mark bit into escape bits.
-                this->ClearMarkedAndEscapeShallow(obj);
+                this->ClearMarkedAndEscapeShallow(o);
             }
 
-            obj = obj->Next();
+            o = o->Next();
             continue;
         }
 
-        size_t lastMarkedEnd = obj->Start();
-        obj = SkipUnmarked(obj);
-        size_t skipped = obj->Start() - lastMarkedEnd;
+        size_t lastMarkedEnd = o->Start();
+        o = SkipUnmarked(o);
+        size_t skipped = o->Start() - lastMarkedEnd;
         if (skipped)
         {
             foundFree += skipped;
@@ -1580,11 +1569,12 @@ bool SatoriRegion::Sweep(bool keepMarked)
             AddFreeSpace(free);
         }
     }
-    while (obj->Start() < objLimit);
+    while (o->Start() < objLimit);
 
     if (!keepMarked)
     {
-        SetMayHaveDeadObjects(false);
+        this->HasMarksSet() = false;
+        this->HasPinnedObjects() = false;
         if (!this->IsThreadLocal())
         {
             this->ClearMarks();
@@ -1592,7 +1582,105 @@ bool SatoriRegion::Sweep(bool keepMarked)
     }
 
     SetOccupancy(Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree + largeObjTailSize);
-    return !cannotRecycle;
+    return cannotRecycle;
+}
+
+bool SatoriRegion::SweepAndUpdatePointers()
+{
+    // we should only sweep when we have marks
+    _ASSERTE(HasMarksSet());
+
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+    size_t largeObjTailSize = 0;
+
+    // we will be building new free lists
+    ClearFreeLists();
+
+    // if region is huge and the last object is unreachable, the region is all empty.
+    if (End() > objLimit)
+    {
+        SatoriObject* last = FindObject(objLimit - 1);
+        if (!last->IsMarked())
+        {
+            _ASSERTE(!this->IsThreadLocal());
+            _ASSERTE(this->NothingMarked());
+            _ASSERTE(!this->HasPinnedObjects());
+#if _DEBUG
+            size_t fistObjStart = FirstObject()->Start();
+            SatoriObject::FormatAsFree(fistObjStart, objLimit - fistObjStart);
+#endif
+            this->HasMarksSet() = false;
+            SetOccupancy(0);
+            return false;
+        }
+        else
+        {
+            largeObjTailSize = last->End() - objLimit;
+        }
+    }
+
+    m_escapeCounter = 0;
+    size_t foundFree = 0;
+    bool cannotRecycle = this->Generation() == 0;
+    bool isEscapeTracking = this->IsThreadLocal();
+
+    // sweeping invalidates indices, since free objects get coalesced
+    ClearIndex();
+
+    SatoriObject* o = FirstObject();
+    do
+    {
+        if (o->IsMarked())
+        {
+            _ASSERTE(!o->IsFree());
+            cannotRecycle = true;
+            if (isEscapeTracking)
+            {
+                // turn mark bit into escape bits.
+                this->ClearMarkedAndEscapeShallow(o);
+            }
+
+            // TODO: VS this is the only difference, perhaps just make conditional
+            o->ForEachObjectRef(
+                [](SatoriObject** ppObject)
+                {
+                    SatoriObject* child = *ppObject;
+                    if (child)
+                    {
+                        ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                        if (ptr < 0)
+                        {
+                            _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
+                            *ppObject = (SatoriObject*)-ptr;
+                        }
+                    }
+                }
+            );
+
+            o = o->Next();
+            continue;
+        }
+
+        size_t lastMarkedEnd = o->Start();
+        o = SkipUnmarked(o);
+        size_t skipped = o->Start() - lastMarkedEnd;
+        if (skipped)
+        {
+            foundFree += skipped;
+            SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
+            AddFreeSpace(free);
+        }
+    } while (o->Start() < objLimit);
+
+    this->HasMarksSet() = false;
+    this->HasPinnedObjects() = false;
+    if (!this->IsThreadLocal())
+    {
+        this->ClearMarks();
+    }
+
+    SetOccupancy(Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree + largeObjTailSize);
+    return cannotRecycle;
 }
 
 void SatoriRegion::UpdateFinalizableTrackers()
@@ -1607,6 +1695,7 @@ void SatoriRegion::UpdateFinalizableTrackers()
                 if (finalizable->ContainingRegion() != this)
                 {
                     ptrdiff_t ptr = ((ptrdiff_t*)finalizable)[-1];
+                    _ASSERTE(finalizable->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
                     finalizable = (SatoriObject*)-ptr;
                     _ASSERTE(finalizable->ContainingRegion() == this);
                 }
@@ -1619,162 +1708,85 @@ void SatoriRegion::UpdateFinalizableTrackers()
 
 void SatoriRegion::UpdatePointers()
 {
-    _ASSERTE(!MayHaveDeadObjects());
+    _ASSERTE(!HasMarksSet());
 
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
-    SatoriObject* obj = FirstObject();
+    SatoriObject* o = FirstObject();
     do
     {
-        obj->ForEachObjectRef(
+        o->ForEachObjectRef(
             [](SatoriObject** ppObject)
             {
-                SatoriObject* o = *ppObject;
-                if (o)
+                SatoriObject* child = *ppObject;
+                if (child)
                 {
-                    ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
+                    ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
                     if (ptr < 0)
                     {
+                        _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
                         *ppObject = (SatoriObject*)-ptr;
                     }
                 }
             }
         );
 
-        obj = obj->Next();
-    } while (obj->Start() < objLimit);
+        o = o->Next();
+    } while (o->Start() < objLimit);
 }
 
 void SatoriRegion::UpdatePointersInPromotedObjects()
 {
+    _ASSERTE(HasMarksSet());
+
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
-    SatoriObject* obj = FirstObject();
+    SatoriObject* o = FirstObject();
     do
     {
-        if (obj->IsMarked())
+        if (o->IsMarked())
         {
-            ptrdiff_t r = ((ptrdiff_t*)obj)[-1];
+            ptrdiff_t r = ((ptrdiff_t*)o)[-1];
             _ASSERTE(r < 0);
             SatoriObject* relocated = (SatoriObject*)-r;
-            _ASSERTE(relocated->RawGetMethodTable() == obj->RawGetMethodTable());
+            _ASSERTE(relocated->RawGetMethodTable() == o->RawGetMethodTable());
             _ASSERTE(!relocated->IsFree());
 
+            SatoriPage* page = relocated->ContainingRegion()->ContainingPage();
             relocated->ForEachObjectRef(
-                [](SatoriObject** ppObject)
+                [&](SatoriObject** ppObject)
                 {
-                    SatoriObject* o = *ppObject;
-                    if (o)
+                    // prevent re-reading o, UpdatePointersThroughCards could be doing the same update.
+                    SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
+                    if (child)
                     {
-                        ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
+                        ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
                         if (ptr < 0)
                         {
-                            *ppObject = (SatoriObject*)-ptr;
+                            _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
+                            child = (SatoriObject*)-ptr;
+                            VolatileStoreWithoutBarrier(ppObject, child);
+                        }
+
+                        // update the card as if the relocated object got a child assigned
+                        if (child->ContainingRegion()->Generation() < 2)
+                        {
+                            page->SetCardForAddress((size_t)ppObject);
                         }
                     }
                 }
             );
 
-            obj = obj->Next();
+            o = o->Next();
         }
         else
         {
-            obj = SkipUnmarked(obj);
+            o = SkipUnmarked(o);
         }
-    } while (obj->Start() < objLimit);
-}
-
-bool SatoriRegion::SweepAndUpdatePointers()
-{
-    // we should only sweep when we have new marks and only once
-    _ASSERTE(MayHaveDeadObjects());
-
-    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
-    size_t largeObjTailSize = 0;
-
-    // if region is huge and the last object is unreachable,
-    // we split off extra regions and return to allocator.
-    if (End() > objLimit)
-    {
-        SatoriObject* last = FindObject(objLimit - 1);
-        if (!last->IsMarked())
-        {
-            SatoriObject* free = SatoriObject::FormatAsFree(last->Start(), objLimit - last->Start());
-            SatoriRegion* tail = this->Split(Size() - Satori::REGION_SIZE_GRANULARITY);
-            tail->WipeCards();
-            Allocator()->ReturnRegion(tail);
-        }
-        else
-        {
-            largeObjTailSize = last->End() - objLimit;
-        }
-    }
-
-    // we will be building new free lists
-    ClearFreeLists();
-    // sweeping invalidates indices, since free objects get coalesced
-    ClearIndex();
-
-    m_escapeCounter = 0;
-    size_t foundFree = 0;
-    bool cannotRecycle = this->Generation() == 0;
-    bool isEscapeTracking = this->IsThreadLocal();
-
-    SatoriObject* obj = FirstObject();
-    do
-    {
-        if (obj->IsMarked())
-        {
-            _ASSERTE(!obj->IsFree());
-            cannotRecycle = true;
-            if (isEscapeTracking)
-            {
-                // turn mark bit into escape bits.
-                this->ClearMarkedAndEscapeShallow(obj);
-            }
-
-            // TODO: VS this is the only difference, perhaps just make conditional
-            obj->ForEachObjectRef(
-                [](SatoriObject** ppObject)
-                {
-                    SatoriObject* o = *ppObject;
-                    if (o)
-                    {
-                        ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
-                        if (ptr < 0)
-                        {
-                            *ppObject = (SatoriObject*)-ptr;
-                        }
-                    }
-                }
-            );
-
-            obj = obj->Next();
-            continue;
-        }
-
-        size_t lastMarkedEnd = obj->Start();
-        obj = SkipUnmarked(obj);
-        size_t skipped = obj->Start() - lastMarkedEnd;
-        if (skipped)
-        {
-            foundFree += skipped;
-            SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
-            AddFreeSpace(free);
-        }
-    } while (obj->Start() < objLimit);
-
-    SetMayHaveDeadObjects(false);
-    if (!this->IsThreadLocal())
-    {
-        this->ClearMarks();
-    }
-
-    SetOccupancy(Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree + largeObjTailSize);
-    return !cannotRecycle;
+    } while (o->Start() < objLimit);
 }
 
 void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
 {
-    _ASSERTE(!other->m_hasPinnedObjects);
+    _ASSERTE(!other->HasPinnedObjects());
     m_everHadFinalizables |= other->m_everHadFinalizables;
     SatoriMarkChunk* otherFinalizables = other->m_finalizableTrackers;
     if (otherFinalizables)
@@ -1807,13 +1819,12 @@ bool SatoriRegion::NothingMarked()
 
 void SatoriRegion::ClearMarks()
 {
-    m_hasPinnedObjects = false;
     memset(&m_bitmap[BITMAP_START], 0, (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
 }
 
 void SatoriRegion::ClearIndex()
 {
-    memset(&m_index, 0, sizeof(m_index));
+    memset((void*)&m_index, 0, sizeof(m_index));
 }
 
 void SatoriRegion::ClearFreeLists()
@@ -1831,28 +1842,28 @@ void SatoriRegion::Verify(bool allowMarked)
 
     SatoriObject* prevPrevObj = nullptr;
     SatoriObject* prevObj = nullptr;
-    SatoriObject* obj = FirstObject();
+    SatoriObject* o = FirstObject();
 
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
-    while (obj->Start() < objLimit)
+    while (o->Start() < objLimit)
     {
-        obj->Validate();
+        o->Validate();
 
-        if (obj->Start() - Start() > Satori::REGION_SIZE_GRANULARITY)
+        if (o->Start() - Start() > Satori::REGION_SIZE_GRANULARITY)
         {
-            _ASSERTE(obj->IsFree());
+            _ASSERTE(o->IsFree());
         }
         else
         {
-            _ASSERTE(allowMarked || !obj->IsMarked());
+            _ASSERTE(allowMarked || !o->IsMarked());
         }
 
         prevPrevObj = prevObj;
-        prevObj = obj;
-        obj = obj->Next();
+        prevObj = o;
+        o = o->Next();
     }
 
-    _ASSERTE(obj->Start() == End() ||
-        (Size() > Satori::REGION_SIZE_GRANULARITY) && (End() - obj->Start()) < Satori::REGION_SIZE_GRANULARITY);
+    _ASSERTE(o->Start() == End() ||
+        (Size() > Satori::REGION_SIZE_GRANULARITY) && (End() - o->Start()) < Satori::REGION_SIZE_GRANULARITY);
 #endif
 }
