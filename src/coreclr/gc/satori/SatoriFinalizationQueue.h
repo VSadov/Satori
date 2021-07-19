@@ -12,19 +12,24 @@
 #include "../gc.h"
 
 class SatoriObject;
+class SatoriHeap;
+class SatoriRegion;
 
 class SatoriFinalizationQueue
 {
 public:
-    void Initialize();
+    void Initialize(SatoriHeap* heap);
     bool TryUpdateScanTicket(int currentScanTicket);
     bool TryScheduleForFinalization(SatoriObject* finalizable);
-    bool TryScheduleForFinalizationSTW(SatoriObject* finalizable);
     SatoriObject* TryGetNextItem();
     bool HasItems();
 
+    int OverflowedGen();
+    void SetOverflow(int generation);
+    void ResetOverflow(int generation);
+
     template<typename F>
-    void ForEachObjectRef(F& lambda)
+    void ForEachObjectRef(F lambda)
     {
         for (int i = m_dequeue; i != m_enqueue; i++)
         {
@@ -41,9 +46,12 @@ private:
 
     int m_enqueue;
     int m_dequeue;
-    int m_sizeMask;
+    int m_overflowedGen;
     int m_scanTicket;
+    int m_sizeMask;
     Entry* m_data;
+    SatoriHeap* m_heap;
+    SatoriRegion* m_region;
 };
 
 #endif
