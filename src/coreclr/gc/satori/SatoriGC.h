@@ -122,6 +122,8 @@ public:
     // Inherited via IGCHeapInternal
     virtual void GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* totalAvailableMemoryBytes, uint64_t* lastRecordedMemLoadBytes, uint64_t* lastRecordedHeapSizeBytes, uint64_t* lastRecordedFragmentationBytes, uint64_t* totalCommittedBytes, uint64_t* promotedBytes, uint64_t* pinnedObjectCount, uint64_t* finalizationPendingCount, uint64_t* index, uint32_t* generation, uint32_t* pauseTimePct, bool* isCompaction, bool* isConcurrent, uint64_t* genInfoRaw, uint64_t* pauseInfoRaw, int kind) override;
     virtual uint32_t GetMemoryLoad() override;
+
+    virtual void DiagGetGCSettings(EtwGCSettingsInfo* etw_settings) override;
 };
 
 #endif

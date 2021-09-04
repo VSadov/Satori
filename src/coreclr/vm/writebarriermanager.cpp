@@ -640,6 +640,11 @@ int WriteBarrierManager::UpdateWriteWatchAndCardTableLocations(bool isRuntimeSus
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 int WriteBarrierManager::SwitchToWriteWatchBarrier(bool isRuntimeSuspended)
 {
+#ifdef FEATURE_SATORI_GC
+    // Noop for Satori
+    return SWB_PASS;
+#endif // FEATURE_SATORI_GC
+
     WriteBarrierType newWriteBarrierType;
     switch (m_currentWriteBarrier)
     {
@@ -678,6 +683,11 @@ int WriteBarrierManager::SwitchToWriteWatchBarrier(bool isRuntimeSuspended)
 
 int WriteBarrierManager::SwitchToNonWriteWatchBarrier(bool isRuntimeSuspended)
 {
+#ifdef FEATURE_SATORI_GC
+    // Noop for Satori
+    return SWB_PASS;
+#endif // FEATURE_SATORI_GC
+
     WriteBarrierType newWriteBarrierType;
     switch (m_currentWriteBarrier)
     {
