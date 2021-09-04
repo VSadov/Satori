@@ -592,3 +592,7 @@ uint32_t SatoriGC::GetMemoryLoad()
     // TODO: Satori this should be implementable
     return 0;
 }
+
+void SatoriGC::DiagGetGCSettings(EtwGCSettingsInfo* etw_settings)
+{
+}
