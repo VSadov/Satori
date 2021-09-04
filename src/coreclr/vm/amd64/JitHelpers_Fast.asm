@@ -310,12 +310,22 @@ else
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+Section segment para 'DATA'
+
+        align   16
+
+        public  JIT_WriteBarrier_Loc
+JIT_WriteBarrier_Loc:
+        dq 0
+
+LEAF_ENTRY  JIT_WriteBarrier_Callable, _TEXT
+        ; JIT_WriteBarrier(Object** dst, Object* src)
+        jmp     JIT_WriteBarrier
+LEAF_END JIT_WriteBarrier_Callable, _TEXT
+
+
 ; void JIT_CheckedWriteBarrier(Object** dst, Object* src)
 LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
-
-        ; When WRITE_BARRIER_CHECK is defined _NotInHeap will write the reference
-        ; but if it isn't then it will just return.
-        ;
 
         ; See if this is in GCHeap
         cmp     rcx, [g_highest_address]
@@ -339,11 +349,7 @@ LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
         ret
 LEAF_END JIT_PatchedCodeStart, _TEXT
 
-; This is used by the mechanism to hold either the JIT_WriteBarrier_PreGrow
-; or JIT_WriteBarrier_PostGrow code (depending on the state of the GC). It _WILL_
-; change at runtime as the GC changes. Initially it should simply be a copy of the
-; larger of the two functions (JIT_WriteBarrier_PostGrow) to ensure we have created
-; enough space to copy that code in.
+;
 ;   rcx - dest address 
 ;   rdx - object
 ;
