@@ -1783,7 +1783,7 @@ void SatoriRecycler::ShortWeakPtrScanWorker()
         [&](int p)
         {
             sc.thread_number = p;
-            GCScan::GcShortWeakPtrScan(nullptr, m_condemnedGeneration, 2, &sc);
+            GCScan::GcShortWeakPtrScan(m_condemnedGeneration, 2, &sc);
         }
     );
 }
@@ -1803,7 +1803,7 @@ void SatoriRecycler::LongWeakPtrScanWorker()
         [&](int p)
         {
             sc.thread_number = p;
-            GCScan::GcWeakPtrScan(nullptr, m_condemnedGeneration, 2, &sc);
+            GCScan::GcWeakPtrScan(m_condemnedGeneration, 2, &sc);
         }
     );
 
