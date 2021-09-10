@@ -75,7 +75,7 @@ SatoriHeap* SatoriHeap::Create()
     SatoriHeap* heap = (SatoriHeap*)reserved;
     heap->m_reservedMapSize = mapSize;
     heap->m_committedMapSize = (int)(commitSize - ((size_t)&heap->m_pageMap - (size_t)heap));
-    InitWriteBarrier(heap->m_pageMap, heap->m_committedMapSize * Satori::PAGE_SIZE_GRANULARITY);
+    InitWriteBarrier(heap->m_pageMap, heap->m_committedMapSize * Satori::PAGE_SIZE_GRANULARITY - 1);
     heap->m_mapLock.Initialize();
     heap->m_nextPageIndex = 1;
 
@@ -98,7 +98,7 @@ bool SatoriHeap::CommitMoreMap(int currentlyCommitted)
         {
             // we did the commit
             m_committedMapSize = min(currentlyCommitted + (int)commitSize, m_reservedMapSize);
-            UpdateWriteBarrier(m_pageMap, m_committedMapSize * Satori::PAGE_SIZE_GRANULARITY);
+            UpdateWriteBarrier(m_pageMap, m_committedMapSize * Satori::PAGE_SIZE_GRANULARITY - 1);
         }
     }
 
@@ -124,14 +124,23 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
             if (newPage)
             {
                 // SYNCRONIZATION:
-                // A page map update must be seen by all threads befeore seeing objects allocated
+                // A page map update must be seen by all threads before seeing objects allocated
                 // in the new page or checked barriers may consider the objects not in the heap.
                 //
                 // If another thread checks if object is in heap, its read of the map element is dependent on object,
                 // therefore the read will happen after the object is obtained.
                 // Also the object must be published before other thread could see it, and publishing is a release.
                 // Thus an ordinary write is ok even for weak memory cases.
+
+                // we also need to ensure that the other thread doing the barrier,
+                // reads the object before reading the updated map.
+                // on ARM this would require load fence in the barrier. We will do a processwide here instead.
+                //TODO: VS needed?  (or delete comment above, also a full fence might be sufficient)
                 m_pageMap[i] = 1;
+#if defined(HOST_ARM64) || defined(HOST_ARM)
+                GCToOSInterface::FlushProcessWriteBuffers();
+#endif
+
                 // ensure the next is advanced to at least i + 1
                 while ((nextPageIndex = m_nextPageIndex) < i + 1 &&
                     Interlocked::CompareExchange(&m_nextPageIndex, i + 1, nextPageIndex) != nextPageIndex);
@@ -194,7 +203,7 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
                 for (int j = 1; j < mapMarkCount; j++)
                 {
                     DWORD log2;
-                    BitScanReverse(&log2, j);
+                    BitScanReverse64(&log2, j);
                     m_pageMap[i + j] = (uint8_t)(log2 + 2);
                 }
 

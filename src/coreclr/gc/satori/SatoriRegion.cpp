@@ -1164,7 +1164,7 @@ void SatoriRegion::ThreadLocalUpdatePointers()
     if (m_finalizableTrackers)
     {
         ForEachFinalizableThreadLocal(
-            [this](SatoriObject* finalizable)
+            [&](SatoriObject* finalizable)
             {
                 // save the pending bit, will reapply back later
                 size_t finalizePending = (size_t)finalizable & Satori::FINALIZATION_PENDING;

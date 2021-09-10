@@ -323,6 +323,8 @@ WRITE_BARRIER_ENTRY JIT_ByRefWriteBarrier
 
 WRITE_BARRIER_END JIT_ByRefWriteBarrier
 
+#ifndef FEATURE_SATORI_GC
+
 //-----------------------------------------------------------------------------
 // Simple WriteBarriers
 // void JIT_CheckedWriteBarrier(Object** dst, Object* src)
@@ -470,6 +472,203 @@ LOCAL_LABEL(Exit):
     add  x14, x14, 8
     ret  lr
 WRITE_BARRIER_END JIT_WriteBarrier
+
+#else  // FEATURE_SATORI_GC
+
+//-----------------------------------------------------------------------------
+// Simple WriteBarriers
+// void JIT_CheckedWriteBarrier(Object** dst, Object* src)
+// On entry:
+//   x14  : the destination address (LHS of the assignment)
+//   x15  : the object reference (RHS of the assignment)
+//
+// On exit:
+//   x12  : trashed
+//   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
+//   x15  : trashed
+//   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+//
+WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
+    ldr  x12,  LOCAL_LABEL(wbs_highest_address)
+    cmp  x14, x12
+    bhi  LOCAL_LABEL(NotInHeap)
+    
+    ldr     x12, LOCAL_LABEL(wbs_card_table)
+    add     x12, x12, x14, lsr #30
+    ldrb    w17, [x12]
+    cbnz    x17, C_FUNC(JIT_WriteBarrier)
+
+LOCAL_LABEL(NotInHeap):
+    str  x15, [x14], #8
+    ret  lr
+WRITE_BARRIER_END JIT_CheckedWriteBarrier
+
+// void JIT_WriteBarrier(Object** dst, Object* src)
+// On entry:
+//   x14  : the destination address (LHS of the assignment)
+//   x15  : the object reference (RHS of the assignment)
+//
+// On exit:
+//   x12  : trashed
+//   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
+//   x15  : trashed
+//   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+//
+WRITE_BARRIER_ENTRY JIT_WriteBarrier
+    // per our calling convention we can trash only x12 until assignment.
+    // we need at least one more temp, so save a couple.
+        stp     x2, x3,  [sp, -16]!
+    // check for escaping assignment
+    // 1) check if we own the source region
+        cbz     x15, LOCAL_LABEL(JustAssign)   // assigning null   
+        and     x2,  x15, #0xFFFFFFFFFFE00000  // x2 - source region
+        ldr     x12, [x2]
+#ifdef TARGET_OSX
+        mrs     x3, TPIDRRO_EL0
+        and     x3, x3, #-8                   // thread tag on OSX
+#else
+        mrs     x3, TPIDR_EL0                 // thread tag on other Unix
+#endif
+        cmp     x12, x3     
+        bne     LOCAL_LABEL(AssignAndMarkCards) // not local to this thread
+
+    // 2) check if the src and dst are from the same region
+        eor     x12, x14, x15
+        lsr     x12, x12, #21
+        cbnz    x12, LOCAL_LABEL(RecordEscape )  // cross region assignment. definitely escaping
+
+    // 3) check if the target is exposed
+        ubfx        x3, x14,#9,#12         // word index = (dst >> 9) & 0x1FFFFF
+        ldr         x3, [x2, x3, lsl #3]   // mark word = [region + index * 8]
+        ubfx        x12, x14,#3,#6         // bit = (dst >> 3) & 63
+        lsr         x3, x3, x12
+        tbnz        x3, #0, LOCAL_LABEL(RecordEscape) // target is exposed. record an escape.
+
+    LOCAL_LABEL(JustAssign):
+        ldp     x2,  x3, [sp], 16          // restore temps before assigning
+        str     x15, [x14]                 // UNORDERED assignment of unescaped object
+        add     x14, x14, 8
+        ret     lr
+
+    LOCAL_LABEL(AssignAndMarkCards):
+        ldp     x2,  x3, [sp], 16       // restore temps before assigning
+        stlr    x15, [x14]
+
+    // need couple temps. Save before using.
+        stp     x2,  x3,  [sp, -16]!
+    // if src is in gen2 and barrier is not concurrent we do not need to mark cards
+        and     x2,  x15, #0xFFFFFFFFFFE00000     // source region
+        ldr     w12, [x2, 16]
+        tbz     w12, #1, LOCAL_LABEL(MarkCards)
+        ldr     x12, LOCAL_LABEL(wbs_sw_ww_table) // !wbs_sw_ww_table -> !concurrent
+        cbnz    x12, LOCAL_LABEL(MarkCards)
+        
+    LOCAL_LABEL(Exit):
+        ldp  x2,  x3, [sp], 16
+        add  x14, x14, 8
+        ret  lr
+
+    LOCAL_LABEL(MarkCards):
+    // fetch card location for x14
+        ldr     x12, LOCAL_LABEL(wbs_card_table)     // fetch the page map
+        lsr     x17, x14, #30
+    LOCAL_LABEL(CheckPageMap):
+        ldrb    w2,  [x12, x17]
+        cmp     w2,  #1
+        beq     LOCAL_LABEL(PageFound)
+        sub     x2,  x2, #2
+        mov     x15, #1
+        lsl     x15, x15, x2
+        sub     x17, x17, x15
+        b       LOCAL_LABEL(CheckPageMap)
+    LOCAL_LABEL(PageFound):
+        lsl     x17, x17, #30   // page
+        sub     x2,  x14, x17   // offset in page
+        lsr     x15, x2,  #21   // group index
+        lsl     x15, x15, #1    // group offset (index * 2)
+        lsr     x2,  x2,  #9    // card offset
+
+    // check if concurrent marking is in progress
+        ldr     x12, LOCAL_LABEL(wbs_sw_ww_table)    // !wbs_sw_ww_table -> !concurrent
+        cbnz    x12, LOCAL_LABEL(DirtyCard)
+
+    // SETTING CARD FOR X14
+    LOCAL_LABEL(SetCard):
+        ldrb    w3, [x17, x2]
+        cbnz    w3, LOCAL_LABEL(CardSet)
+        mov     w3, #1
+        strb    w3, [x17, x2]
+    LOCAL_LABEL(SetGroup):
+        add     x12, x17, #0x80
+        ldrb    w3, [x12, x15]
+        cbnz    w3, LOCAL_LABEL(CardSet)
+        mov     w3, #1
+        strb    w3, [x12, x15]
+    LOCAL_LABEL(SetPage):
+        ldrb    w3, [x17]
+        cbnz    w3, LOCAL_LABEL(CardSet)
+        mov     w3, #1
+        strb    w3, [x17]
+
+    LOCAL_LABEL(CardSet):
+    // check if concurrent marking is still not in progress
+        ldr     x12, LOCAL_LABEL(wbs_sw_ww_table)    // !wbs_sw_ww_table -> !concurrent
+        cbnz    x12, LOCAL_LABEL(DirtyCard)
+        b       LOCAL_LABEL(Exit)
+
+    // DIRTYING CARD FOR X14
+    LOCAL_LABEL(DirtyCard):
+        mov     w3, #3
+        strb    w3, [x17, x2]
+    LOCAL_LABEL(DirtyGroup):
+        add     x12, x17, #0x80
+        strb    w3, [x12, x15]
+    LOCAL_LABEL(DirtyPage):
+        strb    w3, [x17]
+        b       LOCAL_LABEL(Exit)
+
+// this is expected to be rare.
+LOCAL_LABEL(RecordEscape):
+        ldr  x12, [x2, #8]          // EscapeFn address
+
+        // because of the barrier call convention
+        // we need to preserve caller-saved x0 through x18 and x29/x30
+        // NB: we have already saved x2, x3
+
+        stp     x0, x1,  [sp, -16]!
+        stp     x4, x5,  [sp, -16]!
+        stp     x6, x7,  [sp, -16]!
+        stp     x8, x9,  [sp, -16]!
+        stp     x10,x11, [sp, -16]!
+        stp     x12,x13, [sp, -16]!
+        stp     x14,x15, [sp, -16]!
+        stp     x16,x17, [sp, -16]!
+        stp     x29,x30, [sp, -16]!
+#ifndef TARGET_OSX
+        str     x18      [sp, -16]!
+#endif
+        // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
+        mov  x0, x14
+        mov  x1, x15
+        blr  x12
+
+#ifndef TARGET_OSX
+        ldr     x18      [sp], 16
+#endif
+        ldp     x29,x30, [sp], 16
+        ldp     x16,x17, [sp], 16
+        ldp     x14,x15, [sp], 16
+        stp     x12,x13, [sp], 16
+        ldp     x10,x11, [sp], 16
+        ldp     x8, x9,  [sp], 16
+        ldp     x6, x7,  [sp], 16
+        ldp     x4, x5,  [sp], 16
+        ldp     x0, x1,  [sp], 16
+
+        b       LOCAL_LABEL(AssignAndMarkCards)
+WRITE_BARRIER_END JIT_WriteBarrier
+
+#endif  // FEATURE_SATORI_GC
 
     // Begin patchable literal pool
     .balign 64  // Align to power of two at least as big as patchable literal pool so that it fits optimally in cache line
