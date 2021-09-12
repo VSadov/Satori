@@ -711,40 +711,38 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
     _ASSERTE(this->OwnedByCurrentThread());
     _ASSERTE(o->ContainingRegion() == this);
 
-    if (o->IsEscaped())
+    if (!o->IsEscaped())
     {
-        return;
-    }
+        m_escapeCounter++;
+        o->SetEscaped();
 
-    m_escapeCounter++;
-    o->SetEscaped();
-
-    // now recursively mark all the objects reachable from escaped object.
-    do
-    {
-        _ASSERTE(o->IsEscaped());
-        o->ForEachObjectRef(
-            [&](SatoriObject** ref)
-            {
-                // no refs should be exposed yet, except if the ref is the first field,
-                // we use that to escape whole object.
-                _ASSERTE(!IsExposed(ref) || ((size_t)o == (size_t)ref - sizeof(size_t)));
-
-                // mark ref location as exposed
-                SetExposed(ref);
-
-                // recursively escape all currently reachable objects
-                SatoriObject* child = *ref;
-                if (child->ContainingRegion() == this && !child->IsEscaped())
+        // now recursively mark all the objects reachable from escaped object.
+        do
+        {
+            _ASSERTE(o->IsEscaped());
+            o->ForEachObjectRef(
+                [&](SatoriObject** ref)
                 {
-                    m_escapeCounter++;
-                    child->SetEscaped();
-                    PushToMarkStack(child);
+                    // no refs should be exposed yet, except if the ref is the first field,
+                    // we use that to escape whole object.
+                    _ASSERTE(!IsExposed(ref) || ((size_t)o == (size_t)ref - sizeof(size_t)));
+
+                    // mark ref location as exposed
+                    SetExposed(ref);
+
+                    // recursively escape all currently reachable objects
+                    SatoriObject* child = *ref;
+                    if (child->ContainingRegion() == this && !child->IsEscaped())
+                    {
+                        m_escapeCounter++;
+                        child->SetEscaped();
+                        PushToMarkStack(child);
+                    }
                 }
-            }
-        );
-        o = PopFromMarkStack();
-    } while (o);
+            );
+            o = PopFromMarkStack();
+        } while (o);
+    }
 }
 
 #pragma clang optimize on
