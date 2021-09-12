@@ -37,7 +37,15 @@ void SatoriObject::EscapeCheckOnHandleCreation()
     if (region->OwnedByCurrentThread())
     {
         region->EscapeRecursively(this);
-        VolatileStoreBarrier();
+
+        if (region->m_escapeCounter > Satori::MAX_TRACKED_ESCAPES)
+        {
+            region->StopEscapeTracking();
+        }
+        else
+        {
+            VolatileStoreBarrier();
+        }
     }
 }
 
