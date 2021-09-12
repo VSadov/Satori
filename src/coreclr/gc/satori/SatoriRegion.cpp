@@ -709,7 +709,7 @@ bool InSameRegion(SatoriObject* o1, SatoriObject* o2)
     return !(((size_t)o1 ^ (size_t)o2) >> Satori::REGION_BITS);
 }
 
-#pragma clang optimize off
+//#pragma clang optimize off
 
 void SatoriRegion::EscapeRecursively(SatoriObject* o)
 {
@@ -750,7 +750,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
     }
 }
 
-#pragma clang optimize on
+//#pragma clang optimize on
 
 void SatoriRegion::ClearMarkedAndEscapeShallow(SatoriObject* o)
 {
