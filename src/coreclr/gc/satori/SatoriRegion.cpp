@@ -743,6 +743,11 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
             o = PopFromMarkStack();
         } while (o);
     }
+
+    if (m_escapeCounter > Satori::MAX_TRACKED_ESCAPES)
+    {
+        StopEscapeTracking();
+    }
 }
 
 #pragma clang optimize on
@@ -793,11 +798,6 @@ void SatoriRegion::SetOccupancy(size_t occupancy)
 void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
 {
     region->EscapeRecursively(src);
-    if (region->m_escapeCounter > Satori::MAX_TRACKED_ESCAPES)
-    {
-        // stop escape tracking.
-        region->StopEscapeTracking();
-    }
 }
 
 void SatoriRegion::ThreadLocalCollect()
