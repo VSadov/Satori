@@ -706,7 +706,7 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
 
 // #pragma clang optimize off
 
-__attribute__((optimize(0)))
+__attribute__((optnone))
 void SatoriRegion::EscapeRecursively(SatoriObject* o)
 {
     _ASSERTE(this->OwnedByCurrentThread());
