@@ -670,7 +670,7 @@ bool SatoriRegion::IsExposed(SatoriObject** location)
     //size_t mask = (size_t)1 << offset;
     //return m_bitmap[bitmapIndex] & mask;
 
-    ((SatoriObject*)location)->IsMarked();
+    return ((SatoriObject*)location)->IsMarked();
 }
 
 bool SatoriRegion::AnyExposed(size_t first, size_t length)
