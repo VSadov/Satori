@@ -704,12 +704,7 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
     return m_bitmap[bitmapIndexL] & maskL;
 }
 
-bool InSameRegion(SatoriObject* o1, SatoriObject* o2)
-{
-    return !(((size_t)o1 ^ (size_t)o2) >> Satori::REGION_BITS);
-}
-
-//#pragma clang optimize off
+#pragma clang optimize off
 
 void SatoriRegion::EscapeRecursively(SatoriObject* o)
 {
@@ -739,7 +734,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
                     SatoriObject* child = *ref;
                     if (child->ContainingRegion() == this && !child->IsEscaped())
                     {
-                        // m_escapeCounter++;
+                        m_escapeCounter++;
                         child->SetEscaped();
                         PushToMarkStack(child);
                     }
@@ -750,7 +745,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
     }
 }
 
-//#pragma clang optimize on
+#pragma clang optimize on
 
 void SatoriRegion::ClearMarkedAndEscapeShallow(SatoriObject* o)
 {
