@@ -704,6 +704,11 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
     return m_bitmap[bitmapIndexL] & maskL;
 }
 
+bool InSameRegion(SatoriObject* o1, SatoriObject* o2)
+{
+    return (((size_t)o1 ^ (size_t)o2) >> Satori::REGION_BITS);
+}
+
 #pragma clang optimize off
 
 void SatoriRegion::EscapeRecursively(SatoriObject* o)
@@ -732,7 +737,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
 
                     // recursively escape all currently reachable objects
                     SatoriObject* child = *ref;
-                    if (child->ContainingRegion() == this && !child->IsEscaped())
+                    if (InSameRegion(child, o) && !child->IsEscaped())
                     {
                         m_escapeCounter++;
                         child->SetEscaped();
@@ -1313,7 +1318,7 @@ tryAgain:
                     return finalizable;
                 }
 
-                // we are escaping the finalizable to the queue from which it is globally reachable
+                // by enqueuing we are making the object available to the finalization thread
                 EscapeRecursively(o);
 
                 // in a rare case when an F object could not pend, we cannot pend any CFs from the same finalization set
