@@ -737,9 +737,9 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
 
                     // recursively escape all currently reachable objects
                     SatoriObject* child = *ref;
-                    if (InSameRegion(child, o) && !child->IsEscaped())
+                    if (child->ContainingRegion() == this && !child->IsEscaped())
                     {
-                        m_escapeCounter++;
+                        // m_escapeCounter++;
                         child->SetEscaped();
                         PushToMarkStack(child);
                     }
