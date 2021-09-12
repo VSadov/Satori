@@ -648,11 +648,13 @@ void SatoriRegion::SetExposed(SatoriObject** location)
     // set the mark bit corresponding to the location to indicate that it is globally exposed
     // same as: ((SatoriObject*)location)->SetMarked();
 
-    size_t bitmapIndex;
-    int offset = ((SatoriObject*)location)->GetMarkBitAndWord(&bitmapIndex);
+    //size_t bitmapIndex;
+    //int offset = ((SatoriObject*)location)->GetMarkBitAndWord(&bitmapIndex);
 
-    size_t mask = (size_t)1 << offset;
-    m_bitmap[bitmapIndex] |= mask;
+    //size_t mask = (size_t)1 << offset;
+    //m_bitmap[bitmapIndex] |= mask;
+
+    ((SatoriObject*)location)->SetMarked();
 }
 
 bool SatoriRegion::IsExposed(SatoriObject** location)
@@ -662,11 +664,13 @@ bool SatoriRegion::IsExposed(SatoriObject** location)
     // check the mark bit corresponding to the location
     //same as: return ((SatoriObject*)location)->IsMarked();
 
-    size_t bitmapIndex;
-    int offset = ((SatoriObject*)location)->GetMarkBitAndWord(&bitmapIndex);
+    //size_t bitmapIndex;
+    //int offset = ((SatoriObject*)location)->GetMarkBitAndWord(&bitmapIndex);
 
-    size_t mask = (size_t)1 << offset;
-    return m_bitmap[bitmapIndex] & mask;
+    //size_t mask = (size_t)1 << offset;
+    //return m_bitmap[bitmapIndex] & mask;
+
+    ((SatoriObject*)location)->IsMarked();
 }
 
 bool SatoriRegion::AnyExposed(size_t first, size_t length)
@@ -705,7 +709,7 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
 }
 
 #if defined (__clang__)
-#pragma clang optimize off
+//#pragma clang optimize off
 #endif
 
 void SatoriRegion::EscapeRecursively(SatoriObject* o)
