@@ -706,7 +706,7 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
 
 bool InSameRegion(SatoriObject* o1, SatoriObject* o2)
 {
-    return (((size_t)o1 ^ (size_t)o2) >> Satori::REGION_BITS);
+    return !(((size_t)o1 ^ (size_t)o2) >> Satori::REGION_BITS);
 }
 
 #pragma clang optimize off
