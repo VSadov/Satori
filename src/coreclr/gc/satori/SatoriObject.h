@@ -12,9 +12,9 @@
 #include "../gc.h"
 
 // overwrite freed space with junk for debugging purposes.
-#if _DEBUG
+// #if _DEBUG
 #define JUNK_FILL_FREE_SPACE
-#endif
+// #endif
 
 // #define USE_SIZE_CACHE
 
@@ -57,7 +57,7 @@ public:
 
     void DirtyCardsForContent();
 
-    void EscapeCheck();
+    void EscapeCheckOnHandleCreation();
 
     bool IsFinalizationSuppressed();
     void SuppressFinalization();

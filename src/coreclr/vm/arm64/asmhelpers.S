@@ -495,8 +495,8 @@ WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
     
     ldr     x12, LOCAL_LABEL(wbs_card_table)
     add     x12, x12, x14, lsr #30
-    ldrb    w17, [x12]
-    cbnz    x17, C_FUNC(JIT_WriteBarrier)
+    ldrb    w12, [x12]
+    cbnz    x12, C_FUNC(JIT_WriteBarrier)
 
 LOCAL_LABEL(NotInHeap):
     str  x15, [x14], #8
@@ -515,21 +515,18 @@ WRITE_BARRIER_END JIT_CheckedWriteBarrier
 //   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 //
 WRITE_BARRIER_ENTRY JIT_WriteBarrier
-    // per our calling convention we can trash only x12 until assignment.
-    // we need at least one more temp, so save a couple.
-        stp     x2, x3,  [sp, -16]!
     // check for escaping assignment
     // 1) check if we own the source region
-        cbz     x15, LOCAL_LABEL(JustAssign)   // assigning null   
-        and     x2,  x15, #0xFFFFFFFFFFE00000  // x2 - source region
-        ldr     x12, [x2]
+        cbz     x15, LOCAL_LABEL(JustAssign)    // assigning null   
+        and     x12,  x15, #0xFFFFFFFFFFE00000  // source region
+        ldr     x12, [x12]                      // region tag
 #ifdef TARGET_OSX
-        mrs     x3, TPIDRRO_EL0
-        and     x3, x3, #-8                   // thread tag on OSX
+        mrs     x17, TPIDRRO_EL0
+        and     x17, x17, #-8                   // thread tag on OSX
 #else
-        mrs     x3, TPIDR_EL0                 // thread tag on other Unix
+        mrs     x17, TPIDR_EL0                  // thread tag on other Unix
 #endif
-        cmp     x12, x3     
+        cmp     x12, x17     
         bne     LOCAL_LABEL(AssignAndMarkCards) // not local to this thread
 
     // 2) check if the src and dst are from the same region
@@ -538,20 +535,18 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         cbnz    x12, LOCAL_LABEL(RecordEscape )  // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
-        ubfx        x3, x14,#9,#12         // word index = (dst >> 9) & 0x1FFFFF
-        ldr         x3, [x2, x3, lsl #3]   // mark word = [region + index * 8]
+        ubfx        x17, x14,#9,#12         // word index = (dst >> 9) & 0x1FFFFF
+        and         x12, x15, #0xFFFFFFFFFFE00000  // source region
+        ldr         x17, [x12, x17, lsl #3]   // mark word = [region + index * 8]
         ubfx        x12, x14,#3,#6         // bit = (dst >> 3) & 63
-        lsr         x3, x3, x12
-        tbnz        x3, #0, LOCAL_LABEL(RecordEscape) // target is exposed. record an escape.
+        lsr         x17, x17, x12
+        tbnz        x17, #0, LOCAL_LABEL(RecordEscape) // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign):
-        ldp     x2,  x3, [sp], 16          // restore temps before assigning
-        str     x15, [x14]                 // UNORDERED assignment of unescaped object
-        add     x14, x14, 8
-        ret     lr
+        str  x15, [x14], #8                 // UNORDERED assignment of unescaped object
+        ret  lr
 
     LOCAL_LABEL(AssignAndMarkCards):
-        ldp     x2,  x3, [sp], 16       // restore temps before assigning
         stlr    x15, [x14]
 
     // need couple temps. Save before using.
@@ -629,13 +624,11 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 
 // this is expected to be rare.
 LOCAL_LABEL(RecordEscape):
-        ldr  x12, [x2, #8]          // EscapeFn address
-
         // because of the barrier call convention
         // we need to preserve caller-saved x0 through x18 and x29/x30
-        // NB: we have already saved x2, x3
 
         stp     x0, x1,  [sp, -16]!
+        stp     x2, x3,  [sp, -16]!
         stp     x4, x5,  [sp, -16]!
         stp     x6, x7,  [sp, -16]!
         stp     x8, x9,  [sp, -16]!
@@ -650,6 +643,8 @@ LOCAL_LABEL(RecordEscape):
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         mov  x0, x14
         mov  x1, x15
+        and  x2, x15, #0xFFFFFFFFFFE00000  // source region
+        ldr  x12, [x2, #8]                 // EscapeFn address
         blr  x12
 
 #ifndef TARGET_OSX
@@ -663,6 +658,7 @@ LOCAL_LABEL(RecordEscape):
         ldp     x8, x9,  [sp], 16
         ldp     x6, x7,  [sp], 16
         ldp     x4, x5,  [sp], 16
+        ldp     x2, x3,  [sp], 16
         ldp     x0, x1,  [sp], 16
 
         b       LOCAL_LABEL(AssignAndMarkCards)

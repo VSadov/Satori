@@ -31,12 +31,13 @@ NOINLINE void SatoriObject::ClearPinned()
     }
 }
 
-void SatoriObject::EscapeCheck()
+void SatoriObject::EscapeCheckOnHandleCreation()
 {
     SatoriRegion* region = ContainingRegion();
     if (region->OwnedByCurrentThread())
     {
         region->EscapeRecursively(this);
+        VolatileStoreBarrier();
     }
 }
 

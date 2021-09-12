@@ -1333,6 +1333,7 @@ void CheckEscapeSatori(Object** dst, Object* ref)
     }
 }
 
+// TODO: VS return true for completely local assignment to avoid a fence.
 void CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
 {
     SatoriRegion* curRegion = (SatoriRegion*)GCToEEInterface::GetAllocContext()->gc_reserved_1;
@@ -1361,7 +1362,7 @@ void CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
 
     if (((src ^ curRegion->Start()) >> 21) == 0)
     {
-        // if src is not exposed, we are escaping the objects
+        // if src is in current region, the elements could be escaping
         if (!curRegion->AnyExposed(src, len))
         {
             SatoriObject* containingSrcObj = curRegion->FindObject(src);
