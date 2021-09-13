@@ -2632,7 +2632,7 @@ bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
         MaybeAskForHelp();
 
         SatoriRegion* curRegion;
-        while (curRegion = m_deferredSweepRegions->TryPop())
+        while ((curRegion = m_deferredSweepRegions->TryPop()))
         {
             SweepAndReturnRegion(curRegion);
             Interlocked::Decrement(&m_deferredSweepCount);
