@@ -156,6 +156,13 @@
       <ExcludeList Include="$(XunitTestBinBase)/tracing/eventpipe/gcdump/gcdump/*">
         <Issue>Satori profiler tracing</Issue>
       </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/gc/gcallocate/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+
+      <ExcludeList Include="$(XunitTestBinBase)/GC/Scenarios/FinalizeTimeout/FinalizeTimeout/*">
+        <Issue>Satori this times out in baseline</Issue>
+      </ExcludeList>
     </ItemGroup>
 
     <!-- All Unix targets on all runtimes -->
