@@ -653,7 +653,7 @@ LOCAL_LABEL(RecordEscape):
         ldp     x29,x30, [sp], 16
         ldp     x16,x17, [sp], 16
         ldp     x14,x15, [sp], 16
-        stp     x12,x13, [sp], 16
+        ldp     x12,x13, [sp], 16
         ldp     x10,x11, [sp], 16
         ldp     x8, x9,  [sp], 16
         ldp     x6, x7,  [sp], 16

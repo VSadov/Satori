@@ -704,10 +704,6 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
     return m_bitmap[bitmapIndexL] & maskL;
 }
 
-#if defined (__clang__)
-#pragma clang optimize off
-#endif
-
 void SatoriRegion::EscapeRecursively(SatoriObject* o)
 {
     _ASSERTE(this->OwnedByCurrentThread());
@@ -746,10 +742,6 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
         } while (o);
     }
 }
-
-#if defined (__clang__)
-#pragma clang optimize on
-#endif
 
 void SatoriRegion::ClearMarkedAndEscapeShallow(SatoriObject* o)
 {
