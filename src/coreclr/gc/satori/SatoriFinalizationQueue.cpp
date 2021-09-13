@@ -20,7 +20,7 @@
 // needing this many items is likely an indication that finalizer is not keeping up and nothing can help that.
 static const int MAX_SIZE = 1 << 25;
 
-#if DEBUG
+#if _DEBUG
 // smaller size in debug to have overflows
 static const int INITIAL_SIZE = 1 << 5;
 #else
