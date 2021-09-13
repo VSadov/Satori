@@ -1659,13 +1659,13 @@ void CheckEscapeSatori(Object** dst, Object* ref)
     }
 }
 
-void CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
+bool CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
 {
     SatoriRegion* curRegion = (SatoriRegion*)GCToEEInterface::GetAllocContext()->gc_reserved_1;
     if (!curRegion || !curRegion->IsThreadLocal())
     {
-        // not tracking escapes
-        return;
+        // not tracking escapes, not a local assignment.
+        return false;
     }
 
     _ASSERTE(curRegion->OwnedByCurrentThread());
@@ -1675,19 +1675,20 @@ void CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
     {
         if (!curRegion->AnyExposed(dst, len))
         {
-            return;
+            // thread-local assignment
+            return true;
         }
     }
 
     if (!PageForAddressCheckedSatori((void*)dst))
     {
-        // dest not in heap
-        return;
+        // dest not in heap, must be stack, so, local
+        return true;
     }
 
     if (((src ^ curRegion->Start()) >> 21) == 0)
     {
-        // if src is not exposed, we are escaping the objects
+        // if src is in current region, the elements could be escaping
         if (!curRegion->AnyExposed(src, len))
         {
             SatoriObject* containingSrcObj = curRegion->FindObject(src);
@@ -1705,26 +1706,28 @@ void CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
             );
         }
 
-        return;
+        return false;
     }
 
     if (PageForAddressCheckedSatori((void*)src))
     {
-        // src is not in current region but in heap, it can't escape anything that belong to current thread
-        return;
+        // src is not in current region but in heap,
+        // it can't escape anything that belong to current thread, but it is not local.
+        return false;
     }
 
     // This is a very rare case where we are copying refs out of non-heap area like stack or native heap.
     // We do not have a containing type and that is somewhat inconvenient.
     // 
     // There are not many scenarios that lead here. In particular, boxing uses a newly
-    // allocated and not yet escaped target, so it does not.
+    // allocated and not yet escaped target, so it does not end up here.
     // One possible way to get here is a copy-back after a reflection call with a boxed nullable
     // argument that happen to escape.
     // 
     // We could handle this is by concervatively escaping any value that matches an unescaped pointer in curRegion.
     // However, considering how uncommon this is, we will just give up tracking.
     curRegion->StopEscapeTracking();
+    return false;
 }
 #endif
 

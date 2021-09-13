@@ -307,16 +307,15 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
     _ASSERTE(CheckPointer(dest));
     _ASSERTE(CheckPointer(src));
 
-    const bool notInHeap = ((BYTE*)dest < g_lowest_address || (BYTE*)dest >= g_highest_address);
-
-    if (!notInHeap)
-    {
-        GCHeapMemoryBarrier();
-    }
-
+    bool localAssignment = false;
     if (len >= sizeof(size_t))
     {
-        CheckEscapeSatoriRange((size_t)dest, (size_t)src, len);
+        localAssignment = CheckEscapeSatoriRange((size_t)dest, (size_t)src, len);
+    }
+
+    if (!localAssignment)
+    {
+        GCHeapMemoryBarrier();
     }
 
     // To be able to copy forwards, the destination buffer cannot start inside the source buffer
