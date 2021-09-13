@@ -43,18 +43,6 @@ public:
         uint32_t value;
         if (GCToOSInterface::CanGetCurrentProcessorNumber())
         {
-            //TODO: VS GetCurrentProcessorNumber could be slow (can it actually? on platformas that matter?).
-            //      We could cache this for handle creation.
-            // 
-            //      this is for:
-            //      - balance handle tables
-            //      - affinity when scanning handles
-            // 
-            //      it must be CPU related, since scan could be on a different thread.
-            //      it does not need to be very up to date though, just statistically close would be enough.
-            //      we just want to improve the likelyhood of finding it in cur proc table when scanning.
-            //
-            //      just invalidate the cache whe scan num moves forward? (it means the scan will get uncached value, which is ok)
             value = GCToOSInterface::GetCurrentProcessorNumber();
         }
         else
