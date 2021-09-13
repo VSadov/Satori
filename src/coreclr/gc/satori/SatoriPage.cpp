@@ -73,7 +73,7 @@ void SatoriPage::RegionInitialized(SatoriRegion* region)
     for (int i = 1; i < mapCount; i++)
     {
         DWORD log2;
-        BitScanReverse(&log2, i);
+        BitScanReverse64(&log2, i);
         RegionMap()[startIndex + i] = (uint8_t)(log2 + 2);
     }
 }

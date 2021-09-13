@@ -227,7 +227,7 @@ inline void SatoriObject::UnSuppressFinalization()
 
 inline int32_t SatoriObject::GetNextInLocalMarkStack()
 {
-    return (((int32_t*)this)[-2] << 3) & (Satori::REGION_SIZE_GRANULARITY - 1);
+    return (((int32_t*)this)[-2] << 3) & (int32_t)(Satori::REGION_SIZE_GRANULARITY - 1);
 }
 
 inline void SatoriObject::SetNextInLocalMarkStack(int32_t next)
