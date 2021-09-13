@@ -65,7 +65,7 @@ namespace Satori
         // we can support sizes that are binary fractions of REGION_SIZE_GRANULARITY.
         // we can also support 1G
         // TODO: VS this can be configured or computed at start up, but should not change dynamically.
-        return 4096;
+        return 4096 * 4;
     }
 
     static const int BYTES_PER_CARD_BYTE = 512;
@@ -104,15 +104,39 @@ public:
         return (size_t)1 << highestBit;
     }
 
+    // must match what is used in barriers.
     static size_t GetCurrentThreadTag()
     {
-        // must match what is used in barriers.
 #if TARGET_WINDOWS
         // we use linear address of TEB on NT
-        // return (size_t)__readgsqword(0x30);
-                return (size_t)__readgsqword(0x30);
+#if defined(TARGET_ARM64)
+        return (size_t)__getReg(18);
 #else
-        return (size_t)-1;
+        return (size_t)__readgsqword(0x30);
+#endif
+
+#elif defined(TARGET_OSX)
+
+        size_t tag;
+#if defined(TARGET_ARM64)
+        __asm__ ("mrs %0, tpidrro_el0" : "=r" (tag));
+        tag &= (size_t)~7;
+#else
+        __asm__ ("movq %%gs:0, %0" : "=r" (tag) );
+#endif
+        return tag;
+
+#elif defined (TARGET_LINUX)
+
+        size_t tag;
+#if defined(TARGET_ARM64)
+        __asm__ ("mrs %0, tpidr_el0" : "=r" (tag));
+#else
+        __asm__ ("movq %%fs:0, %0" : "=r" (tag));
+#endif
+        return tag;
+#else
+        UNSUPPORTED_PLATFORM
 #endif
     }
 };
