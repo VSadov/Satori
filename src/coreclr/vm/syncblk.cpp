@@ -748,9 +748,9 @@ DWORD SyncBlockCache::NewSyncBlockSlot(Object *obj)
 
     CardTableSetBit (indexNewEntry);
 
-    // effectively we are creating a weak handle to the obj
 #if FEATURE_SATORI_GC
-    ((SatoriObject*)obj)->EscapeCheck();
+    // effectively we are creating a weak handle to the obj
+    ((SatoriObject*)obj)->EscapeCheckOnHandleCreation();
 #endif
 
     // In debug builds the m_SyncBlock at indexNewEntry should already be null, since we should

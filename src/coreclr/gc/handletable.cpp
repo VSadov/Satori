@@ -565,7 +565,7 @@ void HndWriteBarrierWorker(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
     _ASSERTE (value != NULL);
 
 #if FEATURE_SATORI_GC
-    ((SatoriObject*)value)->EscapeCheck();
+    ((SatoriObject*)value)->EscapeCheckOnHandleCreation();
 #endif
 
     // find the write barrier for this handle

@@ -57,7 +57,7 @@ public:
 
     void DirtyCardsForContent();
 
-    void EscapeCheck();
+    void EscapeCheckOnHandleCreation();
 
     bool IsFinalizationSuppressed();
     void SuppressFinalization();

@@ -305,10 +305,7 @@ LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
 
 
 
-else
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+else  ;FEATURE_SATORI_GC
 
 Section segment para 'DATA'
 
@@ -329,7 +326,7 @@ LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
 
         ; See if this is in GCHeap
         cmp     rcx, [g_highest_address]
-        jnb     NotInHeap
+        ja      NotInHeap
 
         mov     rax, rcx
         shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
@@ -398,17 +395,17 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
     AssignAndMarkCards:
         mov     [rcx], rdx
 
-    ; TODO: VS for throughput tuning a nonconcurrent and concurrent paths could be separated 
+    ; TODO: VS for throughput tuning a nonconcurrent and concurrent barriers could be separated 
     ;       need to suspend EE when swapping barriers, but GCs in that mode should be relatively rare
 
-    ; check if src is in gen2
+    ; if src is in gen2 and barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [r8 + 16], 2
-        jne     SrcEphemeral
+        jne     MarkCards
         cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
-        jne     SrcEphemeral
+        jne     MarkCards
         REPRET
 
-    SrcEphemeral:
+    MarkCards:
     ; fetch card location for rcx
         mov     r8,  rcx
         mov     r9 , [g_card_table]     ; fetch the page map
@@ -490,7 +487,7 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
 
         ; See if assignment is into heap
         cmp     rcx, [g_highest_address]
-        jnb     NotInHeap               ; not in heap
+        ja      NotInHeap               ; not in heap
 
         mov     rax, rcx
         shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
@@ -506,11 +503,7 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
         ret
 LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
 
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-endif
+endif  ; FEATURE_SATORI_GC
 
 ; The following helper will access ("probe") a word on each page of the stack
 ; starting with the page right beneath rsp down to the one pointed to by r11.
