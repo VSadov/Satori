@@ -793,7 +793,6 @@ void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion*
     region->EscapeRecursively(src);
     if (region->m_escapeCounter > Satori::MAX_TRACKED_ESCAPES)
     {
-        // stop escape tracking.
         region->StopEscapeTracking();
     }
 }
@@ -1164,7 +1163,7 @@ void SatoriRegion::ThreadLocalUpdatePointers()
     if (m_finalizableTrackers)
     {
         ForEachFinalizableThreadLocal(
-            [this](SatoriObject* finalizable)
+            [&](SatoriObject* finalizable)
             {
                 // save the pending bit, will reapply back later
                 size_t finalizePending = (size_t)finalizable & Satori::FINALIZATION_PENDING;
@@ -1312,7 +1311,7 @@ tryAgain:
                     return finalizable;
                 }
 
-                // we are escaping the finalizable to the queue from which it is globally reachable
+                // by enqueing we are making the object available to the finalization thread
                 EscapeRecursively(o);
 
                 // in a rare case when an F object could not pend, we cannot pend any CFs from the same finalization set
