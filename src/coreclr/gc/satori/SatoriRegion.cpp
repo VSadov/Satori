@@ -69,7 +69,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     result->m_allocEnd = result->End();
 
     result->m_containingPage->RegionInitialized(result);
-    result->m_escapeFunc = EscapeFn;
+    result->m_escapeFunc = nullptr;
     result->m_generation = -1;
     result->m_finalizableTrackersLock = 0;
     return result;
@@ -106,6 +106,7 @@ void SatoriRegion::MakeBlank()
     m_everHadFinalizables = false;
     m_hasPinnedObjects = false;
     m_hasMarksSet = false;
+    m_isReusable = false;
 
     //clear index and free list
     ClearFreeLists();
@@ -263,6 +264,19 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
 bool SatoriRegion::HasFreeSpaceInTopBucket()
 {
     return m_freeLists[Satori::FREELIST_COUNT - 1];
+}
+
+bool SatoriRegion::HasFreeSpaceInTop3Buckets()
+{
+    for (int bucket = Satori::FREELIST_COUNT - 1; bucket >= 0; bucket--)
+    {
+        if (m_freeLists[bucket])
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 size_t SatoriRegion::MaxAllocEstimate()
@@ -569,6 +583,7 @@ SatoriObject* SatoriRegion::FindObject(size_t location)
     return o;
 }
 
+template <bool isConservative>
 void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
 {
     SatoriRegion* region = (SatoriRegion*)sc->_unused1;
@@ -585,13 +600,10 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
     if (flags & GC_CALL_INTERIOR)
     {
         o = region->FindObject(location);
-
-#ifdef FEATURE_CONSERVATIVE_GC
-        if (GCConfig::GetConservativeGC() && o->IsFree())
+        if (isConservative && o->IsFree())
         {
             return;
         }
-#endif
     }
 
     if (!o->IsMarked())
@@ -706,7 +718,7 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
 
 void SatoriRegion::EscapeRecursively(SatoriObject* o)
 {
-    _ASSERTE(this->OwnedByCurrentThread());
+    _ASSERTE(this->IsEscapeTrackedByCurrentThread());
     _ASSERTE(o->ContainingRegion() == this);
 
     if (o->IsEscaped())
@@ -849,7 +861,13 @@ void SatoriRegion::ThreadLocalMark()
     ScanContext sc;
     sc.promotion = TRUE;
     sc._unused1 = this;
-    GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn, &sc);
+
+#ifdef FEATURE_CONSERVATIVE_GC
+    if (GCConfig::GetConservativeGC())
+        GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn<true>, &sc);
+    else
+#endif
+        GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn<false>, &sc);
 
     // now recursively mark all the objects reachable from the stack roots.
     SatoriObject* o = PopFromMarkStack();
@@ -1068,6 +1086,7 @@ size_t SatoriRegion::ThreadLocalPlan()
     }
 }
 
+template <bool isConservative>
 void SatoriRegion::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
 {
     SatoriRegion* region = (SatoriRegion*)sc->_unused1;
@@ -1084,13 +1103,10 @@ void SatoriRegion::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     if (flags & GC_CALL_INTERIOR)
     {
         o = region->FindObject(location);
-
-#ifdef FEATURE_CONSERVATIVE_GC
-        if (GCConfig::GetConservativeGC() && o->IsFree())
+        if (isConservative && o->IsFree())
         {
             return;
         }
-#endif
     }
 
     size_t reloc = o->GetLocalReloc();
@@ -1107,7 +1123,13 @@ void SatoriRegion::ThreadLocalUpdatePointers()
     ScanContext sc;
     sc.promotion = FALSE;
     sc._unused1 = this;
-    GCToEEInterface::GcScanCurrentStackRoots((promote_func*)UpdateFn, &sc);
+
+#ifdef FEATURE_CONSERVATIVE_GC
+    if (GCConfig::GetConservativeGC())
+        GCToEEInterface::GcScanCurrentStackRoots((promote_func*)UpdateFn<true>, &sc);
+    else
+#endif
+        GCToEEInterface::GcScanCurrentStackRoots((promote_func*)UpdateFn<false>, &sc);
 
     // go through all live objects and update pointers if targets are planned for relocation.
     size_t bitmapIndex = BITMAP_START;
@@ -1354,7 +1376,7 @@ tryAgain:
 bool SatoriRegion::RegisterForFinalization(SatoriObject* finalizable)
 {
     _ASSERTE(finalizable->ContainingRegion() == this);
-    _ASSERTE(this->m_everHadFinalizables || this->Generation() == 0);
+    _ASSERTE(this->m_everHadFinalizables || this->IsAttachedToContext());
 
     LockFinalizableTrackers();
 
@@ -1516,7 +1538,7 @@ bool SatoriRegion::Sweep(bool keepMarked)
         SatoriObject* last = FindObject(objLimit - 1);
         if (!last->IsMarked())
         {
-            _ASSERTE(!this->IsThreadLocal());
+            _ASSERTE(!this->IsEscapeTracking());
             _ASSERTE(this->NothingMarked());
             _ASSERTE(!this->HasPinnedObjects());
 #if _DEBUG
@@ -1535,8 +1557,8 @@ bool SatoriRegion::Sweep(bool keepMarked)
 
     m_escapeCounter = 0;
     size_t foundFree = 0;
-    bool cannotRecycle = this->Generation() == 0;
-    bool isEscapeTracking = this->IsThreadLocal();
+    bool cannotRecycle = this->IsAttachedToContext();
+    bool isEscapeTracking = this->IsEscapeTracking();
 
     // sweeping invalidates indices, since free objects get coalesced
     ClearIndex();
@@ -1574,7 +1596,7 @@ bool SatoriRegion::Sweep(bool keepMarked)
     {
         this->HasMarksSet() = false;
         this->HasPinnedObjects() = false;
-        if (!this->IsThreadLocal())
+        if (!this->IsEscapeTracking())
         {
             this->ClearMarks();
         }
@@ -1601,7 +1623,7 @@ bool SatoriRegion::SweepAndUpdatePointers()
         SatoriObject* last = FindObject(objLimit - 1);
         if (!last->IsMarked())
         {
-            _ASSERTE(!this->IsThreadLocal());
+            _ASSERTE(!this->IsEscapeTracking());
             _ASSERTE(this->NothingMarked());
             _ASSERTE(!this->HasPinnedObjects());
 #if _DEBUG
@@ -1620,8 +1642,8 @@ bool SatoriRegion::SweepAndUpdatePointers()
 
     m_escapeCounter = 0;
     size_t foundFree = 0;
-    bool cannotRecycle = this->Generation() == 0;
-    bool isEscapeTracking = this->IsThreadLocal();
+    bool cannotRecycle = this->IsAttachedToContext();
+    bool isEscapeTracking = this->IsEscapeTracking();
 
     // sweeping invalidates indices, since free objects get coalesced
     ClearIndex();
@@ -1673,7 +1695,7 @@ bool SatoriRegion::SweepAndUpdatePointers()
 
     this->HasMarksSet() = false;
     this->HasPinnedObjects() = false;
-    if (!this->IsThreadLocal())
+    if (!this->IsEscapeTracking())
     {
         this->ClearMarks();
     }
