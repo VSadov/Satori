@@ -111,6 +111,7 @@ public:
         // we use linear address of TEB on NT
 #if defined(TARGET_ARM64)
         return (size_t)__getReg(18);
+        Error: IMPLEMENT BARRIER IN ASM
 #else
         return (size_t)__readgsqword(0x30);
 #endif
@@ -123,6 +124,7 @@ public:
         tag &= (size_t)~7;
 #else
         __asm__ ("movq %%gs:0, %0" : "=r" (tag) );
+        Error: IMPLEMENT BARRIER IN ASM
 #endif
         return tag;
 
@@ -131,8 +133,10 @@ public:
         size_t tag;
 #if defined(TARGET_ARM64)
         __asm__ ("mrs %0, tpidr_el0" : "=r" (tag));
+        Error: IMPLEMENT BARRIER IN ASM
 #else
         __asm__ ("movq %%fs:0, %0" : "=r" (tag));
+        Error: IMPLEMENT BARRIER IN ASM
 #endif
         return tag;
 #else
