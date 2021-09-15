@@ -21,10 +21,8 @@ class SatoriAllocationContext;
 
 class SatoriRegion
 {
-    friend class SatoriRegionQueue;
     friend class SatoriObject;
-    friend class SatoriAllocationContext;
-    friend class SatoriAllocator;
+    friend class SatoriRegionQueue;
     friend class SatoriQueue<SatoriRegion>;
 
 public:
@@ -58,14 +56,19 @@ public:
     bool HasFreeSpaceInTopBucket();
 
     bool IsAllocating();
-    void StopEscapeTracking();
 
-    bool IsThreadLocal();
-    bool IsThreadLocalAcquire();
-    bool OwnedByCurrentThread();
+    void StartEscapeTracking(size_t threadTag);
+    void StopEscapeTracking();
+    bool IsEscapeTracking();
+    bool IsEscapeTrackingAcquire();
+    bool IsEscapeTrackedByCurrentThread();
+
+    void Attach(SatoriRegion** attachementPoint);
+    void DetachFromContext();
+    bool IsAttachedToContext();
+    bool IsAttachedToContextAcquire();
 
     int Generation();
-    int GenerationAcquire();
     void SetGeneration(int generation);
 
     size_t Start();
@@ -114,9 +117,6 @@ public:
     bool& AcceptedPromotedObjects();
 
     SatoriQueue<SatoriRegion>* ContainingQueue();
-
-    void Attach(SatoriRegion** attachementPoint);
-    void Detach();
 
     void ClearMarks();
     void ClearIndex();

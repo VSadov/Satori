@@ -201,9 +201,9 @@ size_t SatoriRecycler::RegionCount()
     return Gen1RegionCount() + Gen2RegionCount();
 }
 
-// NOTE: recycler owns nursery regions only temporarily for the duration of GC when mutators are stopped
+// NOTE: recycler owns nursery regions only temporarily for the duration of GC when mutators are stopped.
 //       we do not keep them always since an active nursery region may change its classification
-//       concurrently by becoming gen1 or by allocating a finalizable object.
+//       concurrently by allocating a finalizable object.
 void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region, bool keep)
 {
     _ASSERTE(region->AllocStart() == 0);
@@ -214,16 +214,13 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region, bool keep)
     (region->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions: m_ephemeralRegions)->Push(region);
     Interlocked::Increment(&m_regionsAddedSinceLastCollection);
 
-    // if we want to keep it, we have to promote it.
     if (keep)
     {
-        _ASSERTE(region->Generation() == 0);
-        // following two writes must happen after all allocations have concluded,
+        // following writes must happen after all allocations have concluded,
         // previous adding to a queue ensures such ordering.
         region->StopEscapeTracking();
-        region->SetGeneration(1);
     }
-    else if (region->IsThreadLocal())
+    else if (region->IsEscapeTracking())
     {
         _ASSERTE(IsBlockingPhase());
         _ASSERTE(!region->HasPinnedObjects());
@@ -231,7 +228,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region, bool keep)
     }
 
     // we may have marks already, when concurrent marking is allowed
-    region->Verify(/* allowMarked */ ENABLE_CONCURRENT && !region->IsThreadLocal());
+    region->Verify(/* allowMarked */ ENABLE_CONCURRENT && !region->IsEscapeTracking());
 
     // the region has just done allocating, so real occupancy will be known only after we sweep.
     // for now put 0 and treat the region as completely full
@@ -239,7 +236,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region, bool keep)
     // it does not matter, since they will not participate in relocations
     region->SetOccupancy(0);
 
-    if (!keep && region->Generation() == 0)
+    if (!keep && region->IsAttachedToContext())
     {
         _ASSERTE(m_gcState == GC_STATE_BLOCKED);
         m_condemnedNurseryRegionsCount++;
@@ -250,16 +247,16 @@ void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
 {
     _ASSERTE(region->AllocStart() == 0);
     _ASSERTE(region->AllocRemaining() == 0);
-    _ASSERTE(!region->IsThreadLocal());
+    _ASSERTE(!region->IsEscapeTracking());
     _ASSERTE(!region->HasMarksSet());
 
     region->Verify();
     (region->EverHadFinalizables() ? m_tenuredFinalizationTrackingRegions : m_tenuredRegions)->Push(region);
 
-    // always promote these, we always keep them.
-    _ASSERTE(region->Generation() == 0);
+    _ASSERTE(region->Generation() == 1);
 
-    // must happen after all allocations have concluded,
+    // always promote these, we always keep them.
+    // this write must happen after all allocations have concluded,
     // previous adding to a queue ensures such ordering.
     region->SetGeneration(2);
 }
@@ -899,10 +896,10 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         // byrefs may point to stack, use checked here
         containingRegion = context->m_heap->RegionForAddressChecked(location);
 
-        // concurrent FindObject is safe only in gen1/gen2 regions.
-        // Since gen0->gen1+ promotion can happen concurrently,
-        // make sure we read generation before doing FindObject
-        if (!containingRegion || containingRegion->GenerationAcquire() < 1)
+        // concurrent FindObject is safe only in detached regions.
+        // Since detachement can happen concurrently,
+        // make sure that FindObject does not happen before we check
+        if (!containingRegion || containingRegion->IsAttachedToContextAcquire())
         {
             return;
         }
@@ -919,7 +916,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     {
         containingRegion = o->ContainingRegion();
         // can't mark in regions which are tracking escapes, bitmap is in use
-        if (containingRegion->IsThreadLocalAcquire())
+        if (containingRegion->IsEscapeTrackingAcquire())
         {
             return;
         }
@@ -1003,7 +1000,7 @@ void SatoriRecycler::MarkAllStacksAndFinalizationQueue()
                 SatoriObject* o = *ppObject;
 
                 // can't mark in regions which are tracking escapes, bitmap is in use
-                if (!isBlockingPhase && o->ContainingRegion()->IsThreadLocalAcquire())
+                if (!isBlockingPhase && o->ContainingRegion()->IsEscapeTrackingAcquire())
                 {
                     return;
                 }
@@ -1079,7 +1076,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
                     {
                         objectCount++;
                         SatoriRegion* childRegion = child->ContainingRegion();
-                        if (!childRegion->IsThreadLocalAcquire())
+                        if (!childRegion->IsEscapeTrackingAcquire())
                         {
                             if (!child->IsMarkedOrOlderThan(m_condemnedGeneration))
                             {
@@ -1316,7 +1313,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                                         if (child)
                                         {
                                             SatoriRegion* childRegion = child->ContainingRegion();
-                                            if (!childRegion->IsThreadLocalAcquire())
+                                            if (!childRegion->IsEscapeTrackingAcquire())
                                             {
                                                 if (!child->IsMarkedOrOlderThan(m_condemnedGeneration))
                                                 {
@@ -2108,7 +2105,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         }
 
         // nursery regions do not participate in relocations
-        if (!m_isRelocating || curRegion->Generation() == 0)
+        if (!m_isRelocating || curRegion->IsAttachedToContext())
         {
             m_stayingRegions->Push(curRegion);
             continue;
@@ -2551,7 +2548,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         }
 
         // recycler owns nursery regions only temporarily, we should not keep them.
-        if (curRegion->Generation() == 0)
+        if (curRegion->IsAttachedToContext())
         {
             // when promoting, nursery regions should be detached and promoted to gen1
             _ASSERTE(!m_isPromotingAllRegions);
@@ -2562,7 +2559,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
 
             if (curRegion->Occupancy() == 0)
             {
-                curRegion->Detach();
+                curRegion->DetachFromContext();
                 curRegion->MakeBlank();
                 m_heap->Allocator()->ReturnRegion(curRegion);
             }

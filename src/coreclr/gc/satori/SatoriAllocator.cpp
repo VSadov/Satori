@@ -22,6 +22,8 @@
 #include "SatoriMarkChunk.h"
 #include "SatoriMarkChunkQueue.h"
 
+#define ENABLE_GEN0
+
 void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
     m_heap = heap;
@@ -169,7 +171,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
     m_heap->Recycler()->HelpOnce();
     SatoriRegion* region = context->RegularRegion();
 
-    _ASSERTE(region == nullptr || region->Generation() == 0);
+    _ASSERTE(region == nullptr || region->IsAttachedToContext());
 
     while (true)
     {
@@ -224,7 +226,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                 continue;
             }
 
-            if (region->IsThreadLocal())
+            if (region->IsEscapeTracking())
             {
                 // perform thread local collection and see if we have enough space after that.
                 region->ThreadLocalCollect();
@@ -236,7 +238,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                 }
             }
 
-            region->Detach();
+            region->DetachFromContext();
             context->alloc_ptr = context->alloc_limit = nullptr;
             m_heap->Recycler()->AddEphemeralRegion(region, /* keep */ true);
         }
@@ -250,9 +252,11 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
         }
 
         _ASSERTE(region->NothingMarked());
+        region->SetGeneration(1);
+#ifdef ENABLE_GEN0
+        region->StartEscapeTracking(SatoriUtil::GetCurrentThreadTag());
+#endif
         context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
-        region->SetGeneration(0);
-        region->m_ownerThreadTag = SatoriUtil::GetCurrentThreadTag();
         region->Attach(&context->RegularRegion());
     }
 }
@@ -308,7 +312,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
                 continue;
             }
 
-            region->Detach();
+            region->DetachFromContext();
             m_heap->Recycler()->AddEphemeralRegion(region, /* keep */ true);
         }
 
@@ -322,7 +326,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
         }
 
         _ASSERTE(region->NothingMarked());
-        region->SetGeneration(0);
+        region->SetGeneration(1);
         region->Attach(&context->LargeRegion());
     }
 }
@@ -338,8 +342,8 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
         return nullptr;
     }
 
-    // gen0 since we are still allocating
-    hugeRegion->SetGeneration(0);
+    _ASSERTE(hugeRegion->NothingMarked());
+    hugeRegion->SetGeneration(1);
     bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
     SatoriObject* result = SatoriObject::At(hugeRegion->AllocateHuge(size, zeroInitialize));
     if (!result)

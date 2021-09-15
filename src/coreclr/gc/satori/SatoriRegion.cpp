@@ -69,7 +69,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     result->m_allocEnd = result->End();
 
     result->m_containingPage->RegionInitialized(result);
-    result->m_escapeFunc = EscapeFn;
+    result->m_escapeFunc = nullptr;
     result->m_generation = -1;
     result->m_finalizableTrackersLock = 0;
     return result;
@@ -706,7 +706,7 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
 
 void SatoriRegion::EscapeRecursively(SatoriObject* o)
 {
-    _ASSERTE(this->OwnedByCurrentThread());
+    _ASSERTE(this->IsEscapeTrackedByCurrentThread());
     _ASSERTE(o->ContainingRegion() == this);
 
     if (o->IsEscaped())
@@ -1354,7 +1354,7 @@ tryAgain:
 bool SatoriRegion::RegisterForFinalization(SatoriObject* finalizable)
 {
     _ASSERTE(finalizable->ContainingRegion() == this);
-    _ASSERTE(this->m_everHadFinalizables || this->Generation() == 0);
+    _ASSERTE(this->m_everHadFinalizables || this->IsAttachedToContext());
 
     LockFinalizableTrackers();
 
@@ -1516,7 +1516,7 @@ bool SatoriRegion::Sweep(bool keepMarked)
         SatoriObject* last = FindObject(objLimit - 1);
         if (!last->IsMarked())
         {
-            _ASSERTE(!this->IsThreadLocal());
+            _ASSERTE(!this->IsEscapeTracking());
             _ASSERTE(this->NothingMarked());
             _ASSERTE(!this->HasPinnedObjects());
 #if _DEBUG
@@ -1535,8 +1535,8 @@ bool SatoriRegion::Sweep(bool keepMarked)
 
     m_escapeCounter = 0;
     size_t foundFree = 0;
-    bool cannotRecycle = this->Generation() == 0;
-    bool isEscapeTracking = this->IsThreadLocal();
+    bool cannotRecycle = this->IsAttachedToContext();
+    bool isEscapeTracking = this->IsEscapeTracking();
 
     // sweeping invalidates indices, since free objects get coalesced
     ClearIndex();
@@ -1574,7 +1574,7 @@ bool SatoriRegion::Sweep(bool keepMarked)
     {
         this->HasMarksSet() = false;
         this->HasPinnedObjects() = false;
-        if (!this->IsThreadLocal())
+        if (!this->IsEscapeTracking())
         {
             this->ClearMarks();
         }
@@ -1601,7 +1601,7 @@ bool SatoriRegion::SweepAndUpdatePointers()
         SatoriObject* last = FindObject(objLimit - 1);
         if (!last->IsMarked())
         {
-            _ASSERTE(!this->IsThreadLocal());
+            _ASSERTE(!this->IsEscapeTracking());
             _ASSERTE(this->NothingMarked());
             _ASSERTE(!this->HasPinnedObjects());
 #if _DEBUG
@@ -1620,8 +1620,8 @@ bool SatoriRegion::SweepAndUpdatePointers()
 
     m_escapeCounter = 0;
     size_t foundFree = 0;
-    bool cannotRecycle = this->Generation() == 0;
-    bool isEscapeTracking = this->IsThreadLocal();
+    bool cannotRecycle = this->IsAttachedToContext();
+    bool isEscapeTracking = this->IsEscapeTracking();
 
     // sweeping invalidates indices, since free objects get coalesced
     ClearIndex();
@@ -1673,7 +1673,7 @@ bool SatoriRegion::SweepAndUpdatePointers()
 
     this->HasMarksSet() = false;
     this->HasPinnedObjects() = false;
-    if (!this->IsThreadLocal())
+    if (!this->IsEscapeTracking())
     {
         this->ClearMarks();
     }
