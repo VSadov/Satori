@@ -34,7 +34,7 @@ NOINLINE void SatoriObject::ClearPinned()
 void SatoriObject::EscapeCheckOnHandleCreation()
 {
     SatoriRegion* region = ContainingRegion();
-    if (region->OwnedByCurrentThread())
+    if (region->IsEscapeTrackedByCurrentThread())
     {
         region->EscapeRecursively(this);
 
@@ -97,7 +97,7 @@ void SatoriObject::Validate()
     // _ASSERTE(this->GetReloc() == 0);
     _ASSERTE(this->Size() >= Satori::MIN_FREE_SIZE);
 
-    if (ContainingRegion()->OwnedByCurrentThread())
+    if (ContainingRegion()->IsEscapeTrackedByCurrentThread())
     {
         if (IsEscaped())
         {
