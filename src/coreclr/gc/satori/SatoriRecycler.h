@@ -48,6 +48,8 @@ public:
     size_t Gen2RegionCount();
     size_t RegionCount();
 
+    SatoriRegion* TryGetReusable();
+
 private:
     SatoriHeap* m_heap;
 
@@ -75,6 +77,9 @@ private:
 
     // store regions for concurrent sweep
     SatoriRegionQueue* m_deferredSweepRegions;
+
+    // regions that could be reused for Gen1
+    SatoriRegionQueue* m_reusableRegions;
 
     static const int GC_STATE_NONE = 0;
     static const int GC_STATE_CONCURRENT = 1;
@@ -115,9 +120,16 @@ private:
     size_t m_gen1CountAtLastGen2;
 
     static void DeactivateFn(gc_alloc_context* context, void* param);
+
+    template <bool isConservative>
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
-    static void MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+
+    template <bool isConservative>
     static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+
+    template <bool isConservative>
+    static void MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+
     static void HelperThreadFn(void* param);
 
     void DeactivateAllStacks();
