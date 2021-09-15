@@ -1645,7 +1645,7 @@ void CheckEscapeSatori(Object** dst, Object* ref)
     SatoriRegion* region = obj->ContainingRegion();
 
     // we should be the owner of the region to care about escapes
-    if (region && region->OwnedByCurrentThread())
+    if (region && region->IsEscapeTrackedByCurrentThread())
     {
         if ((((size_t)dst ^ (size_t)ref) >> 21) == 0 &&
             !(region->IsExposed((SatoriObject**)dst)))
@@ -1662,13 +1662,13 @@ void CheckEscapeSatori(Object** dst, Object* ref)
 bool CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
 {
     SatoriRegion* curRegion = (SatoriRegion*)GCToEEInterface::GetAllocContext()->gc_reserved_1;
-    if (!curRegion || !curRegion->IsThreadLocal())
+    if (!curRegion || !curRegion->IsEscapeTracking())
     {
         // not tracking escapes, not a local assignment.
         return false;
     }
 
-    _ASSERTE(curRegion->OwnedByCurrentThread());
+    _ASSERTE(curRegion->IsEscapeTrackedByCurrentThread());
 
     // if dst is within the curRegion and is not exposed, we are done
     if (((dst ^ curRegion->Start()) >> 21) == 0)
