@@ -16,17 +16,18 @@
 #include "SatoriRegion.h"
 #include "SatoriMarkChunk.h"
 
-inline bool SatoriRegion::IsThreadLocal()
+inline bool SatoriRegion::IsEscapeTracking()
 {
+    _ASSERTE(!m_ownerThreadTag || m_generation == 0);
     return m_ownerThreadTag;
 }
 
-inline bool SatoriRegion::IsThreadLocalAcquire()
+inline bool SatoriRegion::IsEscapeTrackingAcquire()
 {
     return VolatileLoad(&m_ownerThreadTag);
 }
 
-inline bool SatoriRegion::OwnedByCurrentThread()
+inline bool SatoriRegion::IsEscapeTrackedByCurrentThread()
 {
     return m_ownerThreadTag == SatoriUtil::GetCurrentThreadTag();
 }
@@ -36,13 +37,12 @@ inline int SatoriRegion::Generation()
     return m_generation;
 }
 
-inline int SatoriRegion::GenerationAcquire()
-{
-    return VolatileLoad(&m_generation);
-}
-
 inline void SatoriRegion::SetGeneration(int generation)
 {
+    // Gen0 is controlled by thread-local tracking
+    _ASSERTE(generation != 0);
+    _ASSERTE(m_generation != 0);
+
     m_generation = generation;
 }
 
@@ -88,17 +88,27 @@ inline SatoriObject* SatoriRegion::FirstObject()
     return &m_firstObject;
 }
 
+inline void SatoriRegion::StartEscapeTracking(size_t threadTag)
+{
+    _ASSERTE(m_generation = -1);
+    m_escapeFunc = EscapeFn;
+    m_ownerThreadTag = threadTag;
+    m_generation = 0;
+}
+
 inline void SatoriRegion::StopEscapeTracking()
 {
-    if (IsThreadLocal())
+    if (IsEscapeTracking())
     {
         _ASSERTE(!HasPinnedObjects());
         ClearMarks();
-        m_escapeFunc = nullptr;
 
         // must clear ownership after clearing marks
-        // to make sure concurrent marking does not start marking before we clear
+        // to make sure concurrent marking does not use dirty mark table
         VolatileStore(&m_ownerThreadTag, (size_t)0);
+
+        m_escapeFunc = nullptr;
+        m_generation = 1;
     }
 }
 
@@ -189,6 +199,11 @@ inline bool& SatoriRegion::AcceptedPromotedObjects()
     return m_acceptedPromotedObjects;
 }
 
+inline bool& SatoriRegion::IsReusable()
+{
+    return m_isReusable;
+}
+
 inline SatoriQueue<SatoriRegion>* SatoriRegion::ContainingQueue()
 {
     return VolatileLoadWithoutBarrier(&m_containingQueue);
@@ -203,12 +218,23 @@ inline void SatoriRegion::Attach(SatoriRegion** attachementPoint)
     m_allocationContextAttachmentPoint = attachementPoint;
 }
 
-inline void SatoriRegion::Detach()
+inline void SatoriRegion::DetachFromContext()
 {
     _ASSERTE(*m_allocationContextAttachmentPoint == this);
 
     *m_allocationContextAttachmentPoint = nullptr;
-    m_allocationContextAttachmentPoint = nullptr;
+    // all allocations must be committed prior to detachement.
+    VolatileStore(&m_allocationContextAttachmentPoint, (SatoriRegion**)nullptr);
+}
+
+inline bool SatoriRegion::IsAttachedToContext()
+{
+    return m_allocationContextAttachmentPoint;
+}
+
+inline bool SatoriRegion::IsAttachedToContextAcquire()
+{
+    return m_isReusable || VolatileLoad(&m_allocationContextAttachmentPoint);
 }
 
 #endif

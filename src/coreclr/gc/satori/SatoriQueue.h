@@ -35,6 +35,7 @@ enum class QueueKind
     RecyclerRelocationTarget,
 
     RecyclerDeferredSweep,
+    RecyclerReusable,
 };
 
 template<class T>

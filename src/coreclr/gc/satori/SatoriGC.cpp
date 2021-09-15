@@ -400,15 +400,15 @@ void SatoriGC::PublishObject(uint8_t* obj)
     SatoriObject* so = (SatoriObject*)obj;
     SatoriRegion* region = so->ContainingRegion();
 
-    // we do not retain huge regions in the nursery,
-    // but we can't promote them until the object has a MethodTable.
+    // we do not attach huge regions to thread contexts,
+    // but we can not pass the region to recycler until it's object has a MethodTable.
     // do that here.
-    if (!region->IsAllocating())
+    if (!region->IsAttachedToContext())
     {
         _ASSERTE(region->Size() > Satori::REGION_SIZE_GRANULARITY);
         if (!so->RawGetMethodTable()->ContainsPointers())
         {
-            // this is a single-object region with no pointers.
+            // this is a single-object region and it's body has no pointers.
             // it is rather cheap to have in gen1, so give it a chance to collect early.
             m_heap->Recycler()->AddEphemeralRegion(region, /* keep */ true);
         }
