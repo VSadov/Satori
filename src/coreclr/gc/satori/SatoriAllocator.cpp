@@ -22,7 +22,7 @@
 #include "SatoriMarkChunk.h"
 #include "SatoriMarkChunkQueue.h"
 
-#define ENABLE_GEN0
+#define ENABLE_ESCAPE_TRACKING
 
 void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
@@ -244,18 +244,31 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
         }
 
         m_heap->Recycler()->MaybeTriggerGC();
-        region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
+        region = m_heap->Recycler()->TryGetReusable();
+        if (region == nullptr)
+        {
+            region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
+            _ASSERTE(region == nullptr || region->NothingMarked());
+        }
+        else
+        {
+            printf(".");
+        }
+
         if (region == nullptr)
         {
             //OOM
             return nullptr;
         }
 
-        _ASSERTE(region->NothingMarked());
         region->SetGeneration(1);
-#ifdef ENABLE_GEN0
-        region->StartEscapeTracking(SatoriUtil::GetCurrentThreadTag());
+#ifdef ENABLE_ESCAPE_TRACKING
+        if (!region->IsReusable())
+        {
+            region->StartEscapeTracking(SatoriUtil::GetCurrentThreadTag());
+        }
 #endif
+        region->IsReusable() = false;
         context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
         region->Attach(&context->RegularRegion());
     }

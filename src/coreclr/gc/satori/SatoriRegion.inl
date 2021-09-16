@@ -199,6 +199,11 @@ inline bool& SatoriRegion::AcceptedPromotedObjects()
     return m_acceptedPromotedObjects;
 }
 
+inline bool& SatoriRegion::IsReusable()
+{
+    return m_isReusable;
+}
+
 inline SatoriQueue<SatoriRegion>* SatoriRegion::ContainingQueue()
 {
     return VolatileLoadWithoutBarrier(&m_containingQueue);
@@ -229,7 +234,7 @@ inline bool SatoriRegion::IsAttachedToContext()
 
 inline bool SatoriRegion::IsAttachedToContextAcquire()
 {
-    return VolatileLoad(&m_allocationContextAttachmentPoint);
+    return m_isReusable || VolatileLoad(&m_allocationContextAttachmentPoint);
 }
 
 #endif

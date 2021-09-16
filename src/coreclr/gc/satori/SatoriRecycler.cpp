@@ -81,6 +81,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_deferredSweepCount = 0;
     m_regionsAddedSinceLastCollection = 0;
 
+    m_reusableRegions = new SatoriRegionQueue(QueueKind::RecyclerReusable);
+
     m_workList = new SatoriMarkChunkQueue();
     m_gcState = GC_STATE_NONE;
     m_isBarrierConcurrent = false;
@@ -199,6 +201,11 @@ size_t SatoriRecycler::Gen2RegionCount()
 size_t SatoriRecycler::RegionCount()
 {
     return Gen1RegionCount() + Gen2RegionCount();
+}
+
+SatoriRegion* SatoriRecycler::TryGetReusable()
+{
+    return m_reusableRegions->TryPop();
 }
 
 // NOTE: recycler owns nursery regions only temporarily for the duration of GC when mutators are stopped.
@@ -830,6 +837,7 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, Sa
     }
 }
 
+template <bool isConservative>
 void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
 {
     size_t location = (size_t)*ppObject;
@@ -845,17 +853,10 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     {
         // byrefs may point to stack, use checked here
         o = context->m_heap->ObjectForAddressChecked(location);
-        if (o == nullptr)
+        if (!o || (isConservative && o->IsFree()))
         {
             return;
         }
-
-#ifdef FEATURE_CONSERVATIVE_GC
-        if (GCConfig::GetConservativeGC() && o->IsFree())
-        {
-            return;
-        }
-#endif
     }
 
     if (o->ContainingRegion()->Generation() <= context->m_condemnedGeneration)
@@ -873,6 +874,43 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     }
 };
 
+template <bool isConservative>
+void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
+{
+    size_t location = (size_t)*ppObject;
+    if (location == 0)
+    {
+        return;
+    }
+
+    SatoriObject* o = SatoriObject::At(location);
+    if (flags & GC_CALL_INTERIOR)
+    {
+        MarkContext* context = (MarkContext*)sc->_unused1;
+        // byrefs may point to stack, use checked here
+        o = context->m_heap->ObjectForAddressChecked(location);
+        if (!o || (isConservative && o->IsFree()))
+        {
+            return;
+        }
+    }
+
+    ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
+    if (ptr < 0)
+    {
+        ptr = -ptr;
+        if (flags & GC_CALL_INTERIOR)
+        {
+            *ppObject = (PTR_Object)(location + (ptr - o->Start()));
+        }
+        else
+        {
+            *ppObject = (PTR_Object)ptr;
+        }
+    }
+};
+
+template <bool isConservative>
 void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
 {
     size_t location = (size_t)VolatileLoadWithoutBarrier(ppObject);
@@ -895,22 +933,25 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     {
         // byrefs may point to stack, use checked here
         containingRegion = context->m_heap->RegionForAddressChecked(location);
+        if (!containingRegion)
+        {
+            return;
+        }
 
-        // concurrent FindObject is safe only in detached regions.
-        // Since detachement can happen concurrently,
-        // make sure that FindObject does not happen before we check
-        if (!containingRegion || containingRegion->IsAttachedToContextAcquire())
+        // FindObject is unsafe in escape-tracking regions, since objects may move.
+        // In conservative case any active region is unsafe, since ref may fall into unparsable range.
+        // The checks must acquire to be sure we check before actually doing FindObject.
+        if ((isConservative && containingRegion->IsAttachedToContextAcquire()) ||
+            (!isConservative && containingRegion->IsEscapeTrackingAcquire()))
         {
             return;
         }
 
         o = containingRegion->FindObject(location);
-#ifdef FEATURE_CONSERVATIVE_GC
-        if (GCConfig::GetConservativeGC() && o->IsFree())
+        if (isConservative && (!o || o->IsFree()))
         {
             return;
         }
-#endif
     }
     else
     {
@@ -958,7 +999,13 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
             if (Interlocked::CompareExchange(&aContext->alloc_count, currentScanTicket, threadScanTicket) == threadScanTicket)
             {
                 MaybeAskForHelp();
-                GCToEEInterface::GcScanCurrentStackRoots(IsBlockingPhase() ? MarkFn : MarkFnConcurrent, &sc);
+
+#ifdef FEATURE_CONSERVATIVE_GC
+                if (GCConfig::GetConservativeGC())
+                    GCToEEInterface::GcScanCurrentStackRoots(IsBlockingPhase() ? MarkFn<true> : MarkFnConcurrent<true>, &sc);
+                else
+#endif
+                    GCToEEInterface::GcScanCurrentStackRoots(IsBlockingPhase() ? MarkFn<false> : MarkFnConcurrent<false>, &sc);
             }
         }
     }
@@ -987,8 +1034,13 @@ void SatoriRecycler::MarkAllStacksAndFinalizationQueue()
     // TODO: VS make template param
     bool isBlockingPhase = IsBlockingPhase();
 
-    //generations are meaningless here, so we pass -1
-    GCToEEInterface::GcScanRoots(isBlockingPhase ? MarkFn : MarkFnConcurrent, -1, -1, &sc);
+#ifdef FEATURE_CONSERVATIVE_GC
+    if (GCConfig::GetConservativeGC())
+        //generations are meaningless here, so we pass -1
+        GCToEEInterface::GcScanRoots(isBlockingPhase ? MarkFn<true> : MarkFnConcurrent<true>, -1, -1, &sc);
+    else
+#endif
+        GCToEEInterface::GcScanRoots(isBlockingPhase ? MarkFn<false> : MarkFnConcurrent<false>, -1, -1, &sc);
 
     SatoriFinalizationQueue* fQueue = m_heap->FinalizationQueue();
     if (fQueue->TryUpdateScanTicket(this->GetRootScanTicket()) &&
@@ -1753,7 +1805,11 @@ bool SatoriRecycler::MarkHandles(int64_t deadline)
             MaybeAskForHelp();
 
             sc.thread_number = p;
-            GCScan::GcScanHandles(IsBlockingPhase() ? MarkFn : MarkFnConcurrent, m_condemnedGeneration, 2, &sc);
+            GCScan::GcScanHandles(
+                IsBlockingPhase() ? MarkFn</*isConservative*/ false> : MarkFnConcurrent</*isConservative*/ false>,
+                m_condemnedGeneration,
+                2,
+                &sc);
         },
         deadline
     );
@@ -1825,6 +1881,8 @@ void SatoriRecycler::ScanAllFinalizableRegionsWorker()
     MarkContext c = MarkContext(this);
 
     ScanFinalizableRegions(m_ephemeralFinalizationTrackingRegions, &c);
+    ScanFinalizableRegions(m_reusableRegions, &c);
+    
     if (m_condemnedGeneration == 2)
     {
         ScanFinalizableRegions(m_tenuredFinalizationTrackingRegions, &c);
@@ -1975,7 +2033,7 @@ void SatoriRecycler::DependentHandlesInitialScanWorker()
         [&](int p)
         {
             sc.thread_number = p;
-            GCScan::GcDhInitialScan(MarkFn, m_condemnedGeneration, 2, &sc);
+            GCScan::GcDhInitialScan(MarkFn</*isConservative*/ false>, m_condemnedGeneration, 2, &sc);
         }
     );
 
@@ -2349,49 +2407,6 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     }
 }
 
-void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
-{
-    size_t location = (size_t)*ppObject;
-    if (location == 0)
-    {
-        return;
-    }
-
-    SatoriObject* o = SatoriObject::At(location);
-    if (flags & GC_CALL_INTERIOR)
-    {
-        MarkContext* context = (MarkContext*)sc->_unused1;
-
-        // byrefs may point to stack, use checked here
-        o = context->m_heap->ObjectForAddressChecked(location);
-        if (o == nullptr)
-        {
-            return;
-        }
-
-#ifdef FEATURE_CONSERVATIVE_GC
-        if (GCConfig::GetConservativeGC() && o->IsFree())
-        {
-            return;
-        }
-#endif
-    }
-
-    ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
-    if (ptr < 0)
-    {
-        ptr = -ptr;
-        if (flags & GC_CALL_INTERIOR)
-        {
-            *ppObject = (PTR_Object)(location + (ptr - o->Start()));
-        }
-        else
-        {
-            *ppObject = (PTR_Object)ptr;
-        }
-    }
-};
-
 void SatoriRecycler::Update()
 {
     if (m_isRelocating)
@@ -2444,13 +2459,18 @@ void SatoriRecycler::UpdateRootsWorker()
             [&](int p)
             {
                 sc.thread_number = p;
-                GCScan::GcScanHandles(UpdateFn, m_condemnedGeneration, 2, &sc);
+                GCScan::GcScanHandles(UpdateFn</*isConservative*/ false>, m_condemnedGeneration, 2, &sc);
             }
         );
 
-        //generations are meaningless here, so we pass -1
         // TODO: VS ask for help? (also check the mark counterpart)
-        GCToEEInterface::GcScanRoots(UpdateFn, -1, -1, &sc);
+#ifdef FEATURE_CONSERVATIVE_GC
+        if (GCConfig::GetConservativeGC())
+            //generations are meaningless here, so we pass -1
+            GCToEEInterface::GcScanRoots(UpdateFn<true>, -1, -1, &sc);
+        else
+#endif
+            GCToEEInterface::GcScanRoots(UpdateFn<false>, -1, -1, &sc);
 
         SatoriFinalizationQueue* fQueue = m_heap->FinalizationQueue();
         if (fQueue->TryUpdateScanTicket(this->GetRootScanTicket()) &&
@@ -2526,6 +2546,8 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
             {
                 if (!curRegion->SweepAndUpdatePointers())
                 {
+                    // the region is empty and will be returned,
+                    // but there is still some work to defer.
                     if (ENABLE_CONCURRENT)
                     {
                         m_deferredSweepRegions->Enqueue(curRegion);
@@ -2573,8 +2595,17 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
             curRegion->WipeCards();
         }
 
+        // TODO: VS heuristic for reuse may be more aggressive, consider pinning, etc...
+        if (curRegion->Generation() == 1 &&
+            curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 8 &&
+            curRegion->HasFreeSpaceInTop3Buckets())
+        {
+            _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
+            curRegion->IsReusable() = true;
+        }
+
         // make sure the region is swept and returned now, or later
-        if (!ENABLE_CONCURRENT)
+        if (!ENABLE_CONCURRENT || curRegion->IsReusable())
         {
             SweepAndReturnRegion(curRegion);
             continue;
@@ -2583,7 +2614,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         if (!curRegion->HasMarksSet() &&
             curRegion->Occupancy() > 0)
         {
-            // no point to defer these
+            // no point to defer these, we have swept them already
             KeepRegion(curRegion);
             continue;
         }
@@ -2602,7 +2633,15 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
     }
     else
     {
-        (curRegion->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
+        if (curRegion->IsReusable())
+        {
+            _ASSERTE(curRegion->Size() <= Satori::REGION_SIZE_GRANULARITY);
+            m_reusableRegions->Push(curRegion);
+        }
+        else
+        {
+            (curRegion->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
+        }
     }
 }
 

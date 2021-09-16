@@ -54,6 +54,7 @@ public:
     size_t StartAllocating(size_t minSize);
 
     bool HasFreeSpaceInTopBucket();
+    bool HasFreeSpaceInTop3Buckets();
 
     bool IsAllocating();
 
@@ -115,6 +116,7 @@ public:
     bool& HasPinnedObjects();
     bool& HasMarksSet();
     bool& AcceptedPromotedObjects();
+    bool& IsReusable();
 
     SatoriQueue<SatoriRegion>* ContainingQueue();
 
@@ -187,6 +189,7 @@ private:
             bool m_hasPinnedObjects;
             bool m_hasMarksSet;
             bool m_acceptedPromotedObjects;
+            bool m_isReusable;
 
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
         };
@@ -199,7 +202,11 @@ private:
 
 private:
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
+
+    template <bool isConservative>
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+
+    template <bool isConservative>
     static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 
     static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
