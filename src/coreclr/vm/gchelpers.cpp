@@ -1438,7 +1438,7 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
             return;
     }
 
-    page->DirtyCardForAddress((size_t)dst);
+    page->DirtyCardForAddressUnordered((size_t)dst);
 
 #else
     // if the dst is outside of the heap (unboxed value classes) then we
@@ -1559,7 +1559,7 @@ SetCardsAfterBulkCopy(Object** dst, Object **src, size_t len)
                     return;
             }
 
-            page->DirtyCardsForRange((size_t)dst, (size_t)dst + len);
+            page->DirtyCardsForRangeUnordered((size_t)dst, (size_t)dst + len);
         }
 
 #else
