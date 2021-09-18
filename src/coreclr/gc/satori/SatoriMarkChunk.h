@@ -32,6 +32,11 @@ public:
         return self;
     }
 
+    static size_t Capacity()
+    {
+        return (Satori::MARK_CHUNK_SIZE - sizeof(SatoriMarkChunk)) / sizeof(SatoriObject*);
+    }
+
     size_t Count()
     {
         return m_top;
@@ -39,12 +44,12 @@ public:
 
     size_t FreeSpace()
     {
-        return (Satori::MARK_CHUNK_SIZE - sizeof(SatoriMarkChunk)) / sizeof(SatoriObject*) - m_top;
+        return Capacity() - m_top;
     }
 
     bool HasSpace()
     {
-        return m_top < (Satori::MARK_CHUNK_SIZE - sizeof(SatoriMarkChunk)) / sizeof(SatoriObject*);
+        return m_top < Capacity();
     }
 
     void Push(SatoriObject* obj)
