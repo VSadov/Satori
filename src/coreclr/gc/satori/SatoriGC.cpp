@@ -46,6 +46,7 @@ void SatoriGC::SetReservedVMLimit(size_t vmlimit)
 
 void SatoriGC::WaitUntilConcurrentGCComplete()
 {
+    WaitUntilGCComplete();
 }
 
 bool SatoriGC::IsConcurrentGCInProgress()
@@ -73,7 +74,7 @@ bool SatoriGC::IsConcurrentGCEnabled()
 
 HRESULT SatoriGC::WaitUntilConcurrentGCCompleteAsync(int millisecondsTimeout)
 {
-    // TODO: VS wait until blocking gc state or none
+    WaitUntilGCComplete();
     return S_OK;
 }
 
@@ -151,7 +152,7 @@ unsigned SatoriGC::WhichGeneration(Object* obj)
 
 int SatoriGC::CollectionCount(int generation, int get_bgc_fgc_coutn)
 {
-    //TODO: VS get_bgc_fgc_coutn ?.
+    //get_bgc_fgc_coutn does not apply for Satori
     return (int)m_heap->Recycler()->GetCollectionCount(generation);
 }
 
@@ -169,8 +170,14 @@ int SatoriGC::EndNoGCRegion()
 
 size_t SatoriGC::GetTotalBytesInUse()
 {
-    //TODO: VS, bytes used by objects? What is GetCurrentObjSize then?
+    //TODO: VS, bytes used by objects? 
     return Satori::REGION_SIZE_GRANULARITY * 10;
+}
+
+size_t SatoriGC::GetCurrentObjSize()
+{
+    // It seems some rough estimate of combined live object size.
+    return GetTotalBytesInUse();
 }
 
 uint64_t SatoriGC::GetTotalAllocatedBytes()
@@ -178,7 +185,7 @@ uint64_t SatoriGC::GetTotalAllocatedBytes()
     // monotonically increasing number ever produced by allocator. (only objects?)
 
     //TODO: VS would need some kind of counter incremented when allocating from regions 
-    return Satori::REGION_SIZE_GRANULARITY * 10;
+    return 0;
 }
 
 HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
@@ -326,8 +333,7 @@ bool SatoriGC::IsEphemeral(Object* object)
 
 uint32_t SatoriGC::WaitUntilGCComplete(bool bConsiderGCStart)
 {
-    //NB: bConsiderGCStart does not make much sense for Satori
-
+    //bConsiderGCStart does not apply for Satori
     if (m_gcInProgress)
     {
         _ASSERTE(m_waitForGCEvent->IsValid());
@@ -341,12 +347,6 @@ void SatoriGC::FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap
 {
     // this is only called when thread is terminating and about to clear its context.
     ((SatoriAllocationContext*)acontext)->Deactivate(m_heap->Recycler(), /*detach*/ true);
-}
-
-size_t SatoriGC::GetCurrentObjSize()
-{
-    //TODO: Satori this should be implementable
-    return 0;
 }
 
 void SatoriGC::SetGCInProgress(bool fInProgress)
@@ -419,10 +419,10 @@ void SatoriGC::PublishObject(uint8_t* obj)
             // in such case we simulate retroactive write by dirtying the card for the MT location.
             if (so->RawGetMethodTable()->Collectible())
             {
-                region->ContainingPage()->DirtyCardForAddress(so->Start());
+                region->ContainingPage()->DirtyCardForAddressUnordered(so->Start());
             }
 
-            region->SetOccupancy(so->Size());
+            region->SetOccupancy(so->Size(), 1);
             m_heap->Recycler()->AddTenuredRegion(region);
         }
     }
@@ -568,10 +568,16 @@ size_t SatoriGC::GetPromotedBytes(int heap_index)
 
 void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* totalAvailableMemoryBytes, uint64_t* lastRecordedMemLoadBytes, uint64_t* lastRecordedHeapSizeBytes, uint64_t* lastRecordedFragmentationBytes, uint64_t* totalCommittedBytes, uint64_t* promotedBytes, uint64_t* pinnedObjectCount, uint64_t* finalizationPendingCount, uint64_t* index, uint32_t* generation, uint32_t* pauseTimePct, bool* isCompaction, bool* isConcurrent, uint64_t* genInfoRaw, uint64_t* pauseInfoRaw, int kind)
 {
-    // TODO: Satori some of this makes sense and implementable.
-    *highMemLoadThresholdBytes = (uint64_t)1 << 30;
-    *totalAvailableMemoryBytes = (uint64_t)1 << 31;
-    *lastRecordedMemLoadBytes = 0;
+    uint64_t totalLimit = GCToOSInterface::GetPhysicalMemoryLimit();
+    *highMemLoadThresholdBytes = totalLimit * 99 / 100; // just say 99% for now
+    *totalAvailableMemoryBytes = totalLimit;
+
+    uint32_t memLoad;
+    uint64_t availPhysical, availPage;
+    GCToOSInterface::GetMemoryStatus(totalLimit, &memLoad, &availPhysical, &availPage);
+    *lastRecordedMemLoadBytes = memLoad * totalLimit / 100;
+
+    // the rest seems implementation specific and not strictly required.
     *lastRecordedHeapSizeBytes = 0;
     *lastRecordedFragmentationBytes = 0;
     *totalCommittedBytes = 0;
@@ -589,8 +595,11 @@ void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* tota
 
 uint32_t SatoriGC::GetMemoryLoad()
 {
-    // TODO: Satori this should be implementable
-    return 0;
+    uint32_t memLoad;
+    uint64_t availPhysical, availPage;
+    GCToOSInterface::GetMemoryStatus(0, &memLoad, &availPhysical, &availPage);
+
+    return memLoad;
 }
 
 void SatoriGC::DiagGetGCSettings(EtwGCSettingsInfo* etw_settings)
