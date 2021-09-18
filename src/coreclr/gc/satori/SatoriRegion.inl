@@ -169,6 +169,109 @@ void SatoriRegion::ForEachFinalizableThreadLocal(F lambda)
     UnlockFinalizableTrackers();
 }
 
+template <bool updatePointers>
+bool SatoriRegion::Sweep(bool keepMarked)
+{
+    // we should only sweep when we have marks
+    _ASSERTE(HasMarksSet());
+
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+
+    // we will be building new free lists
+    ClearFreeLists();
+
+    // if region is huge and the last object is unreachable, the region is all empty.
+    if (End() > objLimit)
+    {
+        SatoriObject* last = FindObject(objLimit - 1);
+        if (!last->IsMarked())
+        {
+            _ASSERTE(!this->IsEscapeTracking());
+            _ASSERTE(this->NothingMarked());
+            _ASSERTE(!this->HasPinnedObjects());
+#if _DEBUG
+            size_t fistObjStart = FirstObject()->Start();
+            SatoriObject::FormatAsFree(fistObjStart, objLimit - fistObjStart);
+#endif
+            this->HasMarksSet() = false;
+            SetOccupancy(0, 0);
+            return false;
+        }
+    }
+
+    size_t occupancy = 0;
+    size_t objCount = 0;
+
+    bool cannotRecycle = this->IsAttachedToContext();
+    bool isEscapeTracking = this->IsEscapeTracking();
+
+    // sweeping invalidates indices, since free objects get coalesced
+    ClearIndex();
+    m_escapeCounter = 0;
+
+    SatoriObject* o = FirstObject();
+    do
+    {
+        if (o->IsMarked())
+        {
+            _ASSERTE(!o->IsFree());
+            if (isEscapeTracking)
+            {
+                // turn mark bit into escape bits.
+                this->ClearMarkedAndEscapeShallow(o);
+            }
+
+            if (updatePointers)
+            {
+                o->ForEachObjectRef(
+                    [](SatoriObject** ppObject)
+                    {
+                        SatoriObject* child = *ppObject;
+                        if (child)
+                        {
+                            ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                            if (ptr < 0)
+                            {
+                                _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
+                                *ppObject = (SatoriObject*)-ptr;
+                            }
+                        }
+                    }
+                );
+            }
+
+            size_t size = o->Size();
+            cannotRecycle = true;
+            objCount++;
+            occupancy += size;
+            o = (SatoriObject*)(o->Start() + size);
+            continue;
+        }
+
+        size_t lastMarkedEnd = o->Start();
+        o = SkipUnmarked(o);
+        size_t skipped = o->Start() - lastMarkedEnd;
+        if (skipped)
+        {
+            SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
+            AddFreeSpace(free);
+        }
+    } while (o->Start() < objLimit);
+
+    if (!keepMarked)
+    {
+        this->HasMarksSet() = false;
+        this->HasPinnedObjects() = false;
+        if (!this->IsEscapeTracking())
+        {
+            this->ClearMarks();
+        }
+    }
+
+    SetOccupancy(occupancy, objCount);
+    return cannotRecycle;
+}
+
 inline bool SatoriRegion::EverHadFinalizables()
 {
     return m_everHadFinalizables;
@@ -182,6 +285,11 @@ inline bool& SatoriRegion::HasPendingFinalizables()
 inline size_t SatoriRegion::Occupancy()
 {
     return m_occupancy;
+}
+
+inline size_t SatoriRegion::ObjCount()
+{
+    return m_objCount;
 }
 
 inline bool& SatoriRegion::HasPinnedObjects()
@@ -235,6 +343,16 @@ inline bool SatoriRegion::IsAttachedToContext()
 inline bool SatoriRegion::IsAttachedToContextAcquire()
 {
     return m_isReusable || VolatileLoad(&m_allocationContextAttachmentPoint);
+}
+
+inline bool SatoriRegion::IsDemoted()
+{
+    return m_gen2Objects;
+}
+
+inline SatoriMarkChunk* &SatoriRegion::DemotedObjects()
+{
+    return m_gen2Objects;
 }
 
 #endif
