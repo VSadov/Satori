@@ -18,18 +18,6 @@
 
 FORCEINLINE size_t SatoriObject::Size()
 {
-#ifdef USE_SIZE_CACHE
-    int64_t sbBits = ((int64_t*)this)[-1];
-    if (sbBits > 0)
-    {
-        uint16_t cachedSize = (uint16_t)(sbBits >> 16) & ~3;
-        if (cachedSize != 0)
-        {
-            return cachedSize;
-        }
-    }
-#endif
-
     MethodTable* mt = RawGetMethodTable();
     size_t size = mt->GetBaseSize();
     if (mt->HasComponentSize())
@@ -37,13 +25,6 @@ FORCEINLINE size_t SatoriObject::Size()
         size += (size_t)((ArrayBase*)this)->GetNumComponents() * mt->RawGetComponentSize();
         size = ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
     }
-
-#ifdef USE_SIZE_CACHE
-    if (sbBits >= 0 && size < (1 << 16))
-    {
-        ((uint16_t*)this)[-3] |= size;
-    }
-#endif
 
     return size;
 }
@@ -222,23 +203,23 @@ inline void SatoriObject::UnSuppressFinalization()
 
 //
 // Implementation note on mark overflow and relocation - we could use temporary maps,
-// but we will use 18 unused bits in the syncblock instead.
+// but we will use unused bits in the syncblock instead.
 //
 
 inline int32_t SatoriObject::GetNextInLocalMarkStack()
 {
-    return (((int32_t*)this)[-2] << 3) & (int32_t)(Satori::REGION_SIZE_GRANULARITY - 1);
+    return ((int32_t*)this)[-2];
 }
 
 inline void SatoriObject::SetNextInLocalMarkStack(int32_t next)
 {
     _ASSERTE(GetNextInLocalMarkStack() == 0);
-    ((int32_t*)this)[-2] |= next >> 3;
+    ((int32_t*)this)[-2] = next;
 }
 
 inline void SatoriObject::ClearNextInLocalMarkStack()
 {
-    ((int32_t*)this)[-2] &= ~(Satori::REGION_SIZE_GRANULARITY - 1) >> 3;
+    ((int32_t*)this)[-2] = 0;
 }
 
 inline int32_t SatoriObject::GetLocalReloc()

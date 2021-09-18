@@ -58,17 +58,7 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
     memset((void*)(location - sizeof(size_t)), 0xAC, dirtySize);
 #endif
 
-#ifdef USE_SIZE_CACHE
-    if (size < (1 << 16))
-    {
-        ((size_t*)location)[-1] = size << 16;
-    }
-    else
-#endif
-    {
-        o->CleanSyncBlock();
-    }
-
+    o->CleanSyncBlock();
     o->RawSetMethodTable(s_emptyObjectMt);
     _ASSERTE(!o->IsMarked());
 
