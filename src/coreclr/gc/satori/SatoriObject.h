@@ -50,8 +50,8 @@ public:
     bool IsEscapedOrPinned();
     int GetMarkBitAndWord(size_t* bitmapIndex);
 
-    void SetPermanentlyPinned();
-    bool IsPermanentlyPinned();
+    void SetUnmovable();
+    bool IsUnmovable();
 
     void DirtyCardsForContent();
 

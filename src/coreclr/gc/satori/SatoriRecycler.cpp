@@ -832,7 +832,7 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, Sa
 
         // since this o will not be popped from the mark queue,
         // check for pinning here
-        if (o->IsPermanentlyPinned())
+        if (o->IsUnmovable())
         {
             o->ContainingRegion()->HasPinnedObjects() = true;
         }
@@ -940,11 +940,10 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
             return;
         }
 
-        // FindObject is unsafe in escape-tracking regions, since objects may move.
-        // In conservative case any active region is unsafe, since ref may fall into unparsable range.
-        // The checks must acquire to be sure we check before actually doing FindObject.
-        if ((isConservative && containingRegion->IsAttachedToContextAcquire()) ||
-            (!isConservative && containingRegion->IsEscapeTrackingAcquire()))
+        // FindObject is unsafe in active regions. While ref may be in a real obj,
+        // the path to it from the first obj or prev indexed may cross unparsable ranges.
+        // The check must acquire to be sure we check before actually doing FindObject.
+        if (containingRegion->IsAttachedToContextAcquire())
         {
             return;
         }
@@ -1117,7 +1116,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
 
             SatoriObject* o = srcChunk->Pop();
             _ASSERTE(o->IsMarked());
-            if (o->IsPermanentlyPinned())
+            if (o->IsUnmovable())
             {
                 o->ContainingRegion()->HasPinnedObjects() = true;
             }
@@ -1205,7 +1204,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriMarkChunk* srcChunk)
         {
             SatoriObject* o = srcChunk->Pop();
             _ASSERTE(o->IsMarked());
-            if (o->IsPermanentlyPinned())
+            if (o->IsUnmovable())
             {
                 o->ContainingRegion()->HasPinnedObjects() = true;
             }
@@ -1638,7 +1637,7 @@ bool SatoriRecycler::CleanCards()
                             {
                                 if (considerAllMarked || o->IsMarked())
                                 {
-                                    if (o->IsPermanentlyPinned())
+                                    if (o->IsUnmovable())
                                     {
                                         o->ContainingRegion()->HasPinnedObjects() = true;
                                     }
@@ -2369,7 +2368,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         size_t size = o->Size();
         if (o->IsMarked())
         {
-            _ASSERTE(!o->IsPermanentlyPinned());
+            _ASSERTE(!o->IsUnmovable());
             _ASSERTE(!o->IsFree());
 
             memcpy((void*)(dstPtr - sizeof(size_t)), (void*)(o->Start() - sizeof(size_t)), size);

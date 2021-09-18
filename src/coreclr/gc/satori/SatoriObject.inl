@@ -183,7 +183,7 @@ inline void SatoriObject::SetEscaped()
 
 inline bool SatoriObject::IsEscapedOrPinned()
 {
-    return IsEscaped() || IsPinned();
+    return IsEscaped() || IsPinned() || IsUnmovable();
 }
 
 inline bool SatoriObject::IsFinalizationSuppressed()
@@ -258,12 +258,12 @@ inline int SatoriObject::GetMarkBitAndWord(size_t* bitmapIndex)
     return (start >> 3) & 63;     // % bits in a word
 }
 
-inline void SatoriObject::SetPermanentlyPinned()
+inline void SatoriObject::SetUnmovable()
 {
     ((DWORD*)this)[-1] |= BIT_SBLK_GC_RESERVE;
 }
 
-inline bool SatoriObject::IsPermanentlyPinned()
+inline bool SatoriObject::IsUnmovable()
 {
     return ((DWORD*)this)[-1] & BIT_SBLK_GC_RESERVE;
 }
