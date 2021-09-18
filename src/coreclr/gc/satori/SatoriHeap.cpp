@@ -78,6 +78,7 @@ SatoriHeap* SatoriHeap::Create()
     InitWriteBarrier(heap->m_pageMap, heap->m_committedMapSize * Satori::PAGE_SIZE_GRANULARITY - 1);
     heap->m_mapLock.Initialize();
     heap->m_nextPageIndex = 1;
+    heap->m_usedMapSize = 1;
 
     heap->m_allocator.Initialize(heap);
     heap->m_recycler.Initialize(heap);
@@ -136,6 +137,11 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
                 // ensure the next is advanced to at least i + 1
                 while ((nextPageIndex = m_nextPageIndex) < i + 1 &&
                     Interlocked::CompareExchange(&m_nextPageIndex, i + 1, nextPageIndex) != nextPageIndex);
+
+                int usedMapSize;
+                // ensure the m_usedMapSize is advanced to at least i + 1
+                while ((usedMapSize = m_usedMapSize) < i + 1 &&
+                    Interlocked::CompareExchange(&m_usedMapSize, i + 1, usedMapSize) != usedMapSize);
 
                 return true;
             }
@@ -199,9 +205,14 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
                     m_pageMap[i + j] = (uint8_t)(log2 + 2);
                 }
 
+                int usedMapSize;
+                // ensure the m_usedMapSize is advanced to at least i + mapMarkCount
+                while ((usedMapSize = m_usedMapSize) < i + mapMarkCount &&
+                    Interlocked::CompareExchange(&m_usedMapSize, i + mapMarkCount, usedMapSize) != usedMapSize);
+
                 // advance next if contiguous
                 // Note: it may become contiguous after we check, but it should be rare.
-                //       advancing is not needed for correctness, so we do not care.
+                //       advancing m_nextPageIndex is not needed for correctness, so we do not retry.
                 if (i == m_nextPageIndex)
                 {
                     Interlocked::CompareExchange(&m_nextPageIndex, i + mapMarkCount, i);
