@@ -87,8 +87,9 @@ public:
     bool NothingMarked();
     void UpdatePointers();
     void UpdatePointersInPromotedObjects();
+
+    template <bool updatePointers>
     bool Sweep(bool keepMarked = false);
-    bool SweepAndUpdatePointers();
 
     bool IsExposed(SatoriObject** location);
     bool AnyExposed(size_t from, size_t length);

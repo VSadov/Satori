@@ -2186,7 +2186,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
 
             // a newly promoted gen1 region may have a lot of dead objects.
             // we will sweep to improve chances finding relocatable regions.
-            curRegion->Sweep(true);
+            curRegion->Sweep</*updatePointers*/ false>(/*keepMarked*/ true);
         }
 
         if (curRegion->Generation() > m_condemnedGeneration)
@@ -2533,7 +2533,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
     {
         if (curRegion->Generation() > m_condemnedGeneration)
         {
-            // this can only happen when promoting in gen1
+            // this can only happen when selectively promoting in gen1
             _ASSERTE(m_allowPromotingRelocations);
             if (curRegion->AcceptedPromotedObjects())
             {
@@ -2545,10 +2545,10 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         {
             if (curRegion->HasMarksSet())
             {
-                if (!curRegion->SweepAndUpdatePointers())
+                if (!curRegion->Sweep</*updatePointers*/ true>())
                 {
                     // the region is empty and will be returned,
-                    // but there is still some work to defer.
+                    // but there is still some cleaning work to defer.
                     if (ENABLE_CONCURRENT)
                     {
                         m_deferredSweepRegions->Enqueue(curRegion);
@@ -2577,7 +2577,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
             _ASSERTE(!m_isPromotingAllRegions);
             if (!m_isRelocating)
             {
-                curRegion->Sweep();
+                curRegion->Sweep</*updatePointers*/ false>();
             }
 
             if (curRegion->Occupancy() == 0)
@@ -2705,7 +2705,7 @@ bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
 
 void SatoriRecycler::SweepAndReturnRegion(SatoriRegion* curRegion)
 {
-    if ((curRegion->HasMarksSet() && !curRegion->Sweep()) ||
+    if ((curRegion->HasMarksSet() && !curRegion->Sweep</*updatePointers*/ false>()) ||
         curRegion->Occupancy() == 0)
     {
         curRegion->MakeBlank();
