@@ -18,18 +18,6 @@
 
 FORCEINLINE size_t SatoriObject::Size()
 {
-#ifdef USE_SIZE_CACHE
-    int64_t sbBits = ((int64_t*)this)[-1];
-    if (sbBits > 0)
-    {
-        uint16_t cachedSize = (uint16_t)(sbBits >> 16) & ~3;
-        if (cachedSize != 0)
-        {
-            return cachedSize;
-        }
-    }
-#endif
-
     MethodTable* mt = RawGetMethodTable();
     size_t size = mt->GetBaseSize();
     if (mt->HasComponentSize())
@@ -37,13 +25,6 @@ FORCEINLINE size_t SatoriObject::Size()
         size += (size_t)((ArrayBase*)this)->GetNumComponents() * mt->RawGetComponentSize();
         size = ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
     }
-
-#ifdef USE_SIZE_CACHE
-    if (sbBits >= 0 && size < (1 << 16))
-    {
-        ((uint16_t*)this)[-3] |= size;
-    }
-#endif
 
     return size;
 }
@@ -66,11 +47,6 @@ FORCEINLINE SatoriObject* SatoriObject::Next()
 inline SatoriRegion* SatoriObject::ContainingRegion()
 {
     return (SatoriRegion*)((size_t)this & ~(Satori::REGION_SIZE_GRANULARITY - 1));
-}
-
-inline SatoriObject* SatoriObject::At(size_t location)
-{
-    return (SatoriObject*)location;
 }
 
 inline bool SatoriObject::IsFree()
@@ -103,19 +79,19 @@ inline void SatoriObject::SetBitAtomic(int offset)
     size_t word = Start() + offset * sizeof(size_t);
     size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
     size_t bit = ((word >> 3) & 63);
+    size_t mask = (size_t)1 << bit;
 
+    //NB: this does not need to be a full fence, if possible. 
+    //    just need to set a bit atomically.
+    //    ordering WRT other writes is unimportant, as long as the bit is set.
 #ifdef _MSC_VER
-#ifdef HOST_64BIT
-    _interlockedbittestandset64((long long*)&ContainingRegion()->m_bitmap[bitmapIndex], bit);
+#if defined(TARGET_AMD64)
+    _InterlockedOr64((long long *)&ContainingRegion()->m_bitmap[bitmapIndex], mask);
 #else
-    _interlockedbittestandset((long*)&ContainingRegion()->m_bitmap[bitmapIndex], bit);
+    _InterlockedOr64nf((long long*)&ContainingRegion()->m_bitmap[bitmapIndex], mask);
 #endif
 #else
-    //NB: this does not need to be a full fence, if possible. 
-    //    just need to set a bit atomically. (i.e. LDSET on ARM 8.1)
-    //    ordering WRT other writes is unimportant, as long as the bit is set.
-    size_t mask = (size_t)1 << bit;
-    __sync_or_and_fetch(&ContainingRegion()->m_bitmap[bitmapIndex], mask);
+    __atomic_or_fetch(&ContainingRegion()->m_bitmap[bitmapIndex], mask, __ATOMIC_RELAXED);
 #endif
 }
 
@@ -202,7 +178,7 @@ inline void SatoriObject::SetEscaped()
 
 inline bool SatoriObject::IsEscapedOrPinned()
 {
-    return IsEscaped() || IsPinned();
+    return IsEscaped() || IsPinned() || IsUnmovable();
 }
 
 inline bool SatoriObject::IsFinalizationSuppressed()
@@ -222,23 +198,23 @@ inline void SatoriObject::UnSuppressFinalization()
 
 //
 // Implementation note on mark overflow and relocation - we could use temporary maps,
-// but we will use 18 unused bits in the syncblock instead.
+// but we will use unused bits in the syncblock instead.
 //
 
 inline int32_t SatoriObject::GetNextInLocalMarkStack()
 {
-    return (((int32_t*)this)[-2] << 3) & (int32_t)(Satori::REGION_SIZE_GRANULARITY - 1);
+    return ((int32_t*)this)[-2];
 }
 
 inline void SatoriObject::SetNextInLocalMarkStack(int32_t next)
 {
     _ASSERTE(GetNextInLocalMarkStack() == 0);
-    ((int32_t*)this)[-2] |= next >> 3;
+    ((int32_t*)this)[-2] = next;
 }
 
 inline void SatoriObject::ClearNextInLocalMarkStack()
 {
-    ((int32_t*)this)[-2] &= ~(Satori::REGION_SIZE_GRANULARITY - 1) >> 3;
+    ((int32_t*)this)[-2] = 0;
 }
 
 inline int32_t SatoriObject::GetLocalReloc()
@@ -277,12 +253,12 @@ inline int SatoriObject::GetMarkBitAndWord(size_t* bitmapIndex)
     return (start >> 3) & 63;     // % bits in a word
 }
 
-inline void SatoriObject::SetPermanentlyPinned()
+inline void SatoriObject::SetUnmovable()
 {
     ((DWORD*)this)[-1] |= BIT_SBLK_GC_RESERVE;
 }
 
-inline bool SatoriObject::IsPermanentlyPinned()
+inline bool SatoriObject::IsUnmovable()
 {
     return ((DWORD*)this)[-1] & BIT_SBLK_GC_RESERVE;
 }
