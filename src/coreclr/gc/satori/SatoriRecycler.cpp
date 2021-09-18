@@ -190,7 +190,9 @@ int SatoriRecycler::CondemnedGeneration()
 
 size_t SatoriRecycler::Gen1RegionCount()
 {
-    return m_ephemeralFinalizationTrackingRegions->Count() + m_ephemeralRegions->Count();
+    return m_ephemeralFinalizationTrackingRegions->Count() +
+        m_ephemeralRegions->Count() +
+        m_reusableRegions->Count();
 }
 
 size_t SatoriRecycler::Gen2RegionCount()
@@ -209,7 +211,7 @@ SatoriRegion* SatoriRecycler::TryGetReusable()
 }
 
 // NOTE: recycler owns nursery regions only temporarily for the duration of GC when mutators are stopped.
-//       we do not keep them always since an active nursery region may change its classification
+//       we do not keep them because an active nursery region may change its finalizability classification
 //       concurrently by allocating a finalizable object.
 void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region, bool keep)
 {
@@ -2605,7 +2607,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         }
 
         // make sure the region is swept and returned now, or later
-        if (!ENABLE_CONCURRENT || curRegion->IsReusable())
+        if (!ENABLE_CONCURRENT)
         {
             SweepAndReturnRegion(curRegion);
             continue;
@@ -2620,7 +2622,14 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         }
 
         // these we can sweep/return later
-        m_deferredSweepRegions->Enqueue(curRegion);
+        if (curRegion->IsReusable())
+        {
+            m_deferredSweepRegions->Push(curRegion);
+        }
+        else
+        {
+            m_deferredSweepRegions->Enqueue(curRegion);
+        }
     }
 }
 
