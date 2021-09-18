@@ -40,9 +40,13 @@ public:
 
     void SetCardForAddress(size_t address);
     void SetCardForAddressOnly(size_t address);
-    void SetCardsForRange(size_t start, size_t end);
     void DirtyCardForAddress(size_t address);
+    void DirtyCardForAddressUnordered(size_t address);
+
+    void SetCardsForRange(size_t start, size_t end);
     void DirtyCardsForRange(size_t start, size_t length);
+    void DirtyCardsForRangeUnordered(size_t start, size_t end);
+
     void WipeCardsForRange(size_t start, size_t end);
 
     // order is unimportant, but we want to read it only once when we read it, thus volatile.
