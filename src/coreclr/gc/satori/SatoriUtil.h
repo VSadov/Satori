@@ -62,9 +62,9 @@ namespace Satori
     // TODO: VS move to something like SatoriConfig, MIN_REGULAR_ALLOC too. These are not constants.
     static size_t CommitGranularity()
     {
-        // we can support sizes that are binary fractions of REGION_SIZE_GRANULARITY.
+        // we can support sizes that are > OS page and binary fractions of REGION_SIZE_GRANULARITY.
         // we can also support 1G
-        // TODO: VS this can be configured or computed at start up, but should not change dynamically.
+        // TODO: VS this should be configured or computed at start up, but should not change dynamically.
         return 4096 * 4;
     }
 

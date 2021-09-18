@@ -1764,7 +1764,7 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
             return;
     }
 
-    page->DirtyCardForAddress((size_t)dst);
+    page->DirtyCardForAddressUnordered((size_t)dst);
 
 #else
     // if the dst is outside of the heap (unboxed value classes) then we
