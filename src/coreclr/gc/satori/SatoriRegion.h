@@ -69,6 +69,9 @@ public:
     bool IsAttachedToContext();
     bool IsAttachedToContextAcquire();
 
+    bool IsDemoted();
+    SatoriMarkChunk* &DemotedObjects();
+
     int Generation();
     void SetGeneration(int generation);
 
@@ -87,15 +90,16 @@ public:
     bool NothingMarked();
     void UpdatePointers();
     void UpdatePointersInPromotedObjects();
+
+    template <bool updatePointers>
     bool Sweep(bool keepMarked = false);
-    bool SweepAndUpdatePointers();
 
     bool IsExposed(SatoriObject** location);
     bool AnyExposed(size_t from, size_t length);
     void EscapeRecursively(SatoriObject* obj);
 
     void ClearMarkedAndEscapeShallow(SatoriObject* o);
-    void SetOccupancy(size_t occupancy);
+    void SetOccupancy(size_t occupancy, size_t objCount);
 
     template<typename F>
     void ForEachFinalizable(F lambda);
@@ -112,6 +116,7 @@ public:
     bool& HasPendingFinalizables();
 
     size_t Occupancy();
+    size_t ObjCount();
 
     bool& HasPinnedObjects();
     bool& HasMarksSet();
@@ -128,6 +133,8 @@ public:
 
     SatoriPage* ContainingPage();
     SatoriRegion* NextInPage();
+
+    void TryDemote();
 
     void Verify(bool allowMarked = false);
 
@@ -183,6 +190,7 @@ private:
             // when number goes too high, we stop escaping and do not do local GC.
             int32_t m_escapeCounter;
             size_t m_occupancy;
+            size_t m_objCount;
 
             bool m_everHadFinalizables;
             bool m_hasPendingFinalizables;
@@ -190,6 +198,8 @@ private:
             bool m_hasMarksSet;
             bool m_acceptedPromotedObjects;
             bool m_isReusable;
+
+            SatoriMarkChunk* m_gen2Objects;
 
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
         };
@@ -212,7 +222,7 @@ private:
     static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
 
     void ThreadLocalMark();
-    size_t ThreadLocalPlan();
+    void ThreadLocalPlan();
     void ThreadLocalUpdatePointers();
     void ThreadLocalCompact();
     void ThreadLocalPendFinalizables();
