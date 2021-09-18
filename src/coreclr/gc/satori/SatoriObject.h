@@ -16,7 +16,7 @@
 #define JUNK_FILL_FREE_SPACE
 #endif
 
-// #define USE_SIZE_CACHE
+#define USE_SIZE_CACHE
 
 class SatoriRegion;
 
