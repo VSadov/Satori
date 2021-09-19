@@ -96,7 +96,7 @@ public:
     void EscapeRecursively(SatoriObject* obj);
 
     void ClearMarkedAndEscapeShallow(SatoriObject* o);
-    void SetOccupancy(size_t occupancy);
+    void SetOccupancy(size_t occupancy, size_t objCount);
 
     template<typename F>
     void ForEachFinalizable(F lambda);
@@ -113,6 +113,7 @@ public:
     bool& HasPendingFinalizables();
 
     size_t Occupancy();
+    size_t ObjCount();
 
     bool& HasPinnedObjects();
     bool& HasMarksSet();
@@ -184,6 +185,7 @@ private:
             // when number goes too high, we stop escaping and do not do local GC.
             int32_t m_escapeCounter;
             size_t m_occupancy;
+            size_t m_objCount;
 
             bool m_everHadFinalizables;
             bool m_hasPendingFinalizables;
@@ -213,7 +215,7 @@ private:
     static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
 
     void ThreadLocalMark();
-    size_t ThreadLocalPlan();
+    void ThreadLocalPlan();
     void ThreadLocalUpdatePointers();
     void ThreadLocalCompact();
     void ThreadLocalPendFinalizables();

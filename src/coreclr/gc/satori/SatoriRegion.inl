@@ -176,7 +176,6 @@ bool SatoriRegion::Sweep(bool keepMarked)
     _ASSERTE(HasMarksSet());
 
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
-    size_t largeObjTailSize = 0;
 
     // we will be building new free lists
     ClearFreeLists();
@@ -195,22 +194,20 @@ bool SatoriRegion::Sweep(bool keepMarked)
             SatoriObject::FormatAsFree(fistObjStart, objLimit - fistObjStart);
 #endif
             this->HasMarksSet() = false;
-            SetOccupancy(0);
+            SetOccupancy(0, 0);
             return false;
-        }
-        else
-        {
-            largeObjTailSize = last->End() - objLimit;
         }
     }
 
-    m_escapeCounter = 0;
-    size_t foundFree = 0;
+    size_t occupancy = 0;
+    size_t objCount = 0;
+
     bool cannotRecycle = this->IsAttachedToContext();
     bool isEscapeTracking = this->IsEscapeTracking();
 
     // sweeping invalidates indices, since free objects get coalesced
     ClearIndex();
+    m_escapeCounter = 0;
 
     SatoriObject* o = FirstObject();
     do
@@ -218,7 +215,6 @@ bool SatoriRegion::Sweep(bool keepMarked)
         if (o->IsMarked())
         {
             _ASSERTE(!o->IsFree());
-            cannotRecycle = true;
             if (isEscapeTracking)
             {
                 // turn mark bit into escape bits.
@@ -244,7 +240,11 @@ bool SatoriRegion::Sweep(bool keepMarked)
                 );
             }
 
-            o = o->Next();
+            size_t size = o->Size();
+            cannotRecycle = true;
+            objCount++;
+            occupancy += size;
+            o = SatoriObject::At(o->Start() + size);
             continue;
         }
 
@@ -253,7 +253,6 @@ bool SatoriRegion::Sweep(bool keepMarked)
         size_t skipped = o->Start() - lastMarkedEnd;
         if (skipped)
         {
-            foundFree += skipped;
             SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
             AddFreeSpace(free);
         }
@@ -269,7 +268,7 @@ bool SatoriRegion::Sweep(bool keepMarked)
         }
     }
 
-    SetOccupancy(Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree + largeObjTailSize);
+    SetOccupancy(occupancy, objCount);
     return cannotRecycle;
 }
 
@@ -286,6 +285,11 @@ inline bool& SatoriRegion::HasPendingFinalizables()
 inline size_t SatoriRegion::Occupancy()
 {
     return m_occupancy;
+}
+
+inline size_t SatoriRegion::ObjCount()
+{
+    return m_objCount;
 }
 
 inline bool& SatoriRegion::HasPinnedObjects()

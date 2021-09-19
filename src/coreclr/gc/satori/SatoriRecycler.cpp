@@ -243,7 +243,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region, bool keep)
     // for now put 0 and treat the region as completely full
     // that is a fair estimate for promoted regions anyways and for nursery regions
     // it does not matter, since they will not participate in relocations
-    region->SetOccupancy(0);
+    region->SetOccupancy(0, 0);
 
     if (!keep && region->IsAttachedToContext())
     {
@@ -2121,7 +2121,7 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
             if (ENABLE_CONCURRENT)
             {
                 curRegion->HasMarksSet() = false;
-                curRegion->SetOccupancy(0);
+                curRegion->SetOccupancy(0, 0);
                 m_deferredSweepRegions->Enqueue(curRegion);
             }
             else
@@ -2354,15 +2354,16 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     relocationTarget->TakeFinalizerInfoFrom(relocationSource);
 
     // allocate space for relocated objects
-    size_t dstPtr = relocationTarget->Allocate(copySize, /*zeroInitialize*/ false);
+    size_t dst = relocationTarget->Allocate(copySize, /*zeroInitialize*/ false);
 
     // actually relocate src objects into the allocated space.
-    size_t dstPtrOrig = dstPtr;
+    size_t dstOrig = dst;
     size_t objLimit = relocationSource->Start() + Satori::REGION_SIZE_GRANULARITY;
     SatoriObject* o = relocationSource->FirstObject();
     // the target is typically marked, unless it is freshly allocated or in a higher generation
     // preserve marked state by copying marks
     bool needToCopyMarks = relocationTarget->HasMarksSet();
+    size_t objectsRelocated = 0;
     do
     {
         size_t size = o->Size();
@@ -2371,18 +2372,19 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
             _ASSERTE(!o->IsUnmovable());
             _ASSERTE(!o->IsFree());
 
-            memcpy((void*)(dstPtr - sizeof(size_t)), (void*)(o->Start() - sizeof(size_t)), size);
+            memcpy((void*)(dst - sizeof(size_t)), (void*)(o->Start() - sizeof(size_t)), size);
             // record the new location of the object by storing it in the syncblock space.
             // make it negative so it is different from a normal syncblock.
-            ((ptrdiff_t*)o)[-1] = -(ptrdiff_t)dstPtr;
+            ((ptrdiff_t*)o)[-1] = -(ptrdiff_t)dst;
 
             if (needToCopyMarks)
             {
-                ((SatoriObject*)dstPtr)->SetMarked();
+                SatoriObject::At(dst)->SetMarked();
             }
 
-            dstPtr += size;
-            o = (SatoriObject*)(o->Start() + size);
+            dst += size;
+            objectsRelocated++;
+            o = SatoriObject::At(o->Start() + size);
         }
         else
         {
@@ -2390,9 +2392,9 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         }
     } while (o->Start() < objLimit);
 
-    size_t used = dstPtr - dstPtrOrig;
-    relocationTarget->SetOccupancy(relocationTarget->Occupancy() + used);
-    relocationTarget->StopAllocating(dstPtr);
+    size_t used = dst - dstOrig;
+    relocationTarget->SetOccupancy(relocationTarget->Occupancy() + used, relocationTarget->ObjCount() + objectsRelocated);
+    relocationTarget->StopAllocating(dst);
     // the target may yet have more space and be a target for more relocations.
     AddRelocationTarget(relocationTarget);
 

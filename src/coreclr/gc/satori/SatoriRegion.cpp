@@ -785,10 +785,11 @@ void SatoriRegion::ClearMarkedAndEscapeShallow(SatoriObject* o)
     );
 }
 
-void SatoriRegion::SetOccupancy(size_t occupancy)
+void SatoriRegion::SetOccupancy(size_t occupancy, size_t objCount)
 {
     _ASSERTE(occupancy <= (Size() - offsetof(SatoriRegion, m_firstObject)));
     m_occupancy = occupancy;
+    m_objCount = objCount;
 
     // TUNING: heuristic needed
     //       when there is 10% "sediment" we want to release this to recycler.
@@ -812,6 +813,7 @@ void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion*
 void SatoriRegion::ThreadLocalCollect()
 {
     ThreadLocalMark();
+    // TODO: VS if region is too full after planning (say 75%), perhaps just sweep, stop tracking, and return?
     ThreadLocalPlan();
     ThreadLocalUpdatePointers();
     ThreadLocalCompact();
@@ -941,7 +943,7 @@ void SatoriRegion::ThreadLocalMark()
     Verify(/*allowMarked*/ true);
 }
 
-size_t SatoriRegion::ThreadLocalPlan()
+void SatoriRegion::ThreadLocalPlan()
 {
     // object can be in 3 states here:
     //  - Free:
@@ -970,25 +972,26 @@ size_t SatoriRegion::ThreadLocalPlan()
     size_t dstStart;
     size_t dstEnd = 0;
 
-    //TODO: VS what is the purpose for tracking relocated. To not compact if it is too high? Is it common enough?
-    size_t relocated = 0;
-    size_t free = 0;
+    // stats
+    size_t occupancy = 0;
+    size_t objCount = 0;
 
     // moveable: starts at first movable and reachable, as long as there is any free space to slide in
     size_t lastMarkedEnd = FirstObject()->Start();
     moveable = SkipUnmarked(FirstObject());
+    bool sawFree = false;
     while (true)
     {
         size_t skipped = moveable->Start() - lastMarkedEnd;
         if (skipped)
         {
-            if (free == 0)
+            if (!sawFree)
             {
                 // new gap from here
                 dstEnd = lastMarkedEnd;
             }
 
-            free += skipped;
+            sawFree = true;
             SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
         }
 
@@ -996,11 +999,14 @@ size_t SatoriRegion::ThreadLocalPlan()
         {
             // nothing left to move
             _ASSERTE(moveable->Start() == End());
-            return relocated;
+            goto Exit;
         }
 
         moveableSize = moveable->Size();
-        if (!moveable->IsEscapedOrPinned() && free > 0)
+        objCount++;
+        occupancy += moveableSize;
+
+        if (sawFree && !moveable->IsEscapedOrPinned())
         {
             // reachable and moveable and saw free space. we can move this one.
             break;
@@ -1024,7 +1030,7 @@ size_t SatoriRegion::ThreadLocalPlan()
         if (dstStart >= End())
         {
             // no more space could be found
-            return relocated;
+            goto Exit;
         }
 
         // dst end: skip until next unmovable
@@ -1044,7 +1050,6 @@ size_t SatoriRegion::ThreadLocalPlan()
             int32_t reloc = (int32_t)(moveable->Start() - dstStart);
             if (reloc != 0)
             {
-                relocated += moveableSize;
                 moveable->SetLocalReloc(reloc);
             }
 
@@ -1059,7 +1064,6 @@ size_t SatoriRegion::ThreadLocalPlan()
                 size_t skipped = moveable->Start() - lastMarkedEnd;
                 if (skipped)
                 {
-                    free += skipped;
                     SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
                 }
 
@@ -1067,10 +1071,13 @@ size_t SatoriRegion::ThreadLocalPlan()
                 {
                     // nothing left to move
                     _ASSERTE(moveable->Start() == End());
-                    return relocated;
+                    goto Exit;
                 }
 
                 moveableSize = moveable->Size();
+                objCount++;
+                occupancy += moveableSize;
+
                 if (!moveable->IsEscapedOrPinned())
                 {
                     // reachable and moveable. we can move this.
@@ -1084,6 +1091,11 @@ size_t SatoriRegion::ThreadLocalPlan()
         // Note: gap will not cross ahead of the current moveable, because moveables are valid gaps.
         //       the gap may reach the current movable, which would result in a trivial 0-distance move
     }
+
+Exit:
+    // do not call SetOccupancy just yet, since it could stop tracking and kill marks.
+    m_occupancy = occupancy;
+    m_objCount = objCount;
 }
 
 template <bool isConservative>
@@ -1286,7 +1298,7 @@ void SatoriRegion::ThreadLocalCompact()
 
         if (reloc)
         {
-            // moving objects with syncblocks, thus the src/dst adjustment
+            // moving objects with syncblocks, thus the "- sizeof(size_t)" adjustment
             memmove(
                 (void*)(relocTarget - sizeof(size_t)),
                 (void*)(s1->Start() - sizeof(size_t)),
@@ -1302,7 +1314,12 @@ void SatoriRegion::ThreadLocalCompact()
     }
 
     Verify();
-    SetOccupancy(Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree);
+
+    _ASSERTE((Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree) == m_occupancy);
+
+    // the objCount and occupancy are computed and set by the Plan.
+    // we only call SetOccupancy here because it could stop tracking and kill marks.
+    SetOccupancy(m_occupancy, m_objCount);
 }
 
 enum class FinalizationPendState

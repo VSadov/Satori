@@ -422,7 +422,7 @@ void SatoriGC::PublishObject(uint8_t* obj)
                 region->ContainingPage()->DirtyCardForAddress(so->Start());
             }
 
-            region->SetOccupancy(so->Size());
+            region->SetOccupancy(so->Size(), 1);
             m_heap->Recycler()->AddTenuredRegion(region);
         }
     }
