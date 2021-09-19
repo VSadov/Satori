@@ -50,7 +50,7 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
     _ASSERTE(size >= Satori::MIN_FREE_SIZE);
     _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY);
 
-    SatoriObject* o = SatoriObject::At(location);
+    SatoriObject* o = (SatoriObject*)location;
     _ASSERTE(o->ContainingRegion()->m_used > location + 2 * sizeof(size_t));
 
 #ifdef JUNK_FILL_FREE_SPACE

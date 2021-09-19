@@ -546,7 +546,7 @@ SatoriObject* SatoriRegion::FindObject(size_t location)
         int offset = m_index[current];
         if (offset)
         {
-            SatoriObject* indexed = SatoriObject::At(Start() + offset);
+            SatoriObject* indexed = (SatoriObject*)(Start() + offset);
             if (indexed->Start() > o->Start())
             {
                 o = indexed;
@@ -596,7 +596,7 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
         return;
     }
 
-    SatoriObject* o = SatoriObject::At(location);
+    SatoriObject* o = (SatoriObject*)location;
     if (flags & GC_CALL_INTERIOR)
     {
         o = region->FindObject(location);
@@ -638,7 +638,7 @@ inline SatoriObject* SatoriRegion::PopFromMarkStack()
 {
     if (m_markStack != 0)
     {
-        SatoriObject* o = SatoriObject::At(this->Start() + m_markStack);
+        SatoriObject* o = (SatoriObject*)(this->Start() + m_markStack);
         m_markStack = o->GetNextInLocalMarkStack();
         o->ClearNextInLocalMarkStack();
         return o;
@@ -650,7 +650,7 @@ inline SatoriObject* SatoriRegion::PopFromMarkStack()
 SatoriObject* SatoriRegion::ObjectForMarkBit(size_t bitmapIndex, int offset)
 {
     size_t objOffset = (bitmapIndex * sizeof(size_t) * 8 + offset) * sizeof(size_t);
-    return SatoriObject::At(Start() + objOffset);
+    return (SatoriObject*)(Start() + objOffset);
 }
 
 void SatoriRegion::SetExposed(SatoriObject** location)
@@ -1111,7 +1111,7 @@ void SatoriRegion::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
         return;
     }
 
-    SatoriObject* o = SatoriObject::At(location);
+    SatoriObject* o = (SatoriObject*)location;
     if (flags & GC_CALL_INTERIOR)
     {
         o = region->FindObject(location);
@@ -1290,7 +1290,7 @@ void SatoriRegion::ThreadLocalCompact()
         // [d1, d2) will be the gap that the run is targeting, but it may not fill the whole gap.
         // for our purposes the extra space is as good as a free object, we will move d1 to that
         size_t relocTargetEnd = s2->Start() - reloc;
-        d1 = SatoriObject::At(relocTargetEnd);
+        d1 = (SatoriObject*)relocTargetEnd;
         while (d2->Start() < relocTargetEnd)
         {
             d2 = d2->Next();
@@ -1531,7 +1531,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
     SatoriObject* result = ObjectForMarkBit(bitmapIndex, markBitOffset);
     if (result->Start() > upTo)
     {
-        result = SatoriObject::At(upTo);
+        result = (SatoriObject*)upTo;
     }
 
     _ASSERTE(result->Start() <= upTo);

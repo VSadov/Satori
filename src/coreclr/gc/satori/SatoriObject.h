@@ -27,7 +27,6 @@ public:
     SatoriObject() = delete;
     ~SatoriObject() = delete;
 
-    static SatoriObject* At(size_t location);
     static SatoriObject* FormatAsFree(size_t location, size_t size);
 
     SatoriRegion* ContainingRegion();

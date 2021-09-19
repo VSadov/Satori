@@ -195,7 +195,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                     context->alloc_bytes += moreSpace;
                     context->alloc_limit += moreSpace;
 
-                    SatoriObject* result = SatoriObject::At((size_t)context->alloc_ptr);
+                    SatoriObject* result = (SatoriObject*)(size_t)context->alloc_ptr;
                     context->alloc_ptr += size;
                     result->CleanSyncBlock();
                     return result;
@@ -287,7 +287,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
             if (allocRemaining >= size)
             {
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
-                SatoriObject* result = SatoriObject::At(region->Allocate(size, zeroInitialize));
+                SatoriObject* result = (SatoriObject*)region->Allocate(size, zeroInitialize);
                 if (result)
                 {
                     result->CleanSyncBlock();
@@ -358,7 +358,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     _ASSERTE(hugeRegion->NothingMarked());
     hugeRegion->SetGeneration(1);
     bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
-    SatoriObject* result = SatoriObject::At(hugeRegion->AllocateHuge(size, zeroInitialize));
+    SatoriObject* result = (SatoriObject*)hugeRegion->AllocateHuge(size, zeroInitialize);
     if (!result)
     {
         hugeRegion->SetGeneration(-1);

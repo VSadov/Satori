@@ -849,7 +849,7 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     }
 
     MarkContext* context = (MarkContext*)sc->_unused1;
-    SatoriObject* o = SatoriObject::At(location);
+    SatoriObject* o = (SatoriObject*)location;
 
     if (flags & GC_CALL_INTERIOR)
     {
@@ -885,7 +885,7 @@ void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t
         return;
     }
 
-    SatoriObject* o = SatoriObject::At(location);
+    SatoriObject* o = (SatoriObject*)location;
     if (flags & GC_CALL_INTERIOR)
     {
         MarkContext* context = (MarkContext*)sc->_unused1;
@@ -929,7 +929,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
 
     SatoriRegion* containingRegion;
     MarkContext* context = (MarkContext*)sc->_unused1;
-    SatoriObject* o = SatoriObject::At(location);
+    SatoriObject* o = (SatoriObject*)location;
 
     if (flags & GC_CALL_INTERIOR)
     {
@@ -2379,12 +2379,12 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
 
             if (needToCopyMarks)
             {
-                SatoriObject::At(dst)->SetMarked();
+                ((SatoriObject*)dst)->SetMarked();
             }
 
             dst += size;
             objectsRelocated++;
-            o = SatoriObject::At(o->Start() + size);
+            o = (SatoriObject*)(o->Start() + size);
         }
         else
         {

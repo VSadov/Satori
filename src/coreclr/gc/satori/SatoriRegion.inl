@@ -244,7 +244,7 @@ bool SatoriRegion::Sweep(bool keepMarked)
             cannotRecycle = true;
             objCount++;
             occupancy += size;
-            o = SatoriObject::At(o->Start() + size);
+            o = (SatoriObject*)(o->Start() + size);
             continue;
         }
 

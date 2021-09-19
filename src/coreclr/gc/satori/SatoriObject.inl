@@ -49,11 +49,6 @@ inline SatoriRegion* SatoriObject::ContainingRegion()
     return (SatoriRegion*)((size_t)this & ~(Satori::REGION_SIZE_GRANULARITY - 1));
 }
 
-inline SatoriObject* SatoriObject::At(size_t location)
-{
-    return (SatoriObject*)location;
-}
-
 inline bool SatoriObject::IsFree()
 {
     return RawGetMethodTable() == s_emptyObjectMt;
