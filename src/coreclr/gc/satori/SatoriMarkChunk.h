@@ -42,6 +42,11 @@ public:
         return m_top;
     }
 
+    void Clear()
+    {
+        m_top = 0;
+    }
+
     size_t FreeSpace()
     {
         return Capacity() - m_top;
