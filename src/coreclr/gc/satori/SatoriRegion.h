@@ -69,6 +69,9 @@ public:
     bool IsAttachedToContext();
     bool IsAttachedToContextAcquire();
 
+    bool IsDemoted();
+    SatoriMarkChunk* &DemotedObjects();
+
     int Generation();
     void SetGeneration(int generation);
 
@@ -130,6 +133,8 @@ public:
 
     SatoriPage* ContainingPage();
     SatoriRegion* NextInPage();
+
+    void TryDemote();
 
     void Verify(bool allowMarked = false);
 
@@ -193,6 +198,8 @@ private:
             bool m_hasMarksSet;
             bool m_acceptedPromotedObjects;
             bool m_isReusable;
+
+            SatoriMarkChunk* m_gen2Objects;
 
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
         };

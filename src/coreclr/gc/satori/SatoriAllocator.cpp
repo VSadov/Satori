@@ -250,10 +250,6 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
             _ASSERTE(region == nullptr || region->NothingMarked());
         }
-        else
-        {
-            printf(".");
-        }
 
         if (region == nullptr)
         {

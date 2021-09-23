@@ -345,4 +345,14 @@ inline bool SatoriRegion::IsAttachedToContextAcquire()
     return m_isReusable || VolatileLoad(&m_allocationContextAttachmentPoint);
 }
 
+inline bool SatoriRegion::IsDemoted()
+{
+    return m_gen2Objects;
+}
+
+inline SatoriMarkChunk* &SatoriRegion::DemotedObjects()
+{
+    return m_gen2Objects;
+}
+
 #endif

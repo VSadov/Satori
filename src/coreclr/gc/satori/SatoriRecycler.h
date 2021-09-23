@@ -81,6 +81,8 @@ private:
     // regions that could be reused for Gen1
     SatoriRegionQueue* m_reusableRegions;
 
+    SatoriRegionQueue* m_demotedRegions;
+
     static const int GC_STATE_NONE = 0;
     static const int GC_STATE_CONCURRENT = 1;
     static const int GC_STATE_BLOCKING = 2;

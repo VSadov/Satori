@@ -82,6 +82,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_regionsAddedSinceLastCollection = 0;
 
     m_reusableRegions = new SatoriRegionQueue(QueueKind::RecyclerReusable);
+    m_demotedRegions = new SatoriRegionQueue(QueueKind::RecyclerDemoted);
 
     m_workList = new SatoriMarkChunkQueue();
     m_gcState = GC_STATE_NONE;
@@ -207,7 +208,14 @@ size_t SatoriRecycler::RegionCount()
 
 SatoriRegion* SatoriRecycler::TryGetReusable()
 {
-    return m_reusableRegions->TryPop();
+    SatoriRegion* r = m_reusableRegions->TryPop();
+    if (r)
+    {
+        Interlocked::Decrement(&m_regionsAddedSinceLastCollection);
+        printf(r->IsDemoted() ? "*" : "+");
+    }
+
+    return r;
 }
 
 // NOTE: recycler owns nursery regions only temporarily for the duration of GC when mutators are stopped.
@@ -220,7 +228,15 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region, bool keep)
     _ASSERTE(region->Generation() == 0 || region->Generation() == 1);
     _ASSERTE(!region->HasMarksSet());
 
-    (region->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions: m_ephemeralRegions)->Push(region);
+    if (region->IsDemoted())
+    {
+        m_demotedRegions->Push(region);
+    }
+    else
+    {
+        (region->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(region);
+    }
+
     Interlocked::Increment(&m_regionsAddedSinceLastCollection);
 
     if (keep)
@@ -237,7 +253,9 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region, bool keep)
     }
 
     // we may have marks already, when concurrent marking is allowed
-    region->Verify(/* allowMarked */ ENABLE_CONCURRENT && !region->IsEscapeTracking());
+    region->Verify(/* allowMarked */ ENABLE_CONCURRENT ||
+        region->IsEscapeTracking() ||
+        region->IsDemoted());
 
     // the region has just done allocating, so real occupancy will be known only after we sweep.
     // for now put 0 and treat the region as completely full
@@ -604,9 +622,9 @@ void SatoriRecycler::BlockingCollect()
     // this needs to be called on a "GC" thread while EE is stopped.
     GCToEEInterface::GcStartWork(m_condemnedGeneration, max_generation);
 
-#ifdef TIMED
-    printf("Gen%i , allow promoting relocations: %d \n", m_condemnedGeneration, m_allowPromotingRelocations);
-#endif
+    //#ifdef TIMED
+    //printf("GenStarting%i , allow promoting relocations: %d \n", m_condemnedGeneration, m_allowPromotingRelocations);
+    //#endif
 
     m_condemnedNurseryRegionsCount = 0;
     DeactivateAllStacks();
@@ -630,16 +648,20 @@ void SatoriRecycler::BlockingCollect()
     // that is unobservable to EE, so tell EE that we are done
     GCToEEInterface::GcDone(m_condemnedGeneration);
 
-    m_prevCondemnedGeneration = m_condemnedGeneration;
-    m_condemnedGeneration = 0;
-    m_gcState = GC_STATE_NONE;
-    m_deferredSweepCount = m_deferredSweepRegions->Count();
-    m_regionsAddedSinceLastCollection = 0;
+    //#ifdef TIMED
+    //printf("GenDone%i , relocating: %d , allow promoting relocations: %d \n", m_condemnedGeneration, m_isRelocating, m_allowPromotingRelocations);
+    //#endif
 
 #ifdef TIMED
     time = (GCToOSInterface::QueryPerformanceCounter() - time) * 1000000 / GCToOSInterface::QueryPerformanceFrequency();
     printf("%zu\n", time);
 #endif
+
+    m_prevCondemnedGeneration = m_condemnedGeneration;
+    m_condemnedGeneration = 0;
+    m_gcState = GC_STATE_NONE;
+    m_deferredSweepCount = m_deferredSweepRegions->Count();
+    m_regionsAddedSinceLastCollection = 0;
 
     // restart VM
     GCToEEInterface::RestartEE(true);
@@ -1065,6 +1087,39 @@ void SatoriRecycler::MarkAllStacksAndFinalizationQueue()
                 }
             }
         );
+    }
+
+    SatoriRegion* curRegion;
+    while ((curRegion = m_demotedRegions->TryPop()))
+    {
+        _ASSERT(curRegion->Generation() == 1);
+
+        SatoriMarkChunk* gen2Objects = curRegion->DemotedObjects();
+        if (m_condemnedGeneration == 1)
+        {
+            curRegion->HasPinnedObjects() = true;
+            for (int i = 0; i < gen2Objects->Count(); i++)
+            {
+                SatoriObject* o = gen2Objects->Item(i);
+                o->SetMarkedAtomic();
+                c.PushToMarkQueues(o);
+            }
+        }
+        else
+        {
+            curRegion->DemotedObjects() = nullptr;
+            gen2Objects->Clear();
+            m_heap->Allocator()->ReturnMarkChunk(gen2Objects);
+        }
+
+        if (curRegion->IsReusable())
+        {
+            m_reusableRegions->Push(curRegion);
+        }
+        else
+        {
+            (curRegion->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
+        }
     }
 
     if (c.m_markChunk != nullptr)
@@ -2334,6 +2389,8 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
 {
     // the region must be in after marking and before sweeping state
     _ASSERTE(relocationSource->HasMarksSet());
+    _ASSERTE(!relocationSource->IsDemoted());
+
     relocationSource->Verify(true);
 
     size_t copySize = relocationSource->Occupancy();
@@ -2348,6 +2405,11 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     {
         AddRelocationTarget(relocationSource);
         return;
+    }
+
+    if (relocationTarget->IsDemoted())
+    {
+        printf("#");
     }
 
     // transfer finalization trackers if we have any
@@ -2598,15 +2660,6 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
             curRegion->WipeCards();
         }
 
-        // TODO: VS heuristic for reuse may be more aggressive, consider pinning, etc...
-        if (curRegion->Generation() == 1 &&
-            curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 8 &&
-            curRegion->HasFreeSpaceInTop3Buckets())
-        {
-            _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
-            curRegion->IsReusable() = true;
-        }
-
         // make sure the region is swept and returned now, or later
         if (!ENABLE_CONCURRENT)
         {
@@ -2637,13 +2690,43 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
 void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
 {
     _ASSERTE(curRegion->Occupancy() > 0);
+
+    if (curRegion->Generation() == 2)
+    {
+        if (curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 8 &&
+            curRegion->HasFreeSpaceInTop3Buckets() &&
+            curRegion->ObjCount() <= SatoriMarkChunk::Capacity())
+        {
+            _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
+            curRegion->TryDemote();
+        }
+    }
+
+    // TODO: VS heuristic for reuse may be more aggressive, consider pinning, etc...
+    if (curRegion->Generation() == 1 &&
+        curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 8 &&
+        curRegion->HasFreeSpaceInTop3Buckets())
+    {
+        _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
+        curRegion->IsReusable() = true;
+    }
+    else
+    {
+        curRegion->IsReusable() = false;
+    }
+
     if (curRegion->Generation() == 2)
     {
         (curRegion->EverHadFinalizables() ? m_tenuredFinalizationTrackingRegions : m_tenuredRegions)->Push(curRegion);
     }
     else
     {
-        if (curRegion->IsReusable())
+        if (curRegion->IsDemoted())
+        {
+            _ASSERTE(curRegion->Size() <= Satori::REGION_SIZE_GRANULARITY);
+            m_demotedRegions->Push(curRegion);
+        }
+        else if (curRegion->IsReusable())
         {
             _ASSERTE(curRegion->Size() <= Satori::REGION_SIZE_GRANULARITY);
             m_reusableRegions->Push(curRegion);

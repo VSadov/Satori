@@ -90,6 +90,7 @@ void SatoriRegion::MakeBlank()
     _ASSERTE(!m_hasPendingFinalizables);
     _ASSERTE(!m_finalizableTrackers);
     _ASSERTE(!m_acceptedPromotedObjects);
+    _ASSERTE(!m_gen2Objects);
     _ASSERTE(NothingMarked());
 
     WipeCards();
@@ -102,6 +103,7 @@ void SatoriRegion::MakeBlank()
     m_markStack = 0;
     m_escapeCounter = 0;
     m_occupancy = 0;
+    m_objCount = 0;
 
     m_everHadFinalizables = false;
     m_hasPinnedObjects = false;
@@ -787,6 +789,7 @@ void SatoriRegion::ClearMarkedAndEscapeShallow(SatoriObject* o)
 
 void SatoriRegion::SetOccupancy(size_t occupancy, size_t objCount)
 {
+    _ASSERTE((occupancy == 0) == (objCount == 0));
     _ASSERTE(occupancy <= (Size() - offsetof(SatoriRegion, m_firstObject)));
     m_occupancy = occupancy;
     m_objCount = objCount;
@@ -1656,6 +1659,29 @@ void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
         tail->SetNext(m_finalizableTrackers);
         m_finalizableTrackers = otherFinalizables;
         other->m_finalizableTrackers = nullptr;
+    }
+}
+
+void SatoriRegion::TryDemote()
+{
+    _ASSERTE(!HasMarksSet());
+    _ASSERTE(Generation() == 2);
+    _ASSERTE(ObjCount() != 0);
+
+    SatoriMarkChunk* gen2Objects = Allocator()->TryGetMarkChunk();
+    if (gen2Objects)
+    {
+        this->m_generation = 1;
+        size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+        for (SatoriObject* o = FirstObject(); o->Start() < objLimit; o = o->Next())
+        {
+            if (!o->IsFree())
+            {
+                gen2Objects->Push(o);
+            }
+        }
+
+        this->m_gen2Objects = gen2Objects;
     }
 }
 
