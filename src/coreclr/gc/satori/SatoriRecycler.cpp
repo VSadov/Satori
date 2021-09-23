@@ -1092,7 +1092,7 @@ void SatoriRecycler::MarkAllStacksAndFinalizationQueue()
     SatoriRegion* curRegion;
     while ((curRegion = m_demotedRegions->TryPop()))
     {
-        _ASSERT(curRegion->Generation() == 1);
+        _ASSERTE(curRegion->Generation() == 1);
 
         SatoriMarkChunk* gen2Objects = curRegion->DemotedObjects();
         if (m_condemnedGeneration == 1)
