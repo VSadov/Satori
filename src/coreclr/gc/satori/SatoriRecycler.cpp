@@ -192,8 +192,7 @@ int SatoriRecycler::CondemnedGeneration()
 size_t SatoriRecycler::Gen1RegionCount()
 {
     return m_ephemeralFinalizationTrackingRegions->Count() +
-        m_ephemeralRegions->Count() +
-        m_reusableRegions->Count();
+        m_ephemeralRegions->Count();
 }
 
 size_t SatoriRecycler::Gen2RegionCount()
@@ -589,9 +588,8 @@ void SatoriRecycler::BlockingCollect()
     // assume that we will relocate. we will rethink later.
     m_isRelocating = ENABLE_RELOCATION;
 
-    // the deferred queue should normally be emptied by the concurrent phase.
-    // just in case we support forcing blocking stage for Collect or OOM situations
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
+
     _ASSERTE(m_deferredSweepRegions->IsEmpty());
 
     size_t gen2Count = Gen2RegionCount();
@@ -1112,7 +1110,7 @@ void SatoriRecycler::MarkAllStacksAndFinalizationQueue()
             m_heap->Allocator()->ReturnMarkChunk(gen2Objects);
         }
 
-        if (curRegion->IsReusable())
+        if (curRegion->IsReusable() && !IsBlockingPhase())
         {
             m_reusableRegions->Push(curRegion);
         }
@@ -1937,7 +1935,7 @@ void SatoriRecycler::ScanAllFinalizableRegionsWorker()
     MarkContext c = MarkContext(this);
 
     ScanFinalizableRegions(m_ephemeralFinalizationTrackingRegions, &c);
-    ScanFinalizableRegions(m_reusableRegions, &c);
+    _ASSERTE(m_reusableRegions->IsEmpty());
     
     if (m_condemnedGeneration == 2)
     {
@@ -2721,16 +2719,24 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
     }
     else
     {
-        if (curRegion->IsDemoted())
+        if (curRegion->IsReusable())
+        {
+            _ASSERTE(curRegion->Size() <= Satori::REGION_SIZE_GRANULARITY);
+            if (curRegion->IsDemoted())
+            {
+                m_reusableRegions->Push(curRegion);
+            }
+            else
+            {
+                m_reusableRegions->Enqueue(curRegion);
+            }
+        }
+        else if (curRegion->IsDemoted())
         {
             _ASSERTE(curRegion->Size() <= Satori::REGION_SIZE_GRANULARITY);
             m_demotedRegions->Push(curRegion);
         }
-        else if (curRegion->IsReusable())
-        {
-            _ASSERTE(curRegion->Size() <= Satori::REGION_SIZE_GRANULARITY);
-            m_reusableRegions->Push(curRegion);
-        }
+         
         else
         {
             (curRegion->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
@@ -2749,6 +2755,25 @@ void SatoriRecycler::DrainDeferredSweepQueue()
         {
             SweepAndReturnRegion(curRegion);
             Interlocked::Decrement(&m_deferredSweepCount);
+        }
+    }
+
+    if (IsBlockingPhase())
+    {
+        MaybeAskForHelp();
+
+        SatoriRegion* curRegion;
+        while ((curRegion = m_reusableRegions->TryPop()))
+        {
+            //TODO: VS move this to a helper
+            if (curRegion->IsDemoted())
+            {
+                m_demotedRegions->Push(curRegion);
+            }
+            else
+            {
+                (curRegion->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
+            }
         }
     }
 }
