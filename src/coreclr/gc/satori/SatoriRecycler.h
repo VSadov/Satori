@@ -23,8 +23,11 @@ class SatoriRecycler
 
 public:
     void Initialize(SatoriHeap* heap);
+
+    void PushToEphemeralQueues(SatoriRegion* region);
     void AddEphemeralRegion(SatoriRegion* region, bool keep);
     void AddTenuredRegion(SatoriRegion* region);
+
     void TryStartGC(int generation);
     bool HelpOnce();
     void ConcurrentHelp();
@@ -37,7 +40,6 @@ public:
     void MaybeTriggerGC();
 
     void Collect(int generation, bool force, bool blocking);
-
     bool IsBlockingPhase();
 
     int GetRootScanTicket();
@@ -137,7 +139,7 @@ private:
     void DeactivateAllStacks();
     void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
     bool MarkOwnStackAndDrainQueues(int64_t deadline = 0);
-    void MarkAllStacksAndFinalizationQueue();
+    void MarkAllStacksFinalizationAndDemotedRoots();
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();
     uint8_t GetCardScanTicket();

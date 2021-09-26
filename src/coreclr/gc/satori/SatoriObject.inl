@@ -79,18 +79,14 @@ inline void SatoriObject::SetBitAtomic(int offset)
     size_t word = Start() + offset * sizeof(size_t);
     size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
     size_t bit = ((word >> 3) & 63);
+    size_t mask = (size_t)1 << bit;
 
-#ifdef _MSC_VER
-#ifdef HOST_64BIT
-    _interlockedbittestandset64((long long*)&ContainingRegion()->m_bitmap[bitmapIndex], bit);
-#else
-    _interlockedbittestandset((long*)&ContainingRegion()->m_bitmap[bitmapIndex], bit);
-#endif
-#else
     //NB: this does not need to be a full fence, if possible. 
     //    just need to set a bit atomically. (i.e. LDSET on ARM 8.1)
     //    ordering WRT other writes is unimportant, as long as the bit is set.
-    size_t mask = (size_t)1 << bit;
+#ifdef _MSC_VER
+    _InterlockedOr64((long long *)&ContainingRegion()->m_bitmap[bitmapIndex], mask);
+#else
     __sync_or_and_fetch(&ContainingRegion()->m_bitmap[bitmapIndex], mask);
 #endif
 }

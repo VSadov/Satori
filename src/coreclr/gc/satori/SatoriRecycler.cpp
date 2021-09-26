@@ -217,6 +217,18 @@ SatoriRegion* SatoriRecycler::TryGetReusable()
     return r;
 }
 
+void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
+{
+    if (region->IsDemoted())
+    {
+        m_demotedRegions->Push(region);
+    }
+    else
+    {
+        (region->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(region);
+    }
+}
+
 // NOTE: recycler owns nursery regions only temporarily for the duration of GC when mutators are stopped.
 //       we do not keep them because an active nursery region may change its finalizability classification
 //       concurrently by allocating a finalizable object.
@@ -227,14 +239,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region, bool keep)
     _ASSERTE(region->Generation() == 0 || region->Generation() == 1);
     _ASSERTE(!region->HasMarksSet());
 
-    if (region->IsDemoted())
-    {
-        m_demotedRegions->Push(region);
-    }
-    else
-    {
-        (region->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(region);
-    }
+    PushToEphemeralQueues(region);
 
     Interlocked::Increment(&m_regionsAddedSinceLastCollection);
 
@@ -420,8 +425,9 @@ void SatoriRecycler::MarkAllStacksAndFinalizationQueueHelper()
     // check state again it could have changed if there were no marking threads
     if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
     {
-        MarkAllStacksAndFinalizationQueue();
+        MarkAllStacksFinalizationAndDemotedRoots();
     }
+
     Interlocked::Decrement(&m_ccMarkingThreadsNum);
 }
 
@@ -431,7 +437,7 @@ void SatoriRecycler::StartMarkingAllStacksAndFinalizationQueue()
     {
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
         m_ccStackMarkState = CC_MARK_STATE_MARKING;
-        MarkAllStacksAndFinalizationQueue();
+        MarkAllStacksFinalizationAndDemotedRoots();
         Interlocked::Exchange(&m_ccStackMarkState, CC_MARK_STATE_DONE);
         while (m_ccMarkingThreadsNum)
         {
@@ -754,7 +760,7 @@ void SatoriRecycler::MarkStrongReferencesWorker()
 #endif
 
     MarkHandles();
-    MarkAllStacksAndFinalizationQueue();
+    MarkAllStacksFinalizationAndDemotedRoots();
 
     if (m_condemnedGeneration == 1)
     {
@@ -847,7 +853,6 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, Sa
     else
     {
         // handle mark overflow by dirtying the cards
-        // TODO: VS if mark setting is not a release (it is on x64), we need to do a release barrier here.
         o->DirtyCardsForContent();
 
         // since this o will not be popped from the mark queue,
@@ -1044,7 +1049,7 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
     return revisit;
 }
 
-void SatoriRecycler::MarkAllStacksAndFinalizationQueue()
+void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
 {
     // mark roots for all stacks
     ScanContext sc;
@@ -1052,7 +1057,6 @@ void SatoriRecycler::MarkAllStacksAndFinalizationQueue()
     MarkContext c = MarkContext(this);
     sc._unused1 = &c;
 
-    // TODO: VS make template param
     bool isBlockingPhase = IsBlockingPhase();
 
 #ifdef FEATURE_CONSERVATIVE_GC
@@ -1205,7 +1209,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
                             ref = (SatoriObject**)o->Start();
                         }
 
-                        parentRegion->ContainingPage()->DirtyCardForAddress((size_t)ref);
+                        parentRegion->ContainingPage()->DirtyCardForAddressUnordered((size_t)ref);
                     }
                 },
                 /* includeCollectibleAllocator */ true
@@ -1442,7 +1446,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                                                 ref = (SatoriObject**)o->Start();
                                             }
 
-                                            parentRegion->ContainingPage()->DirtyCardForAddress((size_t)ref);
+                                            parentRegion->ContainingPage()->DirtyCardForAddressUnordered((size_t)ref);
                                         }
                                     }, start, end);
                                 o = o->Next();
@@ -2731,15 +2735,9 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
                 m_reusableRegions->Enqueue(curRegion);
             }
         }
-        else if (curRegion->IsDemoted())
-        {
-            _ASSERTE(curRegion->Size() <= Satori::REGION_SIZE_GRANULARITY);
-            m_demotedRegions->Push(curRegion);
-        }
-         
         else
         {
-            (curRegion->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
+            PushToEphemeralQueues(curRegion);
         }
     }
 }
@@ -2765,15 +2763,7 @@ void SatoriRecycler::DrainDeferredSweepQueue()
         SatoriRegion* curRegion;
         while ((curRegion = m_reusableRegions->TryPop()))
         {
-            //TODO: VS move this to a helper
-            if (curRegion->IsDemoted())
-            {
-                m_demotedRegions->Push(curRegion);
-            }
-            else
-            {
-                (curRegion->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
-            }
+            PushToEphemeralQueues(curRegion);
         }
     }
 }
