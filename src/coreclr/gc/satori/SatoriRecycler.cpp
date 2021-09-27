@@ -232,7 +232,7 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
 // NOTE: recycler owns nursery regions only temporarily for the duration of GC when mutators are stopped.
 //       we do not keep them because an active nursery region may change its finalizability classification
 //       concurrently by allocating a finalizable object.
-void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region, bool keep)
+void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 {
     _ASSERTE(region->AllocStart() == 0);
     _ASSERTE(region->AllocRemaining() == 0);
@@ -240,36 +240,27 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region, bool keep)
     _ASSERTE(!region->HasMarksSet());
 
     PushToEphemeralQueues(region);
-
     Interlocked::Increment(&m_regionsAddedSinceLastCollection);
-
-    if (keep)
-    {
-        // following writes must happen after all allocations have concluded,
-        // previous adding to a queue ensures such ordering.
-        region->StopEscapeTracking();
-    }
-    else if (region->IsEscapeTracking())
+    if (region->IsEscapeTracking())
     {
         _ASSERTE(IsBlockingPhase());
         _ASSERTE(!region->HasPinnedObjects());
         region->ClearMarks();
     }
 
-    // we may have marks already, when concurrent marking is allowed
-    region->Verify(/* allowMarked */ ENABLE_CONCURRENT ||
-        region->IsEscapeTracking() ||
-        region->IsDemoted());
+    // When concurrent marking is allowed we may have marks already.
+    // Demoted regions could be pre-marked
+    region->Verify(/* allowMarked */ region->IsDemoted() || ENABLE_CONCURRENT);
 
     // the region has just done allocating, so real occupancy will be known only after we sweep.
     // for now put 0 and treat the region as completely full
-    // that is a fair estimate for promoted regions anyways and for nursery regions
+    // that is a fair estimate for detached regions anyways and for nursery regions
     // it does not matter, since they will not participate in relocations
     region->SetOccupancy(0, 0);
 
-    if (!keep && region->IsAttachedToContext())
+    if (region->IsAttachedToContext())
     {
-        _ASSERTE(m_gcState == GC_STATE_BLOCKED);
+        _ASSERTE(IsBlockingPhase());
         m_condemnedNurseryRegionsCount++;
     }
 }
@@ -879,8 +870,15 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     if (flags & GC_CALL_INTERIOR)
     {
         // byrefs may point to stack, use checked here
-        o = context->m_heap->ObjectForAddressChecked(location);
-        if (!o || (isConservative && o->IsFree()))
+        SatoriRegion* containingRegion = context->m_heap->RegionForAddressChecked(location);
+        if (!containingRegion ||
+            (isConservative && (containingRegion->Generation() < 0)))
+        {
+            return;
+        }
+
+        o = containingRegion->FindObject(location);
+        if (isConservative && o->IsFree())
         {
             return;
         }
@@ -915,8 +913,15 @@ void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t
     {
         MarkContext* context = (MarkContext*)sc->_unused1;
         // byrefs may point to stack, use checked here
-        o = context->m_heap->ObjectForAddressChecked(location);
-        if (!o || (isConservative && o->IsFree()))
+        SatoriRegion* containingRegion = context->m_heap->RegionForAddressChecked(location);
+        if (!containingRegion ||
+            (isConservative && (containingRegion->Generation() < 0)))
+        {
+            return;
+        }
+
+        o = containingRegion->FindObject(location);
+        if (isConservative && o->IsFree())
         {
             return;
         }
@@ -965,7 +970,18 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
             return;
         }
 
-        // FindObject is unsafe in active regions. While ref may be in a real obj,
+        // since this is concurrent, in a conservative case an allocation could have caused a split
+        // that shortened the found region and the region no longer matches the ref (which means the ref is not real).
+        // Note that the split could only happen before we are done with allocator queue (which is synchronising)
+        // and assing 0+ gen to the region.
+        // So check here in the opposite order - first that region is 0+ gen and then that the size is stil right.
+        if (isConservative &&
+            (containingRegion->GenerationAcquire() < 0 || location >= containingRegion->End()))
+        {
+            return;
+        }
+
+        // Concurrent FindObject is unsafe in active regions. While ref may be in a real obj,
         // the path to it from the first obj or prev indexed may cross unparsable ranges.
         // The check must acquire to be sure we check before actually doing FindObject.
         if (containingRegion->IsAttachedToContextAcquire())
@@ -974,7 +990,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         }
 
         o = containingRegion->FindObject(location);
-        if (isConservative && (!o || o->IsFree()))
+        if (isConservative && o->IsFree())
         {
             return;
         }
@@ -2639,7 +2655,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         // recycler owns nursery regions only temporarily, we should not keep them.
         if (curRegion->IsAttachedToContext())
         {
-            // when promoting, nursery regions should be detached and promoted to gen1
+            // when promoting, all nursery regions should be detached
             _ASSERTE(!m_isPromotingAllRegions);
             if (!m_isRelocating)
             {
