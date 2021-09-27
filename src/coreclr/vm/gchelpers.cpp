@@ -1811,7 +1811,8 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref)
 
 #if FEATURE_SATORI_GC
 
-    // Satori large objects are allocated in gen0. No barrier is needed.
+    // Satori large objects are allocated in either gen1 or gen2.
+    // PublishObject will sort this out and mark cards as needed.
 
 #else
 #ifdef WRITE_BARRIER_CHECK
