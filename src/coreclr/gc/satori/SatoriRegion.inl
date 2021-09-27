@@ -37,6 +37,11 @@ inline int SatoriRegion::Generation()
     return m_generation;
 }
 
+inline int SatoriRegion::GenerationAcquire()
+{
+    return VolatileLoad(&m_generation);
+}
+
 inline void SatoriRegion::SetGeneration(int generation)
 {
     // Gen0 is controlled by thread-local tracking
@@ -44,6 +49,16 @@ inline void SatoriRegion::SetGeneration(int generation)
     _ASSERTE(m_generation != 0);
 
     m_generation = generation;
+}
+
+inline void SatoriRegion::SetGenerationRelease(int generation)
+{
+    // at the time when we set generation to 0+, we should make it certain if
+    // the region is attached, since 0+ detached regions are assumed parseable.
+    _ASSERTE(generation != 0);
+    _ASSERTE(m_generation == -1 || IsReusable());
+
+    VolatileStore(&m_generation, generation);
 }
 
 inline bool SatoriRegion::IsAllocating()
@@ -90,10 +105,10 @@ inline SatoriObject* SatoriRegion::FirstObject()
 
 inline void SatoriRegion::StartEscapeTracking(size_t threadTag)
 {
-    _ASSERTE(m_generation = -1);
+    _ASSERTE(m_generation == -1);
     m_escapeFunc = EscapeFn;
     m_ownerThreadTag = threadTag;
-    m_generation = 0;
+    VolatileStore(&m_generation, 0);
 }
 
 inline void SatoriRegion::StopEscapeTracking()
@@ -329,6 +344,11 @@ inline void SatoriRegion::Attach(SatoriRegion** attachementPoint)
 inline void SatoriRegion::DetachFromContext()
 {
     _ASSERTE(*m_allocationContextAttachmentPoint == this);
+
+    if (IsEscapeTracking())
+    {
+        StopEscapeTracking();
+    }
 
     *m_allocationContextAttachmentPoint = nullptr;
     // all allocations must be committed prior to detachement.

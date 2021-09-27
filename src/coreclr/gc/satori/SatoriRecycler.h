@@ -24,8 +24,7 @@ class SatoriRecycler
 public:
     void Initialize(SatoriHeap* heap);
 
-    void PushToEphemeralQueues(SatoriRegion* region);
-    void AddEphemeralRegion(SatoriRegion* region, bool keep);
+    void AddEphemeralRegion(SatoriRegion* region);
     void AddTenuredRegion(SatoriRegion* region);
 
     void TryStartGC(int generation);
@@ -135,6 +134,8 @@ private:
     static void MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 
     static void HelperThreadFn(void* param);
+
+    void PushToEphemeralQueues(SatoriRegion* region);
 
     void DeactivateAllStacks();
     void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
