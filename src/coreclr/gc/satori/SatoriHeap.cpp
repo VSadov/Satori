@@ -226,28 +226,12 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
     return nullptr;
 }
 
-SatoriObject* SatoriHeap::ObjectForAddress(size_t address)
-{
-    return PageForAddress(address)->RegionForAddress(address)->FindObject(address);
-}
-
 SatoriRegion* SatoriHeap::RegionForAddressChecked(size_t address)
 {
     SatoriPage* page = PageForAddressChecked(address);
     if (page)
     {
         return page->RegionForAddressChecked(address);
-    }
-
-    return nullptr;
-}
-
-SatoriObject* SatoriHeap::ObjectForAddressChecked(size_t address)
-{
-    SatoriRegion* region = RegionForAddressChecked(address);
-    if (region)
-    {
-        return region->FindObject(address);
     }
 
     return nullptr;
