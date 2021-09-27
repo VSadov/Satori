@@ -401,16 +401,18 @@ void SatoriGC::PublishObject(uint8_t* obj)
     SatoriRegion* region = so->ContainingRegion();
 
     // we do not attach huge regions to thread contexts,
-    // but we can not pass the region to recycler until it's object has a MethodTable.
-    // do that here.
+    // but the region is not parseable until the object has a MethodTable,
+    // so we delay taking the region out of generation -1 and passing to recycler
+    // until we get here.
     if (!region->IsAttachedToContext())
     {
+        region->SetGenerationRelease(1);
         _ASSERTE(region->Size() > Satori::REGION_SIZE_GRANULARITY);
         if (!so->RawGetMethodTable()->ContainsPointers())
         {
             // this is a single-object region and it's body has no pointers.
-            // it is rather cheap to have in gen1, so give it a chance to collect early.
-            m_heap->Recycler()->AddEphemeralRegion(region, /* keep */ true);
+            // it is relatively cheap to have it in gen1, so give it a chance to collect early.
+            m_heap->Recycler()->AddEphemeralRegion(region);
         }
         else
         {
@@ -423,6 +425,7 @@ void SatoriGC::PublishObject(uint8_t* obj)
             }
 
             region->SetOccupancy(so->Size(), 1);
+            // promote to gen2
             m_heap->Recycler()->AddTenuredRegion(region);
         }
     }
