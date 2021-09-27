@@ -54,6 +54,8 @@ public:
             m_pageMap[mapIndex] != 0;
     }
 
+    SatoriRegion* RegionForAddressChecked(size_t address);
+
     SatoriPage* PageForAddressChecked(size_t address)
     {
         size_t mapIndex = address >> Satori::PAGE_BITS;
@@ -74,21 +76,6 @@ public:
 
         return nullptr;
     }
-
-    SatoriPage* PageForAddress(size_t address)
-    {
-        size_t mapIndex = address >> Satori::PAGE_BITS;
-        while (m_pageMap[mapIndex] != 1)
-        {
-            mapIndex -= ((size_t)1 << (m_pageMap[mapIndex] - 2));
-        }
-
-        return (SatoriPage*)(mapIndex << Satori::PAGE_BITS);
-    }
-
-    SatoriObject* ObjectForAddress(size_t address);
-    SatoriRegion* RegionForAddressChecked(size_t address);
-    SatoriObject* ObjectForAddressChecked(size_t address);
 
     template<typename F>
     void ForEachPage(F lambda)

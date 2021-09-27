@@ -238,9 +238,9 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                 }
             }
 
-            region->DetachFromContext();
             context->alloc_ptr = context->alloc_limit = nullptr;
-            m_heap->Recycler()->AddEphemeralRegion(region, /* keep */ true);
+            region->DetachFromContext();
+            m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
         m_heap->Recycler()->MaybeTriggerGC();
@@ -257,16 +257,20 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             return nullptr;
         }
 
-        region->SetGeneration(1);
+        region->Attach(&context->RegularRegion());
 #ifdef ENABLE_ESCAPE_TRACKING
         if (!region->IsReusable())
         {
             region->StartEscapeTracking(SatoriUtil::GetCurrentThreadTag());
         }
+        else
 #endif
+        {
+            region->SetGenerationRelease(1);
+        }
+
         region->IsReusable() = false;
         context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
-        region->Attach(&context->RegularRegion());
     }
 }
 
@@ -322,7 +326,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
             }
 
             region->DetachFromContext();
-            m_heap->Recycler()->AddEphemeralRegion(region, /* keep */ true);
+            m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
         // get a new region.
@@ -335,8 +339,8 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
         }
 
         _ASSERTE(region->NothingMarked());
-        region->SetGeneration(1);
         region->Attach(&context->LargeRegion());
+        region->SetGenerationRelease(1);
     }
 }
 
@@ -352,12 +356,10 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     }
 
     _ASSERTE(hugeRegion->NothingMarked());
-    hugeRegion->SetGeneration(1);
     bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
     SatoriObject* result = (SatoriObject*)hugeRegion->AllocateHuge(size, zeroInitialize);
     if (!result)
     {
-        hugeRegion->SetGeneration(-1);
         ReturnRegion(hugeRegion);
         // OOM
         return nullptr;
@@ -366,9 +368,9 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     result->CleanSyncBlock();
     context->alloc_bytes_uoh += size;
 
-    // we cannot promote out of Gen0 yet since the new object has no MethodTable
-    // and region is not parseable.
-    // we will stop allocating here and promote later in PublishObject.
+    // huge regions are not attached to contexts and in gen0+ would appear parseable,
+    // but this one is not parseable yet since the new object has no MethodTable
+    // we will keep the region in gen -1 for now and make it gen1 or gen2 in PublishObject.
     hugeRegion->StopAllocating(/* allocPtr */ 0);
     return result;
 }
