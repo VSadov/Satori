@@ -73,7 +73,9 @@ public:
     SatoriMarkChunk* &DemotedObjects();
 
     int Generation();
+    int GenerationAcquire();
     void SetGeneration(int generation);
+    void SetGenerationRelease(int generation);
 
     size_t Start();
     size_t End();
