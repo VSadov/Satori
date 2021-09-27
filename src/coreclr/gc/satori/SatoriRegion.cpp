@@ -67,11 +67,11 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
 
     result->m_allocStart = (size_t)&result->m_firstObject;
     result->m_allocEnd = result->End();
-
-    result->m_containingPage->RegionInitialized(result);
     result->m_escapeFunc = nullptr;
     result->m_generation = -1;
     result->m_finalizableTrackersLock = 0;
+
+    result->m_containingPage->RegionInitialized(result);
     return result;
 }
 
@@ -513,28 +513,22 @@ inline size_t LocationToIndex(size_t location)
 //
 // Typical usees:
 //  - precise root marking.
-//         not in allocating mode
+//         not in allocating mode (not attached to allocation context)
 //         always provides real refs into real objects.
 //  - conservative root marking
 //         not in allocating mode
-//         can give refs outside of First/Last objects or pointing to Free
+//         can give refs pointing to Free
 //  - escape checks for array copying.
 //         always provides refs into real objects
 //         may be in allocation mode, but uses the region owned by current thread, thus no allocations could happen concurrently.
 //  - iterating over card table - 
 //         not in allocating mode
-//         can give refs outside of First/Last objects or pointing to Free. (because of card granularity)
+//         can give refs pointing to Free. (because of card granularity)
 SatoriObject* SatoriRegion::FindObject(size_t location)
 {
-    _ASSERTE(location >= Start() && location < End());
-    location = min(location, Start() + Satori::REGION_SIZE_GRANULARITY);
+    _ASSERTE(m_generation >= 0 && location >= Start() && location < End());
 
-#ifdef FEATURE_CONSERVATIVE_GC
-    if (GCConfig::GetConservativeGC() && m_generation < 0)
-    {
-        return nullptr;
-    }
-#endif
+    location = min(location, Start() + Satori::REGION_SIZE_GRANULARITY);
 
     // start search from the first object or after unparseable alloc gap
     SatoriObject* o = (IsAllocating() && (location >= m_allocEnd)) ?
