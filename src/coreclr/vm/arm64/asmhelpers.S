@@ -532,7 +532,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 
     // need couple temps. Save before using.
         stp     x2,  x3,  [sp, -16]!
-    // if src is in gen2 and barrier is not concurrent we do not need to mark cards
+    // if src is in gen2 and the barrier is not concurrent we do not need to mark cards
         and     x2,  x15, #0xFFFFFFFFFFE00000     // source region
         ldr     w12, [x2, 16]
         tbz     w12, #1, LOCAL_LABEL(MarkCards)
@@ -603,8 +603,8 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         strb    w3, [x17]
         b       LOCAL_LABEL(Exit)
 
-// this is expected to be rare.
-LOCAL_LABEL(RecordEscape):
+    // this is expected to be rare.
+    LOCAL_LABEL(RecordEscape):
         // because of the barrier call convention
         // we need to preserve caller-saved x0 through x18 and x29/x30
 
