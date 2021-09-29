@@ -18,12 +18,12 @@
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
 
-void InitWriteBarrier(uint8_t* segmentTable, size_t highest_address)
+void InitWriteBarrier(uint8_t* pageMap, size_t highest_address)
 {
     WriteBarrierParameters args = {};
     args.operation = WriteBarrierOp::Initialize;
     args.is_runtime_suspended = true;
-    args.card_table = (uint32_t*)segmentTable;
+    args.card_table = (uint32_t*)pageMap;
     args.highest_address = (uint8_t*)highest_address;
 
     // dummy values to make asserts happy, we will not use this
@@ -34,12 +34,12 @@ void InitWriteBarrier(uint8_t* segmentTable, size_t highest_address)
     GCToEEInterface::StompWriteBarrier(&args);
 }
 
-void UpdateWriteBarrier(uint8_t* segmentTable, size_t highest_address)
+void UpdateWriteBarrier(uint8_t* pageMap, size_t highest_address)
 {
     WriteBarrierParameters args = {};
     args.operation = WriteBarrierOp::StompResize;
     args.is_runtime_suspended = false;
-    args.card_table = (uint32_t*)segmentTable;
+    args.card_table = (uint32_t*)pageMap;
     args.highest_address = (uint8_t*)highest_address;
 
     // dummy values to make asserts happy, we will not use this
