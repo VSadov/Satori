@@ -332,7 +332,7 @@ LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
         shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
         add     rax, [g_card_table]
         cmp     byte ptr [rax], 0
-        jnz     JIT_WriteBarrier
+        jne     JIT_WriteBarrier
 
     NotInHeap:
         ; See comment above about possible AV
@@ -351,6 +351,7 @@ LEAF_END JIT_PatchedCodeStart, _TEXT
 ;   rdx - object
 ;
 LEAF_ENTRY JIT_WriteBarrier, _TEXT
+    align 16
     ; check for escaping assignment
     ; 1) check if we own the source region
         mov     r8, rdx
@@ -377,28 +378,13 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         mov     [rcx], rdx              ; threadlocal assignment of unescaped object
         ret
 
-    RecordEscape:
-        ; save rcx, rdx, r8 and have enough stack for the callee
-        push rcx
-        push rdx
-        push r8
-        sub  rsp, 20h
-
-        ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
-        call    qword ptr [r8 + 8]
-
-        add     rsp, 20h
-        pop     r8
-        pop     rdx
-        pop     rcx
-
     AssignAndMarkCards:
         mov     [rcx], rdx
 
     ; TODO: VS for throughput tuning a nonconcurrent and concurrent barriers could be separated 
     ;       need to suspend EE when swapping barriers, but GCs in that mode should be relatively rare
 
-    ; if src is in gen2 and barrier is not concurrent we do not need to mark cards
+    ; if src is in gen2 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [r8 + 16], 2
         jne     MarkCards
         cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
@@ -407,9 +393,9 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
 
     MarkCards:
     ; fetch card location for rcx
-        mov     r8,  rcx
         mov     r9 , [g_card_table]     ; fetch the page map
         mov     rax, rcx
+        mov     r8,  rcx
         shr     rax, 30
      CheckPageMap:                               
         movzx   ecx, byte ptr [r9 + rax]
@@ -461,6 +447,23 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
 
     Exit:
         ret
+
+    ; this is expected to be rare.
+    RecordEscape:
+        ; save rcx, rdx, r8 and have enough stack for the callee
+        push rcx
+        push rdx
+        push r8
+        sub  rsp, 20h
+
+        ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
+        call    qword ptr [r8 + 8]
+
+        add     rsp, 20h
+        pop     r8
+        pop     rdx
+        pop     rcx
+        jmp     AssignAndMarkCards
 LEAF_END_MARKED JIT_WriteBarrier, _TEXT
 
 ; Mark start of the code region that we patch at runtime

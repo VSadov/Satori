@@ -212,6 +212,212 @@ LOCAL_LABEL(CheckCardTableByte_ByRefWriteBarrier):
         ret
 LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
 
+
+#else  //FEATURE_SATORI_GC
+
+// Mark start of the code region that we patch at runtime
+LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
+        ret
+LEAF_END JIT_PatchedCodeStart, _TEXT
+
+
+// void JIT_CheckedWriteBarrier(Object** dst, Object* src)
+LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
+
+        // See if this is in GCHeap
+        PREPARE_EXTERNAL_VAR g_highest_address, rax
+        cmp     rdi, [rax]
+        ja      NotInHeap
+
+        mov     rax, rdi
+        shr     rax, 30                 // round to page size ( >> PAGE_BITS )
+        PREPARE_EXTERNAL_VAR g_card_table, r8
+        add     rax, [r8]
+        cmp     byte ptr [rax], 0
+        je      NotInHeap
+        jmp     JIT_WriteBarrier
+        //jmp     [rip + C_FUNC(JIT_WriteBarrier_Loc)]    // TODO: VS do we need the indirection on OSX?
+
+    NotInHeap:
+        // See comment above about possible AV
+        mov     [rdi], rsi
+        ret
+LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
+
+
+//
+//   rdi - dest address
+//   rsi - object
+//
+.balign 16
+LEAF_ENTRY JIT_WriteBarrier, _TEXT
+    // check for escaping assignment
+    // 1) check if we own the source region
+        mov     rdx, rsi
+        and     rdx, 0xFFFFFFFFFFE00000  // source region
+        jz      JustAssign              // assigning null   
+        mov     rax,  fs:[0]            // thread tag
+        cmp     qword ptr [rdx], rax     
+        jne     AssignAndMarkCards      // not local to this thread
+
+    // 2) check if the src and dst are from the same region
+        mov     rax, rsi
+        xor     rax, rdi
+        shr     rax, 21
+        jnz     RecordEscape            // cross region assignment. definitely escaping
+
+    // 3) check if the target is exposed
+        mov     rax, rdi
+        and     rax, 0x1FFFFF
+        shr     rax, 3
+        bt      qword ptr [rdx], rax
+        jb      RecordEscape            // target is exposed. record an escape.
+
+    JustAssign:
+        mov     [rdi], rsi              // threadlocal assignment of unescaped object
+
+        // set rdi, rsi per contract with JIT_ByRefWriteBarrier
+        add     rdi, 8
+        mov     rsi, r10
+        ret
+
+    AssignAndMarkCards:
+        mov     [rdi], rsi
+        mov     rax, rdi
+
+        // set rdi, rsi per contract with JIT_ByRefWriteBarrier
+        add     rdi, 8
+        mov     rsi, r10
+
+    // if src is in gen2 and the barrier is not concurrent we do not need to mark cards
+        PREPARE_EXTERNAL_VAR g_sw_ww_enabled_for_gc_heap, r11
+        cmp     dword ptr [rdx + 16], 2
+        jne     MarkCards
+        cmp     byte ptr [r11], 0
+        jne     MarkCards
+        REPRET
+
+    MarkCards:
+    // fetch card location for rax  (saved rdi)
+        PREPARE_EXTERNAL_VAR g_card_table, r9 
+        mov     r9,  [r9]  // fetch the page map
+        mov     rdx, rax
+        shr     rax, 30
+     CheckPageMap:                               
+        movzx   ecx, byte ptr [r9 + rax]
+        cmp     cl,  1
+        je      PageFound
+        add     cl,  -2
+        mov     r8,  1
+        shl     r8,  cl
+        sub     rax, r8
+        jmp     CheckPageMap
+     PageFound:
+        shl     rax, 30   // page
+        sub     rdx, rax   // offset in page
+        mov     r8,  rdx
+        shr     rdx, 9     // card offset
+        shr     r8,  21   // group offset
+
+     // check if concurrent marking is in progress
+        cmp     byte ptr [r11], 0
+        jne     DirtyCard
+
+     // SETTING CARD
+     SetCard:
+        cmp     byte ptr [rax + rdx], 0
+        jne     CardSet
+        mov     byte ptr [rax + rdx], 1
+     SetGroup:
+        cmp     byte ptr [rax + r8 * 2 + 0x80], 0
+        jne     CardSet
+        mov     byte ptr [rax + r8 * 2 + 0x80], 1
+     SetPage:
+        cmp     byte ptr [rax], 0
+        jne     CardSet
+        mov     byte ptr [rax], 1
+
+     CardSet:
+     // check if concurrent marking is still not in progress
+        cmp     byte ptr [r11], 0
+        jne     DirtyCard
+        REPRET
+
+     // DIRTYING CARD
+     DirtyCard:
+        mov     byte ptr [rax + rdx], 3
+     DirtyGroup:
+        mov     byte ptr [rax + r8 * 2 + 0x80], 3
+     DirtyPage:
+        mov     byte ptr [rax], 3
+
+    Exit:
+        ret
+
+    // this is expected to be rare.
+    RecordEscape:
+        // save rdi, rsi, rdx and r10 (possibly preadjusted rsi)
+        push rdi
+        push rsi
+        push rdx
+        push r10
+
+        // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
+        call    qword ptr [rdx + 8]
+
+        pop     r10
+        pop     rdx
+        pop     rsi
+        pop     rdi
+        jmp     AssignAndMarkCards
+LEAF_END_MARKED JIT_WriteBarrier, _TEXT
+
+// Mark start of the code region that we patch at runtime
+LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
+        ret
+LEAF_END JIT_PatchedCodeLast, _TEXT
+
+// JIT_ByRefWriteBarrier has weird symantics, see usage in StubLinkerX86.cpp
+//
+// Entry:
+//   RDI - address of ref-field (assigned to)
+//   RSI - address of the data  (source)
+//   Note: RyuJIT assumes that all volatile registers can be trashed by 
+//   the CORINFO_HELP_ASSIGN_BYREF helper (i.e. JIT_ByRefWriteBarrier)
+//   except RDI and RSI. This helper uses and defines RDI and RSI, so
+//   they remain as live GC refs or byrefs, and are not killed.
+// Exit:
+//   RDI, RSI are incremented by SIZEOF(LPVOID)
+LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
+        lea     r10, [rsi + 8]
+        mov     rsi, [rsi]
+
+        // See if this is in GCHeap
+        PREPARE_EXTERNAL_VAR g_highest_address, rax
+        cmp     rdi, [rax]
+        ja      NotInHeap_ByRefWriteBarrier
+
+        mov     rax, rdi
+        shr     rax, 30                 // round to page size ( >> PAGE_BITS )
+        PREPARE_EXTERNAL_VAR g_card_table, r8
+        add     rax, [r8]
+        cmp     byte ptr [rax], 0
+        je      NotInHeap_ByRefWriteBarrier
+        jmp     JIT_WriteBarrier
+        //jmp     [rip + C_FUNC(JIT_WriteBarrier_Loc)]    // TODO: VS do we need the indirection on OSX?
+
+    .balign 16
+    NotInHeap_ByRefWriteBarrier:
+        mov     [rdi], rsi
+        add     rdi, 8
+        mov     rsi, r10
+        ret
+LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
+
+#endif  // FEATURE_SATORI_GC
+
+
+
         // When JIT_WriteBarrier is copied into an allocated page,
         // helpers use this global variable to jump to it. This variable is set in InitThreadManager.
         .global C_FUNC(JIT_WriteBarrier_Loc)
@@ -229,7 +435,8 @@ LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
 .balign 16
 LEAF_ENTRY  JIT_WriteBarrier_Callable, _TEXT
     // JIT_WriteBarrier(Object** dst, Object* src)
-    jmp     [rip + C_FUNC(JIT_WriteBarrier_Loc)]
+    jmp JIT_WriteBarrier
+    //jmp     [rip + C_FUNC(JIT_WriteBarrier_Loc)]         // TODO: VS do we need the indirection on OSX?
 LEAF_END JIT_WriteBarrier_Callable, _TEXT
 
 
