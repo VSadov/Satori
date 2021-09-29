@@ -213,6 +213,17 @@ LEAF_END_MARKED JIT_WriteBarrier_SVR64, _TEXT
 
 #endif
 
+#ifdef FEATURE_SATORI_GC
+
+        .balign 8
+LEAF_ENTRY JIT_WriteBarrier_SATORI, _TEXT
+    // TODO: Satori, when we need barrier replacement
+        mov qword ptr[0], 0
+        ret
+LEAF_END_MARKED JIT_WriteBarrier_SATORI, _TEXT
+
+#endif
+
 
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 
