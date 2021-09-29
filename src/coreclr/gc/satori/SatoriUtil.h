@@ -137,7 +137,6 @@ public:
         Error: IMPLEMENT BARRIER IN ASM
 #else
         __asm__ ("movq %%fs:0, %0" : "=r" (tag));
-        Error: IMPLEMENT BARRIER IN ASM
 #endif
         return tag;
 #else
