@@ -235,8 +235,7 @@ LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
         add     rax, [r8]
         cmp     byte ptr [rax], 0
         je      NotInHeap
-        jmp     JIT_WriteBarrier
-        //jmp     [rip + C_FUNC(JIT_WriteBarrier_Loc)]    // TODO: VS do we need the indirection on OSX?
+        jmp     C_FUNC(JIT_WriteBarrier)
 
     NotInHeap:
         // See comment above about possible AV
@@ -255,8 +254,12 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
     // 1) check if we own the source region
         mov     rdx, rsi
         and     rdx, 0xFFFFFFFFFFE00000  // source region
-        jz      JustAssign              // assigning null   
+        jz      JustAssign              // assigning null
+#ifdef TARGET_OSX
+        mov     rax,  gs:[0]            // thread tag
+#else
         mov     rax,  fs:[0]            // thread tag
+#endif
         cmp     qword ptr [rdx], rax     
         jne     AssignAndMarkCards      // not local to this thread
 
@@ -372,10 +375,6 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         jmp     AssignAndMarkCards
 LEAF_END_MARKED JIT_WriteBarrier, _TEXT
 
-// Mark start of the code region that we patch at runtime
-LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
-        ret
-LEAF_END JIT_PatchedCodeLast, _TEXT
 
 // JIT_ByRefWriteBarrier has weird symantics, see usage in StubLinkerX86.cpp
 //
@@ -403,8 +402,7 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
         add     rax, [r8]
         cmp     byte ptr [rax], 0
         je      NotInHeap_ByRefWriteBarrier
-        jmp     JIT_WriteBarrier
-        //jmp     [rip + C_FUNC(JIT_WriteBarrier_Loc)]    // TODO: VS do we need the indirection on OSX?
+        jmp     C_FUNC(JIT_WriteBarrier)
 
     .balign 16
     NotInHeap_ByRefWriteBarrier:
@@ -413,6 +411,11 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
         mov     rsi, r10
         ret
 LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
+
+// Mark start of the code region that we patch at runtime
+LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
+        ret
+LEAF_END JIT_PatchedCodeLast, _TEXT
 
 #endif  // FEATURE_SATORI_GC
 
@@ -434,9 +437,14 @@ LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
 // __declspec(naked) void F_CALL_CONV JIT_WriteBarrier_Callable(Object **dst, Object* val)
 .balign 16
 LEAF_ENTRY  JIT_WriteBarrier_Callable, _TEXT
-    // JIT_WriteBarrier(Object** dst, Object* src)
-    jmp JIT_WriteBarrier
-    //jmp     [rip + C_FUNC(JIT_WriteBarrier_Loc)]         // TODO: VS do we need the indirection on OSX?
+        // JIT_WriteBarrier(Object** dst, Object* src)
+
+        // this will be needed if JIT_WriteBarrier relocated/bashed
+        // also will need to update locations for checked and byref jit helpers
+        // jmp     [rip + C_FUNC(JIT_WriteBarrier_Loc)]
+
+        jmp     C_FUNC(JIT_WriteBarrier)
+
 LEAF_END JIT_WriteBarrier_Callable, _TEXT
 
 
