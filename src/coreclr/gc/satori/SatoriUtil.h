@@ -124,8 +124,7 @@ public:
         __asm__ ("mrs %0, tpidrro_el0" : "=r" (tag));
         tag &= (size_t)~7;
 #else
-        __asm__ ("movq %%gs:0, %0" : "=r" (tag) );
-        Error: IMPLEMENT BARRIER IN ASM
+        __asm__ ("movq %%gs:0, %0" : "=r" (tag));
 #endif
         return tag;
 
