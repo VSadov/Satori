@@ -498,9 +498,18 @@ JIT_WriteBarrier_Loc:
 
 LEAF_ENTRY  JIT_WriteBarrier_Callable, _TEXT
         ; JIT_WriteBarrier(Object** dst, Object* src)
+
+        ; this will be needed if JIT_WriteBarrier relocated/bashed
+        ; also will need to update locations for checked and byref jit helpers
+        ; jmp     QWORD PTR [JIT_WriteBarrier_Loc]
+
         jmp     JIT_WriteBarrier
 LEAF_END JIT_WriteBarrier_Callable, _TEXT
 
+; Mark start of the code region that we patch at runtime
+LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
+        ret
+LEAF_END JIT_PatchedCodeStart, _TEXT
 
 ; void JIT_CheckedWriteBarrier(Object** dst, Object* src)
 LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
@@ -520,12 +529,6 @@ LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
         mov     [rcx], rdx
         ret
 LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
-
-
-; Mark start of the code region that we patch at runtime
-LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
-        ret
-LEAF_END JIT_PatchedCodeStart, _TEXT
 
 ;
 ;   rcx - dest address 
@@ -647,11 +650,6 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         jmp     AssignAndMarkCards
 LEAF_END_MARKED JIT_WriteBarrier, _TEXT
 
-; Mark start of the code region that we patch at runtime
-LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
-        ret
-LEAF_END JIT_PatchedCodeLast, _TEXT
-
 ; JIT_ByRefWriteBarrier has weird symantics, see usage in StubLinkerX86.cpp
 ;
 ; Entry:
@@ -686,6 +684,11 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
         mov     [rcx], rdx
         ret
 LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
+
+; Mark start of the code region that we patch at runtime
+LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
+        ret
+LEAF_END JIT_PatchedCodeLast, _TEXT
 
 endif  ; FEATURE_SATORI_GC
 
