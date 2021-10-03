@@ -108,7 +108,7 @@ void SatoriRegion::MakeBlank()
     m_everHadFinalizables = false;
     m_hasPinnedObjects = false;
     m_hasMarksSet = false;
-    m_isReusable = false;
+    m_reusableFor = ReuseLevel::None;
 
     //clear index and free list
     ClearFreeLists();
@@ -753,16 +753,33 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
     } while (o);
 }
 
+void SatoriRegion::EscsapeAll()
+{
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+    for (SatoriObject* o = FirstObject(); o->Start() < objLimit; o = o->Next())
+    {
+        if (!o->IsFree())
+        {
+            EscapeShallow(o);
+        }
+    }
+}
+
 void SatoriRegion::ClearMarkedAndEscapeShallow(SatoriObject* o)
+{
+    o->ClearMarked();
+    EscapeShallow(o);
+}
+
+void SatoriRegion::EscapeShallow(SatoriObject* o)
 {
     _ASSERTE(o->ContainingRegion() == this);
     _ASSERTE(!o->IsEscaped());
     _ASSERTE(!o->IsPinned());
 
-    o->ClearMarked();
     o->SetEscaped();
 
-    //NB: we are not checking is we exceed escape limit here.
+    //NB: we are not checking if we exceed the escape limit here.
     //    it is possible, if we have a lot of stack roots, but highly unlikely and otherwise ok.
     //    typically objects have died and we have fewer escapes than before the GC,
     //    so we do not bother to check
@@ -1656,27 +1673,35 @@ void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
     }
 }
 
-void SatoriRegion::TryDemote()
+bool SatoriRegion::TryDemote()
 {
     _ASSERTE(!HasMarksSet());
     _ASSERTE(Generation() == 2);
     _ASSERTE(ObjCount() != 0);
 
-    SatoriMarkChunk* gen2Objects = Allocator()->TryGetMarkChunk();
-    if (gen2Objects)
+    if (ObjCount() > SatoriMarkChunk::Capacity())
     {
-        this->m_generation = 1;
-        size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
-        for (SatoriObject* o = FirstObject(); o->Start() < objLimit; o = o->Next())
-        {
-            if (!o->IsFree())
-            {
-                gen2Objects->Push(o);
-            }
-        }
-
-        this->m_gen2Objects = gen2Objects;
+        return false;
     }
+
+    SatoriMarkChunk* gen2Objects = Allocator()->TryGetMarkChunk();
+    if (!gen2Objects)
+    {
+        return false;
+    }
+
+    this->m_generation = 1;
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+    for (SatoriObject* o = FirstObject(); o->Start() < objLimit; o = o->Next())
+    {
+        if (!o->IsFree())
+        {
+            gen2Objects->Push(o);
+        }
+    }
+
+    this->m_gen2Objects = gen2Objects;
+    return true;
 }
 
 bool SatoriRegion::NothingMarked()

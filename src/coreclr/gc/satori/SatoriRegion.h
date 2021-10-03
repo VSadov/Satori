@@ -100,7 +100,10 @@ public:
     bool AnyExposed(size_t from, size_t length);
     void EscapeRecursively(SatoriObject* obj);
 
+    void EscsapeAll();
+
     void ClearMarkedAndEscapeShallow(SatoriObject* o);
+    void EscapeShallow(SatoriObject* o);
     void SetOccupancy(size_t occupancy, size_t objCount);
 
     template<typename F>
@@ -123,7 +126,16 @@ public:
     bool& HasPinnedObjects();
     bool& HasMarksSet();
     bool& AcceptedPromotedObjects();
-    bool& IsReusable();
+
+    enum class ReuseLevel : uint8_t
+    {
+        None,
+        Gen1,
+        Gen0,
+    };
+
+    ReuseLevel& ReusableFor();
+    bool IsReusable();
 
     SatoriQueue<SatoriRegion>* ContainingQueue();
 
@@ -136,7 +148,7 @@ public:
     SatoriPage* ContainingPage();
     SatoriRegion* NextInPage();
 
-    void TryDemote();
+    bool TryDemote();
 
     void Verify(bool allowMarked = false);
 
@@ -199,7 +211,7 @@ private:
             bool m_hasPinnedObjects;
             bool m_hasMarksSet;
             bool m_acceptedPromotedObjects;
-            bool m_isReusable;
+            ReuseLevel m_reusableFor;
 
             SatoriMarkChunk* m_gen2Objects;
 
