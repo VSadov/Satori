@@ -82,6 +82,7 @@ namespace Satori
     // TUNING: this is just a threshold for cases when clearly too many objects have escaped already.
     // Assuming minimum sized objects, when 1/8 escapes, stop tracking escapes
     // The actual value may not matter a lot. Still may be worth revisiting.
+    //TODO: VS consider the escaped Size instead (demote would check occupancy)
     static const int MAX_TRACKED_ESCAPES = REGION_SIZE_GRANULARITY / MIN_FREE_SIZE / 8;
 
     static const int MIN_FREELIST_SIZE_BITS = 12;

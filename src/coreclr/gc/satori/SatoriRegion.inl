@@ -24,7 +24,7 @@ inline bool SatoriRegion::IsEscapeTracking()
 
 inline bool SatoriRegion::IsEscapeTrackingAcquire()
 {
-    return VolatileLoad(&m_ownerThreadTag);
+    return m_reusableFor == ReuseLevel::Gen0 || VolatileLoad(&m_ownerThreadTag);
 }
 
 inline bool SatoriRegion::IsEscapeTrackedByCurrentThread()
@@ -105,7 +105,7 @@ inline SatoriObject* SatoriRegion::FirstObject()
 
 inline void SatoriRegion::StartEscapeTracking(size_t threadTag)
 {
-    _ASSERTE(m_generation == -1);
+    _ASSERTE(m_generation == -1 || ReusableFor() == ReuseLevel::Gen0);
     m_escapeFunc = EscapeFn;
     m_ownerThreadTag = threadTag;
     VolatileStore(&m_generation, 0);
@@ -232,6 +232,8 @@ bool SatoriRegion::Sweep(bool keepMarked)
             _ASSERTE(!o->IsFree());
             if (isEscapeTracking)
             {
+                // TODO: VS we do not need to escape all survivors, we could keep old escape bits
+                //       and only clean 1) mark bit for survivors 2) all bits for free obj.
                 // turn mark bit into escape bits.
                 this->ClearMarkedAndEscapeShallow(o);
             }
@@ -322,9 +324,14 @@ inline bool& SatoriRegion::AcceptedPromotedObjects()
     return m_acceptedPromotedObjects;
 }
 
-inline bool& SatoriRegion::IsReusable()
+inline bool SatoriRegion::IsReusable()
 {
-    return m_isReusable;
+    return m_reusableFor != ReuseLevel::None;
+}
+
+inline SatoriRegion::ReuseLevel& SatoriRegion::ReusableFor()
+{
+    return m_reusableFor;
 }
 
 inline SatoriQueue<SatoriRegion>* SatoriRegion::ContainingQueue()
@@ -362,7 +369,7 @@ inline bool SatoriRegion::IsAttachedToContext()
 
 inline bool SatoriRegion::IsAttachedToContextAcquire()
 {
-    return m_isReusable || VolatileLoad(&m_allocationContextAttachmentPoint);
+    return IsReusable() || VolatileLoad(&m_allocationContextAttachmentPoint);
 }
 
 inline bool SatoriRegion::IsDemoted()

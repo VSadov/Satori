@@ -28,8 +28,8 @@
 #undef memcpy
 #endif //memcpy
 
-#define ENABLE_CONCURRENT true
-//#define ENABLE_CONCURRENT false
+//#define ENABLE_CONCURRENT true
+#define ENABLE_CONCURRENT false
 
 #define ENABLE_RELOCATION true
 //#define ENABLE_RELOCATION false
@@ -211,7 +211,10 @@ SatoriRegion* SatoriRecycler::TryGetReusable()
     if (r)
     {
         Interlocked::Decrement(&m_regionsAddedSinceLastCollection);
-        printf(r->IsDemoted() ? "*" : "+");
+        if (r->IsDemoted())
+        {
+            printf("!");
+        }
     }
 
     return r;
@@ -1110,7 +1113,7 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
     SatoriRegion* curRegion;
     while ((curRegion = m_demotedRegions->TryPop()))
     {
-        _ASSERTE(curRegion->Generation() == 1);
+        _ASSERTE(curRegion->Generation() <= 1);
 
         SatoriMarkChunk* gen2Objects = curRegion->DemotedObjects();
         if (m_condemnedGeneration == 1)
@@ -2425,11 +2428,6 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         return;
     }
 
-    if (relocationTarget->IsDemoted())
-    {
-        printf("#");
-    }
-
     // transfer finalization trackers if we have any
     relocationTarget->TakeFinalizerInfoFrom(relocationSource);
 
@@ -2708,29 +2706,37 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
 void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
 {
     _ASSERTE(curRegion->Occupancy() > 0);
+    _ASSERTE(curRegion->Generation() > 0);
 
-    if (curRegion->Generation() == 2)
-    {
-        if (curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 8 &&
-            curRegion->HasFreeSpaceInTop3Buckets() &&
-            curRegion->ObjCount() <= SatoriMarkChunk::Capacity())
-        {
-            _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
-            curRegion->TryDemote();
-        }
-    }
-
-    // TODO: VS heuristic for reuse may be more aggressive, consider pinning, etc...
-    if (curRegion->Generation() == 1 &&
-        curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 8 &&
+    // TODO: TUNING: heuristic for reuse could be more aggressive, consider pinning, etc...
+    //               the cost here is inability to trace byrefs concurrently, not huge,
+    //               byref is rarely the only ref.
+    curRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
+    if (curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 4 &&
         curRegion->HasFreeSpaceInTop3Buckets())
     {
         _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
-        curRegion->IsReusable() = true;
-    }
-    else
-    {
-        curRegion->IsReusable() = false;
+
+        // TODO: TUNING: heuristic for demoting - could consider pinning, etc...
+        //               the cost here is increasing gen1, which is supposed to be small.
+        // TODO: VS this may be less relevant if gen sizes are in terms of occupancy (which they should be)
+        if ((curRegion->Generation() == 1) ||
+            (curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 8) && curRegion->TryDemote())
+        {
+#if _DEBUG
+            // just split 50%/50% for testing purposes.
+            curRegion->ReusableFor() = curRegion->ObjCount() % 2 == 0 ?
+                SatoriRegion::ReuseLevel::Gen0 :
+                SatoriRegion::ReuseLevel::Gen1;
+
+#else
+            // TODO: TUNING: heuristic for gen0
+            //               the cost here is inability to trace concurrently at all.
+            curRegion->ReusableFor() = curRegion->ObjCount() < (Satori::MAX_TRACKED_ESCAPES / 2) ?
+                                            SatoriRegion::ReuseLevel::Gen0 :
+                                            SatoriRegion::ReuseLevel::Gen1;
+#endif
+        }
     }
 
     if (curRegion->Generation() == 2)
