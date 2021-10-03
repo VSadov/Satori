@@ -259,17 +259,26 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
         region->Attach(&context->RegularRegion());
 #ifdef ENABLE_ESCAPE_TRACKING
-        if (!region->IsReusable())
+        switch (region->ReusableFor())
         {
+        case SatoriRegion::ReuseLevel::Gen0:
+            printf("*");
+            region->EscsapeAll();
+            goto fallthrough;
+        case SatoriRegion::ReuseLevel::None:
+            fallthrough:
             region->StartEscapeTracking(SatoriUtil::GetCurrentThreadTag());
-        }
-        else
-#endif
-        {
+            break;
+        case SatoriRegion::ReuseLevel::Gen1:
+            printf("+");
             region->SetGenerationRelease(1);
+            break;
         }
+#else
+        region->SetGenerationRelease(1);
+#endif
 
-        region->IsReusable() = false;
+        region->ReusableFor() = SatoriRegion::ReuseLevel::None;
         context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
     }
 }
