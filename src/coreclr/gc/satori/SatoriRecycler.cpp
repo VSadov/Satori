@@ -213,7 +213,7 @@ SatoriRegion* SatoriRecycler::TryGetReusable()
         Interlocked::Decrement(&m_regionsAddedSinceLastCollection);
         if (r->IsDemoted())
         {
-            printf("!");
+            //printf("!");
         }
     }
 
@@ -620,9 +620,9 @@ void SatoriRecycler::BlockingCollect()
     // this needs to be called on a "GC" thread while EE is stopped.
     GCToEEInterface::GcStartWork(m_condemnedGeneration, max_generation);
 
-    //#ifdef TIMED
-    //printf("GenStarting%i , allow promoting relocations: %d \n", m_condemnedGeneration, m_allowPromotingRelocations);
-    //#endif
+#ifdef TIMED
+    printf("GenStarting%i , allow promoting relocations: %d \n", m_condemnedGeneration, m_allowPromotingRelocations);
+#endif
 
     m_condemnedNurseryRegionsCount = 0;
     DeactivateAllStacks();
@@ -646,9 +646,9 @@ void SatoriRecycler::BlockingCollect()
     // that is unobservable to EE, so tell EE that we are done
     GCToEEInterface::GcDone(m_condemnedGeneration);
 
-    //#ifdef TIMED
-    //printf("GenDone%i , relocating: %d , allow promoting relocations: %d \n", m_condemnedGeneration, m_isRelocating, m_allowPromotingRelocations);
-    //#endif
+#ifdef TIMED
+    printf("GenDone%i , relocating: %d , allow promoting relocations: %d \n", m_condemnedGeneration, m_isRelocating, m_allowPromotingRelocations);
+#endif
 
 #ifdef TIMED
     time = (GCToOSInterface::QueryPerformanceCounter() - time) * 1000000 / GCToOSInterface::QueryPerformanceFrequency();
@@ -2721,7 +2721,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
         //               the cost here is increasing gen1, which is supposed to be small.
         // TODO: VS this may be less relevant if gen sizes are in terms of occupancy (which they should be)
         if ((curRegion->Generation() == 1) ||
-            (curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 8) && curRegion->TryDemote())
+            ((curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 8) && curRegion->TryDemote()))
         {
 #if _DEBUG
             // just split 50%/50% for testing purposes.
