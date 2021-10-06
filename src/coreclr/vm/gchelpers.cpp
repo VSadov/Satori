@@ -1319,7 +1319,7 @@ void CheckEscapeSatori(Object** dst, Object* ref)
     SatoriRegion* region = obj->ContainingRegion();
 
     // we should be the owner of the region to care about escapes
-    if (region && region->OwnedByCurrentThread())
+    if (region && region->IsEscapeTrackedByCurrentThread())
     {
         if ((((size_t)dst ^ (size_t)ref) >> 21) == 0 &&
             !(region->IsExposed((SatoriObject**)dst)))
@@ -1336,13 +1336,13 @@ void CheckEscapeSatori(Object** dst, Object* ref)
 bool CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
 {
     SatoriRegion* curRegion = (SatoriRegion*)GCToEEInterface::GetAllocContext()->gc_reserved_1;
-    if (!curRegion || !curRegion->IsThreadLocal())
+    if (!curRegion || !curRegion->IsEscapeTracking())
     {
         // not tracking escapes, not a local assignment.
         return false;
     }
 
-    _ASSERTE(curRegion->OwnedByCurrentThread());
+    _ASSERTE(curRegion->IsEscapeTrackedByCurrentThread());
 
     // if dst is within the curRegion and is not exposed, we are done
     if (((dst ^ curRegion->Start()) >> 21) == 0)
@@ -1438,7 +1438,7 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
             return;
     }
 
-    page->DirtyCardForAddress((size_t)dst);
+    page->DirtyCardForAddressUnordered((size_t)dst);
 
 #else
     // if the dst is outside of the heap (unboxed value classes) then we
@@ -1485,7 +1485,8 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref)
 
 #if FEATURE_SATORI_GC
 
-    // Satori large objects are allocated in gen0. No barrier is needed.
+    // Satori large objects are allocated in either gen1 or gen2.
+    // PublishObject will sort this out and mark cards as needed.
 
 #else
 #ifdef WRITE_BARRIER_CHECK
@@ -1559,7 +1560,7 @@ SetCardsAfterBulkCopy(Object** dst, Object **src, size_t len)
                     return;
             }
 
-            page->DirtyCardsForRange((size_t)dst, (size_t)dst + len);
+            page->DirtyCardsForRangeUnordered((size_t)dst, (size_t)dst + len);
         }
 
 #else

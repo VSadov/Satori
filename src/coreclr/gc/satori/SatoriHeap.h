@@ -54,6 +54,8 @@ public:
             m_pageMap[mapIndex] != 0;
     }
 
+    SatoriRegion* RegionForAddressChecked(size_t address);
+
     SatoriPage* PageForAddressChecked(size_t address)
     {
         size_t mapIndex = address >> Satori::PAGE_BITS;
@@ -75,26 +77,10 @@ public:
         return nullptr;
     }
 
-    SatoriPage* PageForAddress(size_t address)
-    {
-        size_t mapIndex = address >> Satori::PAGE_BITS;
-        while (m_pageMap[mapIndex] != 1)
-        {
-            mapIndex -= ((size_t)1 << (m_pageMap[mapIndex] - 2));
-        }
-
-        return (SatoriPage*)(mapIndex << Satori::PAGE_BITS);
-    }
-
-    SatoriObject* ObjectForAddress(size_t address);
-    SatoriRegion* RegionForAddressChecked(size_t address);
-    SatoriObject* ObjectForAddressChecked(size_t address);
-
     template<typename F>
     void ForEachPage(F lambda)
     {
-        // TODO: VS implement a high watermark for this
-        size_t mapIndex = m_committedMapSize - 1;
+        size_t mapIndex = m_usedMapSize - 1;
         while (mapIndex > 0)
         {
             switch (m_pageMap[mapIndex])
@@ -115,8 +101,7 @@ public:
     template<typename F>
     void ForEachPageUntil(F lambda)
     {
-        // TODO: VS implement a high watermark for this
-        size_t mapIndex = m_committedMapSize - 1;
+        size_t mapIndex = m_usedMapSize - 1;
         while (mapIndex > 0)
         {
             switch (m_pageMap[mapIndex])
@@ -144,6 +129,7 @@ private:
 
     int m_reservedMapSize;
     int m_committedMapSize;
+    int m_usedMapSize;
     int m_nextPageIndex;
     SatoriLock m_mapLock;
     uint8_t m_pageMap[1];

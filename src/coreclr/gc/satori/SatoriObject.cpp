@@ -34,7 +34,7 @@ NOINLINE void SatoriObject::ClearPinned()
 void SatoriObject::EscapeCheckOnHandleCreation()
 {
     SatoriRegion* region = ContainingRegion();
-    if (region->OwnedByCurrentThread())
+    if (region->IsEscapeTrackedByCurrentThread())
     {
         region->EscapeRecursively(this);
 
@@ -50,7 +50,7 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
     _ASSERTE(size >= Satori::MIN_FREE_SIZE);
     _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY);
 
-    SatoriObject* o = SatoriObject::At(location);
+    SatoriObject* o = (SatoriObject*)location;
     _ASSERTE(o->ContainingRegion()->m_used > location + 2 * sizeof(size_t));
 
 #ifdef JUNK_FILL_FREE_SPACE
@@ -58,17 +58,7 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
     memset((void*)(location - sizeof(size_t)), 0xAC, dirtySize);
 #endif
 
-#ifdef USE_SIZE_CACHE
-    if (size < (1 << 16))
-    {
-        ((size_t*)location)[-1] = size << 16;
-    }
-    else
-#endif
-    {
-        o->CleanSyncBlock();
-    }
-
+    o->CleanSyncBlock();
     o->RawSetMethodTable(s_emptyObjectMt);
     _ASSERTE(!o->IsMarked());
 
@@ -97,7 +87,7 @@ void SatoriObject::Validate()
     // _ASSERTE(this->GetReloc() == 0);
     _ASSERTE(this->Size() >= Satori::MIN_FREE_SIZE);
 
-    if (ContainingRegion()->OwnedByCurrentThread())
+    if (ContainingRegion()->IsEscapeTrackedByCurrentThread())
     {
         if (IsEscaped())
         {

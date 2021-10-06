@@ -16,17 +16,18 @@
 #include "SatoriRegion.h"
 #include "SatoriMarkChunk.h"
 
-inline bool SatoriRegion::IsThreadLocal()
+inline bool SatoriRegion::IsEscapeTracking()
 {
+    _ASSERTE(!m_ownerThreadTag || m_generation == 0);
     return m_ownerThreadTag;
 }
 
-inline bool SatoriRegion::IsThreadLocalAcquire()
+inline bool SatoriRegion::IsEscapeTrackingAcquire()
 {
-    return VolatileLoad(&m_ownerThreadTag);
+    return m_reusableFor == ReuseLevel::Gen0 || VolatileLoad(&m_ownerThreadTag);
 }
 
-inline bool SatoriRegion::OwnedByCurrentThread()
+inline bool SatoriRegion::IsEscapeTrackedByCurrentThread()
 {
     return m_ownerThreadTag == SatoriUtil::GetCurrentThreadTag();
 }
@@ -43,7 +44,21 @@ inline int SatoriRegion::GenerationAcquire()
 
 inline void SatoriRegion::SetGeneration(int generation)
 {
+    // Gen0 is controlled by thread-local tracking
+    _ASSERTE(generation != 0);
+    _ASSERTE(m_generation != 0);
+
     m_generation = generation;
+}
+
+inline void SatoriRegion::SetGenerationRelease(int generation)
+{
+    // at the time when we set generation to 0+, we should make it certain if
+    // the region is attached, since 0+ detached regions are assumed parseable.
+    _ASSERTE(generation != 0);
+    _ASSERTE(m_generation == -1 || IsReusable());
+
+    VolatileStore(&m_generation, generation);
 }
 
 inline bool SatoriRegion::IsAllocating()
@@ -88,17 +103,27 @@ inline SatoriObject* SatoriRegion::FirstObject()
     return &m_firstObject;
 }
 
+inline void SatoriRegion::StartEscapeTracking(size_t threadTag)
+{
+    _ASSERTE(m_generation == -1 || ReusableFor() == ReuseLevel::Gen0);
+    m_escapeFunc = EscapeFn;
+    m_ownerThreadTag = threadTag;
+    VolatileStore(&m_generation, 0);
+}
+
 inline void SatoriRegion::StopEscapeTracking()
 {
-    if (IsThreadLocal())
+    if (IsEscapeTracking())
     {
         _ASSERTE(!HasPinnedObjects());
         ClearMarks();
-        m_escapeFunc = nullptr;
 
         // must clear ownership after clearing marks
-        // to make sure concurrent marking does not start marking before we clear
+        // to make sure concurrent marking does not use dirty mark table
         VolatileStore(&m_ownerThreadTag, (size_t)0);
+
+        m_escapeFunc = nullptr;
+        m_generation = 1;
     }
 }
 
@@ -159,6 +184,111 @@ void SatoriRegion::ForEachFinalizableThreadLocal(F lambda)
     UnlockFinalizableTrackers();
 }
 
+template <bool updatePointers>
+bool SatoriRegion::Sweep(bool keepMarked)
+{
+    // we should only sweep when we have marks
+    _ASSERTE(HasMarksSet());
+
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+
+    // we will be building new free lists
+    ClearFreeLists();
+
+    // if region is huge and the last object is unreachable, the region is all empty.
+    if (End() > objLimit)
+    {
+        SatoriObject* last = FindObject(objLimit - 1);
+        if (!last->IsMarked())
+        {
+            _ASSERTE(!this->IsEscapeTracking());
+            _ASSERTE(this->NothingMarked());
+            _ASSERTE(!this->HasPinnedObjects());
+#if _DEBUG
+            size_t fistObjStart = FirstObject()->Start();
+            SatoriObject::FormatAsFree(fistObjStart, objLimit - fistObjStart);
+#endif
+            this->HasMarksSet() = false;
+            SetOccupancy(0, 0);
+            return false;
+        }
+    }
+
+    size_t occupancy = 0;
+    size_t objCount = 0;
+
+    bool cannotRecycle = this->IsAttachedToContext();
+    bool isEscapeTracking = this->IsEscapeTracking();
+
+    // sweeping invalidates indices, since free objects get coalesced
+    ClearIndex();
+    m_escapeCounter = 0;
+
+    SatoriObject* o = FirstObject();
+    do
+    {
+        if (o->IsMarked())
+        {
+            _ASSERTE(!o->IsFree());
+            if (isEscapeTracking)
+            {
+                // TODO: VS we do not need to escape all survivors, we could keep old escape bits
+                //       and only clean 1) mark bit for survivors 2) all bits for free obj.
+                // turn mark bit into escape bits.
+                this->ClearMarkedAndEscapeShallow(o);
+            }
+
+            if (updatePointers)
+            {
+                o->ForEachObjectRef(
+                    [](SatoriObject** ppObject)
+                    {
+                        SatoriObject* child = *ppObject;
+                        if (child)
+                        {
+                            ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                            if (ptr < 0)
+                            {
+                                _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
+                                *ppObject = (SatoriObject*)-ptr;
+                            }
+                        }
+                    }
+                );
+            }
+
+            size_t size = o->Size();
+            cannotRecycle = true;
+            objCount++;
+            occupancy += size;
+            o = (SatoriObject*)(o->Start() + size);
+            continue;
+        }
+
+        size_t lastMarkedEnd = o->Start();
+        o = SkipUnmarked(o);
+        size_t skipped = o->Start() - lastMarkedEnd;
+        if (skipped)
+        {
+            SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
+            AddFreeSpace(free);
+        }
+    } while (o->Start() < objLimit);
+
+    if (!keepMarked)
+    {
+        this->HasMarksSet() = false;
+        this->HasPinnedObjects() = false;
+        if (!this->IsEscapeTracking())
+        {
+            this->ClearMarks();
+        }
+    }
+
+    SetOccupancy(occupancy, objCount);
+    return cannotRecycle;
+}
+
 inline bool SatoriRegion::EverHadFinalizables()
 {
     return m_everHadFinalizables;
@@ -172,6 +302,11 @@ inline bool& SatoriRegion::HasPendingFinalizables()
 inline size_t SatoriRegion::Occupancy()
 {
     return m_occupancy;
+}
+
+inline size_t SatoriRegion::ObjCount()
+{
+    return m_objCount;
 }
 
 inline bool& SatoriRegion::HasPinnedObjects()
@@ -189,6 +324,16 @@ inline bool& SatoriRegion::AcceptedPromotedObjects()
     return m_acceptedPromotedObjects;
 }
 
+inline bool SatoriRegion::IsReusable()
+{
+    return m_reusableFor != ReuseLevel::None;
+}
+
+inline SatoriRegion::ReuseLevel& SatoriRegion::ReusableFor()
+{
+    return m_reusableFor;
+}
+
 inline SatoriQueue<SatoriRegion>* SatoriRegion::ContainingQueue()
 {
     return VolatileLoadWithoutBarrier(&m_containingQueue);
@@ -203,12 +348,38 @@ inline void SatoriRegion::Attach(SatoriRegion** attachementPoint)
     m_allocationContextAttachmentPoint = attachementPoint;
 }
 
-inline void SatoriRegion::Detach()
+inline void SatoriRegion::DetachFromContext()
 {
     _ASSERTE(*m_allocationContextAttachmentPoint == this);
 
+    if (IsEscapeTracking())
+    {
+        StopEscapeTracking();
+    }
+
     *m_allocationContextAttachmentPoint = nullptr;
-    m_allocationContextAttachmentPoint = nullptr;
+    // all allocations must be committed prior to detachement.
+    VolatileStore(&m_allocationContextAttachmentPoint, (SatoriRegion**)nullptr);
+}
+
+inline bool SatoriRegion::IsAttachedToContext()
+{
+    return m_allocationContextAttachmentPoint;
+}
+
+inline bool SatoriRegion::IsAttachedToContextAcquire()
+{
+    return IsReusable() || VolatileLoad(&m_allocationContextAttachmentPoint);
+}
+
+inline bool SatoriRegion::IsDemoted()
+{
+    return m_gen2Objects;
+}
+
+inline SatoriMarkChunk* &SatoriRegion::DemotedObjects()
+{
+    return m_gen2Objects;
 }
 
 #endif

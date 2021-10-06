@@ -23,8 +23,10 @@ class SatoriRecycler
 
 public:
     void Initialize(SatoriHeap* heap);
-    void AddEphemeralRegion(SatoriRegion* region, bool keep);
+
+    void AddEphemeralRegion(SatoriRegion* region);
     void AddTenuredRegion(SatoriRegion* region);
+
     void TryStartGC(int generation);
     bool HelpOnce();
     void ConcurrentHelp();
@@ -37,7 +39,6 @@ public:
     void MaybeTriggerGC();
 
     void Collect(int generation, bool force, bool blocking);
-
     bool IsBlockingPhase();
 
     int GetRootScanTicket();
@@ -47,6 +48,8 @@ public:
     size_t Gen1RegionCount();
     size_t Gen2RegionCount();
     size_t RegionCount();
+
+    SatoriRegion* TryGetReusable();
 
 private:
     SatoriHeap* m_heap;
@@ -75,6 +78,11 @@ private:
 
     // store regions for concurrent sweep
     SatoriRegionQueue* m_deferredSweepRegions;
+
+    // regions that could be reused for Gen1
+    SatoriRegionQueue* m_reusableRegions;
+
+    SatoriRegionQueue* m_demotedRegions;
 
     static const int GC_STATE_NONE = 0;
     static const int GC_STATE_CONCURRENT = 1;
@@ -115,15 +123,24 @@ private:
     size_t m_gen1CountAtLastGen2;
 
     static void DeactivateFn(gc_alloc_context* context, void* param);
+
+    template <bool isConservative>
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
-    static void MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+
+    template <bool isConservative>
     static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+
+    template <bool isConservative>
+    static void MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+
     static void HelperThreadFn(void* param);
+
+    void PushToEphemeralQueues(SatoriRegion* region);
 
     void DeactivateAllStacks();
     void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
     bool MarkOwnStackAndDrainQueues(int64_t deadline = 0);
-    void MarkAllStacksAndFinalizationQueue();
+    void MarkAllStacksFinalizationAndDemotedRoots();
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();
     uint8_t GetCardScanTicket();

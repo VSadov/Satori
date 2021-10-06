@@ -16,8 +16,6 @@
 #define JUNK_FILL_FREE_SPACE
 #endif
 
-// #define USE_SIZE_CACHE
-
 class SatoriRegion;
 
 class SatoriObject : public Object
@@ -29,7 +27,6 @@ public:
     SatoriObject() = delete;
     ~SatoriObject() = delete;
 
-    static SatoriObject* At(size_t location);
     static SatoriObject* FormatAsFree(size_t location, size_t size);
 
     SatoriRegion* ContainingRegion();
@@ -52,8 +49,8 @@ public:
     bool IsEscapedOrPinned();
     int GetMarkBitAndWord(size_t* bitmapIndex);
 
-    void SetPermanentlyPinned();
-    bool IsPermanentlyPinned();
+    void SetUnmovable();
+    bool IsUnmovable();
 
     void DirtyCardsForContent();
 

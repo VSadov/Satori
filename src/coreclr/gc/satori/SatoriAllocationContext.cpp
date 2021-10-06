@@ -32,10 +32,10 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
 
         if (detach)
         {
-            region->Detach();
+            region->DetachFromContext();
         }
 
-        recycler->AddEphemeralRegion(region, detach);
+        recycler->AddEphemeralRegion(region);
     }
     else
     {
@@ -53,9 +53,9 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
 
         if (detach)
         {
-            region->Detach();
+            region->DetachFromContext();
         }
 
-        recycler->AddEphemeralRegion(region, detach);
+        recycler->AddEphemeralRegion(region);
     }
  }

@@ -62,9 +62,9 @@ namespace Satori
     // TODO: VS move to something like SatoriConfig, MIN_REGULAR_ALLOC too. These are not constants.
     static size_t CommitGranularity()
     {
-        // we can support sizes that are binary fractions of REGION_SIZE_GRANULARITY.
+        // we can support sizes that are > OS page and binary fractions of REGION_SIZE_GRANULARITY.
         // we can also support 1G
-        // TODO: VS this can be configured or computed at start up, but should not change dynamically.
+        // TODO: VS this should be configured or computed at start up, but should not change dynamically.
         return 4096 * 4;
     }
 
@@ -82,6 +82,7 @@ namespace Satori
     // TUNING: this is just a threshold for cases when clearly too many objects have escaped already.
     // Assuming minimum sized objects, when 1/8 escapes, stop tracking escapes
     // The actual value may not matter a lot. Still may be worth revisiting.
+    //TODO: VS consider the escaped Size instead (demote would check occupancy)
     static const int MAX_TRACKED_ESCAPES = REGION_SIZE_GRANULARITY / MIN_FREE_SIZE / 8;
 
     static const int MIN_FREELIST_SIZE_BITS = 12;

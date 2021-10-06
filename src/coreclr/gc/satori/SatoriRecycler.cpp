@@ -81,6 +81,9 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_deferredSweepCount = 0;
     m_regionsAddedSinceLastCollection = 0;
 
+    m_reusableRegions = new SatoriRegionQueue(QueueKind::RecyclerReusable);
+    m_demotedRegions = new SatoriRegionQueue(QueueKind::RecyclerDemoted);
+
     m_workList = new SatoriMarkChunkQueue();
     m_gcState = GC_STATE_NONE;
     m_isBarrierConcurrent = false;
@@ -188,7 +191,8 @@ int SatoriRecycler::CondemnedGeneration()
 
 size_t SatoriRecycler::Gen1RegionCount()
 {
-    return m_ephemeralFinalizationTrackingRegions->Count() + m_ephemeralRegions->Count();
+    return m_ephemeralFinalizationTrackingRegions->Count() +
+        m_ephemeralRegions->Count();
 }
 
 size_t SatoriRecycler::Gen2RegionCount()
@@ -201,47 +205,65 @@ size_t SatoriRecycler::RegionCount()
     return Gen1RegionCount() + Gen2RegionCount();
 }
 
-// NOTE: recycler owns nursery regions only temporarily for the duration of GC when mutators are stopped
-//       we do not keep them always since an active nursery region may change its classification
-//       concurrently by becoming gen1 or by allocating a finalizable object.
-void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region, bool keep)
+SatoriRegion* SatoriRecycler::TryGetReusable()
+{
+    SatoriRegion* r = m_reusableRegions->TryPop();
+    if (r)
+    {
+        Interlocked::Decrement(&m_regionsAddedSinceLastCollection);
+        if (r->IsDemoted())
+        {
+            printf("!");
+        }
+    }
+
+    return r;
+}
+
+void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
+{
+    if (region->IsDemoted())
+    {
+        m_demotedRegions->Push(region);
+    }
+    else
+    {
+        (region->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(region);
+    }
+}
+
+// NOTE: recycler owns nursery regions only temporarily for the duration of GC when mutators are stopped.
+//       we do not keep them because an active nursery region may change its finalizability classification
+//       concurrently by allocating a finalizable object.
+void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 {
     _ASSERTE(region->AllocStart() == 0);
     _ASSERTE(region->AllocRemaining() == 0);
     _ASSERTE(region->Generation() == 0 || region->Generation() == 1);
     _ASSERTE(!region->HasMarksSet());
 
-    (region->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions: m_ephemeralRegions)->Push(region);
+    PushToEphemeralQueues(region);
     Interlocked::Increment(&m_regionsAddedSinceLastCollection);
-
-    // if we want to keep it, we have to promote it.
-    if (keep)
-    {
-        _ASSERTE(region->Generation() == 0);
-        // following two writes must happen after all allocations have concluded,
-        // previous adding to a queue ensures such ordering.
-        region->StopEscapeTracking();
-        region->SetGeneration(1);
-    }
-    else if (region->IsThreadLocal())
+    if (region->IsEscapeTracking())
     {
         _ASSERTE(IsBlockingPhase());
         _ASSERTE(!region->HasPinnedObjects());
         region->ClearMarks();
     }
 
-    // we may have marks already, when concurrent marking is allowed
-    region->Verify(/* allowMarked */ ENABLE_CONCURRENT && !region->IsThreadLocal());
+    // When concurrent marking is allowed we may have marks already.
+    // Demoted regions could be pre-marked
+    region->Verify(/* allowMarked */ region->IsDemoted() || ENABLE_CONCURRENT);
 
     // the region has just done allocating, so real occupancy will be known only after we sweep.
     // for now put 0 and treat the region as completely full
-    // that is a fair estimate for promoted regions anyways and for nursery regions
+    // that is a fair estimate for detached regions anyways and for nursery regions
     // it does not matter, since they will not participate in relocations
-    region->SetOccupancy(0);
+    region->SetOccupancy(0, 0);
 
-    if (!keep && region->Generation() == 0)
+    if (region->IsAttachedToContext())
     {
-        _ASSERTE(m_gcState == GC_STATE_BLOCKED);
+        _ASSERTE(IsBlockingPhase());
         m_condemnedNurseryRegionsCount++;
     }
 }
@@ -250,16 +272,16 @@ void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
 {
     _ASSERTE(region->AllocStart() == 0);
     _ASSERTE(region->AllocRemaining() == 0);
-    _ASSERTE(!region->IsThreadLocal());
+    _ASSERTE(!region->IsEscapeTracking());
     _ASSERTE(!region->HasMarksSet());
 
     region->Verify();
     (region->EverHadFinalizables() ? m_tenuredFinalizationTrackingRegions : m_tenuredRegions)->Push(region);
 
-    // always promote these, we always keep them.
-    _ASSERTE(region->Generation() == 0);
+    _ASSERTE(region->Generation() == 1);
 
-    // must happen after all allocations have concluded,
+    // always promote these, we always keep them.
+    // this write must happen after all allocations have concluded,
     // previous adding to a queue ensures such ordering.
     region->SetGeneration(2);
 }
@@ -397,8 +419,9 @@ void SatoriRecycler::MarkAllStacksAndFinalizationQueueHelper()
     // check state again it could have changed if there were no marking threads
     if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
     {
-        MarkAllStacksAndFinalizationQueue();
+        MarkAllStacksFinalizationAndDemotedRoots();
     }
+
     Interlocked::Decrement(&m_ccMarkingThreadsNum);
 }
 
@@ -408,7 +431,7 @@ void SatoriRecycler::StartMarkingAllStacksAndFinalizationQueue()
     {
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
         m_ccStackMarkState = CC_MARK_STATE_MARKING;
-        MarkAllStacksAndFinalizationQueue();
+        MarkAllStacksFinalizationAndDemotedRoots();
         Interlocked::Exchange(&m_ccStackMarkState, CC_MARK_STATE_DONE);
         while (m_ccMarkingThreadsNum)
         {
@@ -565,9 +588,8 @@ void SatoriRecycler::BlockingCollect()
     // assume that we will relocate. we will rethink later.
     m_isRelocating = ENABLE_RELOCATION;
 
-    // the deferred queue should normally be emptied by the concurrent phase.
-    // just in case we support forcing blocking stage for Collect or OOM situations
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
+
     _ASSERTE(m_deferredSweepRegions->IsEmpty());
 
     size_t gen2Count = Gen2RegionCount();
@@ -598,9 +620,9 @@ void SatoriRecycler::BlockingCollect()
     // this needs to be called on a "GC" thread while EE is stopped.
     GCToEEInterface::GcStartWork(m_condemnedGeneration, max_generation);
 
-#ifdef TIMED
-    printf("Gen%i , allow promoting relocations: %d \n", m_condemnedGeneration, m_allowPromotingRelocations);
-#endif
+    //#ifdef TIMED
+    //printf("GenStarting%i , allow promoting relocations: %d \n", m_condemnedGeneration, m_allowPromotingRelocations);
+    //#endif
 
     m_condemnedNurseryRegionsCount = 0;
     DeactivateAllStacks();
@@ -624,16 +646,20 @@ void SatoriRecycler::BlockingCollect()
     // that is unobservable to EE, so tell EE that we are done
     GCToEEInterface::GcDone(m_condemnedGeneration);
 
-    m_prevCondemnedGeneration = m_condemnedGeneration;
-    m_condemnedGeneration = 0;
-    m_gcState = GC_STATE_NONE;
-    m_deferredSweepCount = m_deferredSweepRegions->Count();
-    m_regionsAddedSinceLastCollection = 0;
+    //#ifdef TIMED
+    //printf("GenDone%i , relocating: %d , allow promoting relocations: %d \n", m_condemnedGeneration, m_isRelocating, m_allowPromotingRelocations);
+    //#endif
 
 #ifdef TIMED
     time = (GCToOSInterface::QueryPerformanceCounter() - time) * 1000000 / GCToOSInterface::QueryPerformanceFrequency();
     printf("%zu\n", time);
 #endif
+
+    m_prevCondemnedGeneration = m_condemnedGeneration;
+    m_condemnedGeneration = 0;
+    m_gcState = GC_STATE_NONE;
+    m_deferredSweepCount = m_deferredSweepRegions->Count();
+    m_regionsAddedSinceLastCollection = 0;
 
     // restart VM
     GCToEEInterface::RestartEE(true);
@@ -728,7 +754,7 @@ void SatoriRecycler::MarkStrongReferencesWorker()
 #endif
 
     MarkHandles();
-    MarkAllStacksAndFinalizationQueue();
+    MarkAllStacksFinalizationAndDemotedRoots();
 
     if (m_condemnedGeneration == 1)
     {
@@ -821,18 +847,18 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, Sa
     else
     {
         // handle mark overflow by dirtying the cards
-        // TODO: VS if mark setting is not a release (it is on x64), we need to do a release barrier here.
         o->DirtyCardsForContent();
 
         // since this o will not be popped from the mark queue,
         // check for pinning here
-        if (o->IsPermanentlyPinned())
+        if (o->IsUnmovable())
         {
             o->ContainingRegion()->HasPinnedObjects() = true;
         }
     }
 }
 
+template <bool isConservative>
 void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
 {
     size_t location = (size_t)*ppObject;
@@ -842,23 +868,23 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     }
 
     MarkContext* context = (MarkContext*)sc->_unused1;
-    SatoriObject* o = SatoriObject::At(location);
+    SatoriObject* o = (SatoriObject*)location;
 
     if (flags & GC_CALL_INTERIOR)
     {
         // byrefs may point to stack, use checked here
-        o = context->m_heap->ObjectForAddressChecked(location);
-        if (o == nullptr)
+        SatoriRegion* containingRegion = context->m_heap->RegionForAddressChecked(location);
+        if (!containingRegion ||
+            (isConservative && (containingRegion->Generation() < 0)))
         {
             return;
         }
 
-#ifdef FEATURE_CONSERVATIVE_GC
-        if (GCConfig::GetConservativeGC() && o->IsFree())
+        o = containingRegion->FindObject(location);
+        if (isConservative && o->IsFree())
         {
             return;
         }
-#endif
     }
 
     if (o->ContainingRegion()->Generation() <= context->m_condemnedGeneration)
@@ -876,6 +902,50 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     }
 };
 
+template <bool isConservative>
+void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
+{
+    size_t location = (size_t)*ppObject;
+    if (location == 0)
+    {
+        return;
+    }
+
+    SatoriObject* o = (SatoriObject*)location;
+    if (flags & GC_CALL_INTERIOR)
+    {
+        MarkContext* context = (MarkContext*)sc->_unused1;
+        // byrefs may point to stack, use checked here
+        SatoriRegion* containingRegion = context->m_heap->RegionForAddressChecked(location);
+        if (!containingRegion ||
+            (isConservative && (containingRegion->Generation() < 0)))
+        {
+            return;
+        }
+
+        o = containingRegion->FindObject(location);
+        if (isConservative && o->IsFree())
+        {
+            return;
+        }
+    }
+
+    ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
+    if (ptr < 0)
+    {
+        ptr = -ptr;
+        if (flags & GC_CALL_INTERIOR)
+        {
+            *ppObject = (PTR_Object)(location + (ptr - o->Start()));
+        }
+        else
+        {
+            *ppObject = (PTR_Object)ptr;
+        }
+    }
+};
+
+template <bool isConservative>
 void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
 {
     size_t location = (size_t)VolatileLoadWithoutBarrier(ppObject);
@@ -892,34 +962,47 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
 
     SatoriRegion* containingRegion;
     MarkContext* context = (MarkContext*)sc->_unused1;
-    SatoriObject* o = SatoriObject::At(location);
+    SatoriObject* o = (SatoriObject*)location;
 
     if (flags & GC_CALL_INTERIOR)
     {
         // byrefs may point to stack, use checked here
         containingRegion = context->m_heap->RegionForAddressChecked(location);
+        if (!containingRegion)
+        {
+            return;
+        }
 
-        // concurrent FindObject is safe only in gen1/gen2 regions.
-        // Since gen0->gen1+ promotion can happen concurrently,
-        // make sure we read generation before doing FindObject
-        if (!containingRegion || containingRegion->GenerationAcquire() < 1)
+        // since this is concurrent, in a conservative case an allocation could have caused a split
+        // that shortened the found region and the region no longer matches the ref (which means the ref is not real).
+        // Note that the split could only happen before we are done with allocator queue (which is synchronising)
+        // and assing 0+ gen to the region.
+        // So check here in the opposite order - first that region is 0+ gen and then that the size is stil right.
+        if (isConservative &&
+            (containingRegion->GenerationAcquire() < 0 || location >= containingRegion->End()))
+        {
+            return;
+        }
+
+        // Concurrent FindObject is unsafe in active regions. While ref may be in a real obj,
+        // the path to it from the first obj or prev indexed may cross unparsable ranges.
+        // The check must acquire to be sure we check before actually doing FindObject.
+        if (containingRegion->IsAttachedToContextAcquire())
         {
             return;
         }
 
         o = containingRegion->FindObject(location);
-#ifdef FEATURE_CONSERVATIVE_GC
-        if (GCConfig::GetConservativeGC() && o->IsFree())
+        if (isConservative && o->IsFree())
         {
             return;
         }
-#endif
     }
     else
     {
         containingRegion = o->ContainingRegion();
         // can't mark in regions which are tracking escapes, bitmap is in use
-        if (containingRegion->IsThreadLocalAcquire())
+        if (containingRegion->IsEscapeTrackingAcquire())
         {
             return;
         }
@@ -961,7 +1044,13 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
             if (Interlocked::CompareExchange(&aContext->alloc_count, currentScanTicket, threadScanTicket) == threadScanTicket)
             {
                 MaybeAskForHelp();
-                GCToEEInterface::GcScanCurrentStackRoots(IsBlockingPhase() ? MarkFn : MarkFnConcurrent, &sc);
+
+#ifdef FEATURE_CONSERVATIVE_GC
+                if (GCConfig::GetConservativeGC())
+                    GCToEEInterface::GcScanCurrentStackRoots(IsBlockingPhase() ? MarkFn<true> : MarkFnConcurrent<true>, &sc);
+                else
+#endif
+                    GCToEEInterface::GcScanCurrentStackRoots(IsBlockingPhase() ? MarkFn<false> : MarkFnConcurrent<false>, &sc);
             }
         }
     }
@@ -979,7 +1068,7 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
     return revisit;
 }
 
-void SatoriRecycler::MarkAllStacksAndFinalizationQueue()
+void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
 {
     // mark roots for all stacks
     ScanContext sc;
@@ -987,11 +1076,15 @@ void SatoriRecycler::MarkAllStacksAndFinalizationQueue()
     MarkContext c = MarkContext(this);
     sc._unused1 = &c;
 
-    // TODO: VS make template param
     bool isBlockingPhase = IsBlockingPhase();
 
-    //generations are meaningless here, so we pass -1
-    GCToEEInterface::GcScanRoots(isBlockingPhase ? MarkFn : MarkFnConcurrent, -1, -1, &sc);
+#ifdef FEATURE_CONSERVATIVE_GC
+    if (GCConfig::GetConservativeGC())
+        //generations are meaningless here, so we pass -1
+        GCToEEInterface::GcScanRoots(isBlockingPhase ? MarkFn<true> : MarkFnConcurrent<true>, -1, -1, &sc);
+    else
+#endif
+        GCToEEInterface::GcScanRoots(isBlockingPhase ? MarkFn<false> : MarkFnConcurrent<false>, -1, -1, &sc);
 
     SatoriFinalizationQueue* fQueue = m_heap->FinalizationQueue();
     if (fQueue->TryUpdateScanTicket(this->GetRootScanTicket()) &&
@@ -1003,7 +1096,7 @@ void SatoriRecycler::MarkAllStacksAndFinalizationQueue()
                 SatoriObject* o = *ppObject;
 
                 // can't mark in regions which are tracking escapes, bitmap is in use
-                if (!isBlockingPhase && o->ContainingRegion()->IsThreadLocalAcquire())
+                if (!isBlockingPhase && o->ContainingRegion()->IsEscapeTrackingAcquire())
                 {
                     return;
                 }
@@ -1015,6 +1108,39 @@ void SatoriRecycler::MarkAllStacksAndFinalizationQueue()
                 }
             }
         );
+    }
+
+    SatoriRegion* curRegion;
+    while ((curRegion = m_demotedRegions->TryPop()))
+    {
+        _ASSERTE(curRegion->Generation() <= 1);
+
+        SatoriMarkChunk* gen2Objects = curRegion->DemotedObjects();
+        if (m_condemnedGeneration == 1)
+        {
+            curRegion->HasPinnedObjects() = true;
+            for (int i = 0; i < gen2Objects->Count(); i++)
+            {
+                SatoriObject* o = gen2Objects->Item(i);
+                o->SetMarkedAtomic();
+                c.PushToMarkQueues(o);
+            }
+        }
+        else
+        {
+            curRegion->DemotedObjects() = nullptr;
+            gen2Objects->Clear();
+            m_heap->Allocator()->ReturnMarkChunk(gen2Objects);
+        }
+
+        if (curRegion->IsReusable() && !IsBlockingPhase())
+        {
+            m_reusableRegions->Push(curRegion);
+        }
+        else
+        {
+            (curRegion->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
+        }
     }
 
     if (c.m_markChunk != nullptr)
@@ -1066,7 +1192,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
 
             SatoriObject* o = srcChunk->Pop();
             _ASSERTE(o->IsMarked());
-            if (o->IsPermanentlyPinned())
+            if (o->IsUnmovable())
             {
                 o->ContainingRegion()->HasPinnedObjects() = true;
             }
@@ -1079,7 +1205,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
                     {
                         objectCount++;
                         SatoriRegion* childRegion = child->ContainingRegion();
-                        if (!childRegion->IsThreadLocalAcquire())
+                        if (!childRegion->IsEscapeTrackingAcquire())
                         {
                             if (!child->IsMarkedOrOlderThan(m_condemnedGeneration))
                             {
@@ -1102,7 +1228,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
                             ref = (SatoriObject**)o->Start();
                         }
 
-                        parentRegion->ContainingPage()->DirtyCardForAddress((size_t)ref);
+                        parentRegion->ContainingPage()->DirtyCardForAddressUnordered((size_t)ref);
                     }
                 },
                 /* includeCollectibleAllocator */ true
@@ -1154,7 +1280,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriMarkChunk* srcChunk)
         {
             SatoriObject* o = srcChunk->Pop();
             _ASSERTE(o->IsMarked());
-            if (o->IsPermanentlyPinned())
+            if (o->IsUnmovable())
             {
                 o->ContainingRegion()->HasPinnedObjects() = true;
             }
@@ -1316,7 +1442,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                                         if (child)
                                         {
                                             SatoriRegion* childRegion = child->ContainingRegion();
-                                            if (!childRegion->IsThreadLocalAcquire())
+                                            if (!childRegion->IsEscapeTrackingAcquire())
                                             {
                                                 if (!child->IsMarkedOrOlderThan(m_condemnedGeneration))
                                                 {
@@ -1339,7 +1465,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                                                 ref = (SatoriObject**)o->Start();
                                             }
 
-                                            parentRegion->ContainingPage()->DirtyCardForAddress((size_t)ref);
+                                            parentRegion->ContainingPage()->DirtyCardForAddressUnordered((size_t)ref);
                                         }
                                     }, start, end);
                                 o = o->Next();
@@ -1587,7 +1713,7 @@ bool SatoriRecycler::CleanCards()
                             {
                                 if (considerAllMarked || o->IsMarked())
                                 {
-                                    if (o->IsPermanentlyPinned())
+                                    if (o->IsUnmovable())
                                     {
                                         o->ContainingRegion()->HasPinnedObjects() = true;
                                     }
@@ -1756,7 +1882,11 @@ bool SatoriRecycler::MarkHandles(int64_t deadline)
             MaybeAskForHelp();
 
             sc.thread_number = p;
-            GCScan::GcScanHandles(IsBlockingPhase() ? MarkFn : MarkFnConcurrent, m_condemnedGeneration, 2, &sc);
+            GCScan::GcScanHandles(
+                IsBlockingPhase() ? MarkFn</*isConservative*/ false> : MarkFnConcurrent</*isConservative*/ false>,
+                m_condemnedGeneration,
+                2,
+                &sc);
         },
         deadline
     );
@@ -1828,6 +1958,8 @@ void SatoriRecycler::ScanAllFinalizableRegionsWorker()
     MarkContext c = MarkContext(this);
 
     ScanFinalizableRegions(m_ephemeralFinalizationTrackingRegions, &c);
+    _ASSERTE(m_reusableRegions->IsEmpty());
+    
     if (m_condemnedGeneration == 2)
     {
         ScanFinalizableRegions(m_tenuredFinalizationTrackingRegions, &c);
@@ -1978,7 +2110,7 @@ void SatoriRecycler::DependentHandlesInitialScanWorker()
         [&](int p)
         {
             sc.thread_number = p;
-            GCScan::GcDhInitialScan(MarkFn, m_condemnedGeneration, 2, &sc);
+            GCScan::GcDhInitialScan(MarkFn</*isConservative*/ false>, m_condemnedGeneration, 2, &sc);
         }
     );
 
@@ -2065,7 +2197,7 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
             if (ENABLE_CONCURRENT)
             {
                 curRegion->HasMarksSet() = false;
-                curRegion->SetOccupancy(0);
+                curRegion->SetOccupancy(0, 0);
                 m_deferredSweepRegions->Enqueue(curRegion);
             }
             else
@@ -2108,7 +2240,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         }
 
         // nursery regions do not participate in relocations
-        if (!m_isRelocating || curRegion->Generation() == 0)
+        if (!m_isRelocating || curRegion->IsAttachedToContext())
         {
             m_stayingRegions->Push(curRegion);
             continue;
@@ -2130,7 +2262,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
 
             // a newly promoted gen1 region may have a lot of dead objects.
             // we will sweep to improve chances finding relocatable regions.
-            curRegion->Sweep(true);
+            curRegion->Sweep</*updatePointers*/ false>(/*keepMarked*/ true);
         }
 
         if (curRegion->Generation() > m_condemnedGeneration)
@@ -2278,6 +2410,8 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
 {
     // the region must be in after marking and before sweeping state
     _ASSERTE(relocationSource->HasMarksSet());
+    _ASSERTE(!relocationSource->IsDemoted());
+
     relocationSource->Verify(true);
 
     size_t copySize = relocationSource->Occupancy();
@@ -2298,34 +2432,36 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     relocationTarget->TakeFinalizerInfoFrom(relocationSource);
 
     // allocate space for relocated objects
-    size_t dstPtr = relocationTarget->Allocate(copySize, /*zeroInitialize*/ false);
+    size_t dst = relocationTarget->Allocate(copySize, /*zeroInitialize*/ false);
 
     // actually relocate src objects into the allocated space.
-    size_t dstPtrOrig = dstPtr;
+    size_t dstOrig = dst;
     size_t objLimit = relocationSource->Start() + Satori::REGION_SIZE_GRANULARITY;
     SatoriObject* o = relocationSource->FirstObject();
     // the target is typically marked, unless it is freshly allocated or in a higher generation
     // preserve marked state by copying marks
     bool needToCopyMarks = relocationTarget->HasMarksSet();
+    size_t objectsRelocated = 0;
     do
     {
         size_t size = o->Size();
         if (o->IsMarked())
         {
-            _ASSERTE(!o->IsPermanentlyPinned());
+            _ASSERTE(!o->IsUnmovable());
             _ASSERTE(!o->IsFree());
 
-            memcpy((void*)(dstPtr - sizeof(size_t)), (void*)(o->Start() - sizeof(size_t)), size);
+            memcpy((void*)(dst - sizeof(size_t)), (void*)(o->Start() - sizeof(size_t)), size);
             // record the new location of the object by storing it in the syncblock space.
             // make it negative so it is different from a normal syncblock.
-            ((ptrdiff_t*)o)[-1] = -(ptrdiff_t)dstPtr;
+            ((ptrdiff_t*)o)[-1] = -(ptrdiff_t)dst;
 
             if (needToCopyMarks)
             {
-                ((SatoriObject*)dstPtr)->SetMarked();
+                ((SatoriObject*)dst)->SetMarked();
             }
 
-            dstPtr += size;
+            dst += size;
+            objectsRelocated++;
             o = (SatoriObject*)(o->Start() + size);
         }
         else
@@ -2334,9 +2470,9 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         }
     } while (o->Start() < objLimit);
 
-    size_t used = dstPtr - dstPtrOrig;
-    relocationTarget->SetOccupancy(relocationTarget->Occupancy() + used);
-    relocationTarget->StopAllocating(dstPtr);
+    size_t used = dst - dstOrig;
+    relocationTarget->SetOccupancy(relocationTarget->Occupancy() + used, relocationTarget->ObjCount() + objectsRelocated);
+    relocationTarget->StopAllocating(dst);
     // the target may yet have more space and be a target for more relocations.
     AddRelocationTarget(relocationTarget);
 
@@ -2351,49 +2487,6 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         m_relocatedRegions->Push(relocationSource);
     }
 }
-
-void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
-{
-    size_t location = (size_t)*ppObject;
-    if (location == 0)
-    {
-        return;
-    }
-
-    SatoriObject* o = SatoriObject::At(location);
-    if (flags & GC_CALL_INTERIOR)
-    {
-        MarkContext* context = (MarkContext*)sc->_unused1;
-
-        // byrefs may point to stack, use checked here
-        o = context->m_heap->ObjectForAddressChecked(location);
-        if (o == nullptr)
-        {
-            return;
-        }
-
-#ifdef FEATURE_CONSERVATIVE_GC
-        if (GCConfig::GetConservativeGC() && o->IsFree())
-        {
-            return;
-        }
-#endif
-    }
-
-    ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
-    if (ptr < 0)
-    {
-        ptr = -ptr;
-        if (flags & GC_CALL_INTERIOR)
-        {
-            *ppObject = (PTR_Object)(location + (ptr - o->Start()));
-        }
-        else
-        {
-            *ppObject = (PTR_Object)ptr;
-        }
-    }
-};
 
 void SatoriRecycler::Update()
 {
@@ -2447,13 +2540,18 @@ void SatoriRecycler::UpdateRootsWorker()
             [&](int p)
             {
                 sc.thread_number = p;
-                GCScan::GcScanHandles(UpdateFn, m_condemnedGeneration, 2, &sc);
+                GCScan::GcScanHandles(UpdateFn</*isConservative*/ false>, m_condemnedGeneration, 2, &sc);
             }
         );
 
-        //generations are meaningless here, so we pass -1
         // TODO: VS ask for help? (also check the mark counterpart)
-        GCToEEInterface::GcScanRoots(UpdateFn, -1, -1, &sc);
+#ifdef FEATURE_CONSERVATIVE_GC
+        if (GCConfig::GetConservativeGC())
+            //generations are meaningless here, so we pass -1
+            GCToEEInterface::GcScanRoots(UpdateFn<true>, -1, -1, &sc);
+        else
+#endif
+            GCToEEInterface::GcScanRoots(UpdateFn<false>, -1, -1, &sc);
 
         SatoriFinalizationQueue* fQueue = m_heap->FinalizationQueue();
         if (fQueue->TryUpdateScanTicket(this->GetRootScanTicket()) &&
@@ -2515,7 +2613,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
     {
         if (curRegion->Generation() > m_condemnedGeneration)
         {
-            // this can only happen when promoting in gen1
+            // this can only happen when selectively promoting in gen1
             _ASSERTE(m_allowPromotingRelocations);
             if (curRegion->AcceptedPromotedObjects())
             {
@@ -2527,8 +2625,10 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         {
             if (curRegion->HasMarksSet())
             {
-                if (!curRegion->SweepAndUpdatePointers())
+                if (!curRegion->Sweep</*updatePointers*/ true>())
                 {
+                    // the region is empty and will be returned,
+                    // but there is still some cleaning work to defer.
                     if (ENABLE_CONCURRENT)
                     {
                         m_deferredSweepRegions->Enqueue(curRegion);
@@ -2551,18 +2651,18 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         }
 
         // recycler owns nursery regions only temporarily, we should not keep them.
-        if (curRegion->Generation() == 0)
+        if (curRegion->IsAttachedToContext())
         {
-            // when promoting, nursery regions should be detached and promoted to gen1
+            // when promoting, all nursery regions should be detached
             _ASSERTE(!m_isPromotingAllRegions);
             if (!m_isRelocating)
             {
-                curRegion->Sweep();
+                curRegion->Sweep</*updatePointers*/ false>();
             }
 
             if (curRegion->Occupancy() == 0)
             {
-                curRegion->Detach();
+                curRegion->DetachFromContext();
                 curRegion->MakeBlank();
                 m_heap->Allocator()->ReturnRegion(curRegion);
             }
@@ -2586,26 +2686,81 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         if (!curRegion->HasMarksSet() &&
             curRegion->Occupancy() > 0)
         {
-            // no point to defer these
+            // no point to defer these, we have swept them already
             KeepRegion(curRegion);
             continue;
         }
 
         // these we can sweep/return later
-        m_deferredSweepRegions->Enqueue(curRegion);
+        if (curRegion->IsReusable())
+        {
+            m_deferredSweepRegions->Push(curRegion);
+        }
+        else
+        {
+            m_deferredSweepRegions->Enqueue(curRegion);
+        }
     }
 }
 
 void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
 {
     _ASSERTE(curRegion->Occupancy() > 0);
+    _ASSERTE(curRegion->Generation() > 0);
+
+    // TODO: TUNING: heuristic for reuse could be more aggressive, consider pinning, etc...
+    //               the cost here is inability to trace byrefs concurrently, not huge,
+    //               byref is rarely the only ref.
+    curRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
+    if (curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 4 &&
+        curRegion->HasFreeSpaceInTop3Buckets())
+    {
+        _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
+
+        // TODO: TUNING: heuristic for demoting - could consider pinning, etc...
+        //               the cost here is increasing gen1, which is supposed to be small.
+        // TODO: VS this may be less relevant if gen sizes are in terms of occupancy (which they should be)
+        if ((curRegion->Generation() == 1) ||
+            (curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 8) && curRegion->TryDemote())
+        {
+#if _DEBUG
+            // just split 50%/50% for testing purposes.
+            curRegion->ReusableFor() = curRegion->ObjCount() % 2 == 0 ?
+                SatoriRegion::ReuseLevel::Gen0 :
+                SatoriRegion::ReuseLevel::Gen1;
+
+#else
+            // TODO: TUNING: heuristic for gen0
+            //               the cost here is inability to trace concurrently at all.
+            curRegion->ReusableFor() = curRegion->ObjCount() < (Satori::MAX_TRACKED_ESCAPES / 2) ?
+                                            SatoriRegion::ReuseLevel::Gen0 :
+                                            SatoriRegion::ReuseLevel::Gen1;
+#endif
+        }
+    }
+
     if (curRegion->Generation() == 2)
     {
         (curRegion->EverHadFinalizables() ? m_tenuredFinalizationTrackingRegions : m_tenuredRegions)->Push(curRegion);
     }
     else
     {
-        (curRegion->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
+        if (curRegion->IsReusable())
+        {
+            _ASSERTE(curRegion->Size() <= Satori::REGION_SIZE_GRANULARITY);
+            if (curRegion->IsDemoted())
+            {
+                m_reusableRegions->Push(curRegion);
+            }
+            else
+            {
+                m_reusableRegions->Enqueue(curRegion);
+            }
+        }
+        else
+        {
+            PushToEphemeralQueues(curRegion);
+        }
     }
 }
 
@@ -2620,6 +2775,17 @@ void SatoriRecycler::DrainDeferredSweepQueue()
         {
             SweepAndReturnRegion(curRegion);
             Interlocked::Decrement(&m_deferredSweepCount);
+        }
+    }
+
+    if (IsBlockingPhase())
+    {
+        MaybeAskForHelp();
+
+        SatoriRegion* curRegion;
+        while ((curRegion = m_reusableRegions->TryPop()))
+        {
+            PushToEphemeralQueues(curRegion);
         }
     }
 }
@@ -2661,7 +2827,7 @@ bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
 
 void SatoriRecycler::SweepAndReturnRegion(SatoriRegion* curRegion)
 {
-    if ((curRegion->HasMarksSet() && !curRegion->Sweep()) ||
+    if ((curRegion->HasMarksSet() && !curRegion->Sweep</*updatePointers*/ false>()) ||
         curRegion->Occupancy() == 0)
     {
         curRegion->MakeBlank();

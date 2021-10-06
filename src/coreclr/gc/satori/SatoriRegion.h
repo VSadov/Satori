@@ -21,10 +21,8 @@ class SatoriAllocationContext;
 
 class SatoriRegion
 {
-    friend class SatoriRegionQueue;
     friend class SatoriObject;
-    friend class SatoriAllocationContext;
-    friend class SatoriAllocator;
+    friend class SatoriRegionQueue;
     friend class SatoriQueue<SatoriRegion>;
 
 public:
@@ -56,17 +54,28 @@ public:
     size_t StartAllocating(size_t minSize);
 
     bool HasFreeSpaceInTopBucket();
+    bool HasFreeSpaceInTop3Buckets();
 
     bool IsAllocating();
-    void StopEscapeTracking();
 
-    bool IsThreadLocal();
-    bool IsThreadLocalAcquire();
-    bool OwnedByCurrentThread();
+    void StartEscapeTracking(size_t threadTag);
+    void StopEscapeTracking();
+    bool IsEscapeTracking();
+    bool IsEscapeTrackingAcquire();
+    bool IsEscapeTrackedByCurrentThread();
+
+    void Attach(SatoriRegion** attachementPoint);
+    void DetachFromContext();
+    bool IsAttachedToContext();
+    bool IsAttachedToContextAcquire();
+
+    bool IsDemoted();
+    SatoriMarkChunk* &DemotedObjects();
 
     int Generation();
     int GenerationAcquire();
     void SetGeneration(int generation);
+    void SetGenerationRelease(int generation);
 
     size_t Start();
     size_t End();
@@ -83,15 +92,19 @@ public:
     bool NothingMarked();
     void UpdatePointers();
     void UpdatePointersInPromotedObjects();
+
+    template <bool updatePointers>
     bool Sweep(bool keepMarked = false);
-    bool SweepAndUpdatePointers();
 
     bool IsExposed(SatoriObject** location);
     bool AnyExposed(size_t from, size_t length);
     void EscapeRecursively(SatoriObject* obj);
 
+    void EscsapeAll();
+
     void ClearMarkedAndEscapeShallow(SatoriObject* o);
-    void SetOccupancy(size_t occupancy);
+    void EscapeShallow(SatoriObject* o);
+    void SetOccupancy(size_t occupancy, size_t objCount);
 
     template<typename F>
     void ForEachFinalizable(F lambda);
@@ -108,15 +121,23 @@ public:
     bool& HasPendingFinalizables();
 
     size_t Occupancy();
+    size_t ObjCount();
 
     bool& HasPinnedObjects();
     bool& HasMarksSet();
     bool& AcceptedPromotedObjects();
 
-    SatoriQueue<SatoriRegion>* ContainingQueue();
+    enum class ReuseLevel : uint8_t
+    {
+        None,
+        Gen1,
+        Gen0,
+    };
 
-    void Attach(SatoriRegion** attachementPoint);
-    void Detach();
+    ReuseLevel& ReusableFor();
+    bool IsReusable();
+
+    SatoriQueue<SatoriRegion>* ContainingQueue();
 
     void ClearMarks();
     void ClearIndex();
@@ -126,6 +147,8 @@ public:
 
     SatoriPage* ContainingPage();
     SatoriRegion* NextInPage();
+
+    bool TryDemote();
 
     void Verify(bool allowMarked = false);
 
@@ -181,12 +204,16 @@ private:
             // when number goes too high, we stop escaping and do not do local GC.
             int32_t m_escapeCounter;
             size_t m_occupancy;
+            size_t m_objCount;
 
             bool m_everHadFinalizables;
             bool m_hasPendingFinalizables;
             bool m_hasPinnedObjects;
             bool m_hasMarksSet;
             bool m_acceptedPromotedObjects;
+            ReuseLevel m_reusableFor;
+
+            SatoriMarkChunk* m_gen2Objects;
 
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
         };
@@ -199,13 +226,17 @@ private:
 
 private:
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
+
+    template <bool isConservative>
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
+
+    template <bool isConservative>
     static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 
     static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
 
     void ThreadLocalMark();
-    size_t ThreadLocalPlan();
+    void ThreadLocalPlan();
     void ThreadLocalUpdatePointers();
     void ThreadLocalCompact();
     void ThreadLocalPendFinalizables();
