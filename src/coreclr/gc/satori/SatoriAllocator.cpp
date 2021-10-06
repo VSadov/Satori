@@ -262,7 +262,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
         switch (region->ReusableFor())
         {
         case SatoriRegion::ReuseLevel::Gen0:
-            printf("*");
+            //printf("*");
             region->EscsapeAll();
             goto fallthrough;
         case SatoriRegion::ReuseLevel::None:
@@ -270,7 +270,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             region->StartEscapeTracking(SatoriUtil::GetCurrentThreadTag());
             break;
         case SatoriRegion::ReuseLevel::Gen1:
-            printf("+");
+            //printf("+");
             region->SetGenerationRelease(1);
             break;
         }
