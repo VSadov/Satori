@@ -28,8 +28,8 @@
 #undef memcpy
 #endif //memcpy
 
-//#define ENABLE_CONCURRENT true
-#define ENABLE_CONCURRENT false
+#define ENABLE_CONCURRENT true
+//#define ENABLE_CONCURRENT false
 
 #define ENABLE_RELOCATION true
 //#define ENABLE_RELOCATION false
