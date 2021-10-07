@@ -698,7 +698,7 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
 
     if (bitmapIndexF == bitmapIndexL)
     {
-        return m_bitmap[bitmapIndexF] & maskF & maskL;
+        return m_bitmap[bitmapIndexF] & (maskF & maskL);
     }
 
     if (m_bitmap[bitmapIndexF] & maskF)
@@ -717,38 +717,33 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
     return m_bitmap[bitmapIndexL] & maskL;
 }
 
-//TODO: VS optimize masks inversions
 void SatoriRegion::ClearEscapes(size_t first, size_t length)
 {
-    for (size_t i = 0; i < length; i++)
+    _ASSERTE(length % 8 == 0);
+
+    size_t last = first + length - sizeof(size_t);
+    _ASSERTE(((SatoriObject*)first)->ContainingRegion() == this);
+    _ASSERTE(((SatoriObject*)last)->ContainingRegion() == this);
+
+    size_t bitmapIndexF;
+    size_t maskF = (size_t)-1 >> (63 - ((SatoriObject*)first)->GetMarkBitAndWord(&bitmapIndexF));
+
+    size_t bitmapIndexL;
+    size_t maskL = (size_t)-1 << ((SatoriObject*)last)->GetMarkBitAndWord(&bitmapIndexL);
+
+    if (bitmapIndexF == bitmapIndexL)
     {
-        ((SatoriObject*)(first + i))->ClearMarked();
+        m_bitmap[bitmapIndexF] &= (maskF | maskL);
+        return;
     }
 
-    //_ASSERTE(length % 8 == 0);
+    m_bitmap[bitmapIndexF] &= maskF;
+    for (size_t i = bitmapIndexF + 1; i < bitmapIndexL; i++)
+    {
+        m_bitmap[i] = 0;
+    }
 
-    //size_t last = first + length - sizeof(size_t);
-    //_ASSERTE(((SatoriObject*)first)->ContainingRegion() == this);
-    //_ASSERTE(((SatoriObject*)last)->ContainingRegion() == this);
-
-    //size_t bitmapIndexF;
-    //size_t maskF = (size_t)-1 << ((SatoriObject*)first)->GetMarkBitAndWord(&bitmapIndexF);
-
-    //size_t bitmapIndexL;
-    //size_t maskL = (size_t)-1 >> (63 - ((SatoriObject*)last)->GetMarkBitAndWord(&bitmapIndexL));
-
-    //if (bitmapIndexF == bitmapIndexL)
-    //{
-    //    m_bitmap[bitmapIndexF] &= ~(maskF & maskL);
-    //    return;
-    //}
-
-    //m_bitmap[bitmapIndexF] &= ~maskF;
-    //for (size_t i = bitmapIndexF + 1; i < bitmapIndexL; i++)
-    //{
-    //    m_bitmap[i] = 0;
-    //}
-    //m_bitmap[bitmapIndexL] &= ~maskL;
+    m_bitmap[bitmapIndexL] &= maskL;
 }
 
 void SatoriRegion::EscapeRecursively(SatoriObject* o)
