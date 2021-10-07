@@ -808,8 +808,8 @@ void SatoriRegion::ClearMarkedAndEscapeShallow(SatoriObject* o)
 void SatoriRegion::EscapeShallow(SatoriObject* o)
 {
     _ASSERTE(o->ContainingRegion() == this);
-    _ASSERTE(!o->IsEscaped());
-    _ASSERTE(!o->IsPinned());
+//    _ASSERTE(!o->IsEscaped());
+ //   _ASSERTE(!o->IsPinned());
 
     o->SetEscaped();
 
@@ -824,7 +824,7 @@ void SatoriRegion::EscapeShallow(SatoriObject* o)
         {
             // no refs should be exposed yet, except if the ref is the first field,
             // we use that to escape whole object.
-            _ASSERTE(!IsExposed(ref) || ((size_t)o == (size_t)ref - sizeof(size_t)));
+ //           _ASSERTE(!IsExposed(ref) || ((size_t)o == (size_t)ref - sizeof(size_t)));
 
             // mark ref location as exposed
             SetExposed(ref);

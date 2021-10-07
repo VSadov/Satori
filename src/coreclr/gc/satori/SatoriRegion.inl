@@ -203,6 +203,13 @@ bool SatoriRegion::SweepWithEscapeBits()
     size_t objCount = 0;
     SatoriObject* o = FirstObject();
     size_t lastMarkedEnd = o->Start();
+
+    int escaped = 0;
+    int unescaped = 0;
+    int free = 0;
+    int freeE = 0;
+    int freeN = 0;
+
     do
     {
         size_t size = o->Size();
@@ -243,15 +250,23 @@ bool SatoriRegion::SweepWithEscapeBits()
         }
         else
         {
+            free++;
             if (o->IsEscaped())
             {
+                freeE++;
                 this->ClearEscapes(o->Start(), size);
                 m_escapeCounter--;
+            }
+            else
+            {
+                freeN++;
             }
         }
 
         o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);
+
+    printf("\n ESCAPED: %d, UNESCAPED: %d, FREE: %d, FREE_E: %d, FREE_N: %d \n", escaped, unescaped, free, freeE, freeN);
 
     this->HasMarksSet() = false;
     this->HasPinnedObjects() = false;
