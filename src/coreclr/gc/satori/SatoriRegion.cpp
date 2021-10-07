@@ -80,6 +80,11 @@ SatoriAllocator* SatoriRegion::Allocator()
     return m_containingPage->Heap()->Allocator();
 }
 
+SatoriRecycler* SatoriRegion::Recycler()
+{
+    return m_containingPage->Heap()->Recycler();
+}
+
 void SatoriRegion::WipeCards()
 {
     m_containingPage->WipeCardsForRange(Start(), End());
@@ -693,7 +698,7 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
 
     if (bitmapIndexF == bitmapIndexL)
     {
-        return m_bitmap[bitmapIndexF] & maskF & maskL;
+        return m_bitmap[bitmapIndexF] & (maskF & maskL);
     }
 
     if (m_bitmap[bitmapIndexF] & maskF)
@@ -815,6 +820,7 @@ void SatoriRegion::SetOccupancy(size_t occupancy, size_t objCount)
     }
 }
 
+// NB: dst is unused, it is just to avoid arg shuffle in x64 barriers
 void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
 {
     region->EscapeRecursively(src);

@@ -987,7 +987,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         // Concurrent FindObject is unsafe in active regions. While ref may be in a real obj,
         // the path to it from the first obj or prev indexed may cross unparsable ranges.
         // The check must acquire to be sure we check before actually doing FindObject.
-        if (containingRegion->IsAttachedToContextAcquire())
+        if (containingRegion->MaybeAttachedToContextAcquire())
         {
             return;
         }
@@ -1002,7 +1002,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     {
         containingRegion = o->ContainingRegion();
         // can't mark in regions which are tracking escapes, bitmap is in use
-        if (containingRegion->IsEscapeTrackingAcquire())
+        if (containingRegion->MaybeEscapeTrackingAcquire())
         {
             return;
         }
@@ -1096,7 +1096,7 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
                 SatoriObject* o = *ppObject;
 
                 // can't mark in regions which are tracking escapes, bitmap is in use
-                if (!isBlockingPhase && o->ContainingRegion()->IsEscapeTrackingAcquire())
+                if (!isBlockingPhase && o->ContainingRegion()->MaybeEscapeTrackingAcquire())
                 {
                     return;
                 }
@@ -1205,7 +1205,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
                     {
                         objectCount++;
                         SatoriRegion* childRegion = child->ContainingRegion();
-                        if (!childRegion->IsEscapeTrackingAcquire())
+                        if (!childRegion->MaybeEscapeTrackingAcquire())
                         {
                             if (!child->IsMarkedOrOlderThan(m_condemnedGeneration))
                             {
@@ -1442,7 +1442,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                                         if (child)
                                         {
                                             SatoriRegion* childRegion = child->ContainingRegion();
-                                            if (!childRegion->IsEscapeTrackingAcquire())
+                                            if (!childRegion->MaybeEscapeTrackingAcquire())
                                             {
                                                 if (!child->IsMarkedOrOlderThan(m_condemnedGeneration))
                                                 {

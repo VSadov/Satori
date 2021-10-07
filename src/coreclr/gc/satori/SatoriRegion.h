@@ -61,13 +61,13 @@ public:
     void StartEscapeTracking(size_t threadTag);
     void StopEscapeTracking();
     bool IsEscapeTracking();
-    bool IsEscapeTrackingAcquire();
+    bool MaybeEscapeTrackingAcquire();
     bool IsEscapeTrackedByCurrentThread();
 
     void Attach(SatoriRegion** attachementPoint);
     void DetachFromContext();
     bool IsAttachedToContext();
-    bool IsAttachedToContextAcquire();
+    bool MaybeAttachedToContextAcquire();
 
     bool IsDemoted();
     SatoriMarkChunk* &DemotedObjects();
@@ -95,6 +95,9 @@ public:
 
     template <bool updatePointers>
     bool Sweep(bool keepMarked = false);
+
+    template<bool updatePointers>
+    bool SweepEscapeTracking();
 
     bool IsExposed(SatoriObject** location);
     bool AnyExposed(size_t from, size_t length);
@@ -242,6 +245,7 @@ private:
     void ThreadLocalPendFinalizables();
 
     SatoriAllocator* Allocator();
+    SatoriRecycler* Recycler();
 
     void PushToMarkStack(SatoriObject* obj);
     SatoriObject* PopFromMarkStack();
