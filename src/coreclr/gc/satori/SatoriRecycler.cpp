@@ -241,15 +241,14 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
     _ASSERTE(region->AllocRemaining() == 0);
     _ASSERTE(region->Generation() == 0 || region->Generation() == 1);
     _ASSERTE(!region->HasMarksSet());
-
-    PushToEphemeralQueues(region);
-    Interlocked::Increment(&m_regionsAddedSinceLastCollection);
     if (region->IsEscapeTracking())
     {
         _ASSERTE(IsBlockingPhase());
         _ASSERTE(!region->HasPinnedObjects());
-        region->ClearMarks();
     }
+
+    PushToEphemeralQueues(region);
+    Interlocked::Increment(&m_regionsAddedSinceLastCollection);
 
     // When concurrent marking is allowed we may have marks already.
     // Demoted regions could be pre-marked
@@ -987,7 +986,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         // Concurrent FindObject is unsafe in active regions. While ref may be in a real obj,
         // the path to it from the first obj or prev indexed may cross unparsable ranges.
         // The check must acquire to be sure we check before actually doing FindObject.
-        if (containingRegion->IsAttachedToContextAcquire())
+        if (containingRegion->MaybeAttachedToContextAcquire())
         {
             return;
         }
@@ -1002,7 +1001,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     {
         containingRegion = o->ContainingRegion();
         // can't mark in regions which are tracking escapes, bitmap is in use
-        if (containingRegion->IsEscapeTrackingAcquire())
+        if (containingRegion->MaybeEscapeTrackingAcquire())
         {
             return;
         }
@@ -1096,7 +1095,7 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
                 SatoriObject* o = *ppObject;
 
                 // can't mark in regions which are tracking escapes, bitmap is in use
-                if (!isBlockingPhase && o->ContainingRegion()->IsEscapeTrackingAcquire())
+                if (!isBlockingPhase && o->ContainingRegion()->MaybeEscapeTrackingAcquire())
                 {
                     return;
                 }
@@ -1205,7 +1204,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
                     {
                         objectCount++;
                         SatoriRegion* childRegion = child->ContainingRegion();
-                        if (!childRegion->IsEscapeTrackingAcquire())
+                        if (!childRegion->MaybeEscapeTrackingAcquire())
                         {
                             if (!child->IsMarkedOrOlderThan(m_condemnedGeneration))
                             {
@@ -1442,7 +1441,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                                         if (child)
                                         {
                                             SatoriRegion* childRegion = child->ContainingRegion();
-                                            if (!childRegion->IsEscapeTrackingAcquire())
+                                            if (!childRegion->MaybeEscapeTrackingAcquire())
                                             {
                                                 if (!child->IsMarkedOrOlderThan(m_condemnedGeneration))
                                                 {
@@ -2025,6 +2024,10 @@ void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContex
                             {
                                 finalizable->SetMarkedAtomic();
                                 c->PushToMarkQueues(finalizable);
+                                if (region->IsEscapeTracking())
+                                {
+                                    region->EscapeRecursively(finalizable);
+                                }
 
                                 if (m_heap->FinalizationQueue()->TryScheduleForFinalization(finalizable))
                                 {
@@ -2066,6 +2069,10 @@ void SatoriRecycler::QueueCriticalFinalizablesWorker()
                         (size_t&)finalizable &= ~Satori::FINALIZATION_PENDING;
                         finalizable->SetMarkedAtomic();
                         c.PushToMarkQueues(finalizable);
+                        if (region->IsEscapeTracking())
+                        {
+                            region->EscapeRecursively(finalizable);
+                        }
 
                         if (m_heap->FinalizationQueue()->TryScheduleForFinalization(finalizable))
                         {

@@ -80,6 +80,11 @@ SatoriAllocator* SatoriRegion::Allocator()
     return m_containingPage->Heap()->Allocator();
 }
 
+SatoriRecycler* SatoriRegion::Recycler()
+{
+    return m_containingPage->Heap()->Recycler();
+}
+
 void SatoriRegion::WipeCards()
 {
     m_containingPage->WipeCardsForRange(Start(), End());
@@ -712,9 +717,43 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
     return m_bitmap[bitmapIndexL] & maskL;
 }
 
+//TODO: VS optimize masks inversions
+void SatoriRegion::ClearEscapes(size_t first, size_t length)
+{
+    for (size_t i = 0; i < length; i++)
+    {
+        ((SatoriObject*)(first + i))->ClearMarked();
+    }
+
+    //_ASSERTE(length % 8 == 0);
+
+    //size_t last = first + length - sizeof(size_t);
+    //_ASSERTE(((SatoriObject*)first)->ContainingRegion() == this);
+    //_ASSERTE(((SatoriObject*)last)->ContainingRegion() == this);
+
+    //size_t bitmapIndexF;
+    //size_t maskF = (size_t)-1 << ((SatoriObject*)first)->GetMarkBitAndWord(&bitmapIndexF);
+
+    //size_t bitmapIndexL;
+    //size_t maskL = (size_t)-1 >> (63 - ((SatoriObject*)last)->GetMarkBitAndWord(&bitmapIndexL));
+
+    //if (bitmapIndexF == bitmapIndexL)
+    //{
+    //    m_bitmap[bitmapIndexF] &= ~(maskF & maskL);
+    //    return;
+    //}
+
+    //m_bitmap[bitmapIndexF] &= ~maskF;
+    //for (size_t i = bitmapIndexF + 1; i < bitmapIndexL; i++)
+    //{
+    //    m_bitmap[i] = 0;
+    //}
+    //m_bitmap[bitmapIndexL] &= ~maskL;
+}
+
 void SatoriRegion::EscapeRecursively(SatoriObject* o)
 {
-    _ASSERTE(this->IsEscapeTrackedByCurrentThread());
+    _ASSERTE(this->IsEscapeTrackedByCurrentThread() || this->Recycler()->IsBlockingPhase());
     _ASSERTE(o->ContainingRegion() == this);
 
     if (o->IsEscaped())
@@ -815,6 +854,7 @@ void SatoriRegion::SetOccupancy(size_t occupancy, size_t objCount)
     }
 }
 
+// NB: dst is unused, it is just to avoid arg shuffle in x64 barriers
 void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
 {
     region->EscapeRecursively(src);

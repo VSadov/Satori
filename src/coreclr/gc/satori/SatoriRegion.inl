@@ -22,7 +22,7 @@ inline bool SatoriRegion::IsEscapeTracking()
     return m_ownerThreadTag;
 }
 
-inline bool SatoriRegion::IsEscapeTrackingAcquire()
+inline bool SatoriRegion::MaybeEscapeTrackingAcquire()
 {
     return m_reusableFor == ReuseLevel::Gen0 || VolatileLoad(&m_ownerThreadTag);
 }
@@ -185,11 +185,91 @@ void SatoriRegion::ForEachFinalizableThreadLocal(F lambda)
 }
 
 template <bool updatePointers>
-bool SatoriRegion::Sweep(bool keepMarked)
+bool SatoriRegion::SweepWithEscapeBits()
 {
     // we should only sweep when we have marks
     _ASSERTE(HasMarksSet());
+    _ASSERTE(Size() == Satori::REGION_SIZE_GRANULARITY);
+    _ASSERTE(IsEscapeTracking());
 
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+
+    // we will be building new free lists
+    ClearFreeLists();
+    // sweeping invalidates indices, since free objects get coalesced
+    ClearIndex();
+
+    size_t occupancy = 0;
+    size_t objCount = 0;
+    SatoriObject* o = FirstObject();
+    size_t lastMarkedEnd = o->Start();
+    do
+    {
+        size_t size = o->Size();
+        if (o->IsMarked())
+        {
+            _ASSERTE(!o->IsFree());
+            o->ClearMarked();
+
+            size_t skipped = o->Start() - lastMarkedEnd;
+            if (skipped)
+            {
+                SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
+                AddFreeSpace(free);
+            }
+
+            if (updatePointers)
+            {
+                o->ForEachObjectRef(
+                    [](SatoriObject** ppObject)
+                    {
+                        SatoriObject* child = *ppObject;
+                        if (child)
+                        {
+                            ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                            if (ptr < 0)
+                            {
+                                _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
+                                *ppObject = (SatoriObject*)-ptr;
+                            }
+                        }
+                    }
+                );
+            }
+
+            objCount++;
+            occupancy += size;
+            lastMarkedEnd = o->Start() + size;
+        }
+        else
+        {
+            if (o->IsEscaped())
+            {
+                this->ClearEscapes(o->Start(), size);
+                m_escapeCounter--;
+            }
+        }
+
+        o = (SatoriObject*)(o->Start() + size);
+    } while (o->Start() < objLimit);
+
+    this->HasMarksSet() = false;
+    this->HasPinnedObjects() = false;
+    SetOccupancy(occupancy, objCount);
+    // cannot recycle
+    return true;
+}
+
+template <bool updatePointers>
+bool SatoriRegion::Sweep(bool keepMarked)
+{
+    if (IsEscapeTracking())
+    {
+        return SweepWithEscapeBits<updatePointers>();
+    }
+
+    // we should only sweep when we have marks
+    _ASSERTE(HasMarksSet());
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
 
     // we will be building new free lists
@@ -201,7 +281,6 @@ bool SatoriRegion::Sweep(bool keepMarked)
         SatoriObject* last = FindObject(objLimit - 1);
         if (!last->IsMarked())
         {
-            _ASSERTE(!this->IsEscapeTracking());
             _ASSERTE(this->NothingMarked());
             _ASSERTE(!this->HasPinnedObjects());
 #if _DEBUG
@@ -216,27 +295,16 @@ bool SatoriRegion::Sweep(bool keepMarked)
 
     size_t occupancy = 0;
     size_t objCount = 0;
-
     bool cannotRecycle = this->IsAttachedToContext();
-    bool isEscapeTracking = this->IsEscapeTracking();
 
     // sweeping invalidates indices, since free objects get coalesced
     ClearIndex();
-    m_escapeCounter = 0;
-
     SatoriObject* o = FirstObject();
     do
     {
         if (o->IsMarked())
         {
             _ASSERTE(!o->IsFree());
-            if (isEscapeTracking)
-            {
-                // TODO: VS we do not need to escape all survivors, we could keep old escape bits
-                //       and only clean 1) mark bit for survivors 2) all bits for free obj.
-                // turn mark bit into escape bits.
-                this->ClearMarkedAndEscapeShallow(o);
-            }
 
             if (updatePointers)
             {
@@ -279,10 +347,7 @@ bool SatoriRegion::Sweep(bool keepMarked)
     {
         this->HasMarksSet() = false;
         this->HasPinnedObjects() = false;
-        if (!this->IsEscapeTracking())
-        {
-            this->ClearMarks();
-        }
+        this->ClearMarks();
     }
 
     SetOccupancy(occupancy, objCount);
@@ -367,7 +432,7 @@ inline bool SatoriRegion::IsAttachedToContext()
     return m_allocationContextAttachmentPoint;
 }
 
-inline bool SatoriRegion::IsAttachedToContextAcquire()
+inline bool SatoriRegion::MaybeAttachedToContextAcquire()
 {
     return IsReusable() || VolatileLoad(&m_allocationContextAttachmentPoint);
 }
