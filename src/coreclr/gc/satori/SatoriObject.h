@@ -42,6 +42,8 @@ public:
     void SetMarked();
     void ClearMarked();
     void SetMarkedAtomic();
+    void MarkTail();
+    void MarkTailAtomic();
     bool IsPinned();
     void SetPinned();
     void ClearPinnedAndMarked();

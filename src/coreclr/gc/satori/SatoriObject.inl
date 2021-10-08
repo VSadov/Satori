@@ -146,6 +146,24 @@ inline void SatoriObject::SetMarkedAtomic()
     SetBitAtomic(0);
 }
 
+inline void SatoriObject::MarkTail()
+{
+    size_t size = Size();
+    if (size <= SatoriRegion::MAX_LARGE_OBJ_SIZE)
+    {
+        ((SatoriObject*)(Start() + size) - 1)->SetBit(0);
+    }
+}
+
+inline void SatoriObject::MarkTailAtomic()
+{
+    size_t size = Size();
+    if (size <= SatoriRegion::MAX_LARGE_OBJ_SIZE)
+    {
+        ((SatoriObject*)(Start() + size) - 1)->SetBitAtomic(0);
+    }
+}
+
 inline bool SatoriObject::IsPinned()
 {
     return CheckBit(2);

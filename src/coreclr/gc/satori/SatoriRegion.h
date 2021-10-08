@@ -30,6 +30,9 @@ public:
     ~SatoriRegion() = delete;
 
     static SatoriRegion* InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used);
+
+    static const int MAX_LARGE_OBJ_SIZE;
+
     void MakeBlank();
     bool ValidateBlank();
     bool ValidateIndexEmpty();

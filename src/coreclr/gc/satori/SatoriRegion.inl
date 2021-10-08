@@ -223,6 +223,12 @@ bool SatoriRegion::SweepEscapeTracking()
         _ASSERTE(o->IsMarked());
         _ASSERTE(!o->IsFree());
 
+#if _DEBUG
+        if (o->Size() <= SatoriRegion::MAX_LARGE_OBJ_SIZE)
+        {
+            _ASSERTE((o->Next() - 1)->CheckBit(0));
+        }
+#endif
         this->ClearMarkedAndEscapeShallow(o);
 
         if (updatePointers)
@@ -339,7 +345,14 @@ bool SatoriRegion::Sweep(bool keepMarked)
         }
 
         objCount++;
-        size_t size = o->Size();
+
+#if _DEBUG
+        if (o->Size() <= SatoriRegion::MAX_LARGE_OBJ_SIZE)
+        {
+            _ASSERTE((o->Next() - 1)->CheckBit(0));
+        }
+#endif
+        size_t size = SkipUnmarked(o + 1)->Start() - o->Start() + sizeof(size_t);
         occupancy += size;
         o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);

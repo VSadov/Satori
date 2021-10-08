@@ -28,6 +28,8 @@
 #include "SatoriQueue.h"
 #include "SatoriMarkChunk.h"
 
+const int SatoriRegion::MAX_LARGE_OBJ_SIZE = Satori::REGION_SIZE_GRANULARITY - Satori::MIN_FREE_SIZE - offsetof(SatoriRegion, m_firstObject);
+
 SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used)
 {
     _ASSERTE(used <= committed);
@@ -773,6 +775,13 @@ void SatoriRegion::EscsapeAll()
 void SatoriRegion::ClearMarkedAndEscapeShallow(SatoriObject* o)
 {
     o->ClearMarked();
+
+    size_t size = o->Size();
+    if (size <= SatoriRegion::MAX_LARGE_OBJ_SIZE)
+    {
+        (o->Next() - 1)->ClearMarked();
+    }
+
     EscapeShallow(o);
 }
 

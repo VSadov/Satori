@@ -312,8 +312,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
         }
 
         // handle huge allocation. It can't be from the current region.
-        size_t regionSize = SatoriRegion::RegionSizeForAlloc(size);
-        if (regionSize > Satori::REGION_SIZE_GRANULARITY)
+        if (size > SatoriRegion::MAX_LARGE_OBJ_SIZE)
         {
             return AllocHuge(context, size, flags);
         }
@@ -338,9 +337,10 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
             m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
-        // get a new region.
+        // get a new regular region.
         m_heap->Recycler()->MaybeTriggerGC();
-        region = GetRegion(regionSize);
+        _ASSERTE(SatoriRegion::RegionSizeForAlloc(size) == Satori::REGION_SIZE_GRANULARITY);
+        region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
         if (!region)
         {
             //OOM
@@ -356,6 +356,8 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
 SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
     size_t regionSize = SatoriRegion::RegionSizeForAlloc(size);
+    _ASSERTE(regionSize > Satori::REGION_SIZE_GRANULARITY);
+
     m_heap->Recycler()->MaybeTriggerGC();
     SatoriRegion* hugeRegion = GetRegion(regionSize);
     if (!hugeRegion)

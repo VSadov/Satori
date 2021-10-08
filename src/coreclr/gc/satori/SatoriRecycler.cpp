@@ -850,7 +850,8 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, Sa
         o->DirtyCardsForContent();
 
         // since this o will not be popped from the mark queue,
-        // check for pinning here
+        // mark the tail and check for pinning here
+        o->MarkTailAtomic();
         if (o->IsUnmovable())
         {
             o->ContainingRegion()->HasPinnedObjects() = true;
@@ -1197,6 +1198,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
                 o->ContainingRegion()->HasPinnedObjects() = true;
             }
 
+            o->MarkTailAtomic();
             o->ForEachObjectRef(
                 [&](SatoriObject** ref)
                 {
@@ -1285,6 +1287,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriMarkChunk* srcChunk)
                 o->ContainingRegion()->HasPinnedObjects() = true;
             }
 
+            o->MarkTailAtomic();
             o->ForEachObjectRef(
                 [&](SatoriObject** ref)
                 {
@@ -1713,11 +1716,6 @@ bool SatoriRecycler::CleanCards()
                             {
                                 if (considerAllMarked || o->IsMarked())
                                 {
-                                    if (o->IsUnmovable())
-                                    {
-                                        o->ContainingRegion()->HasPinnedObjects() = true;
-                                    }
-
                                     o->ForEachObjectRef(
                                         [&](SatoriObject** ref)
                                         {
@@ -2458,6 +2456,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
             if (needToCopyMarks)
             {
                 ((SatoriObject*)dst)->SetMarked();
+                ((SatoriObject*)dst)->MarkTail();
             }
 
             dst += size;
@@ -2466,6 +2465,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         }
         else
         {
+            //TODO: VS turn into mid-loop exit. check other uses of SkipUnmarked
             o = relocationSource->SkipUnmarked(o);
         }
     } while (o->Start() < objLimit);
@@ -2503,7 +2503,6 @@ void SatoriRecycler::Update()
     RunWithHelp(&SatoriRecycler::UpdateRootsWorker);
 
     // must run after updating through cards since update may change generations
-    // TODO: VS can this run in above when not promoting?
     RunWithHelp(&SatoriRecycler::UpdateRegionsWorker);
 
     // promoting handles must be after handles are updated (since update needs to know unpromoted generations).
