@@ -30,6 +30,9 @@ public:
     ~SatoriRegion() = delete;
 
     static SatoriRegion* InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used);
+
+    static const int MAX_LARGE_OBJ_SIZE;
+
     void MakeBlank();
     bool ValidateBlank();
     bool ValidateIndexEmpty();
@@ -61,13 +64,13 @@ public:
     void StartEscapeTracking(size_t threadTag);
     void StopEscapeTracking();
     bool IsEscapeTracking();
-    bool IsEscapeTrackingAcquire();
+    bool MaybeEscapeTrackingAcquire();
     bool IsEscapeTrackedByCurrentThread();
 
     void Attach(SatoriRegion** attachementPoint);
     void DetachFromContext();
     bool IsAttachedToContext();
-    bool IsAttachedToContextAcquire();
+    bool MaybeAttachedToContextAcquire();
 
     bool IsDemoted();
     SatoriMarkChunk* &DemotedObjects();
@@ -94,15 +97,13 @@ public:
     void UpdatePointersInPromotedObjects();
 
     template <bool updatePointers>
-    bool Sweep(bool keepMarked = false);
+    bool Sweep();
 
     bool IsExposed(SatoriObject** location);
     bool AnyExposed(size_t from, size_t length);
     void EscapeRecursively(SatoriObject* obj);
 
     void EscsapeAll();
-
-    void ClearMarkedAndEscapeShallow(SatoriObject* o);
     void EscapeShallow(SatoriObject* o);
     void SetOccupancy(size_t occupancy, size_t objCount);
 
@@ -143,7 +144,9 @@ public:
     void ClearIndex();
     void ClearFreeLists();
 
-    void ThreadLocalCollect();
+    // we tell where we are in terms of alloc bytes, so we do not collect too soon
+    // returns true if it actually did a collection.
+    bool ThreadLocalCollect(size_t allocBytes);
 
     SatoriPage* ContainingPage();
     SatoriRegion* NextInPage();
@@ -177,6 +180,7 @@ private:
             size_t m_ownerThreadTag;
             void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
             int m_generation;
+            SatoriRegion** m_allocationContextAttachmentPoint;
 
             size_t m_end;
             size_t m_committed;
@@ -186,7 +190,6 @@ private:
             SatoriRegion* m_prev;
             SatoriRegion* m_next;
             SatoriQueue<SatoriRegion>* m_containingQueue;
-            SatoriRegion** m_allocationContextAttachmentPoint;
 
             SatoriMarkChunk* m_finalizableTrackers;
             int m_finalizableTrackersLock;
@@ -201,10 +204,11 @@ private:
             int32_t m_markStack;
 
             // counting escaped objects
-            // when number goes too high, we stop escaping and do not do local GC.
-            int32_t m_escapeCounter;
+            // when size goes too high, we stop escaping and do not do local GC.
+            size_t m_escapedSize;
             size_t m_occupancy;
             size_t m_objCount;
+            size_t m_allocBytesAtCollect;
 
             bool m_everHadFinalizables;
             bool m_hasPendingFinalizables;
@@ -239,14 +243,36 @@ private:
     void ThreadLocalPlan();
     void ThreadLocalUpdatePointers();
     void ThreadLocalCompact();
+    NOINLINE void ClearPinned(SatoriObject* o);
     void ThreadLocalPendFinalizables();
 
     SatoriAllocator* Allocator();
+    SatoriRecycler* Recycler();
 
-    void PushToMarkStack(SatoriObject* obj);
+    void PushToMarkStackIfHasPointers(SatoriObject* obj);
     SatoriObject* PopFromMarkStack();
     SatoriObject* ObjectForMarkBit(size_t bitmapIndex, int offset);
     void CompactFinalizableTrackers();
+
+    enum MarkOffset: int
+    {
+        Marked,
+        Escaped,
+        Pinned,
+    };
+
+    bool IsMarked(SatoriObject* o);
+    void SetMarked(SatoriObject* o);
+    void SetMarkedAtomic(SatoriObject* o);
+    void ClearMarked(SatoriObject* o);
+    bool CheckAndClearMarked(SatoriObject* o);
+
+    bool IsPinned(SatoriObject* o);
+    void SetPinned(SatoriObject* o);
+    void ClearPinnedAndMarked(SatoriObject* o);
+    bool IsEscaped(SatoriObject* o);
+    void SetEscaped(SatoriObject* o);
+    bool IsEscapedOrPinned(SatoriObject* o);
 
     void SetExposed(SatoriObject** location);
 };
