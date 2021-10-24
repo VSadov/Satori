@@ -55,7 +55,7 @@ public class GetGenerationTest
             return true;
         }
 
-        if (g1 < g2)
+        if (g1 <= g2)
         {
             Console.WriteLine("arrayTest Passed!");
             return true;
