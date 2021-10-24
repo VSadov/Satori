@@ -28,6 +28,8 @@
 #include "SatoriQueue.h"
 #include "SatoriMarkChunk.h"
 
+const int SatoriRegion::MAX_LARGE_OBJ_SIZE = Satori::REGION_SIZE_GRANULARITY - Satori::MIN_FREE_SIZE - offsetof(SatoriRegion, m_firstObject);
+
 SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used)
 {
     _ASSERTE(used <= committed);
@@ -80,6 +82,11 @@ SatoriAllocator* SatoriRegion::Allocator()
     return m_containingPage->Heap()->Allocator();
 }
 
+SatoriRecycler* SatoriRegion::Recycler()
+{
+    return m_containingPage->Heap()->Recycler();
+}
+
 void SatoriRegion::WipeCards()
 {
     m_containingPage->WipeCardsForRange(Start(), End());
@@ -101,9 +108,10 @@ void SatoriRegion::MakeBlank()
     m_allocStart = (size_t)&m_firstObject;
     m_allocEnd = End();
     m_markStack = 0;
-    m_escapeCounter = 0;
+    m_escapedSize = 0;
     m_occupancy = 0;
     m_objCount = 0;
+    m_allocBytesAtCollect = 0;
 
     m_everHadFinalizables = false;
     m_hasPinnedObjects = false;
@@ -445,7 +453,6 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     size_t chunkStart = m_allocStart;
     size_t chunkEnd = chunkStart + size;
 
-    // TODO: VS consider always padding at the end (let the pad cross the granule)
     // in rare cases the object does not cross into the last granule. (when it needs extra because of free obj padding).
     // in such case pad it in front.
     if (chunkEnd < End() - Satori::REGION_SIZE_GRANULARITY)
@@ -489,7 +496,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     // space after chunkEnd is a waste, no normal object can start there.
     // if there is dirty space after the chunkEnd,
     // zero-out what would be the next obj MT in debug - to catch if we walk there by accident.
-#if _DEBUG
+#ifdef _DEBUG
     if (m_used - chunkEnd > sizeof(size_t))
     {
         *((size_t*)chunkEnd) = 0;
@@ -602,22 +609,22 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
         }
     }
 
-    if (!o->IsMarked())
+    if (!region->IsMarked(o))
     {
-        o->SetMarked();
-        region->PushToMarkStack(o);
+        region->SetMarked(o);
+        region->PushToMarkStackIfHasPointers(o);
     }
 
     if (flags & GC_CALL_PINNED)
     {
-        if (!o->IsEscaped())
+        if (!region->IsEscaped(o))
         {
-            o->SetPinned();
+            region->SetPinned(o);
         }
     }
 }
 
-inline void SatoriRegion::PushToMarkStack(SatoriObject* obj)
+inline void SatoriRegion::PushToMarkStackIfHasPointers(SatoriObject* obj)
 {
     _ASSERTE(obj->ContainingRegion() == this);
     _ASSERTE(!obj->GetNextInLocalMarkStack());
@@ -643,40 +650,6 @@ inline SatoriObject* SatoriRegion::PopFromMarkStack()
     return nullptr;
 }
 
-SatoriObject* SatoriRegion::ObjectForMarkBit(size_t bitmapIndex, int offset)
-{
-    size_t objOffset = (bitmapIndex * sizeof(size_t) * 8 + offset) * sizeof(size_t);
-    return (SatoriObject*)(Start() + objOffset);
-}
-
-void SatoriRegion::SetExposed(SatoriObject** location)
-{
-    _ASSERTE(((SatoriObject*)location)->ContainingRegion() == this);
-
-    // set the mark bit corresponding to the location to indicate that it is globally exposed
-    // same as: ((SatoriObject*)location)->SetMarked();
-
-    size_t bitmapIndex;
-    int offset = ((SatoriObject*)location)->GetMarkBitAndWord(&bitmapIndex);
-
-    size_t mask = (size_t)1 << offset;
-    m_bitmap[bitmapIndex] |= mask;
-}
-
-bool SatoriRegion::IsExposed(SatoriObject** location)
-{
-    _ASSERTE(((SatoriObject*)location)->ContainingRegion() == this);
-
-    // check the mark bit corresponding to the location
-    //same as: return ((SatoriObject*)location)->IsMarked();
-
-    size_t bitmapIndex;
-    int offset = ((SatoriObject*)location)->GetMarkBitAndWord(&bitmapIndex);
-
-    size_t mask = (size_t)1 << offset;
-    return m_bitmap[bitmapIndex] & mask;
-}
-
 bool SatoriRegion::AnyExposed(size_t first, size_t length)
 {
     _ASSERTE(length % 8 == 0);
@@ -693,7 +666,7 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
 
     if (bitmapIndexF == bitmapIndexL)
     {
-        return m_bitmap[bitmapIndexF] & maskF & maskL;
+        return m_bitmap[bitmapIndexF] & (maskF & maskL);
     }
 
     if (m_bitmap[bitmapIndexF] & maskF)
@@ -717,18 +690,18 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
     _ASSERTE(this->IsEscapeTrackedByCurrentThread());
     _ASSERTE(o->ContainingRegion() == this);
 
-    if (o->IsEscaped())
+    if (IsEscaped(o))
     {
         return;
     }
 
-    m_escapeCounter++;
-    o->SetEscaped();
+    SetEscaped(o);
+    m_escapedSize += o->Size();
 
     // now recursively mark all the objects reachable from escaped object.
     do
     {
-        _ASSERTE(o->IsEscaped());
+        _ASSERTE(IsEscaped(o));
         o->ForEachObjectRef(
             [&](SatoriObject** ref)
             {
@@ -741,14 +714,15 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
 
                 // recursively escape all currently reachable objects
                 SatoriObject* child = *ref;
-                if (child->ContainingRegion() == this && !child->IsEscaped())
+                if (child->ContainingRegion() == this && !IsEscaped(child))
                 {
-                    m_escapeCounter++;
-                    child->SetEscaped();
-                    PushToMarkStack(child);
+                    SetEscaped(child);
+                    m_escapedSize += child->Size();
+                    PushToMarkStackIfHasPointers(child);
                 }
             }
         );
+
         o = PopFromMarkStack();
     } while (o);
 }
@@ -765,25 +739,18 @@ void SatoriRegion::EscsapeAll()
     }
 }
 
-void SatoriRegion::ClearMarkedAndEscapeShallow(SatoriObject* o)
-{
-    o->ClearMarked();
-    EscapeShallow(o);
-}
-
 void SatoriRegion::EscapeShallow(SatoriObject* o)
 {
     _ASSERTE(o->ContainingRegion() == this);
-    _ASSERTE(!o->IsEscaped());
-    _ASSERTE(!o->IsPinned());
-
-    o->SetEscaped();
+    _ASSERTE(!IsEscaped(o));
+    _ASSERTE(!IsPinned(o));
 
     //NB: we are not checking if we exceed the escape limit here.
     //    it is possible, if we have a lot of stack roots, but highly unlikely and otherwise ok.
     //    typically objects have died and we have fewer escapes than before the GC,
     //    so we do not bother to check
-    m_escapeCounter++;
+    SetEscaped(o);
+    m_escapedSize += o->Size();
 
     o->ForEachObjectRef(
         [&](SatoriObject** ref)
@@ -804,33 +771,37 @@ void SatoriRegion::SetOccupancy(size_t occupancy, size_t objCount)
     _ASSERTE(occupancy <= (Size() - offsetof(SatoriRegion, m_firstObject)));
     m_occupancy = occupancy;
     m_objCount = objCount;
-
-    // TUNING: heuristic needed
-    //       when there is 10% "sediment" we want to release this to recycler.
-    //       All this can be tuned once full GC works.
-    if (m_occupancy >= (Satori::REGION_SIZE_GRANULARITY * 1 / 10))
-    {
-        // Stop escape tracking. The region is too full
-        StopEscapeTracking();
-    }
 }
 
+// NB: dst is unused, it is just to avoid arg shuffle in x64 barriers
 void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
 {
     region->EscapeRecursively(src);
-    if (region->m_escapeCounter > Satori::MAX_TRACKED_ESCAPES)
+    if (region->m_escapedSize > Satori::MAX_ESCAPE_SIZE)
     {
         region->StopEscapeTracking();
     }
 }
 
-void SatoriRegion::ThreadLocalCollect()
+bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
 {
+    // TUNING: 1/4 is not too greedy? maybe 1/8 ?
+    if (allocBytes - m_allocBytesAtCollect < Satori::REGION_SIZE_GRANULARITY / 4)
+    {
+        // this is too soon. last collection did not buy us as much as we wanted.
+        // either due to fragmentation or unfortunate allocation pattern in this thread.
+        // we will not collect this region, lest it keeps coming back.
+        return false;
+    }
+
+    m_allocBytesAtCollect = allocBytes;
+
     ThreadLocalMark();
-    // TODO: VS if region is too full after planning (say 75%), perhaps just sweep, stop tracking, and return?
     ThreadLocalPlan();
     ThreadLocalUpdatePointers();
     ThreadLocalCompact();
+
+    return true;
 }
 
 void SatoriRegion::ThreadLocalMark()
@@ -848,6 +819,10 @@ void SatoriRegion::ThreadLocalMark()
     // nothing should be marked in the region, so we can find escapes via bit scan
     size_t bitmapIndex = BITMAP_START;
     int markBitOffset = 0;
+
+#ifdef _DEBUG
+    size_t escaped = 0;
+#endif
     while (bitmapIndex < BITMAP_LENGTH)
     {
         DWORD step;
@@ -862,6 +837,10 @@ void SatoriRegion::ThreadLocalMark()
             SatoriObject* o = ObjectForMarkBit(bitmapIndex, markBitOffset);
             o->Validate();
 
+#ifdef _DEBUG
+            escaped += o->Size();
+#endif
+
             // skip the object
             markBitOffset = o->Next()->GetMarkBitAndWord(&bitmapIndex);
         }
@@ -872,6 +851,10 @@ void SatoriRegion::ThreadLocalMark()
             while (++bitmapIndex < BITMAP_LENGTH && m_bitmap[bitmapIndex] == 0) {}
         }
     }
+
+#ifdef _DEBUG
+    _ASSERTE(escaped == this->m_escapedSize);
+#endif
 
     // mark roots for the current stack
     ScanContext sc;
@@ -891,17 +874,17 @@ void SatoriRegion::ThreadLocalMark()
  propagateMarks:
     while (o)
     {
-        _ASSERTE(o->IsMarked());
-        _ASSERTE(!o->IsEscaped());
+        _ASSERTE(IsMarked(o));
+        _ASSERTE(!IsEscaped(o));
         _ASSERTE(!o->IsFree());
         o->ForEachObjectRef(
             [this](SatoriObject** ref)
             {
                 SatoriObject* child = *ref;
-                if (child->ContainingRegion() == this && !child->IsMarked())
+                if (child->ContainingRegion() == this && !IsMarked(child))
                 {
-                    child->SetMarked();
-                    PushToMarkStack(child);
+                    SetMarked(child);
+                    PushToMarkStackIfHasPointers(child);
                 }
             },
             /* includeCollectibleAllocator */ true
@@ -922,7 +905,7 @@ void SatoriRegion::ThreadLocalMark()
             [this](SatoriObject* finalizable)
             {
                 _ASSERTE(((size_t)finalizable & Satori::FINALIZATION_PENDING) == 0);
-                if (!finalizable->IsMarked())
+                if (!IsMarked(finalizable))
                 {
                     // NOTE: if finalization is suppressed or runs eagerly, we do not need to track any longer.
                     //       The object was never scheduled (or it'd be escaped) and now unreachable so noone can re-register it.
@@ -935,8 +918,8 @@ void SatoriRegion::ThreadLocalMark()
                     else
                     {
                         // keep alive
-                        finalizable->SetMarked();
-                        PushToMarkStack(finalizable);
+                        SetMarked(finalizable);
+                        PushToMarkStackIfHasPointers(finalizable);
                         (size_t&)finalizable |= Satori::FINALIZATION_PENDING;
                         HasPendingFinalizables() = true;
                     }
@@ -1020,7 +1003,7 @@ void SatoriRegion::ThreadLocalPlan()
         objCount++;
         occupancy += moveableSize;
 
-        if (sawFree && !moveable->IsEscapedOrPinned())
+        if (sawFree && !IsEscapedOrPinned(moveable))
         {
             // reachable and moveable and saw free space. we can move this one.
             break;
@@ -1035,7 +1018,7 @@ void SatoriRegion::ThreadLocalPlan()
         // dst start: skip unmovables
         for (dstStart = dstEnd; dstStart < End(); dstStart += ((SatoriObject*)dstStart)->Size())
         {
-            if (!((SatoriObject*)dstStart)->IsEscapedOrPinned())
+            if (!IsEscapedOrPinned((SatoriObject*)dstStart))
             {
                 break;
             }
@@ -1050,7 +1033,7 @@ void SatoriRegion::ThreadLocalPlan()
         // dst end: skip until next unmovable
         for (dstEnd = dstStart; dstEnd < End(); dstEnd = SkipUnmarked(((SatoriObject*)dstEnd)->Next())->Start())
         {
-            if (((SatoriObject*)dstEnd)->IsEscapedOrPinned())
+            if (IsEscapedOrPinned((SatoriObject*)dstEnd))
             {
                 break;
             }
@@ -1092,7 +1075,7 @@ void SatoriRegion::ThreadLocalPlan()
                 objCount++;
                 occupancy += moveableSize;
 
-                if (!moveable->IsEscapedOrPinned())
+                if (!IsEscapedOrPinned(moveable))
                 {
                     // reachable and moveable. we can move this.
                     break;
@@ -1107,9 +1090,7 @@ void SatoriRegion::ThreadLocalPlan()
     }
 
 Exit:
-    // do not call SetOccupancy just yet, since it could stop tracking and kill marks.
-    m_occupancy = occupancy;
-    m_objCount = objCount;
+    SetOccupancy(occupancy, objCount);
 }
 
 template <bool isConservative>
@@ -1279,7 +1260,7 @@ void SatoriRegion::ThreadLocalCompact()
             {
                 // clear Mark/Pinned, keep escaped, reloc should be 0, this object will stay around
                 _ASSERTE(d1->GetLocalReloc() == 0);
-                d1->ClearPinnedAndMarked();
+                ClearPinnedAndMarked(d1);
             }
 
             d1 = d1->Next();
@@ -1321,7 +1302,7 @@ void SatoriRegion::ThreadLocalCompact()
     }
 
     // schedule pending finalizables if we have them
-    // must be after compaction, since it may escape objects.
+    // must be after compaction, since pend may escape objects.
     if (HasPendingFinalizables())
     {
         ThreadLocalPendFinalizables();
@@ -1330,10 +1311,14 @@ void SatoriRegion::ThreadLocalCompact()
     Verify();
 
     _ASSERTE((Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree) == m_occupancy);
+}
 
-    // the objCount and occupancy are computed and set by the Plan.
-    // we only call SetOccupancy here because it could stop tracking and kill marks.
-    SetOccupancy(m_occupancy, m_objCount);
+NOINLINE void SatoriRegion::ClearPinned(SatoriObject* o)
+{
+    if (!IsEscaped(o))
+    {
+        ClearMarked(o + MarkOffset::Pinned);
+    }
 }
 
 enum class FinalizationPendState
@@ -1612,45 +1597,46 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
     SatoriObject* o = FirstObject();
     do
     {
-        if (o->IsMarked())
+        o = SkipUnmarked(o);
+        if (o->Start() >= objLimit)
         {
-            ptrdiff_t r = ((ptrdiff_t*)o)[-1];
-            _ASSERTE(r < 0);
-            SatoriObject* relocated = (SatoriObject*)-r;
-            _ASSERTE(relocated->RawGetMethodTable() == o->RawGetMethodTable());
-            _ASSERTE(!relocated->IsFree());
+            break;
+        }
 
-            SatoriPage* page = relocated->ContainingRegion()->ContainingPage();
-            relocated->ForEachObjectRef(
-                [&](SatoriObject** ppObject)
+        _ASSERTE(IsMarked(o));
+
+        ptrdiff_t r = ((ptrdiff_t*)o)[-1];
+        _ASSERTE(r < 0);
+        SatoriObject* relocated = (SatoriObject*)-r;
+        _ASSERTE(relocated->RawGetMethodTable() == o->RawGetMethodTable());
+        _ASSERTE(!relocated->IsFree());
+
+        SatoriPage* page = relocated->ContainingRegion()->ContainingPage();
+        relocated->ForEachObjectRef(
+            [&](SatoriObject** ppObject)
+            {
+                // prevent re-reading o, UpdatePointersThroughCards could be doing the same update.
+                SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
+                if (child)
                 {
-                    // prevent re-reading o, UpdatePointersThroughCards could be doing the same update.
-                    SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
-                    if (child)
+                    ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                    if (ptr < 0)
                     {
-                        ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
-                        if (ptr < 0)
-                        {
-                            _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
-                            child = (SatoriObject*)-ptr;
-                            VolatileStoreWithoutBarrier(ppObject, child);
-                        }
+                        _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
+                        child = (SatoriObject*)-ptr;
+                        VolatileStoreWithoutBarrier(ppObject, child);
+                    }
 
-                        // update the card as if the relocated object got a child assigned
-                        if (child->ContainingRegion()->Generation() < 2)
-                        {
-                            page->SetCardForAddress((size_t)ppObject);
-                        }
+                    // update the card as if the relocated object got a child assigned
+                    if (child->ContainingRegion()->Generation() < 2)
+                    {
+                        page->SetCardForAddress((size_t)ppObject);
                     }
                 }
-            );
+            }
+        );
 
-            o = o->Next();
-        }
-        else
-        {
-            o = SkipUnmarked(o);
-        }
+        o = o->Next();
     } while (o->Start() < objLimit);
 }
 
@@ -1756,7 +1742,7 @@ void SatoriRegion::Verify(bool allowMarked)
         }
         else
         {
-            _ASSERTE(allowMarked || !o->IsMarked());
+            _ASSERTE(allowMarked || !IsMarked(o));
         }
 
         prevPrevObj = prevObj;
