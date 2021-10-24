@@ -22,7 +22,7 @@ inline bool SatoriRegion::IsEscapeTracking()
     return m_ownerThreadTag;
 }
 
-inline bool SatoriRegion::IsEscapeTrackingAcquire()
+inline bool SatoriRegion::MaybeEscapeTrackingAcquire()
 {
     return m_reusableFor == ReuseLevel::Gen0 || VolatileLoad(&m_ownerThreadTag);
 }
@@ -124,6 +124,8 @@ inline void SatoriRegion::StopEscapeTracking()
 
         m_escapeFunc = nullptr;
         m_generation = 1;
+        m_escapedSize = 0;
+        m_allocBytesAtCollect = 0;
     }
 }
 
@@ -185,23 +187,18 @@ void SatoriRegion::ForEachFinalizableThreadLocal(F lambda)
 }
 
 template <bool updatePointers>
-bool SatoriRegion::Sweep(bool keepMarked)
+bool SatoriRegion::Sweep()
 {
     // we should only sweep when we have marks
     _ASSERTE(HasMarksSet());
-
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
 
-    // we will be building new free lists
-    ClearFreeLists();
-
-    // if region is huge and the last object is unreachable, the region is all empty.
+    // in a huge region there is only one real object. If it is unreachable the region is all empty.
     if (End() > objLimit)
     {
-        SatoriObject* last = FindObject(objLimit - 1);
-        if (!last->IsMarked())
+        SatoriObject* o = FirstObject()->IsFree() ? FirstObject()->Next() : FirstObject();
+        if (!IsMarked(o))
         {
-            _ASSERTE(!this->IsEscapeTracking());
             _ASSERTE(this->NothingMarked());
             _ASSERTE(!this->HasPinnedObjects());
 #if _DEBUG
@@ -213,77 +210,74 @@ bool SatoriRegion::Sweep(bool keepMarked)
             return false;
         }
     }
+    else
+    {
+        // we will be building new free lists
+        ClearFreeLists();
+        // sweeping invalidates indices, since free objects get coalesced
+        ClearIndex();
+    }
 
-    size_t occupancy = 0;
-    size_t objCount = 0;
-
+    m_escapedSize = 0;
     bool cannotRecycle = this->IsAttachedToContext();
     bool isEscapeTracking = this->IsEscapeTracking();
-
-    // sweeping invalidates indices, since free objects get coalesced
-    ClearIndex();
-    m_escapeCounter = 0;
-
+    size_t occupancy = 0;
+    size_t objCount = 0;
     SatoriObject* o = FirstObject();
     do
     {
-        if (o->IsMarked())
+        if (!CheckAndClearMarked(o))
         {
-            _ASSERTE(!o->IsFree());
-            if (isEscapeTracking)
-            {
-                // TODO: VS we do not need to escape all survivors, we could keep old escape bits
-                //       and only clean 1) mark bit for survivors 2) all bits for free obj.
-                // turn mark bit into escape bits.
-                this->ClearMarkedAndEscapeShallow(o);
-            }
-
-            if (updatePointers)
-            {
-                o->ForEachObjectRef(
-                    [](SatoriObject** ppObject)
-                    {
-                        SatoriObject* child = *ppObject;
-                        if (child)
-                        {
-                            ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
-                            if (ptr < 0)
-                            {
-                                _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
-                                *ppObject = (SatoriObject*)-ptr;
-                            }
-                        }
-                    }
-                );
-            }
-
-            size_t size = o->Size();
-            cannotRecycle = true;
-            objCount++;
-            occupancy += size;
-            o = (SatoriObject*)(o->Start() + size);
-            continue;
-        }
-
-        size_t lastMarkedEnd = o->Start();
-        o = SkipUnmarked(o);
-        size_t skipped = o->Start() - lastMarkedEnd;
-        if (skipped)
-        {
+            size_t lastMarkedEnd = o->Start();
+            o = SkipUnmarked(o);
+            size_t skipped = o->Start() - lastMarkedEnd;
             SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
             AddFreeSpace(free);
+
+            if (o->Start() >= objLimit)
+            {
+                break;
+            }
+
+            _ASSERTE(IsMarked(o));
+            ClearMarked(o);
         }
+
+        _ASSERTE(!o->IsFree());
+        cannotRecycle = true;
+
+        if (isEscapeTracking)
+        {
+            this->EscapeShallow(o);
+        }
+
+        if (updatePointers)
+        {
+            o->ForEachObjectRef(
+                [](SatoriObject** ppObject)
+                {
+                    SatoriObject* child = *ppObject;
+                    if (child)
+                    {
+                        ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                        if (ptr < 0)
+                        {
+                            _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
+                            *ppObject = (SatoriObject*)-ptr;
+                        }
+                    }
+                }
+            );
+        }
+
+        size_t size = o->Size();
+        objCount++;
+        occupancy += size;
+        o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);
 
-    if (!keepMarked)
-    {
-        this->HasMarksSet() = false;
-        this->HasPinnedObjects() = false;
-        if (!this->IsEscapeTracking())
-        {
-            this->ClearMarks();
-        }
-    }
+    this->HasMarksSet() = false;
+    this->HasPinnedObjects() = false;
 
     SetOccupancy(occupancy, objCount);
     return cannotRecycle;
@@ -367,7 +361,7 @@ inline bool SatoriRegion::IsAttachedToContext()
     return m_allocationContextAttachmentPoint;
 }
 
-inline bool SatoriRegion::IsAttachedToContextAcquire()
+inline bool SatoriRegion::MaybeAttachedToContextAcquire()
 {
     return IsReusable() || VolatileLoad(&m_allocationContextAttachmentPoint);
 }
@@ -382,4 +376,131 @@ inline SatoriMarkChunk* &SatoriRegion::DemotedObjects()
     return m_gen2Objects;
 }
 
+inline void SatoriRegion::SetMarked(SatoriObject* o)
+{
+    _ASSERTE(o->ContainingRegion() == this);
+
+    size_t word = o->Start();
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t mask = (size_t)1 << ((word >> 3) & 63);
+
+    m_bitmap[bitmapIndex] |= mask;
+
+    //TODO: VS consider on x64
+    //size_t bitIndex = (Start() & Satori::REGION_SIZE_GRANULARITY - 1) / sizeof(size_t);
+    //_bittestandset64((long long*)ContainingRegion()->m_bitmap, bitIndex);
+}
+
+inline void SatoriRegion::SetMarkedAtomic(SatoriObject* o)
+{
+    _ASSERTE(o->ContainingRegion() == this);
+
+    size_t word = o->Start();
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t mask = (size_t)1 << ((word >> 3) & 63);
+
+    //NB: this does not need to be a full fence, if possible. 
+    //    just need to set a bit atomically.
+    //    ordering WRT other writes is unimportant, as long as the bit is set.
+#ifdef _MSC_VER
+#if defined(TARGET_AMD64)
+    _InterlockedOr64((long long*)&m_bitmap[bitmapIndex], mask);
+#else
+    _InterlockedOr64nf((long long*)&m_bitmap[bitmapIndex], mask);
+#endif
+#else
+    __atomic_or_fetch(&m_bitmap[bitmapIndex], mask, __ATOMIC_RELAXED);
+#endif
+}
+
+inline void SatoriRegion::ClearMarked(SatoriObject* o)
+{
+    _ASSERTE(o->ContainingRegion() == this);
+
+    size_t word = o->Start();
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t mask = (size_t)1 << ((word >> 3) & 63);
+
+    m_bitmap[bitmapIndex] &= ~mask;
+}
+
+inline bool SatoriRegion::IsMarked(SatoriObject* o)
+{
+    _ASSERTE(o->ContainingRegion() == this);
+
+    size_t word = o->Start();
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t mask = (size_t)1 << ((word >> 3) & 63);
+
+    return m_bitmap[bitmapIndex] & mask;
+}
+
+inline bool SatoriRegion::CheckAndClearMarked(SatoriObject* o)
+{
+    _ASSERTE(o->ContainingRegion() == this);
+
+    size_t word = o->Start();
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t mask = (size_t)1 << ((word >> 3) & 63);
+
+    size_t& bitmapWord = m_bitmap[bitmapIndex];
+    bool wasMarked = bitmapWord & mask;
+    bitmapWord &= ~mask;
+    return wasMarked;
+}
+
+inline bool SatoriRegion::IsPinned(SatoriObject* o)
+{
+    return IsMarked(o + MarkOffset::Pinned);
+}
+
+inline void SatoriRegion::SetPinned(SatoriObject* o)
+{
+    SetMarked(o + MarkOffset::Pinned);
+}
+
+inline void SatoriRegion::ClearPinnedAndMarked(SatoriObject* o)
+{
+    ClearMarked(o);
+    if (IsPinned(o))
+    {
+        // this would be rare. do not inline.
+        ClearPinned(o);
+    }
+}
+
+inline bool SatoriRegion::IsEscaped(SatoriObject* o)
+{
+    return IsMarked(o + MarkOffset::Escaped);
+}
+
+inline void SatoriRegion::SetEscaped(SatoriObject* o)
+{
+    SetMarked(o + MarkOffset::Escaped);
+}
+
+inline bool SatoriRegion::IsEscapedOrPinned(SatoriObject* o)
+{
+    return IsEscaped(o) || IsPinned(o) || o->IsUnmovable();
+}
+
+inline void SatoriRegion::SetExposed(SatoriObject** location)
+{
+    // set the mark bit corresponding to the location to indicate that it is globally exposed
+    // same as: SetMarked((SatoriObject*)location);
+    SetMarked((SatoriObject*)location);
+}
+
+inline bool SatoriRegion::IsExposed(SatoriObject** location)
+{
+    // check the mark bit corresponding to the location
+    //same as: return IsMarked((SatoriObject*)location);
+    return IsMarked((SatoriObject*)location);
+}
+
+inline SatoriObject* SatoriRegion::ObjectForMarkBit(size_t bitmapIndex, int offset)
+{
+    size_t objOffset = bitmapIndex * sizeof(size_t) * 8 + offset;
+    return (SatoriObject*)(Start()) + objOffset;
+}
 #endif

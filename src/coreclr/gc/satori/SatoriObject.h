@@ -37,16 +37,12 @@ public:
     size_t Size();
     bool IsFree();
 
+    bool IsEscaped();
     bool IsMarked();
     bool IsMarkedOrOlderThan(int generation);
     void SetMarked();
-    void ClearMarked();
     void SetMarkedAtomic();
-    bool IsPinned();
-    void SetPinned();
-    void ClearPinnedAndMarked();
-    bool IsEscaped();
-    bool IsEscapedOrPinned();
+
     int GetMarkBitAndWord(size_t* bitmapIndex);
 
     void SetUnmovable();
@@ -80,13 +76,6 @@ public:
 private:
     static MethodTable* s_emptyObjectMt;
     static void Initialize();
-
-    void SetBit(int offset);
-    void SetBitAtomic(int offset);
-    void ClearBit(int offset);
-    bool CheckBit(int offset);
-    void SetEscaped();
-    void ClearPinned();
 };
 
 #endif

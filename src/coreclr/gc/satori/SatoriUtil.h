@@ -38,8 +38,8 @@ namespace Satori
 
     static const int ALLOCATOR_BUCKET_COUNT = PAGE_BITS - REGION_BITS;
 
-    // objects smaller than this go into regular region. A random big number.
-    static const int LARGE_OBJECT_THRESHOLD = 85000;
+    // objects smaller than this go into regular region. 32K - to fit in bucket 3 and above
+    static const int LARGE_OBJECT_THRESHOLD = 32 * 1024;
 
     // object starts are aligned to this
     static const size_t OBJECT_ALIGNMENT = sizeof(size_t);
@@ -48,10 +48,11 @@ namespace Satori
     // we use a trivial array object to fill holes, thus this is the size of an array object.
     static const size_t MIN_FREE_SIZE = 3 * sizeof(size_t);
 
-    // when doing regular allocation we clean this much memory
-    // if we do cleaning, and if available
-    // TODO: VS should this be a constant or be 1/2 L0 ?
-    static const size_t MIN_REGULAR_ALLOC = 16 << 10;
+    // TUNING: Needs tuning?
+    // When doing regular allocation we clean this much memory
+    // if we do cleaning, and if available.
+    // Set to 1/2 of a typical 32K L1 cache.
+    static const size_t MIN_REGULAR_ALLOC = 16 * 1024;
 
     // 8K for now, we can fiddle with size a bit later
     const static size_t MARK_CHUNK_SIZE = 8 * 1024;
@@ -79,11 +80,10 @@ namespace Satori
         static const int8_t DIRTY = 3;
     }
 
-    // TUNING: this is just a threshold for cases when clearly too many objects have escaped already.
-    // Assuming minimum sized objects, when 1/8 escapes, stop tracking escapes
-    // The actual value may not matter a lot. Still may be worth revisiting.
-    //TODO: VS consider the escaped Size instead (demote would check occupancy)
-    static const int MAX_TRACKED_ESCAPES = REGION_SIZE_GRANULARITY / MIN_FREE_SIZE / 8;
+    // TUNING: this is just a threshold for cases when region has too much escaped content.
+    //         The actual value may not matter a lot. Still may be worth revisiting.
+    // When 1/4 escapes, we stop tracking escapes.
+    static const int MAX_ESCAPE_SIZE = REGION_SIZE_GRANULARITY / 4;
 
     static const int MIN_FREELIST_SIZE_BITS = 12;
     static const size_t MIN_FREELIST_SIZE = 1 << MIN_FREELIST_SIZE_BITS;
