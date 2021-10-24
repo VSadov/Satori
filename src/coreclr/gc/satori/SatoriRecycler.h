@@ -119,7 +119,9 @@ private:
     size_t m_condemnedRegionsCount;
     size_t m_condemnedNurseryRegionsCount;
     size_t m_deferredSweepCount;
-    size_t m_regionsAddedSinceLastCollection;
+    // this one is signed because reusing regions "borrow" the count so it may go negative.
+    ptrdiff_t m_gen1AddedSinceLastCollection;
+    size_t m_gen2AddedSinceLastCollection;
     size_t m_gen1CountAtLastGen2;
 
     static void DeactivateFn(gc_alloc_context* context, void* param);
@@ -196,6 +198,7 @@ private:
     void KeepRegion(SatoriRegion* curRegion);
     void DrainDeferredSweepQueue();
     bool DrainDeferredSweepQueueConcurrent(int64_t deadline = 0);
+    void DrainDeferredSweepQueueHelp();
     void SweepAndReturnRegion(SatoriRegion* curRegion);
     void UpdatePointersThroughCards();
     void PlanRegions(SatoriRegionQueue* regions);
