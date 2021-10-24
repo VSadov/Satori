@@ -57,24 +57,32 @@ public:
     template<typename F>
     static bool ForEachUnscannedPartition(F lambda, int64_t deadline = 0)
     {
-        int startPartition = CurrentThreadPartition();
-        //TODO: VS partition walk should be NUMA-aware, if possible
-        for (int i = 0; i < s_partitionCount; i++)
+        if (s_completedTicket != s_currentTicket)
         {
-            int partition = (i + startPartition) % s_partitionCount;
-            uint8_t partitionTicket = VolatileLoadWithoutBarrier(&s_scanTickets[partition]);
-            if (partitionTicket != s_currentTicket)
+            int startPartition = CurrentThreadPartition();
+            //TODO: VS partition walk should be NUMA-aware, if possible
+            for (int i = 0; i < s_partitionCount; i++)
             {
-                if (Interlocked::CompareExchange(&s_scanTickets[partition], s_currentTicket, partitionTicket) == partitionTicket)
+                int partition = (i + startPartition) % s_partitionCount;
+                uint8_t partitionTicket = VolatileLoadWithoutBarrier(&s_scanTickets[partition]);
+                if (partitionTicket != s_currentTicket)
                 {
-                    lambda(partition);
-
-                    if (deadline && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
+                    if (Interlocked::CompareExchange(&s_scanTickets[partition], s_currentTicket, partitionTicket) == partitionTicket)
                     {
-                        // timed out, there could be more work
-                        return true;
+                        lambda(partition);
+
+                        if (deadline && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
+                        {
+                            // timed out, there could be more work
+                            return true;
+                        }
                     }
                 }
+            }
+
+            if (s_completedTicket != s_currentTicket)
+            {
+                s_completedTicket = s_currentTicket;
             }
         }
 
@@ -86,6 +94,7 @@ private:
     static int s_partitionCount;
     static uint8_t* s_scanTickets;
     static uint8_t s_currentTicket;
+    static uint8_t s_completedTicket;
 };
 
 #endif
