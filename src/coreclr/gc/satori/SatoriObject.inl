@@ -60,125 +60,31 @@ inline bool SatoriObject::IsFree()
 
 #endif
 
-
-inline void SatoriObject::SetBit(int offset)
+inline bool SatoriObject::IsEscaped()
 {
-    size_t word = Start() + offset * sizeof(size_t);
-    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
-    size_t mask = (size_t)1 << ((word >> 3) & 63);
-
-    ContainingRegion()->m_bitmap[bitmapIndex] |= mask;
-
-    //TODO: VS consider on x64
-    //size_t bitIndex = (Start() & Satori::REGION_SIZE_GRANULARITY - 1) / sizeof(size_t) + offset;
-    //_bittestandset64((long long*)ContainingRegion()->m_bitmap, bitIndex);
-}
-
-inline void SatoriObject::SetBitAtomic(int offset)
-{
-    size_t word = Start() + offset * sizeof(size_t);
-    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
-    size_t bit = ((word >> 3) & 63);
-    size_t mask = (size_t)1 << bit;
-
-    //NB: this does not need to be a full fence, if possible. 
-    //    just need to set a bit atomically.
-    //    ordering WRT other writes is unimportant, as long as the bit is set.
-#ifdef _MSC_VER
-#if defined(TARGET_AMD64)
-    _InterlockedOr64((long long *)&ContainingRegion()->m_bitmap[bitmapIndex], mask);
-#else
-    _InterlockedOr64nf((long long*)&ContainingRegion()->m_bitmap[bitmapIndex], mask);
-#endif
-#else
-    __atomic_or_fetch(&ContainingRegion()->m_bitmap[bitmapIndex], mask, __ATOMIC_RELAXED);
-#endif
-}
-
-inline void SatoriObject::ClearBit(int offset)
-{
-    size_t word = Start() + offset * sizeof(size_t);
-    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
-    size_t mask = (size_t)1 << ((word >> 3) & 63);
-
-    ContainingRegion()->m_bitmap[bitmapIndex] &= ~mask;
-}
-
-inline bool SatoriObject::CheckBit(int offset)
-{
-    size_t word = Start() + offset * sizeof(size_t);
-    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
-    size_t mask = (size_t)1 << ((word >> 3) & 63);
-
-    return ContainingRegion()->m_bitmap[bitmapIndex] & mask;
-
-    //TODO: VS consider on x64
-    //size_t bitIndex = (Start() & Satori::REGION_SIZE_GRANULARITY - 1) / sizeof(size_t) + offset;
-    //return _bittest64((long long*)ContainingRegion()->m_bitmap, bitIndex);
+    return ContainingRegion()->IsEscaped(this);
 }
 
 inline bool SatoriObject::IsMarked()
 {
-    _ASSERTE(this->Size() > 0);
-    return CheckBit(0);
+    return ContainingRegion()->IsMarked(this);
 }
 
 FORCEINLINE bool SatoriObject::IsMarkedOrOlderThan(int generation)
 {
     _ASSERTE(this->Size() > 0);
-    return ContainingRegion()->Generation() > generation || IsMarked();
+    SatoriRegion* r = ContainingRegion();
+    return r->Generation() > generation || r->IsMarked(this);
 }
 
 inline void SatoriObject::SetMarked()
 {
-    _ASSERTE(!IsFree());
-    SetBit(0);
-}
-
-inline void SatoriObject::ClearMarked()
-{
-    ClearBit(0);
+    ContainingRegion()->SetMarked(this);
 }
 
 inline void SatoriObject::SetMarkedAtomic()
 {
-    _ASSERTE(!IsFree());
-    SetBitAtomic(0);
-}
-
-inline bool SatoriObject::IsPinned()
-{
-    return CheckBit(2);
-}
-
-inline void SatoriObject::SetPinned()
-{
-    SetBit(2);
-}
-
-inline void SatoriObject::ClearPinnedAndMarked()
-{
-    ClearMarked();
-    if (IsPinned())
-    {
-        // this would be rare. do not inline.
-        ClearPinned();
-    }
-}
-
-inline bool SatoriObject::IsEscaped()
-{
-    return CheckBit(1);
-}
-
-inline void SatoriObject::SetEscaped()
-{
-    SetBit(1);
-}
-
-inline bool SatoriObject::IsEscapedOrPinned()
-{
-    return IsEscaped() || IsPinned() || IsUnmovable();
+    return ContainingRegion()->SetMarkedAtomic(this);
 }
 
 inline bool SatoriObject::IsFinalizationSuppressed()
@@ -233,12 +139,14 @@ inline void SatoriObject::SetLocalReloc(int32_t next)
 
 inline void SatoriObject::ClearMarkCompactStateForRelocation()
 {
-    _ASSERTE(!IsEscaped());
     // since local relocation does not intersect with uses of mark stack
     // we will use the same bits.
     ClearNextInLocalMarkStack();
-    ClearBit(0);
-    ClearBit(2);
+
+    SatoriRegion* r = ContainingRegion();
+    _ASSERTE(!r->IsEscaped(this));
+    r->ClearMarked(this);
+    r->ClearPinned(this);
 }
 
 inline void SatoriObject::CleanSyncBlock()
