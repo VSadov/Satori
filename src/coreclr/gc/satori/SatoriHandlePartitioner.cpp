@@ -18,3 +18,6 @@ int SatoriHandlePartitioner::s_partitionCount;
 uint8_t* SatoriHandlePartitioner::s_scanTickets;
 //static
 uint8_t SatoriHandlePartitioner::s_currentTicket;
+//static
+uint8_t SatoriHandlePartitioner::s_completedTicket;
+
