@@ -641,7 +641,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         str     x18      [sp, -16]!
 #endif
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
-        mov  x0, x14
+        // mov  x0, x14  EscapeFn does not use dst, it is just to avoid arg shuffle on x64
         mov  x1, x15
         and  x2, x15, #0xFFFFFFFFFFE00000  // source region
         ldr  x12, [x2, #8]                 // EscapeFn address

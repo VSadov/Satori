@@ -23,14 +23,6 @@ void SatoriObject::Initialize()
     s_emptyObjectMt = GCToEEInterface::GetFreeObjectMethodTable();
 }
 
-NOINLINE void SatoriObject::ClearPinned()
-{
-    if (!IsEscaped())
-    {
-        ClearBit(2);
-    }
-}
-
 void SatoriObject::EscapeCheckOnHandleCreation()
 {
     SatoriRegion* region = ContainingRegion();
