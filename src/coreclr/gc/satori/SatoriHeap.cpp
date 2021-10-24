@@ -164,17 +164,8 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
 // unless we claimed contiguously.
 SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
 {
-    // TUNING: extra address space is not necessarily a waste. It can be used by other regions.
-    //         Considering that a region can never cross pages, maybe reserving slightly larger page
-    //         might be beneficial.
-    //         For now we will ensure just slightly more than the minimum.
-    //
-    //         The overhead of card table is 1/512, but there is some space needed for region headers
-    //         and allocation padding. It is nearly 0, compared to page sizes, but not 0.
-    //         Since we do not need to be precise in our estimates, we will just reserve 1/256 extra.
-    //         The extra reserved space can be used so it is not a waste.
-    minSize += minSize / 256;
-
+    // Add the overhead of card table (1/512).
+    minSize += minSize / Satori::BYTES_PER_CARD_BYTE;
     minSize = ALIGN_UP(minSize, Satori::PAGE_SIZE_GRANULARITY);
     int mapMarkCount = (int)(minSize >> Satori::PAGE_BITS);
 
