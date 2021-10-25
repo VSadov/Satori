@@ -112,7 +112,6 @@ public:
         // we use linear address of TEB on NT
 #if defined(TARGET_ARM64)
         return (size_t)__getReg(18);
-        Error: IMPLEMENT BARRIER IN ASM
 #else
         return (size_t)__readgsqword(0x30);
 #endif
