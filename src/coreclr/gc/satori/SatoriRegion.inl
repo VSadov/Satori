@@ -406,7 +406,7 @@ inline void SatoriRegion::SetMarkedAtomic(SatoriObject* o)
 #if defined(TARGET_AMD64)
     _InterlockedOr64((long long*)&m_bitmap[bitmapIndex], mask);
 #else
-    _InterlockedOr64nf((long long*)&m_bitmap[bitmapIndex], mask);
+    _InterlockedOr64_nf((long long*)&m_bitmap[bitmapIndex], mask);
 #endif
 #else
     __atomic_or_fetch(&m_bitmap[bitmapIndex], mask, __ATOMIC_RELAXED);
