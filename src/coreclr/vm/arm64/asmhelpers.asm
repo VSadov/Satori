@@ -375,6 +375,8 @@ wbs_highest_address
 
     WRITE_BARRIER_END JIT_ByRefWriteBarrier
 
+#ifndef FEATURE_SATORI_GC
+
 ;-----------------------------------------------------------------------------
 ; Simple WriteBarriers
 ; void JIT_CheckedWriteBarrier(Object** dst, Object* src)
@@ -517,6 +519,188 @@ Exit
         add      x14, x14, 8
         ret      lr
     WRITE_BARRIER_END JIT_WriteBarrier
+
+#else  // FEATURE_SATORI_GC
+
+;-----------------------------------------------------------------------------
+; Simple WriteBarriers
+; void JIT_CheckedWriteBarrier(Object** dst, Object* src)
+; On entry:
+;   x14  : the destination address (LHS of the assignment)
+;   x15  : the object reference (RHS of the assignment)
+;
+; On exit:
+;   x12  : trashed
+;   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
+;   x15  : trashed
+;   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+;
+    WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
+        ldr  x12,  wbs_highest_address
+        cmp  x14, x12
+        bhi  NotInHeap
+    
+        ldr     x12, wbs_card_table
+        add     x12, x12, x14, lsr #30
+        ldrb    w12, [x12]
+        cbnz    x12, JIT_WriteBarrier
+
+NotInHeap
+        str  x15, [x14], #8
+        ret  lr
+    WRITE_BARRIER_END JIT_CheckedWriteBarrier
+
+; void JIT_WriteBarrier(Object** dst, Object* src)
+; On entry:
+;   x14  : the destination address (LHS of the assignment)
+;   x15  : the object reference (RHS of the assignment)
+;
+; On exit:
+;   x12  : trashed
+;   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
+;   x15  : trashed
+;   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+;
+    WRITE_BARRIER_ENTRY JIT_WriteBarrier
+    ; check for escaping assignment
+    ; 1) check if we own the source region
+        cbz     x15, JustAssign                 ; assigning null   
+        and     x12,  x15, #0xFFFFFFFFFFE00000  ; source region
+        ldr     x12, [x12]                      ; region tag
+        cmp     x12, x18                        ; x18 - TEB
+        bne     AssignAndMarkCards              ; not local to this thread
+
+    ; 2) check if the src and dst are from the same region
+        eor     x12, x14, x15
+        lsr     x12, x12, #21
+        cbnz    x12, RecordEscape               ; cross region assignment. definitely escaping
+
+    ; 3) check if the target is exposed
+        ubfx        x17, x14,#9,#12              ; word index = (dst >> 9) & 0x1FFFFF
+        and         x12, x15, #0xFFFFFFFFFFE00000  ; source region
+        ldr         x17, [x12, x17, lsl #3]      ; mark word = [region + index * 8]
+        lsr         x12, x14, #3                 ; bit = (dst >> 3) [& 63]
+        lsr         x17, x17, x12
+        tbnz        x17, #0, RecordEscape        ; target is exposed. record an escape.
+
+JustAssign
+        str  x15, [x14], #8                      ; UNORDERED assignment of unescaped object
+        ret  lr
+
+AssignAndMarkCards
+        stlr    x15, [x14]
+
+    ; need couple temps. Save before using.
+        stp     x2,  x3,  [sp, #-16]!
+    ; if src is in gen2 and the barrier is not concurrent we do not need to mark cards
+        and     x2,  x15, #0xFFFFFFFFFFE00000     ; source region
+        ldr     w12, [x2, 16]
+        tbz     x12, #1, MarkCards
+        ldr     x12, wbs_sw_ww_table              ; !wbs_sw_ww_table -> !concurrent
+        cbnz    x12, MarkCards
+        
+Exit
+        ldp  x2,  x3, [sp], 16
+        add  x14, x14, 8
+        ret  lr
+
+MarkCards
+    ; fetch card location for x14
+        ldr     x12, wbs_card_table              ; fetch the page map
+        lsr     x17, x14, #30
+CheckPageMap
+        ldrb    w2,  [x12, x17]
+        cmp     w2,  #1
+        beq     PageFound
+        sub     x2,  x2, #2
+        mov     x15, #1
+        lsl     x15, x15, x2
+        sub     x17, x17, x15
+        b       CheckPageMap
+PageFound
+        lsl     x17, x17, #30   ; page
+        sub     x2,  x14, x17   ; offset in page
+        lsr     x15, x2,  #21   ; group index
+        lsl     x15, x15, #1    ; group offset (index * 2)
+        lsr     x2,  x2,  #9    ; card offset
+
+    ; check if concurrent marking is in progress
+        ldr     x12, wbs_sw_ww_table             ; !wbs_sw_ww_table -> !concurrent
+        cbnz    x12, DirtyCard
+
+    ; SETTING CARD FOR X14
+SetCard
+        ldrb    w3, [x17, x2]
+        cbnz    w3, CardSet
+        mov     w3, #1
+        strb    w3, [x17, x2]
+SetGroup
+        add     x12, x17, #0x80
+        ldrb    w3, [x12, x15]
+        cbnz    w3, CardSet
+        mov     w3, #1
+        strb    w3, [x12, x15]
+SetPage
+        ldrb    w3, [x17]
+        cbnz    w3, CardSet
+        mov     w3, #1
+        strb    w3, [x17]
+
+CardSet
+    ; check if concurrent marking is still not in progress
+        ldr     x12, wbs_sw_ww_table            ; !wbs_sw_ww_table -> !concurrent
+        cbnz    x12, DirtyCard
+        b       Exit
+
+    ; DIRTYING CARD FOR X14
+DirtyCard
+        mov     w3, #3
+        strb    w3, [x17, x2]
+DirtyGroup
+        add     x12, x17, #0x80
+        strb    w3, [x12, x15]
+DirtyPage
+        strb    w3, [x17]
+        b       Exit
+
+    ; this is expected to be rare.
+RecordEscape
+    ; because of the barrier call convention
+    ; we need to preserve caller-saved x0 through x18 and x29/x30
+
+        stp     x0, x1,  [sp, -16 * 1]
+        stp     x2, x3,  [sp, -16 * 2]
+        stp     x4, x5,  [sp, -16 * 3]
+        stp     x6, x7,  [sp, -16 * 4]
+        stp     x8, x9,  [sp, -16 * 5]
+        stp     x10,x11, [sp, -16 * 6]
+        stp     x12,x13, [sp, -16 * 7]
+        stp     x14,x15, [sp, -16 * 8]
+        stp     x16,x17, [sp, -16 * 9]
+        stp     x29,x30, [sp, -16 * 10]!
+
+    ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
+    ; mov  x0, x14  EscapeFn does not use dst, it is just to avoid arg shuffle on x64
+        mov  x1, x15
+        and  x2, x15, #0xFFFFFFFFFFE00000  ; source region
+        ldr  x12, [x2, #8]                 ; EscapeFn address
+        blr  x12
+
+        ldp     x29,x30, [sp], 16 * 10
+        ldp     x16,x17, [sp, - 16 * 9]
+        ldp     x14,x15, [sp, - 16 * 8]
+        ldp     x12,x13, [sp, - 16 * 7]
+        ldp     x10,x11, [sp, - 16 * 6]
+        ldp     x8, x9,  [sp, - 16 * 5]
+        ldp     x6, x7,  [sp, - 16 * 4]
+        ldp     x4, x5,  [sp, - 16 * 3]
+        ldp     x2, x3,  [sp, - 16 * 2]
+        ldp     x0, x1,  [sp, - 16 * 1]
+
+        b       AssignAndMarkCards
+    WRITE_BARRIER_END JIT_WriteBarrier
+
+#endif  // FEATURE_SATORI_GC
 
 ; ------------------------------------------------------------------
 ; End of the writeable code region
