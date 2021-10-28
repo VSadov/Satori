@@ -132,7 +132,6 @@ public:
         size_t tag;
 #if defined(TARGET_ARM64)
         __asm__ ("mrs %0, tpidr_el0" : "=r" (tag));
-        Error: IMPLEMENT BARRIER IN ASM
 #else
         __asm__ ("movq %%fs:0, %0" : "=r" (tag));
 #endif
