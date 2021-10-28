@@ -619,7 +619,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         stp     x16,x17, [sp, -16 * 9]
         stp     x29,x30, [sp, -16 * 10]!
 #ifndef TARGET_OSX
-        str     x18      [sp, -16]!
+        str     x18,     [sp, -16]!
 #endif
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         // mov  x0, x14  EscapeFn does not use dst, it is just to avoid arg shuffle on x64
@@ -629,7 +629,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         blr  x12
 
 #ifndef TARGET_OSX
-        ldr     x18      [sp], 16
+        ldr     x18,     [sp], 16
 #endif
         ldp     x29,x30, [sp], 16 * 10
         ldp     x16,x17, [sp, - 16 * 9]
