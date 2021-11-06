@@ -109,7 +109,7 @@ void SatoriFinalizationQueue::ResetOverflow(int generation)
             m_dequeue = 0;
 
             m_region->MakeBlank();
-            m_heap->Allocator()->AddRegion(m_region);
+            m_heap->Allocator()->ReturnRegion(m_region);
             m_region = newRegion;
         }
     }

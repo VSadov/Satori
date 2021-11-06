@@ -14,6 +14,7 @@
 #include "SatoriMarkChunkQueue.h"
 
 class SatoriHeap;
+class SatoriTrimmer;
 class SatoriRegion;
 class MarkContext;
 
@@ -58,6 +59,7 @@ private:
     uint8_t m_cardScanTicket;
 
     SatoriMarkChunkQueue* m_workList;
+    SatoriTrimmer* m_trimmer;
 
     // regions owned by recycler
     SatoriRegionQueue* m_ephemeralRegions;
@@ -124,6 +126,7 @@ private:
     size_t m_gen2AddedSinceLastCollection;
     size_t m_gen1CountAtLastGen2;
 
+private:
     static void DeactivateFn(gc_alloc_context* context, void* param);
 
     template <bool isConservative>
