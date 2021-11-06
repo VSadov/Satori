@@ -39,10 +39,11 @@ public:
     void WipeCards();
 
     SatoriRegion* Split(size_t regionSize);
+    bool CanDecommit();
     bool TryCoalesceWithNext();
     void Coalesce(SatoriRegion* next);
 
-    void TryDecommit();
+    bool TryDecommit();
 
     size_t AllocStart();
     size_t AllocRemaining();
@@ -150,6 +151,8 @@ public:
 
     SatoriPage* ContainingPage();
     SatoriRegion* NextInPage();
+
+    bool CanCoalesceWithNext();
 
     bool TryDemote();
 
