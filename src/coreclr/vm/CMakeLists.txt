@@ -522,6 +522,7 @@ set(GC_SOURCES_WKS
     ../gc/satori/SatoriRegionQueue.cpp
     ../gc/satori/SatoriAllocator.cpp
     ../gc/satori/SatoriRecycler.cpp
+    ../gc/satori/SatoriTrimmer.cpp
     ../gc/satori/SatoriFinalizationQueue.cpp
     ../gc/satori/SatoriAllocationContext.cpp
     ../gc/satori/SatoriUtil.cpp
@@ -547,6 +548,7 @@ set(GC_HEADERS_WKS
     ../gc/satori/SatoriRegionQueue.h
     ../gc/satori/SatoriAllocator.h
     ../gc/satori/SatoriRecycler.h
+    ../gc/satori/SatoriTrimmer.h
     ../gc/satori/SatoriFinalizationQueue.h
     ../gc/satori/SatoriMarkChunk.h
     ../gc/satori/SatoriMarkChunkQueue.h

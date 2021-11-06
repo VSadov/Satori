@@ -140,6 +140,15 @@ public:
         UNSUPPORTED_PLATFORM
 #endif
     }
+
+    static bool IsConservativeMode()
+    {
+#ifdef FEATURE_CONSERVATIVE_GC
+        return (GCConfig::GetConservativeGC());
+#else
+        return false;
+#endif
+    }
 };
 
 #endif
