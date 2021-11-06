@@ -344,6 +344,21 @@ SatoriRegion* SatoriRegion::NextInPage()
     return m_containingPage->NextInPage(this);
 }
 
+bool SatoriRegion::CanCoalesceWithNext()
+{
+    SatoriRegion* next = NextInPage();
+    if (next)
+    {
+        auto queue = VolatileLoadWithoutBarrier(&next->m_containingQueue);
+        if (queue && queue->Kind() == QueueKind::Allocator)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool SatoriRegion::TryCoalesceWithNext()
 {
     SatoriRegion* next = NextInPage();
@@ -391,7 +406,16 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
     m_containingPage->RegionInitialized(this);
 }
 
-void SatoriRegion::TryDecommit()
+bool SatoriRegion::CanDecommit()
+{
+    size_t decommitStart = ALIGN_UP((size_t)&m_syncBlock, Satori::CommitGranularity());
+    _ASSERTE(m_committed >= decommitStart);
+
+    size_t decommitSize = m_committed - decommitStart;
+    return (decommitSize > Satori::REGION_SIZE_GRANULARITY / 8);
+}
+
+bool SatoriRegion::TryDecommit()
 {
     size_t decommitStart = ALIGN_UP((size_t)&m_syncBlock, Satori::CommitGranularity());
     _ASSERTE(m_committed >= decommitStart);
@@ -402,7 +426,10 @@ void SatoriRegion::TryDecommit()
         GCToOSInterface::VirtualDecommit((void*)decommitStart, decommitSize);
         m_committed = decommitStart;
         m_used = min(m_used, decommitStart);
+        return true;
     }
+
+    return false;
 }
 
 size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
@@ -861,11 +888,9 @@ void SatoriRegion::ThreadLocalMark()
     sc.promotion = TRUE;
     sc._unused1 = this;
 
-#ifdef FEATURE_CONSERVATIVE_GC
-    if (GCConfig::GetConservativeGC())
+    if (SatoriUtil::IsConservativeMode())
         GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn<true>, &sc);
     else
-#endif
         GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn<false>, &sc);
 
     // now recursively mark all the objects reachable from the stack roots.
@@ -1131,11 +1156,9 @@ void SatoriRegion::ThreadLocalUpdatePointers()
     sc.promotion = FALSE;
     sc._unused1 = this;
 
-#ifdef FEATURE_CONSERVATIVE_GC
-    if (GCConfig::GetConservativeGC())
+    if (SatoriUtil::IsConservativeMode())
         GCToEEInterface::GcScanCurrentStackRoots((promote_func*)UpdateFn<true>, &sc);
     else
-#endif
         GCToEEInterface::GcScanCurrentStackRoots((promote_func*)UpdateFn<false>, &sc);
 
     // go through all live objects and update pointers if targets are planned for relocation.
