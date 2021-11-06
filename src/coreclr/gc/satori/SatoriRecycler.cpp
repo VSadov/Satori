@@ -12,6 +12,7 @@
 
 #include "SatoriHandlePartitioner.h"
 #include "SatoriHeap.h"
+#include "SatoriTrimmer.h"
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
 #include "SatoriRecycler.h"
@@ -58,6 +59,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_helpersGate->CreateAutoEventNoThrow(false);
 
     m_heap = heap;
+    m_trimmer = new SatoriTrimmer(heap);
 
     m_ephemeralRegions = new SatoriRegionQueue(QueueKind::RecyclerEphemeral);
     m_ephemeralFinalizationTrackingRegions = new SatoriRegionQueue(QueueKind::RecyclerEphemeralFinalizationTracking);
@@ -302,6 +304,8 @@ void SatoriRecycler::TryStartGC(int generation)
     int newState = ENABLE_CONCURRENT ? GC_STATE_CONCURRENT : GC_STATE_BLOCKING;
     if (Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
     {
+        m_trimmer->SetStopSuggested();
+
         // Here we have a short window when other threads may notice that gc is in progress,
         // but will find no helping opportunities until we set m_condemnedGeneration.
         // that is ok.
@@ -679,6 +683,8 @@ void SatoriRecycler::BlockingCollect()
         MaybeAskForHelp();
     }
 
+    m_trimmer->SetOkToRun();
+
     // restart VM
     GCToEEInterface::RestartEE(true);
 }
@@ -994,7 +1000,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         // since this is concurrent, in a conservative case an allocation could have caused a split
         // that shortened the found region and the region no longer matches the ref (which means the ref is not real).
         // Note that the split could only happen before we are done with allocator queue (which is synchronising)
-        // and assing 0+ gen to the region.
+        // and assign 0+ gen to the region.
         // So check here in the opposite order - first that region is 0+ gen and then that the size is stil right.
         if (isConservative &&
             (containingRegion->GenerationAcquire() < 0 || location >= containingRegion->End()))
@@ -1063,11 +1069,9 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
             {
                 MaybeAskForHelp();
 
-#ifdef FEATURE_CONSERVATIVE_GC
-                if (GCConfig::GetConservativeGC())
+                if (SatoriUtil::IsConservativeMode())
                     GCToEEInterface::GcScanCurrentStackRoots(IsBlockingPhase() ? MarkFn<true> : MarkFnConcurrent<true>, &sc);
                 else
-#endif
                     GCToEEInterface::GcScanCurrentStackRoots(IsBlockingPhase() ? MarkFn<false> : MarkFnConcurrent<false>, &sc);
             }
         }
@@ -1096,12 +1100,10 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
 
     bool isBlockingPhase = IsBlockingPhase();
 
-#ifdef FEATURE_CONSERVATIVE_GC
-    if (GCConfig::GetConservativeGC())
+    if (SatoriUtil::IsConservativeMode())
         //generations are meaningless here, so we pass -1
         GCToEEInterface::GcScanRoots(isBlockingPhase ? MarkFn<true> : MarkFnConcurrent<true>, -1, -1, &sc);
     else
-#endif
         GCToEEInterface::GcScanRoots(isBlockingPhase ? MarkFn<false> : MarkFnConcurrent<false>, -1, -1, &sc);
 
     SatoriFinalizationQueue* fQueue = m_heap->FinalizationQueue();
@@ -2553,12 +2555,10 @@ void SatoriRecycler::UpdateRootsWorker()
         );
 
         // TODO: VS ask for help? (also check the mark counterpart)
-#ifdef FEATURE_CONSERVATIVE_GC
-        if (GCConfig::GetConservativeGC())
+        if (SatoriUtil::IsConservativeMode())
             //generations are meaningless here, so we pass -1
             GCToEEInterface::GcScanRoots(UpdateFn<true>, -1, -1, &sc);
         else
-#endif
             GCToEEInterface::GcScanRoots(UpdateFn<false>, -1, -1, &sc);
 
         SatoriFinalizationQueue* fQueue = m_heap->FinalizationQueue();
@@ -2796,6 +2796,11 @@ void SatoriRecycler::DrainDeferredSweepQueue()
             PushToEphemeralQueues(curRegion);
         }
     }
+
+    if (SatoriUtil::IsConservativeMode())
+    {
+        m_trimmer->WaitForStop();
+    }
 }
 
 bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
@@ -2823,10 +2828,19 @@ bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
     {
         // no work that we can claim, but we must wait for sweeping to finish
         // let other threads do their things.
-        uint32_t spinCount = 0;
+        int cycles = 0;
         while (m_deferredSweepCount)
         {
-            GCToOSInterface::YieldThread(spinCount);
+            YieldProcessor();
+            if ((++cycles % 127) == 0)
+            {
+                GCToOSInterface::YieldThread(0);
+            }
+        }
+
+        if (SatoriUtil::IsConservativeMode())
+        {
+            m_trimmer->WaitForStop();
         }
     }
 
