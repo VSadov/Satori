@@ -34,6 +34,7 @@ set(GC_SOURCES
   satori/SatoriRegionQueue.cpp
   satori/SatoriAllocator.cpp
   satori/SatoriRecycler.cpp
+  satori/SatoriTrimmer.cpp
   satori/SatoriFinalizationQueue.cpp
   satori/SatoriAllocationContext.cpp
   satori/SatoriUtil.cpp
@@ -114,6 +115,7 @@ if (CLR_CMAKE_TARGET_WIN32)
     satori/SatoriRegionQueue.h
     satori/SatoriAllocator.h
     satori/SatoriRecycler.h
+    satori/SatoriTrimmer.h
     satori/SatoriFinalizationQueue.h
     satori/SatoriMarkChunk.h
     satori/SatoriMarkChunkQueue.h
