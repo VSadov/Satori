@@ -89,7 +89,7 @@ public:
     }
 
     template<typename F>
-    void ForEachRegion(F& lambda);
+    void ForEachRegion(F lambda);
 
 private:
     union
