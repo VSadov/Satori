@@ -118,18 +118,13 @@ tryAgain:
 void SatoriAllocator::ReturnRegion(SatoriRegion* region)
 {
     _ASSERTE(region->Generation() == -1);
-
-    //TUNING: this is too aggressive!!
-    //while (region->TryCoalesceWithNext()) {};
-    //region->TryDecommit();
-
     m_queues[SizeToBucket(region->Size())]->Push(region);
 }
 
 void SatoriAllocator::AddRegion(SatoriRegion* region)
 {
     _ASSERTE(region->Generation() == -1);
-    m_queues[SizeToBucket(region->Size())]->Push(region);
+    m_queues[SizeToBucket(region->Size())]->Enqueue(region);
 }
 
 Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags)
