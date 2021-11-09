@@ -246,7 +246,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
-        m_heap->Recycler()->MaybeTriggerGC();
+        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
         region = m_heap->Recycler()->TryGetReusable();
         if (region == nullptr)
         {
@@ -339,7 +339,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
         }
 
         // get a new regular region.
-        m_heap->Recycler()->MaybeTriggerGC();
+        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_loh);
         _ASSERTE(SatoriRegion::RegionSizeForAlloc(size) == Satori::REGION_SIZE_GRANULARITY);
         region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
         if (!region)
@@ -359,7 +359,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     size_t regionSize = SatoriRegion::RegionSizeForAlloc(size);
     _ASSERTE(regionSize > Satori::REGION_SIZE_GRANULARITY);
 
-    m_heap->Recycler()->MaybeTriggerGC();
+    m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_loh);
     SatoriRegion* hugeRegion = GetRegion(regionSize);
     if (!hugeRegion)
     {
