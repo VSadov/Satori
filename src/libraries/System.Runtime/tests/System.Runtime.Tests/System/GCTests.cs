@@ -870,7 +870,6 @@ namespace System.Tests
             GC.CancelFullGCNotification();
         }
 
-        [ActiveIssue("Satori NYI")]
         [Theory]
         [InlineData(1000)]
         [InlineData(100000)]
@@ -955,7 +954,6 @@ namespace System.Tests
             }).Dispose();
         }
 
-        [ActiveIssue("Satori NYI")]
         [Fact]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/42883", TestRuntimes.Mono)]
         public static void GetTotalAllocatedBytes()
