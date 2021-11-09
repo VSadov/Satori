@@ -201,10 +201,9 @@ size_t SatoriGC::GetCurrentObjSize()
 
 uint64_t SatoriGC::GetTotalAllocatedBytes()
 {
-    // monotonically increasing number ever produced by allocator. (only objects?)
-
-    //TODO: VS would need some kind of counter incremented when allocating from regions 
-    return 0;
+    // monotonically increasing number produced by allocator when allocating objects.
+    // threads know the number and we update the total when doing GCs
+    return m_heap->Recycler()->GetTotalAllocatedBytes();
 }
 
 HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
@@ -300,7 +299,7 @@ bool SatoriGC::IsPromoted(Object* object)
 
 bool SatoriGC::IsHeapPointer(void* object, bool small_heap_only)
 {
-    //TODO: Satori small_heap_only ?
+    //small_heap_only is unused - there is no special heap for large objects.
     return m_heap->IsHeapAddress((size_t)object);
 }
 
@@ -366,6 +365,7 @@ void SatoriGC::FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap
 {
     // this is only called when thread is terminating and about to clear its context.
     ((SatoriAllocationContext*)acontext)->Deactivate(m_heap->Recycler(), /*detach*/ true);
+    m_heap->Recycler()->ReportThreadAllocBytes(acontext->alloc_bytes + acontext->alloc_bytes_uoh, /*isLive*/ false);
 }
 
 void SatoriGC::SetGCInProgress(bool fInProgress)
