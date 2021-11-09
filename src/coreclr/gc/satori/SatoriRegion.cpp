@@ -29,6 +29,7 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 #include "../env/gcenv.ee.h"
+#include "../gceventstatus.h"
 
 #if !defined(_DEBUG)
 //#pragma optimize("gty", on)
@@ -842,10 +843,15 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
 
     m_allocBytesAtCollect = allocBytes;
 
+    size_t count = Recycler()->IncrementGen0Count();
+    FIRE_EVENT(GCStart_V2, (int)count - 1, 0, gc_reason::reason_alloc_loh, gc_etw_type_ngc);
+
     ThreadLocalMark();
     ThreadLocalPlan();
     ThreadLocalUpdatePointers();
     ThreadLocalCompact();
+
+    FIRE_EVENT(GCEnd_V1, (int)count - 1, 0);
 
     return true;
 }
