@@ -820,17 +820,38 @@ void SatoriRecycler::ASSERT_NO_WORK()
     );
 }
 
+void SatoriRecycler::ReportThreadAllocBytes(int64_t bytes, bool isLive)
+{
+    if (isLive)
+    {
+        _ASSERTE(IsBlockingPhase());
+        m_currentAllocBytesLiveThreads += bytes;
+    }
+    else
+    {
+        Interlocked::ExchangeAdd64(&m_currentAllocBytesDeadThreads, bytes);
+    }
+}
+
+int64_t SatoriRecycler::GetTotalAllocatedBytes()
+{
+    return m_totalAllocBytes;
+}
+
 void SatoriRecycler::DeactivateFn(gc_alloc_context* gcContext, void* param)
 {
     SatoriAllocationContext* context = (SatoriAllocationContext*)gcContext;
     SatoriRecycler* recycler = (SatoriRecycler*)param;
 
     context->Deactivate(recycler, /*detach*/ recycler->m_isPromotingAllRegions);
+    recycler->ReportThreadAllocBytes(context->alloc_bytes + context->alloc_bytes_uoh, /*islive*/ true);
 }
 
 void SatoriRecycler::DeactivateAllStacks()
 {
+    m_currentAllocBytesLiveThreads = 0;
     GCToEEInterface::GcEnumAllocContexts(DeactivateFn, m_heap->Recycler());
+    m_totalAllocBytes = m_currentAllocBytesLiveThreads + m_currentAllocBytesDeadThreads;
 }
 
 class MarkContext
