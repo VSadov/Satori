@@ -980,6 +980,17 @@ FCIMPL1(INT64, GCInterface::GetTotalAllocatedBytes, CLR_BOOL precise)
 {
     FCALL_CONTRACT;
 
+#if FEATURE_SATORI_GC
+    if (precise)
+    {
+        HELPER_METHOD_FRAME_BEGIN_RET_0();
+        GCHeapUtilities::GetGCHeap()->GarbageCollect(1);
+        HELPER_METHOD_FRAME_END();
+    }
+
+    return GCHeapUtilities::GetGCHeap()->GetTotalAllocatedBytes();
+#else
+
     if (!precise)
     {
 #ifdef TARGET_64BIT
@@ -1030,6 +1041,7 @@ FCIMPL1(INT64, GCInterface::GetTotalAllocatedBytes, CLR_BOOL precise)
     HELPER_METHOD_FRAME_END();
 
     return allocated;
+#endif
 }
 FCIMPLEND;
 
