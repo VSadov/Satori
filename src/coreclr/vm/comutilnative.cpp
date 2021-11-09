@@ -1015,6 +1015,7 @@ extern "C" INT64 QCALLTYPE GCInterface_GetTotalAllocatedBytesPrecise()
     END_QCALL;
 
     return allocated;
+#endif
 }
 
 #ifdef FEATURE_BASICFREEZE
