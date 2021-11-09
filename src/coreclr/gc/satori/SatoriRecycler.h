@@ -47,7 +47,7 @@ public:
     void AddEphemeralRegion(SatoriRegion* region);
     void AddTenuredRegion(SatoriRegion* region);
 
-    void TryStartGC(int generation);
+    void TryStartGC(int generation, gc_reason reason);
     bool HelpOnce();
     void ConcurrentHelp();
     void ShutDown();
@@ -56,10 +56,11 @@ public:
     void StartMarkingAllStacksAndFinalizationQueue();
     void MaybeAskForHelp();
     void AskForHelp();
-    void MaybeTriggerGC();
+    void MaybeTriggerGC(gc_reason reason);
 
     void Collect(int generation, bool force, bool blocking);
     bool IsBlockingPhase();
+    size_t IncrementGen0Count();
 
     int GetRootScanTicket();
     int64_t GetCollectionCount(int gen);
@@ -133,6 +134,7 @@ private:
     bool m_allowPromotingRelocations;
     bool m_isBarrierConcurrent;
 
+    int64_t m_gen0Count;
     int64_t m_gen1Count;
     int64_t m_gen2Count;
 
