@@ -28,6 +28,7 @@
 
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
+#include "../gceventstatus.h"
 
 #include "SatoriHandlePartitioner.h"
 #include "SatoriHeap.h"
@@ -110,7 +111,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_gcState = GC_STATE_NONE;
     m_isBarrierConcurrent = false;
 
-    m_gen1Count = m_gen2Count = 0;
+    m_gen1Count = m_gen2Count = m_gen1Count = 0;
     m_condemnedGeneration = 0;
 
     m_prevCondemnedGeneration = 2;
@@ -208,9 +209,8 @@ int64_t SatoriRecycler::GetCollectionCount(int gen)
     switch (gen)
     {
     case 0:
-        goto fallthrough;
+        return m_gen0Count;
     case 1:
-        fallthrough:
         return m_gen1Count;
     default:
         return m_gen2Count;
@@ -318,11 +318,18 @@ void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
     region->SetGeneration(2);
 }
 
-void SatoriRecycler::TryStartGC(int generation)
+size_t SatoriRecycler::IncrementGen0Count()
+{
+    return Interlocked::Increment((size_t*)&m_gen0Count);
+}
+
+void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
 {
     int newState = ENABLE_CONCURRENT ? GC_STATE_CONCURRENT : GC_STATE_BLOCKING;
     if (Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
     {
+        FIRE_EVENT(GCTriggered, (uint32_t)reason);
+
         m_trimmer->SetStopSuggested();
 
         // Here we have a short window when other threads may notice that gc is in progress,
@@ -533,7 +540,7 @@ void SatoriRecycler::AskForHelp()
     }
 }
 
-void SatoriRecycler::MaybeTriggerGC()
+void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 {
     if (m_gen1AddedSinceLastCollection + m_gen2AddedSinceLastCollection - m_gen1MinorBudget > 0)
     {
@@ -549,7 +556,7 @@ void SatoriRecycler::MaybeTriggerGC()
             generation = 2;
         }
 
-        TryStartGC(generation);
+        TryStartGC(generation, reason);
     }
 
     HelpOnce();
@@ -563,7 +570,7 @@ void SatoriRecycler::Collect(int generation, bool force, bool blocking)
     if (!force)
     {
         // just check if it is time
-        MaybeTriggerGC();
+        MaybeTriggerGC(gc_reason::reason_induced_noforce);
         return;
     }
 
@@ -581,7 +588,7 @@ void SatoriRecycler::Collect(int generation, bool force, bool blocking)
 
     do
     {
-        TryStartGC(generation);
+        TryStartGC(generation, gc_reason::reason_induced);
         HelpOnce();
     } while (blocking && (desiredCollectionNum > collectionNumRef));
 }
@@ -595,6 +602,8 @@ void SatoriRecycler::BlockingCollect()
 {
     // stop other threads.
     GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
+
+    FIRE_EVENT(GCStart_V2, (int)m_gen0Count, m_condemnedGeneration, reason_empty, gc_etw_type_ngc);
 
 #ifdef TIMED
     size_t time = GCToOSInterface::QueryPerformanceCounter();
@@ -670,6 +679,7 @@ void SatoriRecycler::BlockingCollect()
     Relocate();
     Update();
 
+    m_gen0Count++;
     m_gen1Count++;
     if (m_condemnedGeneration == 2)
     {
@@ -688,6 +698,8 @@ void SatoriRecycler::BlockingCollect()
     time = (GCToOSInterface::QueryPerformanceCounter() - time) * 1000000 / GCToOSInterface::QueryPerformanceFrequency();
     printf("%zu\n", time);
 #endif
+
+    FIRE_EVENT(GCEnd_V1, int(m_gen0Count - 1), m_condemnedGeneration);
 
     m_prevCondemnedGeneration = m_condemnedGeneration;
     m_condemnedGeneration = 0;
