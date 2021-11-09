@@ -51,6 +51,8 @@ public:
     size_t RegionCount();
 
     SatoriRegion* TryGetReusable();
+    void ReportThreadAllocBytes(int64_t bytes, bool isLive);
+    int64_t GetTotalAllocatedBytes();
 
 private:
     SatoriHeap* m_heap;
@@ -125,6 +127,10 @@ private:
     ptrdiff_t m_gen1AddedSinceLastCollection;
     size_t m_gen2AddedSinceLastCollection;
     size_t m_gen1CountAtLastGen2;
+
+    int64_t m_currentAllocBytesLiveThreads;
+    int64_t m_currentAllocBytesDeadThreads;
+    int64_t m_totalAllocBytes;
 
 private:
     static void DeactivateFn(gc_alloc_context* context, void* param);
