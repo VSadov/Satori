@@ -82,9 +82,6 @@
       <ExcludeList Include="$(XunitTestBinBase)/GC/API/GCSettings/InputValidation/*">
         <Issue>Satori GC apis</Issue>
       </ExcludeList>
-      <ExcludeList Include="$(XunitTestBinBase)/GC/API/GC/GetTotalAllocatedBytes/*">
-        <Issue>Satori GC apis</Issue>
-      </ExcludeList>
       <ExcludeList Include="$(XunitTestBinBase)/GC/API/GC/GetGCMemoryInfo/*">
         <Issue>Satori GC apis</Issue>
       </ExcludeList>
