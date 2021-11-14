@@ -117,6 +117,13 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_prevCondemnedGeneration = 2;
     m_gen1CountAtLastGen2 = 0;
 
+    m_gen0Occupancy = 0;
+    m_gen1Occupancy = 0;
+    m_gen2Occupancy = 0;
+    m_gen0OccupancyAcc = 0;
+    m_gen1OccupancyAcc = 0;
+    m_gen2OccupancyAcc = 0;
+
     // when gen1 happens
 #ifdef _DEBUG
     m_gen1MinorBudget = 6;
@@ -633,6 +640,21 @@ void SatoriRecycler::BlockingCollect()
 
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
 
+    // all sweeping should be done by now
+    m_gen1Occupancy = m_gen1OccupancyAcc;
+    if (m_prevCondemnedGeneration == 2)
+    {
+        m_gen2Occupancy = m_gen2OccupancyAcc;
+        m_gen2OccupancyAcc = 0;
+    }
+    else
+    {
+        _ASSERTE(m_gen2OccupancyAcc == 0);
+    }
+
+    m_gen0OccupancyAcc = 0;
+    m_gen1OccupancyAcc = 0;
+
     _ASSERTE(m_deferredSweepRegions->IsEmpty());
 
     size_t gen2Count = Gen2RegionCount();
@@ -686,6 +708,9 @@ void SatoriRecycler::BlockingCollect()
         m_gen2Count++;
     }
 
+    // we are done with gen0 here, update the occupancy
+    m_gen0Occupancy = m_gen0OccupancyAcc;
+
     // we may still have some deferred sweeping to do, but
     // that is unobservable to EE, so tell EE that we are done
     GCToEEInterface::GcDone(m_condemnedGeneration);
@@ -712,6 +737,15 @@ void SatoriRecycler::BlockingCollect()
     {
         m_activeHelperFn = &SatoriRecycler::DrainDeferredSweepQueueHelp;
         MaybeAskForHelp();
+    }
+    else
+    {
+        // no deferred sweep, update occupancy
+        m_gen1Occupancy = m_gen1OccupancyAcc;
+        if (m_prevCondemnedGeneration == 2)
+        {
+            m_gen2Occupancy = m_gen2OccupancyAcc;
+        }
     }
 
     m_trimmer->SetOkToRun();
@@ -2838,6 +2872,7 @@ void SatoriRecycler::DrainDeferredSweepQueue()
         }
     }
 
+    // TODO: VS are we always in blocking here?
     if (IsBlockingPhase())
     {
         MaybeAskForHelp();
@@ -2929,3 +2964,27 @@ void SatoriRecycler::SweepAndReturnRegion(SatoriRegion* curRegion)
         KeepRegion(curRegion);
     }
 }
+
+void SatoriRecycler::RecordOccupancy(int generation, size_t occupancy)
+{
+    switch (generation)
+    {
+    case 0:
+        Interlocked::ExchangeAdd64(&m_gen0OccupancyAcc, occupancy);
+        break;
+    case 1:
+        Interlocked::ExchangeAdd64(&m_gen1OccupancyAcc, occupancy);
+        break;
+    default:
+        Interlocked::ExchangeAdd64(&m_gen2OccupancyAcc, occupancy);
+        break;
+    }
+}
+
+size_t SatoriRecycler::GetTotalOccupancy()
+{
+    return m_gen0Occupancy +
+           m_gen1Occupancy +
+           m_gen2Occupancy;
+}
+
