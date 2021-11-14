@@ -278,7 +278,6 @@ size_t SatoriGC::GetLastGCGenerationSize(int gen)
 
 HRESULT SatoriGC::Initialize()
 {
-    m_perfCounterFrequency = GCToOSInterface::QueryPerformanceFrequency();
     SatoriObject::Initialize();
     SatoriHandlePartitioner::Initialize();
     m_heap = SatoriHeap::Create();
@@ -414,8 +413,7 @@ void SatoriGC::Shutdown()
 
 size_t SatoriGC::GetLastGCStartTime(int generation)
 {
-    // TODO: VS  (this is used for threads cleanup)
-    return 0;
+    return m_heap->Recycler()->GetGcStartMillis(generation);
 }
 
 size_t SatoriGC::GetLastGCDuration(int generation)
@@ -426,8 +424,7 @@ size_t SatoriGC::GetLastGCDuration(int generation)
 
 size_t SatoriGC::GetNow()
 {
-    int64_t t = GCToOSInterface::QueryPerformanceCounter();
-    return (size_t)(t / (m_perfCounterFrequency / 1000));
+    return m_heap->Recycler()->GetNowMillis();
 }
 
 Object* SatoriGC::Alloc(gc_alloc_context* acontext, size_t size, uint32_t flags)
