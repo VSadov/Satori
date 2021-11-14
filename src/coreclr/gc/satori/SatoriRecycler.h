@@ -55,6 +55,9 @@ public:
     void ReportThreadAllocBytes(int64_t bytes, bool isLive);
     int64_t GetTotalAllocatedBytes();
 
+    void RecordOccupancy(int generation, size_t size);
+    size_t GetTotalOccupancy();
+
 private:
     SatoriHeap* m_heap;
 
@@ -129,6 +132,14 @@ private:
     ptrdiff_t m_gen1AddedSinceLastCollection;
     size_t m_gen2AddedSinceLastCollection;
     size_t m_gen1CountAtLastGen2;
+
+    size_t m_gen0Occupancy;
+    size_t m_gen1Occupancy;
+    size_t m_gen2Occupancy;
+
+    size_t m_gen0OccupancyAcc;
+    size_t m_gen1OccupancyAcc;
+    size_t m_gen2OccupancyAcc;
 
     int64_t m_currentAllocBytesLiveThreads;
     int64_t m_currentAllocBytesDeadThreads;
