@@ -78,6 +78,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_helpersGate = new (nothrow) GCEvent;
     m_helpersGate->CreateAutoEventNoThrow(false);
 
+    m_perfCounterFrequencyMHz = GCToOSInterface::QueryPerformanceFrequency() / 1000;
+
     m_heap = heap;
     m_trimmer = new SatoriTrimmer(heap);
 
@@ -111,18 +113,21 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_gcState = GC_STATE_NONE;
     m_isBarrierConcurrent = false;
 
-    m_gen1Count = m_gen2Count = m_gen1Count = 0;
+    m_gcCount[0] = 0;
+    m_gcCount[1] = 0;
+    m_gcCount[2] = 0;
+
     m_condemnedGeneration = 0;
 
     m_prevCondemnedGeneration = 2;
     m_gen1CountAtLastGen2 = 0;
 
-    m_gen0Occupancy = 0;
-    m_gen1Occupancy = 0;
-    m_gen2Occupancy = 0;
-    m_gen0OccupancyAcc = 0;
-    m_gen1OccupancyAcc = 0;
-    m_gen2OccupancyAcc = 0;
+    m_occupancy[0] = 0;
+    m_occupancy[1] = 0;
+    m_occupancy[2] = 0;
+    m_occupancyAcc[0] = 0;
+    m_occupancyAcc[1] = 0;
+    m_occupancyAcc[2] = 0;
 
     // when gen1 happens
 #ifdef _DEBUG
@@ -213,15 +218,7 @@ uint8_t SatoriRecycler::GetCardScanTicket()
 
 int64_t SatoriRecycler::GetCollectionCount(int gen)
 {
-    switch (gen)
-    {
-    case 0:
-        return m_gen0Count;
-    case 1:
-        return m_gen1Count;
-    default:
-        return m_gen2Count;
-    }
+    return m_gcCount[gen];
 }
 
 int SatoriRecycler::CondemnedGeneration()
@@ -325,9 +322,16 @@ void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
     region->SetGeneration(2);
 }
 
+size_t SatoriRecycler::GetNowMillis()
+{
+    int64_t t = GCToOSInterface::QueryPerformanceCounter();
+    return (size_t)(t / m_perfCounterFrequencyMHz);
+}
+
 size_t SatoriRecycler::IncrementGen0Count()
 {
-    return Interlocked::Increment((size_t*)&m_gen0Count);
+    m_gcStartMillis[0] = GetNowMillis();
+    return Interlocked::Increment((size_t*)&m_gcCount[0]);
 }
 
 void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
@@ -558,7 +562,7 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
         //      or maybe even 1/10 gen2 ?
 
         // just make sure gen2 happens eventually. 
-        if (m_gen1Count - m_gen1CountAtLastGen2 > 64)
+        if (m_gcCount[1] - m_gen1CountAtLastGen2 > 64)
         {
             generation = 2;
         }
@@ -581,7 +585,7 @@ void SatoriRecycler::Collect(int generation, bool force, bool blocking)
         return;
     }
 
-    int64_t& collectionNumRef = (generation == 1 ? m_gen1Count : m_gen2Count);
+    int64_t& collectionNumRef = (generation == 1 ? m_gcCount[1] : m_gcCount[2]);
     int64_t desiredCollectionNum = collectionNumRef + 1;
 
     // If we need to block for GC, a GC that is already in progress does not count.
@@ -610,7 +614,9 @@ void SatoriRecycler::BlockingCollect()
     // stop other threads.
     GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
 
-    FIRE_EVENT(GCStart_V2, (int)m_gen0Count, m_condemnedGeneration, reason_empty, gc_etw_type_ngc);
+    FIRE_EVENT(GCStart_V2, (int)m_gcCount[0], m_condemnedGeneration, reason_empty, gc_etw_type_ngc);
+
+    m_gcStartMillis[m_condemnedGeneration] = GetNowMillis();
 
 #ifdef TIMED
     size_t time = GCToOSInterface::QueryPerformanceCounter();
@@ -641,19 +647,19 @@ void SatoriRecycler::BlockingCollect()
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
 
     // all sweeping should be done by now
-    m_gen1Occupancy = m_gen1OccupancyAcc;
+    m_occupancy[1] = m_occupancyAcc[1];
     if (m_prevCondemnedGeneration == 2)
     {
-        m_gen2Occupancy = m_gen2OccupancyAcc;
-        m_gen2OccupancyAcc = 0;
+        m_occupancy[2] = m_occupancyAcc[2];
+        m_occupancyAcc[2] = 0;
     }
     else
     {
-        _ASSERTE(m_gen2OccupancyAcc == 0);
+        _ASSERTE(m_occupancyAcc[2] == 0);
     }
 
-    m_gen0OccupancyAcc = 0;
-    m_gen1OccupancyAcc = 0;
+    m_occupancyAcc[0] = 0;
+    m_occupancyAcc[1] = 0;
 
     _ASSERTE(m_deferredSweepRegions->IsEmpty());
 
@@ -671,7 +677,7 @@ void SatoriRecycler::BlockingCollect()
     if (m_condemnedGeneration == 2)
     {
         m_isPromotingAllRegions = true;
-        m_gen1CountAtLastGen2 = (int)m_gen1Count;
+        m_gen1CountAtLastGen2 = (int)m_gcCount[1];
     }
     else
     {
@@ -701,15 +707,15 @@ void SatoriRecycler::BlockingCollect()
     Relocate();
     Update();
 
-    m_gen0Count++;
-    m_gen1Count++;
+    m_gcCount[0]++;
+    m_gcCount[1]++;
     if (m_condemnedGeneration == 2)
     {
-        m_gen2Count++;
+        m_gcCount[2]++;
     }
 
     // we are done with gen0 here, update the occupancy
-    m_gen0Occupancy = m_gen0OccupancyAcc;
+    m_occupancy[0] = m_occupancyAcc[0];
 
     // we may still have some deferred sweeping to do, but
     // that is unobservable to EE, so tell EE that we are done
@@ -724,7 +730,7 @@ void SatoriRecycler::BlockingCollect()
     printf("%zu\n", time);
 #endif
 
-    FIRE_EVENT(GCEnd_V1, int(m_gen0Count - 1), m_condemnedGeneration);
+    FIRE_EVENT(GCEnd_V1, int(m_gcCount[0] - 1), m_condemnedGeneration);
 
     m_prevCondemnedGeneration = m_condemnedGeneration;
     m_condemnedGeneration = 0;
@@ -741,10 +747,10 @@ void SatoriRecycler::BlockingCollect()
     else
     {
         // no deferred sweep, update occupancy
-        m_gen1Occupancy = m_gen1OccupancyAcc;
+        m_occupancy[1] = m_occupancyAcc[1];
         if (m_prevCondemnedGeneration == 2)
         {
-            m_gen2Occupancy = m_gen2OccupancyAcc;
+            m_occupancy[2] = m_occupancyAcc[2];
         }
     }
 
@@ -2967,24 +2973,18 @@ void SatoriRecycler::SweepAndReturnRegion(SatoriRegion* curRegion)
 
 void SatoriRecycler::RecordOccupancy(int generation, size_t occupancy)
 {
-    switch (generation)
-    {
-    case 0:
-        Interlocked::ExchangeAdd64(&m_gen0OccupancyAcc, occupancy);
-        break;
-    case 1:
-        Interlocked::ExchangeAdd64(&m_gen1OccupancyAcc, occupancy);
-        break;
-    default:
-        Interlocked::ExchangeAdd64(&m_gen2OccupancyAcc, occupancy);
-        break;
-    }
+    Interlocked::ExchangeAdd64(&m_occupancyAcc[generation], occupancy);
 }
 
 size_t SatoriRecycler::GetTotalOccupancy()
 {
-    return m_gen0Occupancy +
-           m_gen1Occupancy +
-           m_gen2Occupancy;
+    return m_occupancy[0] +
+           m_occupancy[1] +
+           m_occupancy[2];
+}
+
+size_t SatoriRecycler::GetGcStartMillis(int generation)
+{
+    return m_gcStartMillis[generation];
 }
 
