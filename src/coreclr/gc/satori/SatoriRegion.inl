@@ -299,6 +299,8 @@ bool SatoriRegion::Sweep()
     this->HasPinnedObjects() = false;
 
     SetOccupancy(occupancy, objCount);
+    Recycler()->RecordOccupancy(this->Generation(), occupancy);
+
     return cannotRecycle;
 }
 
