@@ -419,7 +419,6 @@ namespace System.Tests
             }
         }
 
-        [ActiveIssue("Satori NYI")]
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsPreciseGcSupported))]
         public static void GetTotalMemoryTest_ForceCollection()
         {

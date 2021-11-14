@@ -201,14 +201,16 @@ int SatoriGC::EndNoGCRegion()
 
 size_t SatoriGC::GetTotalBytesInUse()
 {
-    //TODO: VS, bytes used by objects? 
-    return Satori::REGION_SIZE_GRANULARITY * 10;
+    // Returns the total number of bytes currently in use by live objects in
+    // the GC heap.  This does not return the total size of the GC heap, but
+    // only the live objects in the GC heap.
+    return m_heap->Recycler()->GetTotalOccupancy();
 }
 
 size_t SatoriGC::GetCurrentObjSize()
 {
-    // TODO: VS
-    // It seems some rough estimate of combined live object size.
+    // Used only by mem pressure heuristic
+    // It seems some rough estimate of "managed heap size"
     return GetTotalBytesInUse();
 }
 
@@ -418,7 +420,7 @@ size_t SatoriGC::GetLastGCStartTime(int generation)
 
 size_t SatoriGC::GetLastGCDuration(int generation)
 {
-    // TODO: VS  (this is used for mem pressure)
+    // NYI  (this is used for mem pressure aggressiveness)
     return 10;
 }
 
