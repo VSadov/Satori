@@ -118,7 +118,6 @@ namespace System.Runtime.InteropServices
             Assert.Throws<InvalidOperationException>(() => collector.Add());
         }
 
-        [ActiveIssue("Satori NYI")]  // probably test issue, relies on frequent blocking collections?
         [Fact]
         public static void TestHandleCollector()
         {
