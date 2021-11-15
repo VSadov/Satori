@@ -144,7 +144,12 @@ public:
     INT_CONFIG   (GCDTargetTCP,              "GCDTargetTCP",              "System.GC.DTargetTCP",              0,                  "Specifies the target tcp for DATAS")                                                     \
     INT_CONFIG   (GCDBGCRatio,              " GCDBGCRatio",               NULL,                                0,                  "Specifies the ratio of BGC to NGC2 for HC change")                                       \
     BOOL_CONFIG  (GCLogBGCThreadId,          "GCLogBGCThreadId",          NULL,                                false,              "Specifies if BGC ThreadId should be logged")                                             \
-    BOOL_CONFIG  (GCCacheSizeFromSysConf,    "GCCacheSizeFromSysConf",    NULL,                                false,              "Specifies using sysconf to retrieve the last level cache size for Unix.")
+    BOOL_CONFIG  (GCCacheSizeFromSysConf,    "GCCacheSizeFromSysConf",    NULL,                                false,              "Specifies using sysconf to retrieve the last level cache size for Unix.")                \
+/* FEATURE_SATORI_GC */                                                                                                                                                                                                      \
+    BOOL_CONFIG  (RelocatingGC,              "gcRelocating",              NULL,                                true,              "Specifies whether GC can relocate objects")                                               \
+    INT_CONFIG   (ParallelGC,                "gcParallel",                NULL,                                -1,                "Specifies max number of addtional GC threads. 0 - no helpers, -1 - default")              \
+    BOOL_CONFIG  (ThreadLocalGC,             "gcThreadLocal",             NULL,                                true,              "Specifies whether thread-local GC can be performed")                                      \
+    BOOL_CONFIG  (TrimmigGC,                 "gcTrim",                    NULL,                                true,              "Specifies whether background trimming is enabled")
 
 // This class is responsible for retreiving configuration information
 // for how the GC should operate.

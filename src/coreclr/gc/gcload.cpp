@@ -112,6 +112,11 @@ GC_Initialize(
         return E_OUTOFMEMORY;
     }
 
+#ifdef FEATURE_SATORI_GC
+    g_gc_heap_type = GC_HEAP_SATORI;
+    heap = new(nothrow) SatoriGC();
+#else
+
 #ifdef FEATURE_SVR_GC
     if (GCConfig::GetServerGC() && GCToEEInterface::GetCurrentProcessCpuCount() > 1)
     {
@@ -124,12 +129,6 @@ GC_Initialize(
         heap = SVR::CreateGCHeap();
         SVR::PopulateDacVars(gcDacVars);
     }
-    else if (true)
-    {
-        //TODO: Satori
-        g_gc_heap_type = GC_HEAP_SATORI;
-        heap = new(nothrow) SatoriGC();
-    }
     else
 #endif
     {
@@ -137,6 +136,7 @@ GC_Initialize(
         heap = WKS::CreateGCHeap();
         WKS::PopulateDacVars(gcDacVars);
     }
+#endif
 
     PopulateHandleTableDacVars(gcDacVars);
     if (heap == nullptr)
