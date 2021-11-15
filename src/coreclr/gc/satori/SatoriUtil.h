@@ -168,6 +168,48 @@ public:
         return false;
 #endif
     }
+
+    static bool IsConcurrent()
+    {
+        return (GCConfig::GetConcurrentGC());
+    }
+
+    static bool IsRelocating()
+    {
+        return (GCConfig::GetRelocatingGC());
+    }
+
+    static bool IsThreadLocalGCEnabled()
+    {
+        return (GCConfig::GetThreadLocalGC());
+    }
+
+    static bool IsTrimmingEnabled()
+    {
+        return (GCConfig::GetTrimmigGC());
+    }
+
+    static int HandlePartitionsCount()
+    {
+        int partitionCount = (int)GCConfig::GetHeapCount();
+        if (partitionCount < 1)
+        {
+            partitionCount = GCToOSInterface::GetTotalProcessorCount();
+        }
+
+        return partitionCount;
+    }
+
+    static int MaxHelpersCount()
+    {
+        int specifiedHelpers = (int)GCConfig::GetParallelGC();
+        if (specifiedHelpers < 0)
+        {
+            specifiedHelpers = GCToOSInterface::GetTotalProcessorCount();
+        }
+
+        return specifiedHelpers;
+    }
 };
 
 #endif
