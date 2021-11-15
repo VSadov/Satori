@@ -134,6 +134,11 @@ public:
     INT_CONFIG   (GCHeapHardLimitPOHPercent, "GCHeapHardLimitPOHPercent", "System.GC.HeapHardLimitPOHPercent", 0,        "Specifies the GC heap POH usage as a percentage of the total memory")                    \
     INT_CONFIG   (GCEnabledInstructionSets,  "GCEnabledInstructionSets",  NULL,                                -1,       "Specifies whether GC can use AVX2 or AVX512F - 0 for neither, 1 for AVX2, 3 for AVX512F")\
     INT_CONFIG   (GCConserveMem,           "GCConserveMemory",      NULL,                             0,                 "Specifies how hard GC should try to conserve memory - values 0-9")                       \
+/* FEATURE_SATORI_GC */                                                                                                                                                                                            \
+    BOOL_CONFIG  (RelocatingGC,           "gcRelocating",           NULL,                             true,              "Specifies whether GC can relocate objects")                                              \
+    INT_CONFIG   (ParallelGC,             "gcParallel",             NULL,                             -1,                "Specifies max number of addtional GC threads. 0 - no helpers, -1 - default")             \
+    BOOL_CONFIG  (ThreadLocalGC,          "gcThreadLocal",          NULL,                             true,              "Specifies whether thread-local GC can be performed")                                     \
+    BOOL_CONFIG  (TrimmigGC,              "gcTrim",                 NULL,                             true,              "Specifies whether background trimming is enabled")                                       \
 
 // This class is responsible for retreiving configuration information
 // for how the GC should operate.
