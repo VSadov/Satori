@@ -38,7 +38,7 @@ class SatoriHandlePartitioner
 public:
     static void Initialize()
     {
-        s_partitionCount = (int)GCToOSInterface::GetTotalProcessorCount();
+        s_partitionCount = SatoriUtil::HandlePartitionsCount();
         s_scanTickets = new uint8_t[s_partitionCount]{};
     }
 
