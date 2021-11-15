@@ -140,7 +140,12 @@ public:
     STRING_CONFIG(GCName,                    "GCName",                    "System.GC.Name",                                        "Specifies the path of the standalone GC implementation.")                                \
     INT_CONFIG   (GCSpinCountUnit,           "GCSpinCountUnit",           0,                                   0,                  "Specifies the spin count unit used by the GC.")                                          \
     INT_CONFIG   (GCDynamicAdaptationMode,   "GCDynamicAdaptationMode",   "System.GC.DynamicAdaptationMode",   0,                  "Enable the GC to dynamically adapt to application sizes.")                               \
-    BOOL_CONFIG  (GCCacheSizeFromSysConf,    "GCCacheSizeFromSysConf",    NULL,                                false,              "Specifies using sysconf to retrieve the last level cache size for Unix.")
+    BOOL_CONFIG  (GCCacheSizeFromSysConf,    "GCCacheSizeFromSysConf",    NULL,                                false,              "Specifies using sysconf to retrieve the last level cache size for Unix.")                \
+/* FEATURE_SATORI_GC */                                                                                                                                                                                                      \
+    BOOL_CONFIG  (RelocatingGC,              "gcRelocating",              NULL,                                true,              "Specifies whether GC can relocate objects")                                               \
+    INT_CONFIG   (ParallelGC,                "gcParallel",                NULL,                                -1,                "Specifies max number of addtional GC threads. 0 - no helpers, -1 - default")              \
+    BOOL_CONFIG  (ThreadLocalGC,             "gcThreadLocal",             NULL,                                true,              "Specifies whether thread-local GC can be performed")                                      \
+    BOOL_CONFIG  (TrimmigGC,                 "gcTrim",                    NULL,                                true,              "Specifies whether background trimming is enabled")                                        \
 
 // This class is responsible for retreiving configuration information
 // for how the GC should operate.
