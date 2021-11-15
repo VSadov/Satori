@@ -29,6 +29,7 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 
+#include "SatoriUtil.h"
 #include "SatoriTrimmer.h"
 #include "SatoriHeap.h"
 #include "SatoriPage.h"
@@ -45,7 +46,10 @@ SatoriTrimmer::SatoriTrimmer(SatoriHeap* heap)
     m_gate = new (nothrow) GCEvent;
     m_gate->CreateAutoEventNoThrow(false);
 
-    GCToEEInterface::CreateThread(LoopFn, this, false, "Satori GC Trimmer Thread");
+    if (SatoriUtil::IsTrimmingEnabled())
+    {
+        GCToEEInterface::CreateThread(LoopFn, this, false, "Satori GC Trimmer Thread");
+    }
 }
 
 void SatoriTrimmer::LoopFn(void* inst)
