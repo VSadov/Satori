@@ -30,9 +30,6 @@
 #undef memcpy
 #endif //memcpy
 
-#define ENABLE_CONCURRENT true
-//#define ENABLE_CONCURRENT false
-
 #define ENABLE_RELOCATION true
 //#define ENABLE_RELOCATION false
 
@@ -269,7 +266,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 
     // When concurrent marking is allowed we may have marks already.
     // Demoted regions could be pre-marked
-    region->Verify(/* allowMarked */ region->IsDemoted() || ENABLE_CONCURRENT);
+    region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrent());
 
     // the region has just done allocating, so real occupancy will be known only after we sweep.
     // for now put 0 and treat the region as completely full
@@ -317,7 +314,7 @@ size_t SatoriRecycler::IncrementGen0Count()
 
 void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
 {
-    int newState = ENABLE_CONCURRENT ? GC_STATE_CONCURRENT : GC_STATE_BLOCKING;
+    int newState = SatoriUtil::IsConcurrent() ? GC_STATE_CONCURRENT : GC_STATE_BLOCKING;
     if (Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
     {
         FIRE_EVENT(GCTriggered, (uint32_t)reason);
@@ -520,7 +517,7 @@ void SatoriRecycler::AskForHelp()
 {
     int totalHelpers = m_totalHelpers;
     if (m_activeHelpers >= totalHelpers &&
-        totalHelpers < SatoriHandlePartitioner::PartitionCount() &&
+        totalHelpers < SatoriUtil::MaxHelpersCount() &&
         Interlocked::CompareExchange(&m_totalHelpers, totalHelpers + 1, totalHelpers) == totalHelpers)
     {
         GCToEEInterface::CreateThread(HelperThreadFn, this, false, "Satori GC Helper Thread");
@@ -720,7 +717,7 @@ void SatoriRecycler::BlockingCollect()
     m_gen1AddedSinceLastCollection = 0;
     m_gen2AddedSinceLastCollection = 0;
 
-    if (ENABLE_CONCURRENT && m_deferredSweepCount > 0)
+    if (SatoriUtil::IsConcurrent() && m_deferredSweepCount > 0)
     {
         m_activeHelperFn = &SatoriRecycler::DrainDeferredSweepQueueHelp;
         MaybeAskForHelp();
@@ -823,11 +820,12 @@ void SatoriRecycler::MarkStrongReferences()
 
 void SatoriRecycler::MarkStrongReferencesWorker()
 {
-#if !ENABLE_CONCURRENT
     // in concurrent case the current stack is unlikely to have anything unmarked
     // so no advantage to mark it early
-    MarkOwnStackAndDrainQueues();
-#endif
+    if (!SatoriUtil::IsConcurrent())
+    {
+        MarkOwnStackAndDrainQueues();
+    }
 
     MarkHandles();
     MarkAllStacksFinalizationAndDemotedRoots();
@@ -2280,7 +2278,7 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
             _ASSERTE(!curRegion->HasPinnedObjects());
             curRegion->ClearMarks();
 
-            if (ENABLE_CONCURRENT)
+            if (SatoriUtil::IsConcurrent())
             {
                 curRegion->HasMarksSet() = false;
                 curRegion->SetOccupancy(0, 0);
@@ -2710,7 +2708,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                 {
                     // the region is empty and will be returned,
                     // but there is still some cleaning work to defer.
-                    if (ENABLE_CONCURRENT)
+                    if (SatoriUtil::IsConcurrent())
                     {
                         m_deferredSweepRegions->Enqueue(curRegion);
                     }
@@ -2758,7 +2756,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         }
 
         // make sure the region is swept and returned now, or later
-        if (!ENABLE_CONCURRENT)
+        if (!SatoriUtil::IsConcurrent())
         {
             SweepAndReturnRegion(curRegion);
             continue;
@@ -2817,6 +2815,11 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
                                             SatoriRegion::ReuseLevel::Gen0 :
                                             SatoriRegion::ReuseLevel::Gen1;
 #endif
+
+            if (!SatoriUtil::IsThreadLocalGCEnabled())
+            {
+                curRegion->ReusableFor() = SatoriRegion::ReuseLevel::Gen1;
+            }
         }
     }
 
