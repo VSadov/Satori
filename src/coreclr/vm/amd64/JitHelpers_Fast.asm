@@ -453,6 +453,14 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
 
     ; this is expected to be rare.
     RecordEscape:
+
+        ; 4) check if the source is escaped
+        mov     rax, rdx
+        and     rax, 01FFFFFh
+        shr     rax, 3
+        bt      qword ptr [r8], rax
+        jb      AssignAndMarkCards            ; source is already escaped.
+
         ; save rcx, rdx, r8 and have enough stack for the callee
         push rcx
         push rdx
