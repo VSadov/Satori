@@ -670,19 +670,29 @@ DirtyPage
 
     ; this is expected to be rare.
 RecordEscape
+
+    ; 4) check if the source is escaped
+        and         x12, x15, #0xFFFFFFFFFFE00000  ; source region
+        add         x15, x15, #8                   ; escape bit is MT + 1
+        ldr         x17, [x12, x17, lsl #3]        ; mark word = [region + index * 8]
+        lsr         x12, x15, #3                   ; bit = (dst >> 3) [& 63]
+        sub         x15, x15, #8                   ; undo MT + 1
+        lsr         x17, x17, x12
+        tbnz        x17, #0, AssignAndMarkCards    ; source is already escaped.
+
     ; because of the barrier call convention
     ; we need to preserve caller-saved x0 through x18 and x29/x30
 
-        stp     x0, x1,  [sp, -16 * 1]
-        stp     x2, x3,  [sp, -16 * 2]
-        stp     x4, x5,  [sp, -16 * 3]
-        stp     x6, x7,  [sp, -16 * 4]
-        stp     x8, x9,  [sp, -16 * 5]
-        stp     x10,x11, [sp, -16 * 6]
-        stp     x12,x13, [sp, -16 * 7]
-        stp     x14,x15, [sp, -16 * 8]
-        stp     x16,x17, [sp, -16 * 9]
         stp     x29,x30, [sp, -16 * 10]!
+        stp     x0, x1,  [sp, 16 * 1]
+        stp     x2, x3,  [sp, 16 * 2]
+        stp     x4, x5,  [sp, 16 * 3]
+        stp     x6, x7,  [sp, 16 * 4]
+        stp     x8, x9,  [sp, 16 * 5]
+        stp     x10,x11, [sp, 16 * 6]
+        stp     x12,x13, [sp, 16 * 7]
+        stp     x14,x15, [sp, 16 * 8]
+        stp     x16,x17, [sp, 16 * 9]
 
     ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
     ; mov  x0, x14  EscapeFn does not use dst, it is just to avoid arg shuffle on x64
@@ -691,16 +701,16 @@ RecordEscape
         ldr  x12, [x2, #8]                 ; EscapeFn address
         blr  x12
 
+        ldp     x0, x1,  [sp, 16 * 1]
+        ldp     x2, x3,  [sp, 16 * 2]
+        ldp     x4, x5,  [sp, 16 * 3]
+        ldp     x6, x7,  [sp, 16 * 4]
+        ldp     x8, x9,  [sp, 16 * 5]
+        ldp     x10,x11, [sp, 16 * 6]
+        ldp     x12,x13, [sp, 16 * 7]
+        ldp     x14,x15, [sp, 16 * 8]
+        ldp     x16,x17, [sp, 16 * 9]
         ldp     x29,x30, [sp], 16 * 10
-        ldp     x16,x17, [sp, - 16 * 9]
-        ldp     x14,x15, [sp, - 16 * 8]
-        ldp     x12,x13, [sp, - 16 * 7]
-        ldp     x10,x11, [sp, - 16 * 6]
-        ldp     x8, x9,  [sp, - 16 * 5]
-        ldp     x6, x7,  [sp, - 16 * 4]
-        ldp     x4, x5,  [sp, - 16 * 3]
-        ldp     x2, x3,  [sp, - 16 * 2]
-        ldp     x0, x1,  [sp, - 16 * 1]
 
         b       AssignAndMarkCards
     WRITE_BARRIER_END JIT_WriteBarrier
