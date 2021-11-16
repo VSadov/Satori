@@ -358,6 +358,13 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         ret
 
     // this is expected to be rare.
+    // 4) check if the source is escaped
+        mov     rax, rsi
+        and     rax, 0x1FFFFF
+        shr     rax, 3
+        bt      qword ptr [rdx], rax
+        jb      AssignAndMarkCards            // source is already escaped.
+
     RecordEscape:
         // save rdi, rsi, rdx and r10 (possibly preadjusted rsi)
         push rdi
