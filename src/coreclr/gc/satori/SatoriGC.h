@@ -20,7 +20,6 @@ class SatoriGC : public IGCHeapInternal
 public:
     SatoriGC()
     {
-        m_perfCounterFrequency = 0;
         m_heap = nullptr;
         m_gcInProgress = false;
         m_shuttingDown = false;
@@ -28,7 +27,6 @@ public:
     }
 
 private:
-    int64_t m_perfCounterFrequency;
     SatoriHeap* m_heap;
 
     bool    m_gcInProgress;

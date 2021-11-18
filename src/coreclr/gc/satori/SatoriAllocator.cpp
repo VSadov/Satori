@@ -22,8 +22,6 @@
 #include "SatoriMarkChunk.h"
 #include "SatoriMarkChunkQueue.h"
 
-#define ENABLE_ESCAPE_TRACKING
-
 void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
     m_heap = heap;
@@ -246,7 +244,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
-        m_heap->Recycler()->MaybeTriggerGC();
+        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
         region = m_heap->Recycler()->TryGetReusable();
         if (region == nullptr)
         {
@@ -261,23 +259,26 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
         }
 
         region->Attach(&context->RegularRegion());
-#ifdef ENABLE_ESCAPE_TRACKING
-        switch (region->ReusableFor())
+        if (SatoriUtil::IsThreadLocalGCEnabled())
         {
-        case SatoriRegion::ReuseLevel::Gen0:
-            region->EscsapeAll();
-            goto fallthrough;
-        case SatoriRegion::ReuseLevel::None:
+            switch (region->ReusableFor())
+            {
+            case SatoriRegion::ReuseLevel::Gen0:
+                region->EscsapeAll();
+                goto fallthrough;
+            case SatoriRegion::ReuseLevel::None:
             fallthrough:
-            region->StartEscapeTracking(SatoriUtil::GetCurrentThreadTag());
-            break;
-        case SatoriRegion::ReuseLevel::Gen1:
-            region->SetGenerationRelease(1);
-            break;
+                region->StartEscapeTracking(SatoriUtil::GetCurrentThreadTag());
+                break;
+            case SatoriRegion::ReuseLevel::Gen1:
+                region->SetGenerationRelease(1);
+                break;
+            }
         }
-#else
-        region->SetGenerationRelease(1);
-#endif
+        else
+        {
+            region->SetGenerationRelease(1);
+        }
 
         region->ReusableFor() = SatoriRegion::ReuseLevel::None;
         context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
@@ -339,7 +340,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
         }
 
         // get a new regular region.
-        m_heap->Recycler()->MaybeTriggerGC();
+        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_loh);
         _ASSERTE(SatoriRegion::RegionSizeForAlloc(size) == Satori::REGION_SIZE_GRANULARITY);
         region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
         if (!region)
@@ -359,7 +360,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     size_t regionSize = SatoriRegion::RegionSizeForAlloc(size);
     _ASSERTE(regionSize > Satori::REGION_SIZE_GRANULARITY);
 
-    m_heap->Recycler()->MaybeTriggerGC();
+    m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_loh);
     SatoriRegion* hugeRegion = GetRegion(regionSize);
     if (!hugeRegion)
     {

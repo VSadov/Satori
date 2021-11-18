@@ -28,7 +28,9 @@ public:
     void AddEphemeralRegion(SatoriRegion* region);
     void AddTenuredRegion(SatoriRegion* region);
 
-    void TryStartGC(int generation);
+    size_t GetNowMillis();
+
+    void TryStartGC(int generation, gc_reason reason);
     bool HelpOnce();
     void ConcurrentHelp();
     void ShutDown();
@@ -37,10 +39,11 @@ public:
     void StartMarkingAllStacksAndFinalizationQueue();
     void MaybeAskForHelp();
     void AskForHelp();
-    void MaybeTriggerGC();
+    void MaybeTriggerGC(gc_reason reason);
 
     void Collect(int generation, bool force, bool blocking);
     bool IsBlockingPhase();
+    size_t IncrementGen0Count();
 
     int GetRootScanTicket();
     int64_t GetCollectionCount(int gen);
@@ -51,6 +54,12 @@ public:
     size_t RegionCount();
 
     SatoriRegion* TryGetReusable();
+    void ReportThreadAllocBytes(int64_t bytes, bool isLive);
+    int64_t GetTotalAllocatedBytes();
+
+    void RecordOccupancy(int generation, size_t size);
+    size_t GetTotalOccupancy();
+    size_t GetGcStartMillis(int generation);
 
 private:
     SatoriHeap* m_heap;
@@ -112,8 +121,8 @@ private:
     bool m_allowPromotingRelocations;
     bool m_isBarrierConcurrent;
 
-    int64_t m_gen1Count;
-    int64_t m_gen2Count;
+    int64_t m_gcCount[3];
+    int64_t m_gcStartMillis[3];
 
     size_t m_gen1MinorBudget;
     size_t m_gen1Budget;
@@ -125,6 +134,15 @@ private:
     ptrdiff_t m_gen1AddedSinceLastCollection;
     size_t m_gen2AddedSinceLastCollection;
     size_t m_gen1CountAtLastGen2;
+
+    size_t m_occupancy[3];
+    size_t m_occupancyAcc[3];
+
+    int64_t m_currentAllocBytesLiveThreads;
+    int64_t m_currentAllocBytesDeadThreads;
+    int64_t m_totalAllocBytes;
+
+    int64_t m_perfCounterFrequencyMHz;
 
 private:
     static void DeactivateFn(gc_alloc_context* context, void* param);

@@ -61,14 +61,17 @@ bool SatoriGC::IsConcurrentGCInProgress()
 
 void SatoriGC::TemporaryEnableConcurrentGC()
 {
+    // N/A
 }
 
 void SatoriGC::TemporaryDisableConcurrentGC()
 {
+    // N/A
 }
 
 bool SatoriGC::IsConcurrentGCEnabled()
 {
+    // N/A
     return true;
 }
 
@@ -105,43 +108,51 @@ Object* SatoriGC::GetNextFinalizable()
 
 int SatoriGC::GetGcLatencyMode()
 {
+    // NYI
     return 0;
 }
 
 int SatoriGC::SetGcLatencyMode(int newLatencyMode)
 {
+    // NYI
     return 0;
 }
 
 int SatoriGC::GetLOHCompactionMode()
 {
+    // N/A
     return 0;
 }
 
 void SatoriGC::SetLOHCompactionMode(int newLOHCompactionMode)
 {
+    // N/A
 }
 
 bool SatoriGC::RegisterForFullGCNotification(uint32_t gen2Percentage, uint32_t lohPercentage)
 {
+    // NYI
     return false;
 }
 
 bool SatoriGC::CancelFullGCNotification()
 {
+    // NYI
     return false;
 }
 
 int SatoriGC::WaitForFullGCApproach(int millisecondsTimeout)
 {
-    __UNREACHABLE();
-    return 0;
+    // NYI
+    // 1 - failed
+    return 1;
 }
 
 int SatoriGC::WaitForFullGCComplete(int millisecondsTimeout)
 {
-    __UNREACHABLE();
-    return 0;
+    // NYI
+    // 1 - failed
+    return 1;
 }
 
 unsigned SatoriGC::WhichGeneration(Object* obj)
@@ -152,40 +163,43 @@ unsigned SatoriGC::WhichGeneration(Object* obj)
 
 int SatoriGC::CollectionCount(int generation, int get_bgc_fgc_coutn)
 {
-    //get_bgc_fgc_coutn does not apply for Satori
+    //get_bgc_fgc_coutn N/A
     return (int)m_heap->Recycler()->GetCollectionCount(generation);
 }
 
 int SatoriGC::StartNoGCRegion(uint64_t totalSize, bool lohSizeKnown, uint64_t lohSize, bool disallowFullBlockingGC)
 {
-    __UNREACHABLE();
-    return 0;
+    // NYI
+    // 1 - NotEnoughMemory
+    return 1;
 }
 
 int SatoriGC::EndNoGCRegion()
 {
-    __UNREACHABLE();
+    // NYI
     return 0;
 }
 
 size_t SatoriGC::GetTotalBytesInUse()
 {
-    //TODO: VS, bytes used by objects? 
-    return Satori::REGION_SIZE_GRANULARITY * 10;
+    // Returns the total number of bytes currently in use by live objects in
+    // the GC heap.  This does not return the total size of the GC heap, but
+    // only the live objects in the GC heap.
+    return m_heap->Recycler()->GetTotalOccupancy();
 }
 
 size_t SatoriGC::GetCurrentObjSize()
 {
-    // It seems some rough estimate of combined live object size.
+    // Used only by mem pressure heuristic
+    // It seems some rough estimate of "managed heap size"
     return GetTotalBytesInUse();
 }
 
 uint64_t SatoriGC::GetTotalAllocatedBytes()
 {
-    // monotonically increasing number ever produced by allocator. (only objects?)
-
-    //TODO: VS would need some kind of counter incremented when allocating from regions 
-    return 0;
+    // monotonically increasing number produced by allocator when allocating objects.
+    // threads know the number and we update the total when doing GCs
+    return m_heap->Recycler()->GetTotalAllocatedBytes();
 }
 
 HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
@@ -232,19 +246,19 @@ bool SatoriGC::RegisterForFinalization(int gen, Object* obj)
 
 int SatoriGC::GetLastGCPercentTimeInGC()
 {
-    __UNREACHABLE();
+    // NYI
     return 0;
 }
 
 size_t SatoriGC::GetLastGCGenerationSize(int gen)
 {
+    // NYI
     __UNREACHABLE();
     return 0;
 }
 
 HRESULT SatoriGC::Initialize()
 {
-    m_perfCounterFrequency = GCToOSInterface::QueryPerformanceFrequency();
     SatoriObject::Initialize();
     SatoriHandlePartitioner::Initialize();
     m_heap = SatoriHeap::Create();
@@ -281,7 +295,7 @@ bool SatoriGC::IsPromoted(Object* object)
 
 bool SatoriGC::IsHeapPointer(void* object, bool small_heap_only)
 {
-    //TODO: Satori small_heap_only ?
+    //small_heap_only is unused - there is no special heap for large objects.
     return m_heap->IsHeapAddress((size_t)object);
 }
 
@@ -347,6 +361,7 @@ void SatoriGC::FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap
 {
     // this is only called when thread is terminating and about to clear its context.
     ((SatoriAllocationContext*)acontext)->Deactivate(m_heap->Recycler(), /*detach*/ true);
+    m_heap->Recycler()->ReportThreadAllocBytes(acontext->alloc_bytes + acontext->alloc_bytes_uoh, /*isLive*/ false);
 }
 
 void SatoriGC::SetGCInProgress(bool fInProgress)
@@ -356,16 +371,19 @@ void SatoriGC::SetGCInProgress(bool fInProgress)
 
 bool SatoriGC::RuntimeStructuresValid()
 {
+    // N/A
     return true;
 }
 
 void SatoriGC::SetSuspensionPending(bool fSuspensionPending)
 {
+    // N/A
     // noop, it makes no difference.
 }
 
 void SatoriGC::SetYieldProcessorScalingFactor(float yieldProcessorScalingFactor)
 {
+    // N/A
 }
 
 void SatoriGC::Shutdown()
@@ -376,18 +394,18 @@ void SatoriGC::Shutdown()
 
 size_t SatoriGC::GetLastGCStartTime(int generation)
 {
-    return 0;
+    return m_heap->Recycler()->GetGcStartMillis(generation);
 }
 
 size_t SatoriGC::GetLastGCDuration(int generation)
 {
-    return 0;
+    // NYI  (this is used for mem pressure aggressiveness)
+    return 10;
 }
 
 size_t SatoriGC::GetNow()
 {
-    int64_t t = GCToOSInterface::QueryPerformanceCounter();
-    return (size_t)(t / (m_perfCounterFrequency / 1000));
+    return m_heap->Recycler()->GetNowMillis();
 }
 
 Object* SatoriGC::Alloc(gc_alloc_context* acontext, size_t size, uint32_t flags)
@@ -443,15 +461,18 @@ void SatoriGC::ResetWaitForGCEvent()
 
 bool SatoriGC::IsLargeObject(Object* pObj)
 {
+    // N/A
     return false;
 }
 
 void SatoriGC::ValidateObjectMember(Object* obj)
 {
+    // NYI
 }
 
 Object* SatoriGC::NextObj(Object* object)
 {
+    // N/A
     return nullptr;
 }
 
@@ -474,72 +495,74 @@ Object* SatoriGC::GetContainingObject(void* pInteriorPtr, bool fCollectedGenOnly
 
 void SatoriGC::DiagWalkObject(Object* obj, walk_fn fn, void* context)
 {
-    // __UNREACHABLE();
+    // NYI
 }
 
 void SatoriGC::DiagWalkObject2(Object* obj, walk_fn2 fn, void* context)
 {
-    // __UNREACHABLE();
+    // NYI
 }
 
 void SatoriGC::DiagWalkHeap(walk_fn fn, void* context, int gen_number, bool walk_large_object_heap_p)
 {
-    // __UNREACHABLE();
+    // NYI
 }
 
 void SatoriGC::DiagWalkSurvivorsWithType(void* gc_context, record_surv_fn fn, void* diag_context, walk_surv_type type, int gen_number)
 {
-    // __UNREACHABLE();
+    // NYI
 }
 
 void SatoriGC::DiagWalkFinalizeQueue(void* gc_context, fq_walk_fn fn)
 {
-    // __UNREACHABLE();
+    // NYI
 }
 
 void SatoriGC::DiagScanFinalizeQueue(fq_scan_fn fn, ScanContext* context)
 {
-    // __UNREACHABLE();
+    // NYI
 }
 
 void SatoriGC::DiagScanHandles(handle_scan_fn fn, int gen_number, ScanContext* context)
 {
-    // __UNREACHABLE();
+    // NYI
 }
 
 void SatoriGC::DiagScanDependentHandles(handle_scan_fn fn, int gen_number, ScanContext* context)
 {
-    __UNREACHABLE();
+    // NYI
 }
 
 void SatoriGC::DiagDescrGenerations(gen_walk_fn fn, void* context)
 {
-    // __UNREACHABLE();
+    // NYI
 }
 
 void SatoriGC::DiagTraceGCSegments()
 {
-    // __UNREACHABLE();
+    // NYI
 }
 
 bool SatoriGC::StressHeap(gc_alloc_context* acontext)
 {
+    // N/A
     return false;
 }
 
 segment_handle SatoriGC::RegisterFrozenSegment(segment_info* pseginfo)
 {
-    __UNREACHABLE();
-    return segment_handle();
+    // N/A
+    return NULL;
 }
 
 void SatoriGC::UnregisterFrozenSegment(segment_handle seg)
 {
-    __UNREACHABLE();
+    // N/A
 }
 
 bool SatoriGC::IsInFrozenSegment(Object* object)
 {
+    // N/A
     return false;
 }
 
@@ -607,4 +630,5 @@ uint32_t SatoriGC::GetMemoryLoad()
 
 void SatoriGC::DiagGetGCSettings(EtwGCSettingsInfo* etw_settings)
 {
+    // NYI
 }
