@@ -81,14 +81,15 @@ public:
         if (m_head == nullptr)
         {
             _ASSERTE(m_tail == nullptr);
-            m_head = m_tail = item;
+            m_tail = item;
         }
         else
         {
             item->m_next = m_head;
             m_head->m_prev = item;
-            m_head = item;
         }
+
+        m_head = item;
     }
 
     T* TryPop()
@@ -138,14 +139,15 @@ public:
         if (m_tail == nullptr)
         {
             _ASSERTE(m_head == nullptr);
-            m_head = m_tail = item;
+            m_head = item;
         }
         else
         {
             item->m_prev = m_tail;
             m_tail->m_next = item;
-            m_tail = item;
         }
+
+        m_tail = item;
     }
 
     bool TryRemove(T* item)
@@ -195,7 +197,7 @@ public:
 
     bool IsEmpty()
     {
-        return m_count == 0;
+        return m_head == nullptr;
     }
 
     QueueKind Kind()
