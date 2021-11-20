@@ -1284,16 +1284,18 @@ void SatoriRegion::ThreadLocalCompact()
                 SatoriObject* freeObj = SatoriObject::FormatAsFree(d1->Start(), freeSpace);
                 AddFreeSpace(freeObj);
                 foundFree += freeSpace;
-            }
-            else
-            {
-                // clear Mark/Pinned, keep escaped, reloc should be 0, this object will stay around
-                _ASSERTE(d1->GetLocalReloc() == 0);
-                ClearPinnedAndMarked(d1);
+
+                d1 = d2;
+                if (d1->Start() == relocTarget)
+                {
+                    break;
+                }
             }
 
-            d1 = d1->Next();
-            d2 = d1;
+            // clear Mark/Pinned, keep escaped, reloc should be 0, this object will stay around
+            _ASSERTE(d1->GetLocalReloc() == 0);
+            ClearPinnedAndMarked(d1);
+            d2 = d1 = d1->Next();
         }
 
         // find the end of the run of relocatable objects with the same reloc distance (we can copy all at once)
