@@ -149,10 +149,11 @@ public:
     INT_CONFIG   (GCDGen0GrowthMaxFactor,    "GCDGen0GrowthMaxFactor",    "System.GC.DGen0GrowthMaxFactor",    0,                  "Specifies the maximum growth factor in permil")                                          \
     BOOL_CONFIG  (GCCacheSizeFromSysConf,    "GCCacheSizeFromSysConf",    NULL,                                false,              "Specifies using sysconf to retrieve the last level cache size for Unix.")                \
 /* FEATURE_SATORI_GC */                                                                                                                                                                                                      \
-    BOOL_CONFIG(RelocatingGC, "gcRelocating", NULL, true, "Specifies whether GC can relocate objects")                                                                                                                       \
-    INT_CONFIG(ParallelGC, "gcParallel", NULL, -1, "Specifies max number of addtional GC threads. 0 - no helpers, -1 - default")                                                                                             \
-    BOOL_CONFIG(ThreadLocalGC, "gcThreadLocal", NULL, true, "Specifies whether thread-local GC can be performed")                                                                                                            \
-    BOOL_CONFIG(TrimmigGC, "gcTrim", NULL, true, "Specifies whether background trimming is enabled")
+    BOOL_CONFIG  (RelocatingInGen1,          "gcRelocatingGen1",          NULL,                                true,               "Specifies whether GC can relocate objects in Gen1 GC")                                   \
+    BOOL_CONFIG  (RelocatingInGen2,          "gcRelocatingGen2",          NULL,                                true,               "Specifies whether GC can relocate objects in Gen2 GC")                                   \
+    INT_CONFIG   (ParallelGC,                "gcParallel",                NULL,                                -1,                 "Specifies max number of addtional GC threads. 0 - no helpers, -1 - default")             \
+    BOOL_CONFIG  (ThreadLocalGC,             "gcThreadLocal",             NULL,                                true,               "Specifies whether thread-local GC can be performed")                                     \
+    BOOL_CONFIG  (TrimmigGC,                 "gcTrim",                    NULL,                                true,               "Specifies whether background trimming is enabled")                                       \
 
 // This class is responsible for retreiving configuration information
 // for how the GC should operate.

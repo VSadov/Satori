@@ -65,6 +65,15 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     size_t regionNumber = pageSize >> Satori::REGION_BITS;
     size_t cardGroupSize = regionNumber * 2;
 
+    // initializing to EPHEMERAL is optional. 0 is ok too.
+    // for huge pages it is not as useful and may get expensive.
+    // also if the huge obj contains references, its region will go to gen2 anyways
+    if (pageSize == Satori::PAGE_SIZE_GRANULARITY)
+    {
+        memset(&result->m_cardTable[cardTableStart], Satori::CardState::EPHEMERAL, cardTableSize - cardTableStart);
+        memset(&result->m_cardGroups, Satori::CardState::EPHEMERAL, cardGroupSize);
+    }
+
     result->m_cardTableStart = cardTableStart;
     result->m_heap = heap;
 
@@ -239,6 +248,13 @@ void SatoriPage::SetCardsForRange(size_t start, size_t end)
     _ASSERTE(firstCard >= m_cardTableStart);
     _ASSERTE(firstCard < m_cardTableSize);
 
+    if (m_cardTable[firstCard] == Satori::CardState::EPHEMERAL)
+    {
+        // this is optimization
+        // marking cards in an ephemeral region is ok, but pointless
+        return;
+    }
+
     size_t lastCard = lastByteOffset / Satori::BYTES_PER_CARD_BYTE;
     _ASSERTE(lastCard >= m_cardTableStart);
     _ASSERTE(lastCard < m_cardTableSize);
@@ -319,7 +335,7 @@ void SatoriPage::DirtyCardsForRangeUnordered(size_t start, size_t end)
     this->m_cardState = Satori::CardState::DIRTY;
 }
 
-void SatoriPage::WipeCardsForRange(size_t start, size_t end)
+void SatoriPage::WipeCardsForRange(size_t start, size_t end, bool isTenured)
 {
     size_t firstByteOffset = start - Start();
     size_t lastByteOffset = end - Start() - 1;
@@ -331,9 +347,10 @@ void SatoriPage::WipeCardsForRange(size_t start, size_t end)
     size_t lastCard = lastByteOffset / Satori::BYTES_PER_CARD_BYTE;
     _ASSERTE(lastCard >= m_cardTableStart);
     _ASSERTE(lastCard < m_cardTableSize);
-    memset((void*)(m_cardTable + firstCard), 0, lastCard - firstCard + 1);
+    int8_t resetValue = isTenured ? Satori::CardState::BLANK : Satori::CardState::EPHEMERAL;
+    memset((void*)(m_cardTable + firstCard), resetValue, lastCard - firstCard + 1);
 
     size_t firstGroup = firstByteOffset / Satori::REGION_SIZE_GRANULARITY;
     size_t lastGroup = lastByteOffset / Satori::REGION_SIZE_GRANULARITY;
-    memset((void*)&m_cardGroups[firstGroup * 2], 0, (lastGroup - firstGroup + 1) * 2);
+    memset((void*)&m_cardGroups[firstGroup * 2], resetValue, (lastGroup - firstGroup + 1) * 2);
 }
