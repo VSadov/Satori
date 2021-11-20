@@ -63,15 +63,26 @@ void SatoriTrimmer::Loop()
     while (true)
     {
         int64_t curGen2 = m_heap->Recycler()->GetCollectionCount(2);
-        while (curGen2 == m_heap->Recycler()->GetCollectionCount(2))
+
+        // limit the trim rate to once per 1 sec + 1 gen2 gc.
+        do
         {
             Interlocked::CompareExchange(&m_state, TRIMMER_STATE_STOPPED, TRIMMER_STATE_RUNNING);
+            // we are not running here, so we can sleep a bit before continuing.
+            GCToOSInterface::Sleep(1000);
             StopAndWait();
-        }
+        } while (curGen2 == m_heap->Recycler()->GetCollectionCount(2));
 
         m_heap->ForEachPage(
             [&](SatoriPage* page)
             {
+                // limit the rate of scanning to 1 page/msec.
+                GCToOSInterface::Sleep(1);
+                if (m_state != TRIMMER_STATE_RUNNING)
+                {
+                    StopAndWait();
+                }
+
                 page->ForEachRegion(
                     [&](SatoriRegion* region)
                     {
@@ -86,6 +97,8 @@ void SatoriTrimmer::Loop()
                                     if (region->TryDecommit())
                                     {
                                         m_heap->Allocator()->AddRegion(region);
+                                        // limit the decommit rate to 1 region/msec.
+                                        GCToOSInterface::Sleep(1);
                                     }
                                     else
                                     {
@@ -147,23 +160,19 @@ void SatoriTrimmer::StopAndWait()
 void SatoriTrimmer::SetOkToRun()
 {
     int state = m_state;
-    if (state == TRIMMER_STATE_BLOCKED)
+    switch (state)
     {
+    case TRIMMER_STATE_BLOCKED:
         // trimmer can't get out of BlOCKED by itself, ordinary assignment is ok
         m_state = TRIMMER_STATE_OK_TO_RUN;
         m_gate->Set();
-        return;
-    }
-
-    if (state == TRIMMER_STATE_STOPPED)
-    {
+        break;
+    case TRIMMER_STATE_STOPPED:
         Interlocked::CompareExchange(&m_state, TRIMMER_STATE_OK_TO_RUN, state);
-        return;
-    }
-
-    if (state == TRIMMER_STATE_STOP_SUGGESTED)
-    {
+        break;
+    case TRIMMER_STATE_STOP_SUGGESTED:
         Interlocked::CompareExchange(&m_state, TRIMMER_STATE_RUNNING, state);
+        break;
     }
 }
 
@@ -172,23 +181,25 @@ void SatoriTrimmer::SetStopSuggested()
     while (true)
     {
         int state = m_state;
-        if (state == TRIMMER_STATE_OK_TO_RUN &&
-            Interlocked::CompareExchange(&m_state, TRIMMER_STATE_STOPPED, state) == state)
+        switch (state)
         {
+        case TRIMMER_STATE_OK_TO_RUN:
+            if (Interlocked::CompareExchange(&m_state, TRIMMER_STATE_STOPPED, state) == state)
+            {
+                return;
+            }
             break;
-        }
-        else if (state == TRIMMER_STATE_RUNNING &&
-            Interlocked::CompareExchange(&m_state, TRIMMER_STATE_STOP_SUGGESTED, state) == state)
-        {
+        case TRIMMER_STATE_RUNNING:
+            if (Interlocked::CompareExchange(&m_state, TRIMMER_STATE_STOP_SUGGESTED, state) == state)
+            {
+                return;
+            }
             break;
-        }
-        else
-        {
-            break;
+        default:
+            _ASSERTE(m_state <= TRIMMER_STATE_STOP_SUGGESTED);
+            return;
         }
     }
-
-    _ASSERTE(m_state <= TRIMMER_STATE_STOP_SUGGESTED);
 }
 
 void SatoriTrimmer::WaitForStop()

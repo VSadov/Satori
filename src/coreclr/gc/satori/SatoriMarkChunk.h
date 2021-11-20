@@ -88,6 +88,11 @@ public:
         return m_data[--m_top];
     }
 
+    SatoriObject* Peek()
+    {
+        return m_data[m_top - 1];
+    }
+
     bool TryPush(SatoriObject* obj)
     {
         if (HasSpace())
@@ -139,6 +144,28 @@ public:
         return to;
     }
 
+    bool IsRange()
+    {
+        return m_top == (size_t)-1;
+    }
+
+    void SetRange(SatoriObject* obj, size_t start, size_t end)
+    {
+        m_top = (size_t)- 1;
+        m_data[0] = obj;
+        m_start = start;
+        m_end = end;
+    }
+
+    void GetRange(SatoriObject* &obj, size_t &start, size_t &end)
+    {
+        _ASSERTE(m_top == (size_t)-1);
+
+        obj = m_data[0];
+        start = m_start;
+        end = m_end;
+    }
+
 private:
     size_t m_top;
 
@@ -147,6 +174,8 @@ private:
     SatoriQueue<SatoriMarkChunk>* m_containingQueue;
 
     SatoriObject* m_data[1];
+    size_t m_start;
+    size_t m_end;
 };
 
 #endif
