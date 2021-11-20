@@ -216,6 +216,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                     SatoriObject* result = (SatoriObject*)(size_t)context->alloc_ptr;
                     context->alloc_ptr += size;
                     result->CleanSyncBlock();
+                    region->SetIndicesForObject(result, result->Start() + size);
                     return result;
                 }
                 else
@@ -263,13 +264,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
-        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
-        region = m_heap->Recycler()->TryGetReusable();
-        if (region == nullptr)
-        {
-            region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
-            _ASSERTE(region == nullptr || region->NothingMarked());
-        }
+        TryGetRegularRegion(region);
 
         if (region == nullptr)
         {
@@ -304,6 +299,55 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
     }
 }
 
+void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region)
+{
+    m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
+
+    // opportunistically try get the next region, if available
+    SatoriRegion* next = nullptr;
+    SatoriQueue<SatoriRegion>* nextContainingQueue = nullptr;
+
+    if (region)
+    {
+        next = region->NextInPage();
+        if (next)
+        {
+            nextContainingQueue = next->ContainingQueue();
+            if (nextContainingQueue &&
+                nextContainingQueue->Kind() == QueueKind::RecyclerReusable &&
+                nextContainingQueue->TryRemove(next))
+            {
+                region = next;
+                return;
+            }
+        }
+    }
+
+    region = m_heap->Recycler()->TryGetReusable();
+
+    if (region == nullptr)
+    {
+        if (nextContainingQueue &&
+            nextContainingQueue->Kind() == QueueKind::Allocator &&
+            next->Size() == Satori::REGION_SIZE_GRANULARITY &&
+            nextContainingQueue->TryRemove(next))
+        {
+            if (next->Size() != Satori::REGION_SIZE_GRANULARITY)
+            {
+                ReturnRegion(next);
+            }
+            else
+            {
+                region = next;
+                return;
+            }
+        }
+
+        region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
+        _ASSERTE(region == nullptr || region->NothingMarked());
+    }
+}
+
 SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
     m_heap->Recycler()->HelpOnce();
@@ -322,6 +366,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
                 {
                     result->CleanSyncBlock();
                     context->alloc_bytes_uoh += size;
+                    region->SetIndicesForObject(result, result->Start() + size);
                 }
                 else
                 {
@@ -409,6 +454,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
 
 SatoriMarkChunk* SatoriAllocator::TryGetMarkChunk()
 {
+    // TODO: VS try returning nullptr sometimes in debug
     SatoriMarkChunk* chunk = m_markChunks->TryPop();
     while (!chunk && AddMoreMarkChunks())
     {
