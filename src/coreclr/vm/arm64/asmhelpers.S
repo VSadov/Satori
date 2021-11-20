@@ -475,8 +475,8 @@ WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
     bhi  LOCAL_LABEL(NotInHeap)
     
     ldr     x12, LOCAL_LABEL(wbs_card_table)
-    add     x12, x12, x14, lsr #30
-    ldrb    w12, [x12]
+    lsr     x17, x14, #30
+    ldr     x12, [x12, x17, lsl #3]
     cbnz    x12, C_FUNC(JIT_WriteBarrier)
 
 LOCAL_LABEL(NotInHeap):
@@ -532,10 +532,17 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 
     // need couple temps. Save before using.
         stp     x2,  x3,  [sp, -16]!
+
+        eor     x12, x14, x15
+        lsr     x12, x12, #21
+        cbz     x12, LOCAL_LABEL(CheckConcurrent) // same region, just check if barrier is not concurrent
+
     // if src is in gen2 and the barrier is not concurrent we do not need to mark cards
         and     x2,  x15, #0xFFFFFFFFFFE00000     // source region
         ldr     w12, [x2, 16]
         tbz     x12, #1, LOCAL_LABEL(MarkCards)
+
+    LOCAL_LABEL(CheckConcurrent):
         ldr     x12, LOCAL_LABEL(wbs_sw_ww_table) // !wbs_sw_ww_table -> !concurrent
         cbnz    x12, LOCAL_LABEL(MarkCards)
         
@@ -548,17 +555,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     // fetch card location for x14
         ldr     x12, LOCAL_LABEL(wbs_card_table)     // fetch the page map
         lsr     x17, x14, #30
-    LOCAL_LABEL(CheckPageMap):
-        ldrb    w2,  [x12, x17]
-        cmp     w2,  #1
-        beq     LOCAL_LABEL(PageFound)
-        sub     x2,  x2, #2
-        mov     x15, #1
-        lsl     x15, x15, x2
-        sub     x17, x17, x15
-        b       LOCAL_LABEL(CheckPageMap)
-    LOCAL_LABEL(PageFound):
-        lsl     x17, x17, #30   // page
+        ldr     x17, [x12, x17, lsl #3]              // page
         sub     x2,  x14, x17   // offset in page
         lsr     x15, x2,  #21   // group index
         lsl     x15, x15, #1    // group offset (index * 2)
@@ -606,7 +603,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     // this is expected to be rare.
     LOCAL_LABEL(RecordEscape):
 
-    ; 4) check if the source is escaped
+    // 4) check if the source is escaped
         and         x12, x15, #0xFFFFFFFFFFE00000  // source region
         add         x15, x15, #8                   // escape bit is MT + 1
         ubfx        x17, x15, #9,#12               // word index = (dst >> 9) & 0x1FFFFF
