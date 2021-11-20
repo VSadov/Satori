@@ -46,7 +46,7 @@ namespace Satori
     static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
 
     // regions are aligned at 2 Mb
-    // objects can be larger than that and straddle multiple region "tiles".
+    // objects can be larger than that and straddle multiple region granules.
     // all real objects start in the first tile though to allow for fixed size of the metadata.
     const static int REGION_BITS = 21;
     const static size_t REGION_SIZE_GRANULARITY = 1 << REGION_BITS;
@@ -64,7 +64,7 @@ namespace Satori
     static const size_t OBJECT_ALIGNMENT = sizeof(size_t);
 
     // minimal free size that can be made parseable.
-    // we use a trivial array object to fill holes, thus this is the size of an array object.
+    // we use a trivial array object to fill holes, thus this is the size of a shortest array object.
     static const size_t MIN_FREE_SIZE = 3 * sizeof(size_t);
 
     // TUNING: Needs tuning?
@@ -93,6 +93,7 @@ namespace Satori
 
     namespace CardState
     {
+        static const int8_t EPHEMERAL = -1;
         static const int8_t BLANK = 0;
         static const int8_t REMEMBERED = 1;
         static const int8_t PROCESSING = 2;
@@ -160,6 +161,19 @@ public:
 #endif
     }
 
+    static void Prefetch(void* addr)
+    {
+#if TARGET_WINDOWS
+#if defined(TARGET_ARM64)
+        __prefetch(addr);
+#else
+        _mm_prefetch((char *) addr, _MM_HINT_T0);
+#endif
+#else
+        __builtin_prefetch(addr);
+#endif
+    }
+
     static bool IsConservativeMode()
     {
 #ifdef FEATURE_CONSERVATIVE_GC
@@ -174,9 +188,14 @@ public:
         return (GCConfig::GetConcurrentGC());
     }
 
-    static bool IsRelocating()
+    static bool IsRelocatingInGen1()
     {
-        return (GCConfig::GetRelocatingGC());
+        return (GCConfig::GetRelocatingInGen1());
+    }
+
+    static bool IsRelocatingInGen2()
+    {
+        return (GCConfig::GetRelocatingInGen2());
     }
 
     static bool IsThreadLocalGCEnabled()
