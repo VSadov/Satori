@@ -107,9 +107,24 @@ SatoriRecycler* SatoriRegion::Recycler()
     return m_containingPage->Heap()->Recycler();
 }
 
-void SatoriRegion::WipeCards()
+void SatoriRegion::RearmCardsForTenured()
 {
-    m_containingPage->WipeCardsForRange(Start(), End());
+    _ASSERTE(Generation() == 2);
+    m_containingPage->WipeCardsForRange(Start(), End(), /* tenured */ true);
+
+    SatoriMarkChunk* gen2Objects = DemotedObjects();
+    if (gen2Objects)
+    {
+        DemotedObjects() = nullptr;
+        gen2Objects->Clear();
+        Allocator()->ReturnMarkChunk(gen2Objects);
+    }
+}
+
+void SatoriRegion::ResetCardsForEphemeral()
+{
+    _ASSERTE(Generation() == 2);
+    m_containingPage->WipeCardsForRange(Start(), End(), /* tenured */ false);
 }
 
 void SatoriRegion::MakeBlank()
@@ -120,11 +135,14 @@ void SatoriRegion::MakeBlank()
     _ASSERTE(!m_gen2Objects);
     _ASSERTE(NothingMarked());
 
-    WipeCards();
+    if (m_generation == 2)
+    {
+        this->ResetCardsForEphemeral();
+    }
 
+    m_generation = -1;
     m_ownerThreadTag = 0;
     m_escapeFunc = EscapeFn;
-    m_generation = -1;
     m_allocStart = (size_t)&m_firstObject;
     m_allocEnd = End();
     m_markStack = 0;
@@ -283,6 +301,7 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
             m_freeLists[bucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
             m_allocStart = freeObj->Start();
             m_allocEnd = freeObj->End();
+            ClearIndicesForAllocRange();
             _ASSERTE(AllocRemaining() >= minAllocSize);
             return m_allocStart;
         }
@@ -553,11 +572,6 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     return chunkStart;
 }
 
-inline size_t LocationToIndex(size_t location)
-{
-    return (location >> Satori::INDEX_GRANULARITY_BITS) & (Satori::INDEX_LENGTH - 1);
-}
-
 // Finds an object that contains given location.
 //
 // Assumptions that caller must arrange or handle:
@@ -614,17 +628,7 @@ SatoriObject* SatoriRegion::FindObject(size_t location)
     SatoriObject* next = o->Next();
     while (next->Start() <= location)
     {
-        // if object straddles index granules, record the object in corresponding indices
-        if ((o->Start() ^ next->Start()) >> Satori::INDEX_GRANULARITY_BITS)
-        {
-            size_t i = LocationToIndex(o->Start()) + 1;
-            size_t last = LocationToIndex(next->Start());
-            do
-            {
-                m_index[i++] = (int)(o->Start() - Start());
-            }
-            while (i <= last);
-        }
+        SetIndicesForObject(o, next->Start());
 
         o = next;
         next = next->Next();
@@ -1303,20 +1307,26 @@ void SatoriRegion::ThreadLocalCompact()
                 SatoriObject* freeObj = SatoriObject::FormatAsFree(d1->Start(), freeSpace);
                 AddFreeSpace(freeObj);
                 foundFree += freeSpace;
-            }
-            else
-            {
-                // clear Mark/Pinned, keep escaped, reloc should be 0, this object will stay around
-                _ASSERTE(d1->GetLocalReloc() == 0);
-                ClearPinnedAndMarked(d1);
+
+                d1 = d2;
+                if (d1->Start() == relocTarget)
+                {
+                    break;
+                }
             }
 
-            d1 = d1->Next();
-            d2 = d1;
+            // clear Mark/Pinned, keep escaped, reloc should be 0, this object will stay around
+            _ASSERTE(d1->GetLocalReloc() == 0);
+            ClearPinnedAndMarked(d1);
+            SatoriObject* next = d1->Next();
+            // opportunistically mark the index if d1 is indexable
+            SetIndicesForObject(d1, next->Start());
+            d2 = d1 = next;
         }
 
         // find the end of the run of relocatable objects with the same reloc distance (we can copy all at once)
-        for (s2 = s1; s2->Start() < End(); s2 = s2->Next())
+        s2 = s1;
+        while (s2->Start() < End())
         {
             if (reloc != s2->GetLocalReloc())
             {
@@ -1327,6 +1337,10 @@ void SatoriRegion::ThreadLocalCompact()
             // pre-relocation copy of object need to clear the mark, so that the object could be swept if not overwritten.
             // the relocated copy is not swept so clearing is also correct.
             s2->ClearMarkCompactStateForRelocation();
+            SatoriObject* next = s2->Next();
+            // opportunistically mark the index if s2 is indexable
+            SetIndicesForObject((SatoriObject*)(s2->Start() - reloc), next->Start() - reloc);
+            s2 = next;
         }
 
         // move d2 to the first object after the future end of the relocated run
@@ -1367,6 +1381,17 @@ NOINLINE void SatoriRegion::ClearPinned(SatoriObject* o)
     {
         ClearMarked(o + MarkOffset::Pinned);
     }
+}
+
+NOINLINE void SatoriRegion::SetIndicesForObjectCore(size_t start, size_t end)
+{
+    size_t i = LocationToIndex(start) + 1;
+    size_t lastIndex = LocationToIndex(end);
+    int objOffset = (int)(start - Start());
+    do
+    {
+        m_index[i++] = objOffset;
+    } while (i <= lastIndex);
 }
 
 enum class FinalizationPendState
@@ -1531,7 +1556,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
     else
     {
         markBitOffset = 0;
-        while (bitmapIndex < SatoriRegion::BITMAP_LENGTH)
+        do
         {
             bitmapIndex++;
             if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
@@ -1540,7 +1565,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
                 markBitOffset = offset;
                 break;
             }
-        }
+        } while (bitmapIndex < SatoriRegion::BITMAP_LENGTH);
     }
 
     return ObjectForMarkBit(bitmapIndex, markBitOffset);
@@ -1563,7 +1588,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
         size_t limit = (upTo - Start()) / Satori::BYTES_PER_CARD_BYTE;
         _ASSERTE(limit <= SatoriRegion::BITMAP_LENGTH);
         markBitOffset = 0;
-        while (bitmapIndex < limit)
+        do
         {
             bitmapIndex++;
             if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
@@ -1572,7 +1597,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
                 markBitOffset = offset;
                 break;
             }
-        }
+        } while (bitmapIndex < limit);
     }
 
     SatoriObject* result = ObjectForMarkBit(bitmapIndex, markBitOffset);
@@ -1609,13 +1634,12 @@ void SatoriRegion::UpdateFinalizableTrackers()
     }
 }
 
-void SatoriRegion::UpdatePointers()
+void SatoriRegion::UpdatePointersInObject(SatoriObject* o)
 {
-    _ASSERTE(!HasMarksSet());
-
-    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
-    SatoriObject* o = FirstObject();
-    do
+    // if the containing region is large, do not engage with the entire object,
+    // schedule update of separate ranges.
+    if (this->Size() == Satori::REGION_SIZE_GRANULARITY ||
+        !Recycler()->ScheduleUpdateAsChildRanges(o))
     {
         o->ForEachObjectRef(
             [](SatoriObject** ppObject)
@@ -1632,7 +1656,18 @@ void SatoriRegion::UpdatePointers()
                 }
             }
         );
+    }
+}
 
+void SatoriRegion::UpdatePointers()
+{
+    _ASSERTE(!HasMarksSet());
+
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+    SatoriObject* o = FirstObject();
+    do
+    {
+        UpdatePointersInObject(o);
         o = o->Next();
     } while (o->Start() < objLimit);
 }
@@ -1675,6 +1710,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
                         VolatileStoreWithoutBarrier(ppObject, child);
                     }
 
+                    // TODO: VS no need to do this when promoting everything
                     // update the card as if the relocated object got a child assigned
                     if (child->ContainingRegion()->Generation() < 2)
                     {
@@ -1724,7 +1760,9 @@ bool SatoriRegion::TryDemote()
         return false;
     }
 
-    this->m_generation = 1;
+    this->ResetCardsForEphemeral();
+    this->SetGeneration(1);
+
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     for (SatoriObject* o = FirstObject(); o->Start() < objLimit; o = o->Next())
     {
