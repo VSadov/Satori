@@ -42,6 +42,7 @@ private:
     SatoriMarkChunkQueue* m_markChunks;
 
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
+    void TryGetRegularRegion(SatoriRegion*& region);
     SatoriObject* AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocHuge(SatoriAllocationContext* context, size_t size, uint32_t flags);
 

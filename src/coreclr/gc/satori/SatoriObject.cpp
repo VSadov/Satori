@@ -89,7 +89,7 @@ void SatoriObject::Validate()
                 [&](SatoriObject** ref)
                 {
                     _ASSERTE(ContainingRegion()->IsExposed(ref));
-                    SatoriObject* child = *ref;
+                    SatoriObject* child = VolatileLoad(ref);
                     if (child->ContainingRegion() == ContainingRegion())
                     {
                         _ASSERTE(child->IsEscaped());

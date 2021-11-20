@@ -36,7 +36,9 @@ public:
     void MakeBlank();
     bool ValidateBlank();
     bool ValidateIndexEmpty();
-    void WipeCards();
+
+    void RearmCardsForTenured();
+    void ResetCardsForEphemeral();
 
     SatoriRegion* Split(size_t regionSize);
     bool CanDecommit();
@@ -87,6 +89,10 @@ public:
 
     SatoriObject* FirstObject();
     SatoriObject* FindObject(size_t location);
+    size_t LocationToIndex(size_t location);
+    void SetIndicesForObject(SatoriObject* o, size_t end);
+    void SetIndicesForObjectCore(size_t start, size_t end);
+    void ClearIndicesForAllocRange();
 
     SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
@@ -96,6 +102,7 @@ public:
     bool NothingMarked();
     void UpdatePointers();
     void UpdatePointersInPromotedObjects();
+    void UpdatePointersInObject(SatoriObject* o);
 
     template <bool updatePointers>
     bool Sweep();
@@ -183,6 +190,7 @@ private:
             size_t m_ownerThreadTag;
             void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
             int m_generation;
+            ReuseLevel m_reusableFor;
             SatoriRegion** m_allocationContextAttachmentPoint;
 
             size_t m_end;
@@ -218,7 +226,6 @@ private:
             bool m_hasPinnedObjects;
             bool m_hasMarksSet;
             bool m_acceptedPromotedObjects;
-            ReuseLevel m_reusableFor;
 
             SatoriMarkChunk* m_gen2Objects;
 
