@@ -337,10 +337,10 @@ LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
         cmp     rcx, [g_highest_address]
         ja      NotInHeap
 
+        mov     r9 , [g_card_table]     ; fetch the page map
         mov     rax, rcx
         shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
-        add     rax, [g_card_table]
-        cmp     byte ptr [rax], 0
+        cmp     qword ptr [r9 + rax * 8], 0
         jne     JIT_WriteBarrier
 
     NotInHeap:
@@ -384,12 +384,18 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
     AssignAndMarkCards:
         mov     [rcx], rdx
 
-    ; TODO: VS for throughput tuning a nonconcurrent and concurrent barriers could be separated 
-    ;       need to suspend EE when swapping barriers, but GCs in that mode should be relatively rare
+        xor     rdx, rcx
+        shr     rdx, 21
+        jz      CheckConcurrent         ; same region, just check if barrier is not concurrent
+
+    ; TUNING: nonconcurrent and concurrent barriers could be separate pieces of code, but to switch 
+    ;         need to suspend EE, not sure if skipping concurrent check would worth that much.
 
     ; if src is in gen2 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [r8 + 16], 2
         jne     MarkCards
+
+    CheckConcurrent:
         cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
         jne     MarkCards
         REPRET
@@ -397,20 +403,9 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
     MarkCards:
     ; fetch card location for rcx
         mov     r9 , [g_card_table]     ; fetch the page map
-        mov     rax, rcx
         mov     r8,  rcx
-        shr     rax, 30
-     CheckPageMap:                               
-        movzx   ecx, byte ptr [r9 + rax]
-        cmp     cl, 1
-        je      PageFound
-        add     cl, -2
-        mov     edx, 1
-        shl     rdx, cl
-        sub     rax, rdx
-        jmp     CheckPageMap
-     PageFound:
-        shl     rax, 30   ; page
+        shr     rcx, 30
+        mov     rax, qword ptr [r9 + rcx * 8] ; page
         sub     r8, rax   ; offset in page
         mov     rdx,r8
         shr     r8, 9     ; card offset
@@ -498,13 +493,11 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
         cmp     rcx, [g_highest_address]
         ja      NotInHeap               ; not in heap
 
+        mov     r9 , [g_card_table]     ; fetch the page map
         mov     rax, rcx
         shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
-        add     rax, [g_card_table]
-        cmp     byte ptr [rax], 0
-        je      NotInHeap               ; not in heap
-
-        jmp     JIT_WriteBarrier
+        cmp     qword ptr [r9 + rax * 8], 0
+        jne     JIT_WriteBarrier
 
     align 16
     NotInHeap:

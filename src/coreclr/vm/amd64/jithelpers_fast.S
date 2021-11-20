@@ -229,13 +229,12 @@ LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
         cmp     rdi, [rax]
         ja      NotInHeap
 
+        PREPARE_EXTERNAL_VAR g_card_table, r8
+        mov     r8,  [r8]               // fetch the page map
         mov     rax, rdi
         shr     rax, 30                 // round to page size ( >> PAGE_BITS )
-        PREPARE_EXTERNAL_VAR g_card_table, r8
-        add     rax, [r8]
-        cmp     byte ptr [rax], 0
-        je      NotInHeap
-        jmp     C_FUNC(JIT_WriteBarrier)
+        cmp     qword ptr [r8 + rax * 8], 0
+        jne     C_FUNC(JIT_WriteBarrier)
 
     NotInHeap:
         // See comment above about possible AV
@@ -286,16 +285,26 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
 
     AssignAndMarkCards:
         mov     [rdi], rsi
-        mov     rax, rdi
 
-        // set rdi, rsi per contract with JIT_ByRefWriteBarrier
+        PREPARE_EXTERNAL_VAR g_sw_ww_enabled_for_gc_heap, r11
+
+        // set rdi per contract with JIT_ByRefWriteBarrier
+        mov     rax, rdi
         add     rdi, 8
+
+        xor     rsi, rax
+        shr     rsi, 21                 // check if assigning within the same region (sets flags)
+
+        // set rsi per contract with JIT_ByRefWriteBarrier
         mov     rsi, r10
 
+        jz      CheckConcurrent         // same region, just check if barrier is not concurrent
+
     // if src is in gen2 and the barrier is not concurrent we do not need to mark cards
-        PREPARE_EXTERNAL_VAR g_sw_ww_enabled_for_gc_heap, r11
         cmp     dword ptr [rdx + 16], 2
         jne     MarkCards
+
+    CheckConcurrent:
         cmp     byte ptr [r11], 0
         jne     MarkCards
         REPRET
@@ -306,17 +315,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         mov     r9,  [r9]  // fetch the page map
         mov     rdx, rax
         shr     rax, 30
-     CheckPageMap:                               
-        movzx   ecx, byte ptr [r9 + rax]
-        cmp     cl,  1
-        je      PageFound
-        add     cl,  -2
-        mov     r8,  1
-        shl     r8,  cl
-        sub     rax, r8
-        jmp     CheckPageMap
-     PageFound:
-        shl     rax, 30   // page
+        mov     rax, qword ptr [r9 + rax * 8] // page
         sub     rdx, rax   // offset in page
         mov     r8,  rdx
         shr     rdx, 9     // card offset
@@ -403,13 +402,12 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
         cmp     rdi, [rax]
         ja      NotInHeap_ByRefWriteBarrier
 
+        PREPARE_EXTERNAL_VAR g_card_table, r8
+        mov     r8,  [r8]               // fetch the page map
         mov     rax, rdi
         shr     rax, 30                 // round to page size ( >> PAGE_BITS )
-        PREPARE_EXTERNAL_VAR g_card_table, r8
-        add     rax, [r8]
-        cmp     byte ptr [rax], 0
-        je      NotInHeap_ByRefWriteBarrier
-        jmp     C_FUNC(JIT_WriteBarrier)
+        cmp     qword ptr [r8 + rax * 8], 0
+        jne     C_FUNC(JIT_WriteBarrier)
 
     .balign 16
     NotInHeap_ByRefWriteBarrier:
