@@ -50,12 +50,12 @@ public:
     size_t GetNowMillis();
 
     void TryStartGC(int generation, gc_reason reason);
-    bool HelpOnce();
+    void HelpOnce();
     void ConcurrentHelp();
     void ShutDown();
     bool HelpOnceCore();
-    void MarkAllStacksAndFinalizationQueueHelper();
-    void StartMarkingAllStacksAndFinalizationQueue();
+    void BlockingMarkForConcurrentHelper();
+    void BlockingMarkForConcurrent();
     void MaybeAskForHelp();
     void AskForHelp();
     void MaybeTriggerGC(gc_reason reason);
@@ -78,7 +78,11 @@ public:
 
     void RecordOccupancy(int generation, size_t size);
     size_t GetTotalOccupancy();
+    size_t GetRecyclerOccupancy();
     size_t GetGcStartMillis(int generation);
+
+    void ScheduleMarkAsChildRanges(SatoriObject* o);
+    bool ScheduleUpdateAsChildRanges(SatoriObject* o);
 
 private:
     SatoriHeap* m_heap;
@@ -86,7 +90,7 @@ private:
     int m_rootScanTicket;
     uint8_t m_cardScanTicket;
 
-    SatoriMarkChunkQueue* m_workList;
+    SatoriMarkChunkQueue* m_workQueue;
     SatoriTrimmer* m_trimmer;
 
     // regions owned by recycler
@@ -111,6 +115,7 @@ private:
 
     // regions that could be reused for Gen1
     SatoriRegionQueue* m_reusableRegions;
+    SatoriRegionQueue* m_reusableRegionsAlternate;
 
     SatoriRegionQueue* m_demotedRegions;
 
@@ -133,24 +138,24 @@ private:
 
     void(SatoriRecycler::* m_activeHelperFn)();
 
-    int m_prevCondemnedGeneration;
     int m_condemnedGeneration;
     bool m_isRelocating;   
-    bool m_isPromotingAllRegions;  
+    bool m_promoteAllRegions;  
     bool m_allowPromotingRelocations;
     bool m_isBarrierConcurrent;
+
+    int m_prevCondemnedGeneration;
 
     int64_t m_gcCount[3];
     int64_t m_gcStartMillis[3];
 
-    size_t m_gen1MinorBudget;
     size_t m_gen1Budget;
+    size_t m_gen2BudgetBytes;
     size_t m_gen2Budget;
     size_t m_condemnedRegionsCount;
     size_t m_condemnedNurseryRegionsCount;
     size_t m_deferredSweepCount;
-    // this one is signed because reusing regions "borrow" the count so it may go negative.
-    ptrdiff_t m_gen1AddedSinceLastCollection;
+    size_t m_gen1AddedSinceLastCollection;
     size_t m_gen2AddedSinceLastCollection;
     size_t m_gen1CountAtLastGen2;
 
@@ -163,8 +168,16 @@ private:
 
     int64_t m_perfCounterFrequencyMHz;
 
+    GCEvent* m_helpersGate;
+    volatile int m_gateSignaled;
+    volatile int m_activeHelpers;
+    volatile int m_totalHelpers;
+
+    int64_t m_noWorkSince;
+
 private:
     static void DeactivateFn(gc_alloc_context* context, void* param);
+    static void MarkDemotedAttachedRegionsFn(gc_alloc_context* gcContext, void* param);
 
     template <bool isConservative>
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
@@ -182,6 +195,7 @@ private:
     void DeactivateAllStacks();
     void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
     bool MarkOwnStackAndDrainQueues(int64_t deadline = 0);
+    void MarkDemoted(SatoriRegion* curRegion, MarkContext& c);
     void MarkAllStacksFinalizationAndDemotedRoots();
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();
@@ -189,6 +203,7 @@ private:
     void DrainMarkQueues(SatoriMarkChunk* srcChunk = nullptr);
     bool DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk = nullptr, int64_t deadline = 0);
     void MarkThroughCards();
+    bool HasDirtyCards();
     bool MarkThroughCardsConcurrent(int64_t deadline);
     bool CleanCards();
     bool MarkHandles(int64_t deadline = 0);
@@ -211,6 +226,8 @@ private:
 
     void PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker();
 
+    void AdjustHeuristics();
+
     void BlockingCollect();
     void RunWithHelp(void(SatoriRecycler::* method)());
     void BlockingMark();
@@ -232,6 +249,8 @@ private:
 
     void UpdateRegionsWorker();
 
+    void UpdatePointersInObjectRanges();
+
     void UpdatePointersInPromotedObjects();
 
     void UpdateRegions(SatoriRegionQueue* queue);
@@ -243,6 +262,8 @@ private:
     void UpdatePointersThroughCards();
     void PlanRegions(SatoriRegionQueue* regions);
     void AddRelocationTarget(SatoriRegion* region);
+
+    void AddTenuredRegionsToPlan(SatoriRegionQueue* regions);
 
     SatoriRegion* TryGetRelocationTarget(size_t size, bool existingRegionOnly);
 

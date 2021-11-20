@@ -183,6 +183,11 @@ unsigned SatoriGC::WhichGeneration(Object* obj)
 int SatoriGC::CollectionCount(int generation, int get_bgc_fgc_coutn)
 {
     //get_bgc_fgc_coutn N/A
+    if ((unsigned)generation > (unsigned)2)
+    {
+        return 0;
+    }
+
     return (int)m_heap->Recycler()->GetCollectionCount(generation);
 }
 
@@ -453,6 +458,9 @@ void SatoriGC::PublishObject(uint8_t* obj)
         }
         else
         {
+            // promote to gen2
+            m_heap->Recycler()->AddTenuredRegion(region);
+
             // the region has seen no writes, so no need to worry about cards.
             // unless the obj has a collectible type.
             // in such case we simulate retroactive write by dirtying the card for the MT location.
@@ -462,8 +470,6 @@ void SatoriGC::PublishObject(uint8_t* obj)
             }
 
             region->SetOccupancy(so->Size(), 1);
-            // promote to gen2
-            m_heap->Recycler()->AddTenuredRegion(region);
         }
     }
 }
