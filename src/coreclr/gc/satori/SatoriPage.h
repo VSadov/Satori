@@ -66,7 +66,7 @@ public:
     void DirtyCardsForRange(size_t start, size_t length);
     void DirtyCardsForRangeUnordered(size_t start, size_t end);
 
-    void WipeCardsForRange(size_t start, size_t end);
+    void WipeCardsForRange(size_t start, size_t end, bool isTenured);
 
     // order is unimportant, but we want to read it only once when we read it, thus volatile.
     volatile int8_t& CardState()
