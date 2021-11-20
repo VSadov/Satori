@@ -66,53 +66,38 @@ public:
         return &m_finalizationQueue;
     }
 
-    bool IsHeapAddress(size_t address)
+    size_t CommittedMapLength()
     {
-        size_t mapIndex = address >> Satori::PAGE_BITS;
-        return (unsigned int)mapIndex < (unsigned int)m_committedMapSize&&
-            m_pageMap[mapIndex] != 0;
+        return m_committedMapSize / sizeof(SatoriPage*);
     }
-
-    SatoriRegion* RegionForAddressChecked(size_t address);
-
     SatoriPage* PageForAddressChecked(size_t address)
     {
         size_t mapIndex = address >> Satori::PAGE_BITS;
-        if (mapIndex < m_committedMapSize)
+        if (mapIndex < CommittedMapLength())
         {
-        tryAgain:
-            switch (m_pageMap[mapIndex])
-            {
-            case 0:
-                break;
-            case 1:
-                return (SatoriPage*)(mapIndex << Satori::PAGE_BITS);
-            default:
-                mapIndex -= ((size_t)1 << (m_pageMap[mapIndex] - 2));
-                goto tryAgain;
-            }
+            return m_pageMap[mapIndex];
         }
 
         return nullptr;
     }
 
+    bool IsHeapAddress(size_t address)
+    {
+        return PageForAddressChecked(address) != nullptr;
+    }
+
+    SatoriRegion* RegionForAddressChecked(size_t address);
+
     template<typename F>
     void ForEachPage(F lambda)
     {
-        size_t mapIndex = m_usedMapSize - 1;
+        size_t mapIndex = m_usedMapLength - 1;
         while (mapIndex > 0)
         {
-            switch (m_pageMap[mapIndex])
+            SatoriPage* page = m_pageMap[mapIndex--];
+            if (page && page != m_pageMap[mapIndex])
             {
-            case 1:
-                lambda((SatoriPage*)(mapIndex << Satori::PAGE_BITS));
-                goto fallthrough;
-            case 0:
-                fallthrough:
-                mapIndex--;
-                continue;
-            default:
-                mapIndex -= ((size_t)1 << (m_pageMap[mapIndex] - 2));
+                lambda(page);
             }
         }
     }
@@ -120,23 +105,16 @@ public:
     template<typename F>
     void ForEachPageUntil(F lambda)
     {
-        size_t mapIndex = m_usedMapSize - 1;
+        size_t mapIndex = m_usedMapLength - 1;
         while (mapIndex > 0)
         {
-            switch (m_pageMap[mapIndex])
+            SatoriPage* page = m_pageMap[mapIndex--];
+            if (page && page != m_pageMap[mapIndex])
             {
-            case 1:
-                if (lambda((SatoriPage*)(mapIndex << Satori::PAGE_BITS)))
+                if (lambda(page))
                 {
                     return;
                 }
-                goto fallthrough;
-            case 0:
-                fallthrough:
-                mapIndex--;
-                continue;
-            default:
-                mapIndex -= ((size_t)1 << (m_pageMap[mapIndex] - 2));
             }
         }
     }
@@ -146,14 +124,14 @@ private:
     SatoriRecycler m_recycler;
     SatoriFinalizationQueue m_finalizationQueue;
 
-    int m_reservedMapSize;
-    int m_committedMapSize;
-    int m_usedMapSize;
-    int m_nextPageIndex;
+    size_t m_reservedMapSize;
+    size_t m_committedMapSize;
+    size_t m_usedMapLength;
+    size_t m_nextPageIndex;
     SatoriLock m_mapLock;
-    uint8_t m_pageMap[1];
+    SatoriPage* m_pageMap[1];
 
-    bool CommitMoreMap(int currentlyCommitted);
+    bool CommitMoreMap(size_t currentlyCommitted);
 };
 
 #endif
