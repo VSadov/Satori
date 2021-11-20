@@ -37,7 +37,7 @@
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
 
-void InitWriteBarrier(uint8_t* pageMap, size_t highest_address)
+void InitWriteBarrier(void* pageMap, size_t highest_address)
 {
     WriteBarrierParameters args = {};
     args.operation = WriteBarrierOp::Initialize;
@@ -53,7 +53,7 @@ void InitWriteBarrier(uint8_t* pageMap, size_t highest_address)
     GCToEEInterface::StompWriteBarrier(&args);
 }
 
-void UpdateWriteBarrier(uint8_t* pageMap, size_t highest_address)
+void UpdateWriteBarrier(void* pageMap, size_t highest_address)
 {
     WriteBarrierParameters args = {};
     args.operation = WriteBarrierOp::StompResize;
@@ -76,11 +76,10 @@ SatoriHeap* SatoriHeap::Create()
     // Half-byte per 4Gb
     const int availableAddressSpaceBits = 48;
     const int pageCountBits = availableAddressSpaceBits - Satori::PAGE_BITS;
-    const int mapSize = 1 << pageCountBits;
+    const int mapSize = (1 << pageCountBits) * sizeof(SatoriPage*);
     size_t rezerveSize = mapSize + sizeof(SatoriHeap);
 
     void* reserved = GCToOSInterface::VirtualReserve(rezerveSize, 0, VirtualReserveFlags::None);
-
     size_t commitSize = min(Satori::CommitGranularity(), rezerveSize);
     if (!GCToOSInterface::VirtualCommit(reserved, commitSize))
     {
@@ -93,11 +92,11 @@ SatoriHeap* SatoriHeap::Create()
     //       do we care to handle that?
     SatoriHeap* heap = (SatoriHeap*)reserved;
     heap->m_reservedMapSize = mapSize;
-    heap->m_committedMapSize = (int)(commitSize - ((size_t)&heap->m_pageMap - (size_t)heap));
-    InitWriteBarrier(heap->m_pageMap, heap->m_committedMapSize * Satori::PAGE_SIZE_GRANULARITY - 1);
+    heap->m_committedMapSize = commitSize - sizeof(SatoriHeap) + sizeof(SatoriPage*);
+    InitWriteBarrier(heap->m_pageMap, heap->CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
     heap->m_mapLock.Initialize();
     heap->m_nextPageIndex = 1;
-    heap->m_usedMapSize = 1;
+    heap->m_usedMapLength = 1;
 
     heap->m_allocator.Initialize(heap);
     heap->m_recycler.Initialize(heap);
@@ -106,40 +105,41 @@ SatoriHeap* SatoriHeap::Create()
     return heap;
 }
 
-bool SatoriHeap::CommitMoreMap(int currentlyCommitted)
+bool SatoriHeap::CommitMoreMap(size_t currentCommittedMapSize)
 {
-    void* commitFrom = &m_pageMap[currentlyCommitted];
+    void* commitFrom = (void*)((size_t)&m_pageMap + currentCommittedMapSize);
     size_t commitSize = Satori::CommitGranularity();
 
     SatoriLockHolder<SatoriLock> holder(&m_mapLock);
-    if (currentlyCommitted < m_committedMapSize)
+    if (currentCommittedMapSize <= m_committedMapSize)
     {
         if (GCToOSInterface::VirtualCommit(commitFrom, commitSize))
         {
             // we did the commit
-            m_committedMapSize = min(currentlyCommitted + (int)commitSize, m_reservedMapSize);
-            UpdateWriteBarrier(m_pageMap, m_committedMapSize * Satori::PAGE_SIZE_GRANULARITY - 1);
+            m_committedMapSize = min(currentCommittedMapSize + commitSize, m_reservedMapSize);
+            UpdateWriteBarrier(m_pageMap, CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
         }
     }
 
     // either we did commit or someone else did, otherwise this is a failure.
-    return m_committedMapSize > currentlyCommitted;
+    return m_committedMapSize > currentCommittedMapSize;
 }
 
 bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
 {
-    int nextPageIndex = m_nextPageIndex;
-    for (int i = nextPageIndex; i < m_reservedMapSize; i++)
+    size_t nextPageIndex = m_nextPageIndex;
+    size_t maxIndex = m_reservedMapSize / sizeof(SatoriPage*);
+    for (size_t i = nextPageIndex; i < maxIndex; i++)
     {
-        int currentMapSize = m_committedMapSize;
-        if (i >= m_committedMapSize && !CommitMoreMap(currentMapSize))
+        size_t currentCommittedMapSize = m_committedMapSize;
+        if (i >= currentCommittedMapSize && !CommitMoreMap(currentCommittedMapSize))
         {
             break;
         }
 
         if (m_pageMap[i] == 0)
         {
-            size_t pageAddress = (size_t)i << Satori::PAGE_BITS;
+            size_t pageAddress = i << Satori::PAGE_BITS;
             newPage = SatoriPage::InitializeAt(pageAddress, Satori::PAGE_SIZE_GRANULARITY, this);
             if (newPage)
             {
@@ -151,16 +151,16 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
                 // therefore the read will happen after the object is obtained.
                 // Also the object must be published before other thread could see it, and publishing is a release.
                 // Thus an ordinary write is ok even for weak memory cases.
-                m_pageMap[i] = 1;
+                m_pageMap[i] = newPage;
 
                 // ensure the next is advanced to at least i + 1
                 while ((nextPageIndex = m_nextPageIndex) < i + 1 &&
                     Interlocked::CompareExchange(&m_nextPageIndex, i + 1, nextPageIndex) != nextPageIndex);
 
-                int usedMapSize;
-                // ensure the m_usedMapSize is advanced to at least i + 1
-                while ((usedMapSize = m_usedMapSize) < i + 1 &&
-                    Interlocked::CompareExchange(&m_usedMapSize, i + 1, usedMapSize) != usedMapSize);
+                size_t usedMapLength;
+                // ensure the m_usedMapLength is advanced to at least i + 1
+                while ((usedMapLength = m_usedMapLength) < i + 1 &&
+                    Interlocked::CompareExchange(&m_usedMapLength, i + 1, usedMapLength) != usedMapLength);
 
                 return true;
             }
@@ -185,15 +185,17 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
 {
     // Add the overhead of card table (1/512).
     minSize += minSize / Satori::BYTES_PER_CARD_BYTE;
-    minSize = ALIGN_UP(minSize, Satori::PAGE_SIZE_GRANULARITY);
-    int mapMarkCount = (int)(minSize >> Satori::PAGE_BITS);
+    size_t pageSize = ALIGN_UP(minSize, Satori::PAGE_SIZE_GRANULARITY);
+    size_t mapMarkCount = pageSize / Satori::PAGE_SIZE_GRANULARITY;
 
-    for (int i = m_nextPageIndex; i < m_reservedMapSize; i++)
+    size_t maxIndex = m_reservedMapSize / sizeof(SatoriPage*);
+    for (size_t i = m_nextPageIndex; i < maxIndex; i++)
     {
-        int currentMapSize = m_committedMapSize;
-        while (i + mapMarkCount >= m_committedMapSize)
+        size_t currentCommittedMapSize;
+        size_t requiredMapSize = i + mapMarkCount * sizeof(SatoriPage*);
+        while (requiredMapSize > ((currentCommittedMapSize = m_committedMapSize)))
         {
-            if (!CommitMoreMap(currentMapSize))
+            if (!CommitMoreMap(currentCommittedMapSize))
             {
                 return nullptr;
             }
@@ -201,24 +203,21 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
 
         if (m_pageMap[i] == 0)
         {
-            size_t pageAddress = (size_t)i << Satori::PAGE_BITS;
-            SatoriPage* newPage = SatoriPage::InitializeAt(pageAddress, minSize, this);
+            size_t pageAddress = i << Satori::PAGE_BITS;
+            SatoriPage* newPage = SatoriPage::InitializeAt(pageAddress, pageSize, this);
             if (newPage)
             {
                 // mark the map, before an object can be allocated in the new page and
                 // may be seen in a GC barrier
-                m_pageMap[i] = 1;
-                for (int j = 1; j < mapMarkCount; j++)
+                for (size_t j = 0; j < mapMarkCount; j++)
                 {
-                    DWORD log2;
-                    BitScanReverse64(&log2, j);
-                    m_pageMap[i + j] = (uint8_t)(log2 + 2);
+                    m_pageMap[i + j] = newPage;
                 }
 
-                int usedMapSize;
-                // ensure the m_usedMapSize is advanced to at least i + mapMarkCount
-                while ((usedMapSize = m_usedMapSize) < i + mapMarkCount &&
-                    Interlocked::CompareExchange(&m_usedMapSize, i + mapMarkCount, usedMapSize) != usedMapSize);
+                size_t usedMapLength;
+                // ensure the m_usedMapLength is advanced to at least i + mapMarkCount
+                while ((usedMapLength = m_usedMapLength) < i + mapMarkCount &&
+                    Interlocked::CompareExchange(&m_usedMapLength, i + mapMarkCount, usedMapLength) != usedMapLength);
 
                 // advance next if contiguous
                 // Note: it may become contiguous after we check, but it should be rare.
