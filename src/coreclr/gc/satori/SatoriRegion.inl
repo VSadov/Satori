@@ -74,7 +74,7 @@ inline void SatoriRegion::SetGenerationRelease(int generation)
 {
     // at the time when we set generation to 0+, we should make it certain if
     // the region is attached, since 0+ detached regions are assumed parseable.
-    _ASSERTE(generation != 0);
+    _ASSERTE(generation != 0 && generation != 2);
     _ASSERTE(m_generation == -1 || IsReusable());
 
     VolatileStore(&m_generation, generation);
@@ -233,8 +233,6 @@ bool SatoriRegion::Sweep()
     {
         // we will be building new free lists
         ClearFreeLists();
-        // sweeping invalidates indices, since free objects get coalesced
-        ClearIndex();
     }
 
     m_escapedSize = 0;
@@ -251,6 +249,7 @@ bool SatoriRegion::Sweep()
             o = SkipUnmarked(o);
             size_t skipped = o->Start() - lastMarkedEnd;
             SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
+            SetIndicesForObject(free, o->Start());
             AddFreeSpace(free);
 
             if (o->Start() >= objLimit)
@@ -272,21 +271,7 @@ bool SatoriRegion::Sweep()
 
         if (updatePointers)
         {
-            o->ForEachObjectRef(
-                [](SatoriObject** ppObject)
-                {
-                    SatoriObject* child = *ppObject;
-                    if (child)
-                    {
-                        ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
-                        if (ptr < 0)
-                        {
-                            _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
-                            *ppObject = (SatoriObject*)-ptr;
-                        }
-                    }
-                }
-            );
+            UpdatePointersInObject(o);
         }
 
         size_t size = o->Size();
@@ -299,8 +284,6 @@ bool SatoriRegion::Sweep()
     this->HasPinnedObjects() = false;
 
     SetOccupancy(occupancy, objCount);
-    Recycler()->RecordOccupancy(this->Generation(), occupancy);
-
     return cannotRecycle;
 }
 
@@ -524,4 +507,52 @@ inline SatoriObject* SatoriRegion::ObjectForMarkBit(size_t bitmapIndex, int offs
     size_t objOffset = bitmapIndex * sizeof(size_t) * 8 + offset;
     return (SatoriObject*)(Start()) + objOffset;
 }
+
+inline size_t SatoriRegion::LocationToIndex(size_t location)
+{
+    return (location - Start()) >> Satori::INDEX_GRANULARITY_BITS;
+}
+
+inline void SatoriRegion::SetIndicesForObject(SatoriObject* o, size_t end)
+{
+    _ASSERTE(end > o->Start());
+    _ASSERTE(end <= Start() + Satori::REGION_SIZE_GRANULARITY);
+
+    size_t start = o->Start();
+
+    // if object straddles index granules, record the object in corresponding indices
+    if ((start ^ end) >> Satori::INDEX_GRANULARITY_BITS)
+    {
+        SetIndicesForObjectCore(start, end);
+    }
+}
+
+inline void SatoriRegion::ClearIndicesForAllocRange()
+{
+    _ASSERTE(m_allocStart < m_allocEnd);
+    _ASSERTE(m_allocStart > Start());
+
+    size_t start = m_allocStart;
+    size_t end = min(m_allocEnd, Start() + Satori::REGION_SIZE_GRANULARITY);
+
+    // if range straddles index granules, clear corresponding indices
+    if ((start ^ end) >> Satori::INDEX_GRANULARITY_BITS)
+    {
+        size_t firstIndex = LocationToIndex(start) + 1;
+        // if first is clean, all are clean
+        if (m_index[firstIndex] != 0)
+        {
+            size_t lastIndex = LocationToIndex(end);
+            memset((void*)&m_index[firstIndex], 0, (lastIndex - firstIndex + 1) * sizeof(int));
+        }
+
+#if _DEBUG
+        for(size_t i = firstIndex, last = LocationToIndex(end); i <= last; i++)
+        {
+            _ASSERTE(m_index[i] == 0);
+        }
+#endif
+    }
+}
+
 #endif
