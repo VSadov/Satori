@@ -1546,7 +1546,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
         size_t limit = (upTo - Start()) / Satori::BYTES_PER_CARD_BYTE;
         _ASSERTE(limit <= SatoriRegion::BITMAP_LENGTH);
         markBitOffset = 0;
-        while (bitmapIndex < limit)
+        do
         {
             bitmapIndex++;
             if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
@@ -1555,7 +1555,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
                 markBitOffset = offset;
                 break;
             }
-        }
+        } while (bitmapIndex < limit);
     }
 
     SatoriObject* result = ObjectForMarkBit(bitmapIndex, markBitOffset);
