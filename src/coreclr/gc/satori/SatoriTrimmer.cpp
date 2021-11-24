@@ -53,6 +53,13 @@ void SatoriTrimmer::Loop()
         m_heap->ForEachPage(
             [&](SatoriPage* page)
             {
+                // limit the rate of scanning to 1 page/msec.
+                GCToOSInterface::Sleep(1);
+                if (m_state != TRIMMER_STATE_RUNNING)
+                {
+                    StopAndWait();
+                }
+
                 page->ForEachRegion(
                     [&](SatoriRegion* region)
                     {
@@ -67,6 +74,8 @@ void SatoriTrimmer::Loop()
                                     if (region->TryDecommit())
                                     {
                                         m_heap->Allocator()->AddRegion(region);
+                                        // limit the decommit rate to 1 region/msec.
+                                        GCToOSInterface::Sleep(1);
                                     }
                                     else
                                     {
