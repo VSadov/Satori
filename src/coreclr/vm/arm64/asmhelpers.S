@@ -625,7 +625,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     // this is expected to be rare.
     LOCAL_LABEL(RecordEscape):
 
-    ; 4) check if the source is escaped
+    // 4) check if the source is escaped
         and         x12, x15, #0xFFFFFFFFFFE00000  // source region
         add         x15, x15, #8                   // escape bit is MT + 1
         ubfx        x17, x15, #9,#12               // word index = (dst >> 9) & 0x1FFFFF
