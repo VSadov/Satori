@@ -183,6 +183,7 @@ private:
             size_t m_ownerThreadTag;
             void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
             int m_generation;
+            ReuseLevel m_reusableFor;
             SatoriRegion** m_allocationContextAttachmentPoint;
 
             size_t m_end;
@@ -218,7 +219,6 @@ private:
             bool m_hasPinnedObjects;
             bool m_hasMarksSet;
             bool m_acceptedPromotedObjects;
-            ReuseLevel m_reusableFor;
 
             SatoriMarkChunk* m_gen2Objects;
 
