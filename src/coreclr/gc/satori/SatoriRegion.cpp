@@ -1514,7 +1514,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
     else
     {
         markBitOffset = 0;
-        while (bitmapIndex < SatoriRegion::BITMAP_LENGTH)
+        do
         {
             bitmapIndex++;
             if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
@@ -1523,7 +1523,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
                 markBitOffset = offset;
                 break;
             }
-        }
+        } while (bitmapIndex < SatoriRegion::BITMAP_LENGTH);
     }
 
     return ObjectForMarkBit(bitmapIndex, markBitOffset);

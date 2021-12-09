@@ -27,7 +27,7 @@ namespace Satori
     static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
 
     // regions are aligned at 2 Mb
-    // objects can be larger than that and straddle multiple region "tiles".
+    // objects can be larger than that and straddle multiple region granules.
     // all real objects start in the first tile though to allow for fixed size of the metadata.
     const static int REGION_BITS = 21;
     const static size_t REGION_SIZE_GRANULARITY = 1 << REGION_BITS;
@@ -45,7 +45,7 @@ namespace Satori
     static const size_t OBJECT_ALIGNMENT = sizeof(size_t);
 
     // minimal free size that can be made parseable.
-    // we use a trivial array object to fill holes, thus this is the size of an array object.
+    // we use a trivial array object to fill holes, thus this is the size of a shortest array object.
     static const size_t MIN_FREE_SIZE = 3 * sizeof(size_t);
 
     // TUNING: Needs tuning?
