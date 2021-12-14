@@ -244,10 +244,10 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
-        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
         region = m_heap->Recycler()->TryGetReusable();
         if (region == nullptr)
         {
+            m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
             region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
             _ASSERTE(region == nullptr || region->NothingMarked());
         }

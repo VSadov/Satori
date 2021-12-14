@@ -113,7 +113,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 #else
     // TUNING: the whole GC triggering deal should be tuned.
     //         use some silly number for now.
-    m_gen1MinorBudget = 29;
+    m_gen1MinorBudget = 290;
 #endif
 
     // when gen1 promotes
@@ -222,15 +222,7 @@ size_t SatoriRecycler::RegionCount()
 
 SatoriRegion* SatoriRecycler::TryGetReusable()
 {
-    SatoriRegion* r = m_reusableRegions->TryPop();
-    if (r)
-    {
-        // for simplicity - gen1 is a "tax" on allocations
-        // and reusing regions is "tax-free"
-        Interlocked::Decrement((size_t*)&m_gen1AddedSinceLastCollection);
-    }
-
-    return r;
+    return m_reusableRegions->TryPop();
 }
 
 void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
@@ -531,7 +523,8 @@ void SatoriRecycler::AskForHelp()
 
 void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 {
-    if (m_gen1AddedSinceLastCollection + m_gen2AddedSinceLastCollection - m_gen1MinorBudget > 0)
+    size_t addedRegions = m_gen1AddedSinceLastCollection + m_gen2AddedSinceLastCollection;
+    if (addedRegions > m_gen1MinorBudget)
     {
         int generation = Gen2RegionCount() > m_gen2Budget ? 2 : 1;
 
@@ -659,10 +652,8 @@ void SatoriRecycler::BlockingCollect()
     }
     else
     {
-        size_t gen1CountAfterLastCollection = Gen1RegionCount() - m_gen1AddedSinceLastCollection;
-        _ASSERTE(gen1CountAfterLastCollection >= 0);
-
-        m_allowPromotingRelocations = gen1CountAfterLastCollection > m_gen1Budget;
+        // gen1 at last collection > m_gen1Budget
+        m_allowPromotingRelocations = Gen1RegionCount() > m_gen1AddedSinceLastCollection + m_gen1Budget;
     }
 
     // tell EE that we are starting
@@ -2809,9 +2800,11 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
                 SatoriRegion::ReuseLevel::Gen1;
 
 #else
+            // is reuse for Gen0 too aggressive? is it useful at all? ist is the source of conc mark complexity?
+
             // TUNING: heuristic for gen0
             //         the cost here is inability to trace concurrently at all.
-            curRegion->ReusableFor() = curRegion->ObjCount() < Satori::MAX_ESCAPE_SIZE ?
+            curRegion->ReusableFor() = curRegion->ObjCount() < (Satori::MAX_ESCAPE_SIZE / 4)?
                                             SatoriRegion::ReuseLevel::Gen0 :
                                             SatoriRegion::ReuseLevel::Gen1;
 #endif
