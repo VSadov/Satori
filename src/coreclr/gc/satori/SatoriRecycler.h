@@ -130,8 +130,7 @@ private:
     size_t m_condemnedRegionsCount;
     size_t m_condemnedNurseryRegionsCount;
     size_t m_deferredSweepCount;
-    // this one is signed because reusing regions "borrow" the count so it may go negative.
-    ptrdiff_t m_gen1AddedSinceLastCollection;
+    size_t m_gen1AddedSinceLastCollection;
     size_t m_gen2AddedSinceLastCollection;
     size_t m_gen1CountAtLastGen2;
 
