@@ -59,6 +59,7 @@ public:
 
     void RecordOccupancy(int generation, size_t size);
     size_t GetTotalOccupancy();
+    size_t GetRecyclerOccupancy();
     size_t GetGcStartMillis(int generation);
 
 private:
@@ -124,8 +125,9 @@ private:
     int64_t m_gcCount[3];
     int64_t m_gcStartMillis[3];
 
-    size_t m_gen1MinorBudget;
     size_t m_gen1Budget;
+    size_t m_gen1PromotingBudget;
+    size_t m_gen2BudgetBytes;
     size_t m_gen2Budget;
     size_t m_condemnedRegionsCount;
     size_t m_condemnedNurseryRegionsCount;

@@ -109,23 +109,24 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     // when gen1 happens
 #ifdef _DEBUG
-    m_gen1MinorBudget = 6;
+    m_gen1Budget = 6;
 #else
     // TUNING: the whole GC triggering deal should be tuned.
     //         use some silly number for now.
-    m_gen1MinorBudget = 290;
+    m_gen1Budget = 25;
 #endif
 
     // when gen1 promotes
 #ifdef _DEBUG
-    m_gen1Budget = m_gen1MinorBudget * 2;
+    m_gen1PromotingBudget = m_gen1Budget * 2;
 #else
     // simple assumption for now - 3 regions per worker might not be too big of a pause.
-    m_gen1Budget = 3 * GCToOSInterface::GetTotalProcessorCount();
+    m_gen1PromotingBudget = 3 * GCToOSInterface::GetTotalProcessorCount();
 #endif
 
     // when gen2 happens, initial value.
-    m_gen2Budget = 4;
+    m_gen2Budget = m_gen1Budget;
+    m_gen2BudgetBytes = 0;
 
     m_activeHelperFn = nullptr;
     m_rootScanTicket = 0;
@@ -207,7 +208,8 @@ int SatoriRecycler::CondemnedGeneration()
 size_t SatoriRecycler::Gen1RegionCount()
 {
     return m_ephemeralFinalizationTrackingRegions->Count() +
-        m_ephemeralRegions->Count();
+        m_ephemeralRegions->Count() +
+        m_demotedRegions->Count();
 }
 
 size_t SatoriRecycler::Gen2RegionCount()
@@ -523,21 +525,29 @@ void SatoriRecycler::AskForHelp()
 
 void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 {
-    size_t addedRegions = m_gen1AddedSinceLastCollection + m_gen2AddedSinceLastCollection;
-    if (addedRegions > m_gen1MinorBudget)
+    int generation = 0;
+
+    if (m_gen1AddedSinceLastCollection > m_gen1Budget)
     {
-        int generation = Gen2RegionCount() > m_gen2Budget ? 2 : 1;
+//        generation = 1;
+    }
 
-        //TUNING: gen1 should not get too large.
-        //      certainly no point if gen1 > gen2, could rather have all gen2
-        //      or maybe even 1/10 gen2 ?
+    //TUNING: gen1 should not get too large.
+    //      certainly no point if gen1 > gen2, could rather have all gen2
+    //      or maybe even 1/10 gen2 ?
+    if (m_gen1AddedSinceLastCollection > m_gen2Budget)
+    {
+        generation = 2;
+    }
 
-        // just make sure gen2 happens eventually. 
-        if (m_gcCount[1] - m_gen1CountAtLastGen2 > 64)
-        {
-            generation = 2;
-        }
+    // just make sure gen2 happens eventually. 
+    if (m_gcCount[1] - m_gen1CountAtLastGen2 > 64)
+    {
+        generation = 2;
+    }
 
+    if (generation != 0)
+    {
         TryStartGC(generation, reason);
     }
 
@@ -634,26 +644,46 @@ void SatoriRecycler::BlockingCollect()
 
     _ASSERTE(m_deferredSweepRegions->IsEmpty());
 
-    size_t gen2Count = Gen2RegionCount();
-    if (m_prevCondemnedGeneration == 2)
-    {
-        // next gen2 is when gen2 grows by 20%
-        m_gen2Budget = max(4, gen2Count + gen2Count / 4);
-#ifdef TIMED
-        printf("Gen2 budget:%zd \n", m_gen2Budget);
-#endif
-    }
+    // no we know survivorship after last GC
+    // and we can move our goal posts.
 
     m_isPromotingAllRegions = m_allowPromotingRelocations = false;
+
+    size_t rOccupancy = GetRecyclerOccupancy();
+    if (m_prevCondemnedGeneration == 2)
+    {
+        // we do gen2 if recycle occupancy doubles
+        m_gen2BudgetBytes = rOccupancy * 2;
+    }
+
     if (m_condemnedGeneration == 2)
     {
         m_isPromotingAllRegions = true;
         m_gen1CountAtLastGen2 = (int)m_gcCount[1];
+
+        // gen2 budget was less than gen1, but things are about to change
+        // we will bump gen2 budget proportionally to rOccupancy
+        m_gen2Budget = max(40, rOccupancy / Satori::REGION_SIZE_GRANULARITY);
+        // we will also lower gen1 budget, so that it is not preempted by continuous gen2s
+        m_gen1Budget = max(20, m_gen1Budget / 2);
     }
     else
     {
-        // gen1 at last collection > m_gen1Budget
-        m_allowPromotingRelocations = Gen1RegionCount() > m_gen1AddedSinceLastCollection + m_gen1Budget;
+        // we look for ~20% survivorship in gen1
+        m_gen1Budget = max(20, (m_gen1Budget + (m_occupancy[1] * 4 / Satori::REGION_SIZE_GRANULARITY)) / 2);
+
+        // gen2 byte goal is not changing, but adjust the budget to rOccupancy.
+        // ideally occupancy changes only slightly after each gen1
+        m_gen2Budget = m_gen2BudgetBytes > rOccupancy ?
+            max(40, (m_gen2BudgetBytes - rOccupancy) / Satori::REGION_SIZE_GRANULARITY) :
+            40;
+
+        // TODO: VS enable.
+        // gen1 at last collection > m_gen1PromotingBudget
+        m_allowPromotingRelocations = false; // Gen1RegionCount() > m_gen1AddedSinceLastCollection + m_gen1PromotingBudget;
+
+        //TODO: VS
+        // m_gen1PromotingBudget = max(50, m_occupancy[2] / (Satori::REGION_SIZE_GRANULARITY * 8));
     }
 
     // tell EE that we are starting
@@ -683,8 +713,18 @@ void SatoriRecycler::BlockingCollect()
         m_gcCount[2]++;
     }
 
-    // we are done with gen0 here, update the occupancy
-    m_occupancy[0] = m_occupancyAcc[0];
+    // if promoting everything, whatever was attributed to gen1 is now in gen2
+    if (m_isPromotingAllRegions)
+    {
+        _ASSERTE(m_occupancyAcc[0] == 0);
+        m_occupancyAcc[2] += m_occupancyAcc[1];
+        m_occupancyAcc[1] = 0;
+    }
+    else
+    {
+        // we are done with gen0 here, update the occupancy
+        m_occupancy[0] = m_occupancyAcc[0];
+    }
 
     // we may still have some deferred sweeping to do, but
     // that is unobservable to EE, so tell EE that we are done
@@ -716,10 +756,13 @@ void SatoriRecycler::BlockingCollect()
     else
     {
         // no deferred sweep, update occupancy
-        m_occupancy[1] = m_occupancyAcc[1];
         if (m_prevCondemnedGeneration == 2)
         {
             m_occupancy[2] = m_occupancyAcc[2];
+        }
+        else
+        {
+            m_occupancy[1] = m_occupancyAcc[1];
         }
     }
 
@@ -2295,7 +2338,7 @@ void SatoriRecycler::PlanWorker()
     PlanRegions(m_ephemeralRegions);
     PlanRegions(m_finalizationScanCompleteRegions);
 
-    if (m_isPromotingAllRegions)
+    if (m_isPromotingAllRegions || m_allowPromotingRelocations)
     {
         PlanRegions(m_tenuredRegions);
         PlanRegions(m_tenuredFinalizationTrackingRegions);
@@ -2958,6 +3001,11 @@ size_t SatoriRecycler::GetTotalOccupancy()
     return m_occupancy[0] +
            m_occupancy[1] +
            m_occupancy[2];
+}
+
+size_t SatoriRecycler::GetRecyclerOccupancy()
+{
+    return m_occupancy[1] + m_occupancy[2];
 }
 
 size_t SatoriRecycler::GetGcStartMillis(int generation)
