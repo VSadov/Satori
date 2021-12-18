@@ -226,6 +226,8 @@ private:
     void PlanRegions(SatoriRegionQueue* regions);
     void AddRelocationTarget(SatoriRegion* region);
 
+    void AddTenuredRegionsToPlan(SatoriRegionQueue* regions);
+
     SatoriRegion* TryGetRelocationTarget(size_t size, bool existingRegionOnly);
 
     void ASSERT_NO_WORK();
