@@ -529,7 +529,7 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 
     if (m_gen1AddedSinceLastCollection > m_gen1Budget)
     {
-//        generation = 1;
+         generation = 1;
     }
 
     //TUNING: gen1 should not get too large.
@@ -629,18 +629,11 @@ void SatoriRecycler::BlockingCollect()
 
     // all sweeping should be done by now
     m_occupancy[1] = m_occupancyAcc[1];
-    if (m_prevCondemnedGeneration == 2)
-    {
-        m_occupancy[2] = m_occupancyAcc[2];
-        m_occupancyAcc[2] = 0;
-    }
-    else
-    {
-        _ASSERTE(m_occupancyAcc[2] == 0);
-    }
+    m_occupancy[2] = m_occupancyAcc[2];
 
     m_occupancyAcc[0] = 0;
     m_occupancyAcc[1] = 0;
+    m_occupancyAcc[2] = 0;
 
     _ASSERTE(m_deferredSweepRegions->IsEmpty());
 
@@ -680,7 +673,8 @@ void SatoriRecycler::BlockingCollect()
 
         // TODO: VS enable.
         // gen1 at last collection > m_gen1PromotingBudget
-        m_allowPromotingRelocations = false; // Gen1RegionCount() > m_gen1AddedSinceLastCollection + m_gen1PromotingBudget;
+        //m_allowPromotingRelocations = true; // Gen1RegionCount() > m_gen1AddedSinceLastCollection + m_gen1PromotingBudget;
+        m_isPromotingAllRegions = true;
 
         //TODO: VS
         // m_gen1PromotingBudget = max(50, m_occupancy[2] / (Satori::REGION_SIZE_GRANULARITY * 8));
@@ -2338,7 +2332,7 @@ void SatoriRecycler::PlanWorker()
     PlanRegions(m_ephemeralRegions);
     PlanRegions(m_finalizationScanCompleteRegions);
 
-    if (m_isPromotingAllRegions || m_allowPromotingRelocations)
+    if (m_condemnedGeneration == 2)
     {
         PlanRegions(m_tenuredRegions);
         PlanRegions(m_tenuredFinalizationTrackingRegions);
@@ -2350,12 +2344,10 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
     SatoriRegion* curRegion;
     while ((curRegion = regions->TryPop()))
     {
+        _ASSERTE(curRegion->Generation() <= m_condemnedGeneration);
         // we have just marked all condemened generations
         _ASSERTE(!curRegion->HasMarksSet());
-        if (curRegion->Generation() <= m_condemnedGeneration)
-        {
-            curRegion->HasMarksSet() = true;
-        }
+        curRegion->HasMarksSet() = true;
 
         // nursery regions do not participate in relocations
         if (!m_isRelocating || curRegion->IsAttachedToContext())
@@ -2375,12 +2367,6 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         if (curRegion->Occupancy() == 0)
         {
             _ASSERTE(curRegion->Generation() == 1);
-            AddRelocationTarget(curRegion);
-            continue;
-        }
-
-        if (curRegion->Generation() > m_condemnedGeneration)
-        {
             AddRelocationTarget(curRegion);
             continue;
         }
@@ -2495,17 +2481,43 @@ void SatoriRecycler::Relocate()
     RunWithHelp(&SatoriRecycler::RelocateWorker);
 }
 
-void SatoriRecycler::RelocateWorker()
+void SatoriRecycler::AddTenuredRegionsToPlan(SatoriRegionQueue* regions)
 {
-    if (!m_relocatingRegions->IsEmpty())
+    if (!regions->IsEmpty())
     {
         MaybeAskForHelp();
 
-        if (m_isRelocating && m_allowPromotingRelocations && !m_isPromotingAllRegions)
+        SatoriRegion* curRegion;
+        while ((curRegion = regions->TryPop()))
         {
-            PlanRegions(m_tenuredRegions);
-            PlanRegions(m_tenuredFinalizationTrackingRegions);
+            // we have just marked all condemened generations
+            _ASSERTE(!curRegion->HasMarksSet());
+            // condemned regions should go through Plan
+            _ASSERTE(curRegion->Generation() > m_condemnedGeneration);
+
+            if (m_isRelocating && m_allowPromotingRelocations)
+            {
+                AddRelocationTarget(curRegion);
+            }
+            else
+            {
+                m_stayingRegions->Push(curRegion);
+            }
         }
+    }
+};
+
+void SatoriRecycler::RelocateWorker()
+{
+    if (m_condemnedGeneration != 2 && (m_allowPromotingRelocations || m_isPromotingAllRegions))
+    {
+        AddTenuredRegionsToPlan(m_tenuredRegions);
+        AddTenuredRegionsToPlan(m_tenuredFinalizationTrackingRegions);
+    }
+
+    if (!m_relocatingRegions->IsEmpty())
+    {
+        MaybeAskForHelp();
 
         SatoriRegion* curRegion;
         while ((curRegion = m_relocatingRegions->TryPop()))
@@ -2726,8 +2738,8 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
     {
         if (curRegion->Generation() > m_condemnedGeneration)
         {
-            // this can only happen when selectively promoting in gen1
-            _ASSERTE(m_allowPromotingRelocations);
+            // this can only happen when promoting in gen1
+            _ASSERTE(m_allowPromotingRelocations || m_isPromotingAllRegions);
             if (curRegion->AcceptedPromotedObjects())
             {
                 curRegion->UpdateFinalizableTrackers();

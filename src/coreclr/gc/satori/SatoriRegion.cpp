@@ -91,6 +91,14 @@ SatoriRecycler* SatoriRegion::Recycler()
 void SatoriRegion::WipeCards()
 {
     m_containingPage->WipeCardsForRange(Start(), End());
+
+    SatoriMarkChunk* gen2Objects = DemotedObjects();
+    if (gen2Objects)
+    {
+        DemotedObjects() = nullptr;
+        gen2Objects->Clear();
+        Allocator()->ReturnMarkChunk(gen2Objects);
+    }
 }
 
 void SatoriRegion::MakeBlank()
