@@ -40,6 +40,9 @@ volatile static int m_gateSignaled;
 volatile static int m_activeHelpers;
 volatile static int m_totalHelpers;
 
+static const int MIN_GEN1_BUDGET = 10;
+static const int MIN_GEN2_BUDGET = 40;
+
 void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
 {
     WriteBarrierParameters args = {};
@@ -97,9 +100,6 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_condemnedGeneration = 0;
 
-    m_prevCondemnedGeneration = 2;
-    m_gen1CountAtLastGen2 = 0;
-
     m_occupancy[0] = 0;
     m_occupancy[1] = 0;
     m_occupancy[2] = 0;
@@ -107,26 +107,14 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_occupancyAcc[1] = 0;
     m_occupancyAcc[2] = 0;
 
+    // assume gen2 just happens and collected everything
+
     // when gen1 happens
-#ifdef _DEBUG
-    m_gen1Budget = 6;
-#else
-    // TUNING: the whole GC triggering deal should be tuned.
-    //         use some silly number for now.
-    m_gen1Budget = 25;
-#endif
-
-    // when gen1 promotes
-#ifdef _DEBUG
-    m_gen1PromotingBudget = m_gen1Budget * 2;
-#else
-    // simple assumption for now - 3 regions per worker might not be too big of a pause.
-    m_gen1PromotingBudget = 3 * GCToOSInterface::GetTotalProcessorCount();
-#endif
-
-    // when gen2 happens, initial value.
-    m_gen2Budget = m_gen1Budget;
-    m_gen2BudgetBytes = 0;
+    m_gen1CountAtLastGen2 = 0;
+    m_gen1Budget = MIN_GEN1_BUDGET;
+    m_gen2Budget = MIN_GEN2_BUDGET;
+    m_gen2BudgetBytes = m_gen2Budget * Satori::REGION_SIZE_GRANULARITY;
+    m_prevCondemnedGeneration = 2;
 
     m_activeHelperFn = nullptr;
     m_rootScanTicket = 0;
@@ -590,6 +578,62 @@ bool SatoriRecycler::IsBlockingPhase()
     return m_gcState == GC_STATE_BLOCKED;
 }
 
+void SatoriRecycler::AdjustHeuristics()
+{
+    size_t occupancy = GetTotalOccupancy();
+    size_t ephemeralOccupancy = m_occupancy[1] + m_occupancy[0];
+
+    if (m_prevCondemnedGeneration == 2)
+    {
+        // we do gen2 if occupancy doubles
+        m_gen2BudgetBytes = occupancy * 2;
+    }
+
+    // if prev promoted, gen1 occupancy will be low, just keep the same budget.
+    if (!m_promoteAllRegions)
+    {
+        // TODO: VS more smoothing?
+        // we look for ~20% ephemeral survivorship
+        size_t newGen1Budget = max(MIN_GEN1_BUDGET, ephemeralOccupancy * 4 / Satori::REGION_SIZE_GRANULARITY);
+        m_gen1Budget = (m_gen1Budget + newGen1Budget) / 2;
+    }
+
+    m_promoteAllRegions = m_allowPromotingRelocations = false;
+
+    if (m_condemnedGeneration == 2)
+    {
+        m_promoteAllRegions = true;
+        m_gen1CountAtLastGen2 = (int)m_gcCount[1];
+
+        // gen2 budget has been reached.
+        // we expect heap size to reduce and will readjust the goal at the next gc,
+        // but if heap doubles we do gen2 again.
+        m_gen2Budget = max(MIN_GEN2_BUDGET, occupancy / Satori::REGION_SIZE_GRANULARITY);
+        // we will also lower gen1 budget, so that a large gen1 bugget does not lead to
+        // perpetual gen2s if heap collapses. Normally gen1 budget will be less than gen2.
+        m_gen1Budget = min(m_gen1Budget, m_gen2Budget);
+    }
+    else
+    {
+        // gen2 byte goal is not changing, but adjust the budget to occupancy.
+        // ideally occupancy changes only slightly after each gen1
+        // if we have reached the goal, next gen1 should be gen2
+        m_gen2Budget = m_gen2BudgetBytes > occupancy ?
+            max(m_gen1Budget, (m_gen2BudgetBytes - occupancy) / Satori::REGION_SIZE_GRANULARITY) :
+            m_gen1Budget;
+
+        if (ephemeralOccupancy * 10 > m_occupancy[2])
+        {
+            m_allowPromotingRelocations = true;
+        }
+
+        if (ephemeralOccupancy * 5 > m_occupancy[2])
+        {
+            m_promoteAllRegions = true;
+        }
+    }
+}
+
 void SatoriRecycler::BlockingCollect()
 {
     // stop other threads.
@@ -633,52 +677,12 @@ void SatoriRecycler::BlockingCollect()
 
     m_occupancyAcc[0] = 0;
     m_occupancyAcc[1] = 0;
-    m_occupancyAcc[2] = 0;
 
     _ASSERTE(m_deferredSweepRegions->IsEmpty());
 
-    // no we know survivorship after last GC
-    // and we can move our goal posts.
-
-    m_isPromotingAllRegions = m_allowPromotingRelocations = false;
-
-    size_t rOccupancy = GetRecyclerOccupancy();
-    if (m_prevCondemnedGeneration == 2)
-    {
-        // we do gen2 if recycle occupancy doubles
-        m_gen2BudgetBytes = rOccupancy * 2;
-    }
-
-    if (m_condemnedGeneration == 2)
-    {
-        m_isPromotingAllRegions = true;
-        m_gen1CountAtLastGen2 = (int)m_gcCount[1];
-
-        // gen2 budget was less than gen1, but things are about to change
-        // we will bump gen2 budget proportionally to rOccupancy
-        m_gen2Budget = max(40, rOccupancy / Satori::REGION_SIZE_GRANULARITY);
-        // we will also lower gen1 budget, so that it is not preempted by continuous gen2s
-        m_gen1Budget = max(20, m_gen1Budget / 2);
-    }
-    else
-    {
-        // we look for ~20% survivorship in gen1
-        m_gen1Budget = max(20, (m_gen1Budget + (m_occupancy[1] * 4 / Satori::REGION_SIZE_GRANULARITY)) / 2);
-
-        // gen2 byte goal is not changing, but adjust the budget to rOccupancy.
-        // ideally occupancy changes only slightly after each gen1
-        m_gen2Budget = m_gen2BudgetBytes > rOccupancy ?
-            max(40, (m_gen2BudgetBytes - rOccupancy) / Satori::REGION_SIZE_GRANULARITY) :
-            40;
-
-        // TODO: VS enable.
-        // gen1 at last collection > m_gen1PromotingBudget
-        //m_allowPromotingRelocations = true; // Gen1RegionCount() > m_gen1AddedSinceLastCollection + m_gen1PromotingBudget;
-        m_isPromotingAllRegions = true;
-
-        //TODO: VS
-        // m_gen1PromotingBudget = max(50, m_occupancy[2] / (Satori::REGION_SIZE_GRANULARITY * 8));
-    }
+    // now we know survivorship after the last GC
+    // and we can figure what we want to do in this GC and when we will do the next one
+    AdjustHeuristics();
 
     // tell EE that we are starting
     // this needs to be called on a "GC" thread while EE is stopped.
@@ -707,18 +711,8 @@ void SatoriRecycler::BlockingCollect()
         m_gcCount[2]++;
     }
 
-    // if promoting everything, whatever was attributed to gen1 is now in gen2
-    if (m_isPromotingAllRegions)
-    {
-        _ASSERTE(m_occupancyAcc[0] == 0);
-        m_occupancyAcc[2] += m_occupancyAcc[1];
-        m_occupancyAcc[1] = 0;
-    }
-    else
-    {
-        // we are done with gen0 here, update the occupancy
-        m_occupancy[0] = m_occupancyAcc[0];
-    }
+    // we are done with gen0 here, update the occupancy
+    m_occupancy[0] = m_occupancyAcc[0];
 
     // we may still have some deferred sweeping to do, but
     // that is unobservable to EE, so tell EE that we are done
@@ -749,15 +743,9 @@ void SatoriRecycler::BlockingCollect()
     }
     else
     {
-        // no deferred sweep, update occupancy
-        if (m_prevCondemnedGeneration == 2)
-        {
-            m_occupancy[2] = m_occupancyAcc[2];
-        }
-        else
-        {
-            m_occupancy[1] = m_occupancyAcc[1];
-        }
+        // no deferred sweep, can update occupancy earlier (this is optional)
+        m_occupancy[1] = m_occupancyAcc[1];
+        m_occupancy[2] = m_occupancyAcc[2];
     }
 
     m_trimmer->SetOkToRun();
@@ -902,7 +890,7 @@ void SatoriRecycler::DeactivateFn(gc_alloc_context* gcContext, void* param)
     SatoriAllocationContext* context = (SatoriAllocationContext*)gcContext;
     SatoriRecycler* recycler = (SatoriRecycler*)param;
 
-    context->Deactivate(recycler, /*detach*/ recycler->m_isPromotingAllRegions);
+    context->Deactivate(recycler, /*detach*/ recycler->m_promoteAllRegions);
     recycler->ReportThreadAllocBytes(context->alloc_bytes + context->alloc_bytes_uoh, /*islive*/ true);
 }
 
@@ -2265,7 +2253,7 @@ void SatoriRecycler::DependentHandlesRescanWorker()
 void SatoriRecycler::PromoteHandlesAndFreeRelocatedRegions()
 {
     // NB: we may promote some objects in gen1 gc, but it is ok if handles stay young
-    if (m_isPromotingAllRegions)
+    if (m_promoteAllRegions)
     {
         SatoriHandlePartitioner::StartNextScan();
     }
@@ -2275,7 +2263,7 @@ void SatoriRecycler::PromoteHandlesAndFreeRelocatedRegions()
 
 void SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker()
 {
-    if (m_isPromotingAllRegions)
+    if (m_promoteAllRegions)
     {
         ScanContext sc;
         sc.promotion = TRUE;
@@ -2334,6 +2322,7 @@ void SatoriRecycler::PlanWorker()
 
     if (m_condemnedGeneration == 2)
     {
+        m_occupancyAcc[2] = 0;
         PlanRegions(m_tenuredRegions);
         PlanRegions(m_tenuredFinalizationTrackingRegions);
     }
@@ -2495,7 +2484,7 @@ void SatoriRecycler::AddTenuredRegionsToPlan(SatoriRegionQueue* regions)
             // condemned regions should go through Plan
             _ASSERTE(curRegion->Generation() > m_condemnedGeneration);
 
-            if (m_isRelocating && m_allowPromotingRelocations)
+            if (m_allowPromotingRelocations && m_isRelocating)
             {
                 AddRelocationTarget(curRegion);
             }
@@ -2509,8 +2498,10 @@ void SatoriRecycler::AddTenuredRegionsToPlan(SatoriRegionQueue* regions)
 
 void SatoriRecycler::RelocateWorker()
 {
-    if (m_condemnedGeneration != 2 && (m_allowPromotingRelocations || m_isPromotingAllRegions))
+    if (m_condemnedGeneration != 2 &&
+        (m_promoteAllRegions || (m_allowPromotingRelocations && m_isRelocating)))
     {
+        m_occupancyAcc[2] = 0;
         AddTenuredRegionsToPlan(m_tenuredRegions);
         AddTenuredRegionsToPlan(m_tenuredFinalizationTrackingRegions);
     }
@@ -2638,7 +2629,7 @@ void SatoriRecycler::Update()
     // we will combine these two passes here after both prerequisites are complete.
     PromoteHandlesAndFreeRelocatedRegions();
 
-    if (m_isPromotingAllRegions)
+    if (m_promoteAllRegions)
     {
         // the following must be after cards are reset
         m_heap->ForEachPage(
@@ -2739,7 +2730,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         if (curRegion->Generation() > m_condemnedGeneration)
         {
             // this can only happen when promoting in gen1
-            _ASSERTE(m_allowPromotingRelocations || m_isPromotingAllRegions);
+            _ASSERTE(m_allowPromotingRelocations || m_promoteAllRegions);
             if (curRegion->AcceptedPromotedObjects())
             {
                 curRegion->UpdateFinalizableTrackers();
@@ -2779,7 +2770,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         if (curRegion->IsAttachedToContext())
         {
             // when promoting, all nursery regions should be detached
-            _ASSERTE(!m_isPromotingAllRegions);
+            _ASSERTE(!m_promoteAllRegions);
             if (!m_isRelocating)
             {
                 curRegion->Sweep</*updatePointers*/ false>();
@@ -2792,10 +2783,11 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                 m_heap->Allocator()->ReturnRegion(curRegion);
             }
 
+            RecordOccupancy(curRegion->Generation(), curRegion->Occupancy());
             continue;
         }
 
-        if (m_isPromotingAllRegions)
+        if (m_promoteAllRegions)
         {
             curRegion->SetGeneration(2);
             curRegion->WipeCards();
@@ -2871,6 +2863,11 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
         }
     }
 
+    //
+    // finally return the region back into recycler queues
+    //
+
+    RecordOccupancy(curRegion->Generation(), curRegion->Occupancy());
     if (curRegion->Generation() == 2)
     {
         (curRegion->EverHadFinalizables() ? m_tenuredFinalizationTrackingRegions : m_tenuredRegions)->Push(curRegion);
