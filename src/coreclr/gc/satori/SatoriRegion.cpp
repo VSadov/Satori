@@ -1666,6 +1666,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
                         VolatileStoreWithoutBarrier(ppObject, child);
                     }
 
+                    // TODO: VS no need to do this is promoting everything
                     // update the card as if the relocated object got a child assigned
                     if (child->ContainingRegion()->Generation() < 2)
                     {

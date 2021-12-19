@@ -115,18 +115,18 @@ private:
 
     void(SatoriRecycler::* m_activeHelperFn)();
 
-    int m_prevCondemnedGeneration;
     int m_condemnedGeneration;
     bool m_isRelocating;   
-    bool m_isPromotingAllRegions;  
+    bool m_promoteAllRegions;  
     bool m_allowPromotingRelocations;
     bool m_isBarrierConcurrent;
+
+    int m_prevCondemnedGeneration;
 
     int64_t m_gcCount[3];
     int64_t m_gcStartMillis[3];
 
     size_t m_gen1Budget;
-    size_t m_gen1PromotingBudget;
     size_t m_gen2BudgetBytes;
     size_t m_gen2Budget;
     size_t m_condemnedRegionsCount;
@@ -192,6 +192,8 @@ private:
     void PromoteHandlesAndFreeRelocatedRegions();
 
     void PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker();
+
+    void AdjustHeuristics();
 
     void BlockingCollect();
     void RunWithHelp(void(SatoriRecycler::* method)());
