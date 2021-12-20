@@ -164,6 +164,11 @@ unsigned SatoriGC::WhichGeneration(Object* obj)
 int SatoriGC::CollectionCount(int generation, int get_bgc_fgc_coutn)
 {
     //get_bgc_fgc_coutn N/A
+    if ((unsigned)generation > (unsigned)2)
+    {
+        return 0;
+    }
+
     return (int)m_heap->Recycler()->GetCollectionCount(generation);
 }
 
