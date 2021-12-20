@@ -622,12 +622,12 @@ void SatoriRecycler::AdjustHeuristics()
             max(m_gen1Budget, (m_gen2BudgetBytes - occupancy) / Satori::REGION_SIZE_GRANULARITY) :
             m_gen1Budget;
 
-        if (ephemeralOccupancy * 10 > m_occupancy[2])
+        if (ephemeralOccupancy * 20 > occupancy)
         {
             m_allowPromotingRelocations = true;
         }
 
-        if (ephemeralOccupancy * 5 > m_occupancy[2])
+        if (ephemeralOccupancy * 10 > occupancy)
         {
             m_promoteAllRegions = true;
         }
