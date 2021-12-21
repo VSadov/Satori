@@ -57,6 +57,7 @@ public:
     virtual int WaitForFullGCApproach(int millisecondsTimeout) override;
     virtual int WaitForFullGCComplete(int millisecondsTimeout) override;
     virtual unsigned WhichGeneration(Object* obj) override;
+    virtual unsigned GetGenerationWithRange(Object* object, uint8_t** ppStart, uint8_t** ppAllocated, uint8_t** ppReserved) override;
     virtual int CollectionCount(int generation, int get_bgc_fgc_coutn = 0) override;
     virtual int StartNoGCRegion(uint64_t totalSize, bool lohSizeKnown, uint64_t lohSize, bool disallowFullBlockingGC) override;
     virtual int EndNoGCRegion() override;

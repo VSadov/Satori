@@ -161,6 +161,12 @@ unsigned SatoriGC::WhichGeneration(Object* obj)
     return (unsigned)so->ContainingRegion()->Generation();
 }
 
+unsigned SatoriGC::GetGenerationWithRange(Object* object, uint8_t** ppStart, uint8_t** ppAllocated, uint8_t** ppReserved)
+{
+    // NYI
+    return 0;
+}
+
 int SatoriGC::CollectionCount(int generation, int get_bgc_fgc_coutn)
 {
     //get_bgc_fgc_coutn N/A
