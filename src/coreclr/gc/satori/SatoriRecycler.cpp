@@ -238,7 +238,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
     _ASSERTE(!region->HasMarksSet());
 
     PushToEphemeralQueues(region);
-    Interlocked::Increment((size_t*)&m_gen1AddedSinceLastCollection);
+    Interlocked::ExchangeAdd64(&m_gen1AddedSinceLastCollection, region->Size() >> Satori::REGION_BITS);
     if (region->IsEscapeTracking())
     {
         _ASSERTE(IsBlockingPhase());
@@ -272,7 +272,7 @@ void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
 
     region->Verify();
     (region->EverHadFinalizables() ? m_tenuredFinalizationTrackingRegions : m_tenuredRegions)->Push(region);
-    Interlocked::Increment((size_t*)&m_gen2AddedSinceLastCollection);
+    Interlocked::ExchangeAdd64(&m_gen2AddedSinceLastCollection, region->Size() >> Satori::REGION_BITS);
 
     _ASSERTE(region->Generation() == 1);
 
@@ -523,7 +523,7 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
     //TUNING: gen1 should not get too large.
     //      certainly no point if gen1 > gen2, could rather have all gen2
     //      or maybe even 1/10 gen2 ?
-    if (m_gen1AddedSinceLastCollection > m_gen2Budget)
+    if (m_gen1AddedSinceLastCollection + m_gen2AddedSinceLastCollection > m_gen2Budget)
     {
         generation = 2;
     }
@@ -619,8 +619,8 @@ void SatoriRecycler::AdjustHeuristics()
         // ideally occupancy changes only slightly after each gen1
         // if we have reached the goal, next gen1 should be gen2
         m_gen2Budget = m_gen2BudgetBytes > occupancy ?
-            max(m_gen1Budget, (m_gen2BudgetBytes - occupancy) / Satori::REGION_SIZE_GRANULARITY) :
-            m_gen1Budget;
+            max(MIN_GEN2_BUDGET, (m_gen2BudgetBytes - occupancy) / Satori::REGION_SIZE_GRANULARITY) :
+            MIN_GEN2_BUDGET;
 
         if (ephemeralOccupancy * 20 > occupancy)
         {
