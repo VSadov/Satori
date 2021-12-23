@@ -1365,19 +1365,31 @@ bool CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
         // if src is in current region, the elements could be escaping
         if (!curRegion->AnyExposed(src, len))
         {
-            SatoriObject* containingSrcObj = curRegion->FindObject(src);
-            containingSrcObj->ForEachObjectRef(
-                [&](SatoriObject** ref)
+            // one-element array copy is embarrasingly common. specialcase that.
+            if (len == sizeof(size_t))
+            {
+                SatoriObject* obj = *(SatoriObject**)src;
+                if (obj->ContainingRegion() == curRegion)
                 {
-                    SatoriObject* child = *ref;
-                    if (child->ContainingRegion() == curRegion)
+                    curRegion->EscapeRecursively(obj);
+                }
+            }
+            else
+            {
+                SatoriObject* containingSrcObj = curRegion->FindObject(src);
+                containingSrcObj->ForEachObjectRef(
+                    [&](SatoriObject** ref)
                     {
-                        curRegion->EscapeRecursively(child);
-                    }
-                },
-                src,
-                src + len
-            );
+                        SatoriObject* child = *ref;
+                        if (child->ContainingRegion() == curRegion)
+                        {
+                            curRegion->EscapeRecursively(child);
+                        }
+                    },
+                    src,
+                    src + len
+                );
+            }
         }
 
         return false;

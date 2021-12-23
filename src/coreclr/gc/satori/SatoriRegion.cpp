@@ -272,6 +272,7 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
             m_freeLists[bucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
             m_allocStart = freeObj->Start();
             m_allocEnd = freeObj->End();
+            ClearIndicesForAllocRange();
             _ASSERTE(AllocRemaining() >= minAllocSize);
             return m_allocStart;
         }
@@ -542,11 +543,6 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     return chunkStart;
 }
 
-inline size_t LocationToIndex(size_t location)
-{
-    return (location >> Satori::INDEX_GRANULARITY_BITS) & (Satori::INDEX_LENGTH - 1);
-}
-
 // Finds an object that contains given location.
 //
 // Assumptions that caller must arrange or handle:
@@ -603,17 +599,7 @@ SatoriObject* SatoriRegion::FindObject(size_t location)
     SatoriObject* next = o->Next();
     while (next->Start() <= location)
     {
-        // if object straddles index granules, record the object in corresponding indices
-        if ((o->Start() ^ next->Start()) >> Satori::INDEX_GRANULARITY_BITS)
-        {
-            size_t i = LocationToIndex(o->Start()) + 1;
-            size_t last = LocationToIndex(next->Start());
-            do
-            {
-                m_index[i++] = (int)(o->Start() - Start());
-            }
-            while (i <= last);
-        }
+        SetIndicesForObject(o, next->Start());
 
         o = next;
         next = next->Next();
@@ -1303,11 +1289,15 @@ void SatoriRegion::ThreadLocalCompact()
             // clear Mark/Pinned, keep escaped, reloc should be 0, this object will stay around
             _ASSERTE(d1->GetLocalReloc() == 0);
             ClearPinnedAndMarked(d1);
-            d2 = d1 = d1->Next();
+            SatoriObject* next = d1->Next();
+            // opportunistically mark the index if d1 is indexable
+            SetIndicesForObject(d1, next->Start());
+            d2 = d1 = next;
         }
 
         // find the end of the run of relocatable objects with the same reloc distance (we can copy all at once)
-        for (s2 = s1; s2->Start() < End(); s2 = s2->Next())
+        s2 = s1;
+        while (s2->Start() < End())
         {
             if (reloc != s2->GetLocalReloc())
             {
@@ -1318,6 +1308,10 @@ void SatoriRegion::ThreadLocalCompact()
             // pre-relocation copy of object need to clear the mark, so that the object could be swept if not overwritten.
             // the relocated copy is not swept so clearing is also correct.
             s2->ClearMarkCompactStateForRelocation();
+            SatoriObject* next = s2->Next();
+            // opportunistically mark the index if s2 is indexable
+            SetIndicesForObject((SatoriObject*)(s2->Start() - reloc), next->Start() - reloc);
+            s2 = next;
         }
 
         // move d2 to the first object after the future end of the relocated run
@@ -1358,6 +1352,16 @@ NOINLINE void SatoriRegion::ClearPinned(SatoriObject* o)
     {
         ClearMarked(o + MarkOffset::Pinned);
     }
+}
+
+NOINLINE void SatoriRegion::SetIndicesForObjectCore(size_t start, size_t end)
+{
+    size_t i = LocationToIndex(start) + 1;
+    size_t lastIndex = LocationToIndex(end);
+    do
+    {
+        m_index[i++] = (int)(start - Start());
+    } while (i <= lastIndex);
 }
 
 enum class FinalizationPendState

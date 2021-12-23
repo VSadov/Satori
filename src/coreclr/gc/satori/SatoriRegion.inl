@@ -214,8 +214,6 @@ bool SatoriRegion::Sweep()
     {
         // we will be building new free lists
         ClearFreeLists();
-        // sweeping invalidates indices, since free objects get coalesced
-        ClearIndex();
     }
 
     m_escapedSize = 0;
@@ -232,6 +230,7 @@ bool SatoriRegion::Sweep()
             o = SkipUnmarked(o);
             size_t skipped = o->Start() - lastMarkedEnd;
             SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
+            SetIndicesForObject(free, o->Start());
             AddFreeSpace(free);
 
             if (o->Start() >= objLimit)
@@ -503,4 +502,44 @@ inline SatoriObject* SatoriRegion::ObjectForMarkBit(size_t bitmapIndex, int offs
     size_t objOffset = bitmapIndex * sizeof(size_t) * 8 + offset;
     return (SatoriObject*)(Start()) + objOffset;
 }
+
+inline size_t SatoriRegion::LocationToIndex(size_t location)
+{
+    return (location - Start()) >> Satori::INDEX_GRANULARITY_BITS;
+}
+
+inline void SatoriRegion::SetIndicesForObject(SatoriObject* o, size_t end)
+{
+    _ASSERTE(end > o->Start());
+    _ASSERTE(end <= Start() + Satori::REGION_SIZE_GRANULARITY);
+
+    size_t start = o->Start();
+
+    // if object straddles index granules, record the object in corresponding indices
+    if ((start ^ end) >> Satori::INDEX_GRANULARITY_BITS)
+    {
+        SetIndicesForObjectCore(start, end);
+    }
+}
+
+inline void SatoriRegion::ClearIndicesForAllocRange()
+{
+    _ASSERTE(m_allocStart < m_allocEnd);
+    _ASSERTE(m_allocStart > Start());
+
+    size_t start = m_allocStart;
+    size_t end = min(m_allocEnd, Start() + Satori::REGION_SIZE_GRANULARITY);
+
+    // if range straddles index granules, clear corresponding indices
+    if ((start ^ end) >> Satori::INDEX_GRANULARITY_BITS)
+    {
+        size_t i = LocationToIndex(start) + 1;
+        size_t lastIndex = LocationToIndex(end);
+        do
+        {
+            m_index[i++] = 0;
+        } while (i <= lastIndex);
+    }
+}
+
 #endif

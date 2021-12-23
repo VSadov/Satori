@@ -197,6 +197,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                     SatoriObject* result = (SatoriObject*)(size_t)context->alloc_ptr;
                     context->alloc_ptr += size;
                     result->CleanSyncBlock();
+                    region->SetIndicesForObject(result, result->Start() + size);
                     return result;
                 }
                 else
@@ -303,6 +304,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
                 {
                     result->CleanSyncBlock();
                     context->alloc_bytes_uoh += size;
+                    region->SetIndicesForObject(result, result->Start() + size);
                 }
                 else
                 {

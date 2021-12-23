@@ -87,6 +87,10 @@ public:
 
     SatoriObject* FirstObject();
     SatoriObject* FindObject(size_t location);
+    size_t LocationToIndex(size_t location);
+    void SetIndicesForObject(SatoriObject* o, size_t end);
+    void SetIndicesForObjectCore(size_t start, size_t end);
+    void ClearIndicesForAllocRange();
 
     SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
