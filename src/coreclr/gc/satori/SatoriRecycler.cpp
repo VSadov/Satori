@@ -1293,9 +1293,11 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
                     }
                     return true;
                 }
-            }
+            }            
 
             SatoriObject* o = srcChunk->Pop();
+            SatoriUtil::Prefetch(srcChunk->Peek());
+
             _ASSERTE(o->IsMarked());
             if (o->IsUnmovable())
             {
@@ -1384,6 +1386,8 @@ void SatoriRecycler::DrainMarkQueues(SatoriMarkChunk* srcChunk)
         while (srcChunk->Count() > 0)
         {
             SatoriObject* o = srcChunk->Pop();
+            SatoriUtil::Prefetch(srcChunk->Peek());
+
             _ASSERTE(o->IsMarked());
             if (o->IsUnmovable())
             {

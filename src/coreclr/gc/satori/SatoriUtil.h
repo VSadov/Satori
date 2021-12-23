@@ -141,6 +141,19 @@ public:
 #endif
     }
 
+    static void Prefetch(void* addr)
+    {
+#if TARGET_WINDOWS
+#if defined(TARGET_ARM64)
+        __prefetch(addr);
+#else
+        _mm_prefetch((char *) addr, _MM_HINT_T0);
+#endif
+#else
+        __builtin_prefetch(addr);
+#endif
+    }
+
     static bool IsConservativeMode()
     {
 #ifdef FEATURE_CONSERVATIVE_GC
