@@ -1283,7 +1283,6 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
             // - establish the minimum amount of work per help quantum
             if (deadline && objectCount > 4096)
             {
-                objectCount = 0;
                 if ((GCToOSInterface::QueryPerformanceCounter() - deadline) > 0)
                 {
                     m_workList->Push(srcChunk);
@@ -1293,7 +1292,9 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
                     }
                     return true;
                 }
-            }            
+
+                objectCount = 0;
+            }
 
             SatoriObject* o = srcChunk->Pop();
             SatoriUtil::Prefetch(srcChunk->Peek());
