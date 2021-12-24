@@ -533,12 +533,20 @@ inline void SatoriRegion::ClearIndicesForAllocRange()
     // if range straddles index granules, clear corresponding indices
     if ((start ^ end) >> Satori::INDEX_GRANULARITY_BITS)
     {
-        size_t i = LocationToIndex(start) + 1;
-        size_t lastIndex = LocationToIndex(end);
-        do
+        size_t firstIndex = LocationToIndex(start) + 1;
+        // if first is clean, all are clean
+        if (m_index[firstIndex] != 0)
         {
-            m_index[i++] = 0;
-        } while (i <= lastIndex);
+            size_t lastIndex = LocationToIndex(end);
+            memset((void*)&m_index[firstIndex], 0, (lastIndex - firstIndex + 1) * sizeof(int));
+        }
+
+#if _DEBUG
+        for(size_t i = firstIndex, last = LocationToIndex(end); i <= last; i++)
+        {
+            _ASSERTE(m_index[i] == 0);
+        }
+#endif
     }
 }
 

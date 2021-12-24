@@ -71,7 +71,6 @@ public:
 
     SatoriObject* Peek()
     {
-        _ASSERTE(Count() > 0);
         return m_data[m_top - 1];
     }
 

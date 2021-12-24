@@ -1358,9 +1358,10 @@ NOINLINE void SatoriRegion::SetIndicesForObjectCore(size_t start, size_t end)
 {
     size_t i = LocationToIndex(start) + 1;
     size_t lastIndex = LocationToIndex(end);
+    int objOffset = (int)(start - Start());
     do
     {
-        m_index[i++] = (int)(start - Start());
+        m_index[i++] = objOffset;
     } while (i <= lastIndex);
 }
 
