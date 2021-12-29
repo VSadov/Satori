@@ -168,6 +168,7 @@ private:
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();
     uint8_t GetCardScanTicket();
+    void ScheduleAsChildRanges(SatoriObject* o);
     void DrainMarkQueues(SatoriMarkChunk* srcChunk = nullptr);
     bool DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk = nullptr, int64_t deadline = 0);
     void MarkThroughCards();

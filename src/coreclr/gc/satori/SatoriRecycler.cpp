@@ -1368,6 +1368,30 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk, int64_
     return false;
 }
 
+void SatoriRecycler::ScheduleAsChildRanges(SatoriObject* o)
+{
+    size_t start = o->Start();
+    size_t remains = o->Size();
+    while (remains > 0)
+    {
+        SatoriMarkChunk* chunk = m_heap->Allocator()->TryGetMarkChunk();
+        if (chunk == nullptr)
+        {
+            o->ContainingRegion()->ContainingPage()->DirtyCardsForRange(start, remains);
+            break;
+        }
+
+        size_t len = min(Satori::REGION_SIZE_GRANULARITY, remains);
+        chunk->SetRange(o, start, start + len);
+        start += len;
+        remains -= len;
+        m_workList->Push(chunk);
+    }
+
+    // done with current object
+    _ASSERTE(remains == 0);
+}
+
 void SatoriRecycler::DrainMarkQueues(SatoriMarkChunk* srcChunk)
 {
     if (!srcChunk)
@@ -1381,35 +1405,56 @@ void SatoriRecycler::DrainMarkQueues(SatoriMarkChunk* srcChunk)
     }
 
     SatoriMarkChunk* dstChunk = nullptr;
+
+    auto markChildFn = [&](SatoriObject** ref)
+    {
+        SatoriObject* child = *ref;
+        if (child && !child->IsMarkedOrOlderThan(m_condemnedGeneration))
+        {
+            child->SetMarkedAtomic();
+            // put more work, if found, into dstChunk
+            if (!dstChunk || !dstChunk->TryPush(child))
+            {
+                this->PushToMarkQueuesSlow(dstChunk, child);
+            }
+        }
+    };
+
     while (srcChunk)
     {
-        // drain srcChunk to dst chunk
-        while (srcChunk->Count() > 0)
+        if (srcChunk->IsRange())
         {
-            SatoriObject* o = srcChunk->Pop();
-            SatoriUtil::Prefetch(srcChunk->Peek());
-
-            _ASSERTE(o->IsMarked());
-            if (o->IsUnmovable())
+            SatoriObject* o;
+            size_t start, end;
+            srcChunk->GetRange(o, start, end);
+            srcChunk->Clear();
+            // mark children in the range
+            o->ForEachObjectRef(markChildFn, start, end);
+        }
+        else
+        {
+            // mark objects in the chunk
+            while (srcChunk->Count() > 0)
             {
-                o->ContainingRegion()->HasPinnedObjects() = true;
-            }
+                SatoriObject* o = srcChunk->Pop();
+                SatoriUtil::Prefetch(srcChunk->Peek());
 
-            o->ForEachObjectRef(
-                [&](SatoriObject** ref)
+                _ASSERTE(o->IsMarked());
+                if (o->IsUnmovable())
                 {
-                    SatoriObject* child = *ref;
-                    if (child && !child->IsMarkedOrOlderThan(m_condemnedGeneration))
-                    {
-                        child->SetMarkedAtomic();
-                        if (!dstChunk || !dstChunk->TryPush(child))
-                        {
-                            this->PushToMarkQueuesSlow(dstChunk, child);
-                        }
-                    }
-                },
-                /* includeCollectibleAllocator */ true
-            );
+                    o->ContainingRegion()->HasPinnedObjects() = true;
+                }
+
+                // do not get engaged with huge objects, reschedule them as child ranges.
+                if (o->ContainingRegion()->Size() > Satori::REGION_SIZE_GRANULARITY &&
+                    o->RawGetMethodTable()->ContainsPointers())
+                {
+                    ScheduleAsChildRanges(o);
+                    continue;
+                }
+
+                o->ForEachObjectRef(markChildFn, /* includeCollectibleAllocator */ true);
+            }
         }
 
         // done with srcChunk
