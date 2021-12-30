@@ -31,7 +31,7 @@ public:
     size_t GetNowMillis();
 
     void TryStartGC(int generation, gc_reason reason);
-    bool HelpOnce();
+    void HelpOnce();
     void ConcurrentHelp();
     void ShutDown();
     bool HelpOnceCore();
