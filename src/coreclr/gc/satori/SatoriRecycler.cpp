@@ -2927,7 +2927,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
 
             // TUNING: heuristic for gen0
             //         the cost here is inability to trace concurrently at all.
-            curRegion->ReusableFor() = !curRegion->ObjCount() < (Satori::MAX_ESCAPE_SIZE / 4)?
+            curRegion->ReusableFor() = curRegion->ObjCount() < (Satori::MAX_ESCAPE_SIZE / 4)?
                                             SatoriRegion::ReuseLevel::Gen0 :
                                             SatoriRegion::ReuseLevel::Gen1;
 #endif
