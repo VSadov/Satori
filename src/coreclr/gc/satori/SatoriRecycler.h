@@ -35,8 +35,8 @@ public:
     void ConcurrentHelp();
     void ShutDown();
     bool HelpOnceCore();
-    void MarkAllStacksAndFinalizationQueueHelper();
-    void StartMarkingAllStacksAndFinalizationQueue();
+    void BlockingMarkForConcurrentHelper();
+    void BlockingMarkForConcurrent();
     void MaybeAskForHelp();
     void AskForHelp();
     void MaybeTriggerGC(gc_reason reason);
@@ -93,6 +93,7 @@ private:
 
     // regions that could be reused for Gen1
     SatoriRegionQueue* m_reusableRegions;
+    SatoriRegionQueue* m_reusableRegionsAlternate;
 
     SatoriRegionQueue* m_demotedRegions;
 
@@ -147,6 +148,7 @@ private:
 
 private:
     static void DeactivateFn(gc_alloc_context* context, void* param);
+    static void MarkDemotedAttachedRegionsFn(gc_alloc_context* gcContext, void* param);
 
     template <bool isConservative>
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
@@ -164,6 +166,7 @@ private:
     void DeactivateAllStacks();
     void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
     bool MarkOwnStackAndDrainQueues(int64_t deadline = 0);
+    void MarkDemoted(SatoriRegion* curRegion, MarkContext& c);
     void MarkAllStacksFinalizationAndDemotedRoots();
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();

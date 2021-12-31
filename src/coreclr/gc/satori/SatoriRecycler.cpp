@@ -91,6 +91,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_gen2AddedSinceLastCollection = 0;
 
     m_reusableRegions = new SatoriRegionQueue(QueueKind::RecyclerReusable);
+    m_reusableRegionsAlternate = new SatoriRegionQueue(QueueKind::RecyclerReusable);
     m_demotedRegions = new SatoriRegionQueue(QueueKind::RecyclerDemoted);
 
     m_workList = new SatoriMarkChunkQueue();
@@ -129,6 +130,7 @@ void SatoriRecycler::ShutDown()
     m_activeHelperFn = nullptr;
 }
 
+/* static */
 void SatoriRecycler::HelperThreadFn(void* param)
 {
     SatoriRecycler* recycler = (SatoriRecycler*)param;
@@ -356,7 +358,7 @@ bool SatoriRecycler::HelpOnceCore()
     {
         _ASSERTE(m_isBarrierConcurrent);
         // help with marking stacks and f-queue, this is urgent since EE is stopped for this.
-        MarkAllStacksAndFinalizationQueueHelper();
+        BlockingMarkForConcurrentHelper();
 
         if (m_ccStackMarkState == CC_MARK_STATE_MARKING && IsHelperThread())
         {
@@ -371,10 +373,13 @@ bool SatoriRecycler::HelpOnceCore()
     int64_t deadline = timeStamp + m_perfCounterFrequencyMHz / 8; // 1/8 msec.
 
     // this should be done before scanning stacks or cards
-    // since the regions must be swept before we can FindObject
-    if (DrainDeferredSweepQueueConcurrent(deadline))
+    // since the regions must be swept before we can use FindObject
+    if (m_ccStackMarkState == CC_MARK_STATE_NONE)
     {
-        return true;
+        if (DrainDeferredSweepQueueConcurrent(deadline))
+        {
+            return true;
+        }
     }
 
     // make sure the barrier is toggled to concurrent before marking
@@ -397,7 +402,8 @@ bool SatoriRecycler::HelpOnceCore()
 
     if (m_ccStackMarkState == CC_MARK_STATE_NONE)
     {
-        StartMarkingAllStacksAndFinalizationQueue();
+        // only one thread will win and drive this stage, others may help.
+        BlockingMarkForConcurrent();
     }
 
     if (m_condemnedGeneration == 1)
@@ -422,7 +428,37 @@ bool SatoriRecycler::HelpOnceCore()
     return false;
 }
 
-void SatoriRecycler::MarkAllStacksAndFinalizationQueueHelper()
+class MarkContext
+{
+    friend class SatoriRecycler;
+
+public:
+    MarkContext(SatoriRecycler* recycler)
+        : m_markChunk()
+    {
+        m_recycler = recycler;
+        m_condemnedGeneration = recycler->m_condemnedGeneration;
+        m_heap = recycler->m_heap;
+    }
+
+    void PushToMarkQueues(SatoriObject* o)
+    {
+        if (m_markChunk && m_markChunk->TryPush(o))
+        {
+            return;
+        }
+
+        m_recycler->PushToMarkQueuesSlow(m_markChunk, o);
+    }
+
+private:
+    int m_condemnedGeneration;
+    SatoriMarkChunk* m_markChunk;
+    SatoriHeap* m_heap;
+    SatoriRecycler* m_recycler;
+};
+
+void SatoriRecycler::BlockingMarkForConcurrentHelper()
 {
     Interlocked::Increment(&m_ccMarkingThreadsNum);
     // check state again it could have changed if there were no marking threads
@@ -434,13 +470,48 @@ void SatoriRecycler::MarkAllStacksAndFinalizationQueueHelper()
     Interlocked::Decrement(&m_ccMarkingThreadsNum);
 }
 
-void SatoriRecycler::StartMarkingAllStacksAndFinalizationQueue()
+/* static */
+void SatoriRecycler::MarkDemotedAttachedRegionsFn(gc_alloc_context* gcContext, void* param)
+{
+    SatoriAllocationContext* context = (SatoriAllocationContext*)gcContext;
+    MarkContext* markContext = (MarkContext*)param;
+    SatoriRecycler* recycler = markContext->m_recycler;
+
+    SatoriRegion* region = context->RegularRegion();
+    if (region && region->IsDemoted())
+    {
+        recycler->MarkDemoted(region, *markContext);
+    }
+}
+
+void SatoriRecycler::BlockingMarkForConcurrent()
 {
     if (Interlocked::CompareExchange(&m_ccStackMarkState, CC_MARK_STATE_SUSPENDING_EE, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
     {
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
-        m_ccStackMarkState = CC_MARK_STATE_MARKING;
+
+        // swap reusable and alternate so that we could filter through reusables.
+        // the swap needs to be done when EE is stopped, but before marking has started.
+        SatoriRegionQueue* alternate = m_reusableRegionsAlternate;
+        _ASSERTE(alternate->Count() == 0);
+        m_reusableRegionsAlternate = m_reusableRegions;
+        m_reusableRegions = alternate;
+
+        // signal to everybody to start marking roots
+        VolatileStore((int*)&m_ccStackMarkState, CC_MARK_STATE_MARKING);
+
+        // mark demoted regions if any attached to thread contexts
+        MarkContext c(this);
+        GCToEEInterface::GcEnumAllocContexts(MarkDemotedAttachedRegionsFn, &c);
+        if (c.m_markChunk != nullptr)
+        {
+            m_workList->Push(c.m_markChunk);
+        }
+
+        // now join everybody else and mark some roots
         MarkAllStacksFinalizationAndDemotedRoots();
+
+        // done, wait for marking to finish and restart EE
         Interlocked::Exchange(&m_ccStackMarkState, CC_MARK_STATE_DONE);
         while (m_ccMarkingThreadsNum)
         {
@@ -893,6 +964,7 @@ int64_t SatoriRecycler::GetTotalAllocatedBytes()
     return m_totalAllocBytes;
 }
 
+/* static */
 void SatoriRecycler::DeactivateFn(gc_alloc_context* gcContext, void* param)
 {
     SatoriAllocationContext* context = (SatoriAllocationContext*)gcContext;
@@ -908,36 +980,6 @@ void SatoriRecycler::DeactivateAllStacks()
     GCToEEInterface::GcEnumAllocContexts(DeactivateFn, m_heap->Recycler());
     m_totalAllocBytes = m_currentAllocBytesLiveThreads + m_currentAllocBytesDeadThreads;
 }
-
-class MarkContext
-{
-    friend class SatoriRecycler;
-
-public:
-    MarkContext(SatoriRecycler* recycler)
-        : m_markChunk()
-    {
-        m_recycler = recycler;
-        m_condemnedGeneration = recycler->m_condemnedGeneration;
-        m_heap = recycler->m_heap;
-    }
-
-    void PushToMarkQueues(SatoriObject* o)
-    {
-        if (m_markChunk && m_markChunk->TryPush(o))
-        {
-            return;
-        }
-
-        m_recycler->PushToMarkQueuesSlow(m_markChunk, o);
-    }
-
-private:
-    int m_condemnedGeneration;
-    SatoriMarkChunk* m_markChunk;
-    SatoriHeap* m_heap;
-    SatoriRecycler* m_recycler;
-};
 
 void SatoriRecycler::PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o)
 {
@@ -977,6 +1019,7 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, Sa
     }
 }
 
+/* static */
 template <bool isConservative>
 void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
 {
@@ -1021,6 +1064,7 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     }
 };
 
+/* static */
 template <bool isConservative>
 void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
 {
@@ -1148,6 +1192,8 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
     MarkContext c = MarkContext(this);
     gc_alloc_context* aContext = GCToEEInterface::GetAllocContext();
 
+    bool isBlockingPhase = IsBlockingPhase();
+
     // NB: helper threads do not have contexts.
     if (aContext)
     {
@@ -1165,15 +1211,39 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
                 MaybeAskForHelp();
 
                 if (SatoriUtil::IsConservativeMode())
-                    GCToEEInterface::GcScanCurrentStackRoots(IsBlockingPhase() ? MarkFn<true> : MarkFnConcurrent<true>, &sc);
+                    GCToEEInterface::GcScanCurrentStackRoots(isBlockingPhase ? MarkFn<true> : MarkFnConcurrent<true>, &sc);
                 else
-                    GCToEEInterface::GcScanCurrentStackRoots(IsBlockingPhase() ? MarkFn<false> : MarkFnConcurrent<false>, &sc);
+                    GCToEEInterface::GcScanCurrentStackRoots(isBlockingPhase ? MarkFn<false> : MarkFnConcurrent<false>, &sc);
+            }
+        }
+    }
+
+    // in blocking case we go through demoted together with marking all stacks
+    // in concurrent case we do it here, since going through demoted does not need EE stoped.
+    if (!isBlockingPhase && (m_demotedRegions->Count() > 0))
+    {
+        MaybeAskForHelp();
+
+        SatoriRegion* curRegion;
+        while ((curRegion = m_demotedRegions->TryPop()))
+        {
+            MarkDemoted(curRegion, c);
+            (curRegion->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
+
+            if (deadline && ((GCToOSInterface::QueryPerformanceCounter() - deadline) > 0))
+            {
+                if (c.m_markChunk != nullptr)
+                {
+                    m_workList->Push(c.m_markChunk);
+                }
+
+                return true;
             }
         }
     }
 
     bool revisit = false;
-    if (IsBlockingPhase())
+    if (isBlockingPhase)
     {
         DrainMarkQueues(c.m_markChunk);
     }
@@ -1183,6 +1253,29 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
     }
 
     return revisit;
+}
+
+void SatoriRecycler::MarkDemoted(SatoriRegion* curRegion, MarkContext& c)
+{
+    _ASSERTE(curRegion->Generation() == 1);
+
+    SatoriMarkChunk* gen2Objects = curRegion->DemotedObjects();
+    if (m_condemnedGeneration == 1)
+    {
+        curRegion->HasPinnedObjects() = true;
+        for (int i = 0; i < gen2Objects->Count(); i++)
+        {
+            SatoriObject* o = gen2Objects->Item(i);
+            o->SetMarkedAtomic();
+            c.PushToMarkQueues(o);
+        }
+    }
+    else
+    {
+        curRegion->DemotedObjects() = nullptr;
+        gen2Objects->Clear();
+        m_heap->Allocator()->ReturnMarkChunk(gen2Objects);
+    }
 }
 
 void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
@@ -1225,36 +1318,29 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
         );
     }
 
-    //TODO: VS we could be in concurrent stage
-    //      we want to mark gen2 in concurrent, but we do not need EE stopped
-    //TODO: VS there are demoteds in the reusable queue too
-    //      would be nice to mark those too.
-    SatoriRegion* curRegion;
-    while ((curRegion = m_demotedRegions->TryPop()))
+    // going through demoted queue does not require EE stopped,
+    // so in concurrent case we will do that later
+    if (isBlockingPhase)
     {
-        // this cannot be a gen0 or reusable since demoted is a peer of ephemeral queue.
-        _ASSERTE(curRegion->Generation() == 1);
-        _ASSERTE(!curRegion->IsReusable());
-
-        SatoriMarkChunk* gen2Objects = curRegion->DemotedObjects();
-        if (m_condemnedGeneration == 1)
+        SatoriRegion* curRegion;
+        while ((curRegion = m_demotedRegions->TryPop()))
         {
-            curRegion->HasPinnedObjects() = true;
-            for (int i = 0; i < gen2Objects->Count(); i++)
+            MarkDemoted(curRegion, c);
+            (curRegion->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
+        }
+    }
+    else
+    {
+        SatoriRegion* curRegion;
+        while ((curRegion = m_reusableRegionsAlternate->TryPop()))
+        {
+            if (curRegion->IsDemoted())
             {
-                SatoriObject* o = gen2Objects->Item(i);
-                o->SetMarkedAtomic();
-                c.PushToMarkQueues(o);
+                MarkDemoted(curRegion, c);
             }
-        }
-        else
-        {
-            curRegion->DemotedObjects() = nullptr;
-            gen2Objects->Clear();
-            m_heap->Allocator()->ReturnMarkChunk(gen2Objects);
-        }
 
-        (curRegion->EverHadFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
+            m_reusableRegions->Enqueue(curRegion);
+        }
     }
 
     if (c.m_markChunk != nullptr)
