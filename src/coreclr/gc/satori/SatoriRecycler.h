@@ -68,7 +68,7 @@ private:
     int m_rootScanTicket;
     uint8_t m_cardScanTicket;
 
-    SatoriMarkChunkQueue* m_workList;
+    SatoriMarkChunkQueue* m_workQueue;
     SatoriTrimmer* m_trimmer;
 
     // regions owned by recycler
@@ -175,6 +175,7 @@ private:
     void DrainMarkQueues(SatoriMarkChunk* srcChunk = nullptr);
     bool DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk = nullptr, int64_t deadline = 0);
     void MarkThroughCards();
+    bool HasDirtyCards();
     bool MarkThroughCardsConcurrent(int64_t deadline);
     bool CleanCards();
     bool MarkHandles(int64_t deadline = 0);
