@@ -599,9 +599,6 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
          generation = 1;
     }
 
-    //TUNING: gen1 should not get too large.
-    //      certainly no point if gen1 > gen2, could rather have all gen2
-    //      or maybe even 1/10 gen2 ?
     if (m_gen1AddedSinceLastCollection + m_gen2AddedSinceLastCollection > m_gen2Budget)
     {
         generation = 2;
@@ -671,9 +668,12 @@ void SatoriRecycler::AdjustHeuristics()
     // if prev promoted, gen1 occupancy will be low, just keep the same budget.
     if (!m_promoteAllRegions)
     {
-        // TODO: VS more smoothing?
-        // we look for ~20% ephemeral survivorship
-        size_t newGen1Budget = max(MIN_GEN1_BUDGET, ephemeralOccupancy * 4 / Satori::REGION_SIZE_GRANULARITY);
+        // we look for ~20% ephemeral survivorship, also
+        // at least 1/2 gen2 budget or gen1 min.
+        size_t minGen1 = max(MIN_GEN1_BUDGET, m_gen2Budget / 2);
+        size_t newGen1Budget = max(minGen1, ephemeralOccupancy * 4 / Satori::REGION_SIZE_GRANULARITY);
+
+        // TUNING: using exponential smoothing with alpha == 1/2. is it a good smooth/lag balance?
         m_gen1Budget = (m_gen1Budget + newGen1Budget) / 2;
     }
 
