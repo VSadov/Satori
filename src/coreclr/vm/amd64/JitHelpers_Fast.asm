@@ -485,7 +485,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
     AssignAndMarkCards:
         mov     [rcx], rdx
 
-        // TODO: VS same check on other platforms
+        ; TODO: VS same check on other platforms
         xor     rdx, rcx
         shr     rdx, 21
         jz      CheckConcurrent         ; same region, just check if barrier is not concurrent
