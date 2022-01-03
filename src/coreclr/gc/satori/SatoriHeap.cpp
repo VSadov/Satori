@@ -193,6 +193,7 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
                 {
                     DWORD log2;
                     BitScanReverse64(&log2, j);
+                    // TODO: VS do we need such roundabout encoding? for 8x space we could just put page refs there.
                     m_pageMap[i + j] = (uint8_t)(log2 + 2);
                 }
 

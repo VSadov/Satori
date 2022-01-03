@@ -485,12 +485,19 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
     AssignAndMarkCards:
         mov     [rcx], rdx
 
-    ; TODO: VS for throughput tuning a nonconcurrent and concurrent barriers could be separated 
-    ;       need to suspend EE when swapping barriers, but GCs in that mode should be relatively rare
+        // TODO: VS same check on other platforms
+        xor     rdx, rcx
+        shr     rdx, 21
+        jz      CheckConcurrent         ; same region, just check if barrier is not concurrent
+
+    ; TUNING: nonconcurrent and concurrent barriers could be separate pieces of code, but to switch 
+    ;         need to suspend EE, not sure if skipping concurrent check would that worth that much.
 
     ; if src is in gen2 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [r8 + 16], 2
         jne     MarkCards
+
+    CheckConcurrent:
         cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
         jne     MarkCards
         REPRET
