@@ -1277,40 +1277,23 @@ HCIMPLEND_RAW
 static const int PAGE_BITS = 30;
 static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
 
-// same as SatoriGC::IsHeapPointer, just to avoid dependency on SatoriGC instance.
-bool IsInHeapSatori(void* ptr)
-{
-    if ((uint8_t*)ptr > (uint8_t*)g_highest_address)
-    {
-        return false;
-    }
-
-    uint8_t* pageMap = (uint8_t*)g_card_table;
-    size_t page = (size_t)ptr >> PAGE_BITS;
-    return pageMap[page];
-}
-
 // same as SatoriGC::PageForAddressChecked, just to avoid dependency on SatoriGC instance.
 SatoriPage* PageForAddressCheckedSatori(void* address)
 {
-    size_t mapIndex = (size_t)address >> PAGE_BITS;
-    uint8_t* pageMap = (uint8_t*)g_card_table;
+    SatoriPage** pageMap = (SatoriPage**)g_card_table;
     if ((uint8_t*)address <= (uint8_t*)g_highest_address)
     {
-    tryAgain:
-        switch (pageMap[mapIndex])
-        {
-        case 0:
-            break;
-        case 1:
-            return (SatoriPage*)(mapIndex << Satori::PAGE_BITS);
-        default:
-            mapIndex -= ((size_t)1 << (pageMap[mapIndex] - 2));
-            goto tryAgain;
-        }
+        size_t mapIndex = (size_t)address >> PAGE_BITS;
+        return pageMap[mapIndex];
     }
 
     return nullptr;
+}
+
+// same as SatoriGC::IsHeapPointer, just to avoid dependency on SatoriGC instance.
+bool IsInHeapSatori(void* ptr)
+{
+    return PageForAddressCheckedSatori(ptr) != nullptr;
 }
 
 void CheckEscapeSatori(Object** dst, Object* ref)
