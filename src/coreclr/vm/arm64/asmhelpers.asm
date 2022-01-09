@@ -571,8 +571,8 @@ Exit
         bhi  NotInHeap
     
         ldr     x12, wbs_card_table
-        add     x12, x12, x14, lsr #30
-        ldrb    w12, [x12]
+        lsr     x17, x14, #30
+        ldr     x12, [x12, x17, lsl #3]
         cbnz    x12, JIT_WriteBarrier
 
 NotInHeap
@@ -638,17 +638,7 @@ MarkCards
     ; fetch card location for x14
         ldr     x12, wbs_card_table              ; fetch the page map
         lsr     x17, x14, #30
-CheckPageMap
-        ldrb    w2,  [x12, x17]
-        cmp     w2,  #1
-        beq     PageFound
-        sub     x2,  x2, #2
-        mov     x15, #1
-        lsl     x15, x15, x2
-        sub     x17, x17, x15
-        b       CheckPageMap
-PageFound
-        lsl     x17, x17, #30   ; page
+        ldr     x17, [x12, x17, lsl #3]          ; page
         sub     x2,  x14, x17   ; offset in page
         lsr     x15, x2,  #21   ; group index
         lsl     x15, x15, #1    ; group offset (index * 2)
