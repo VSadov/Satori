@@ -657,3 +657,9 @@ void SatoriGC::DiagGetGCSettings(EtwGCSettingsInfo* etw_settings)
 {
     // NYI
 }
+
+unsigned int SatoriGC::GetGenerationWithRange(Object* object, uint8_t** ppStart, uint8_t** ppAllocated, uint8_t** ppReserved)
+{
+    // NYI
+    return WhichGeneration(object);
+}
