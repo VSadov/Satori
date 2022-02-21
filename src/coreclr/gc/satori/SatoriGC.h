@@ -141,6 +141,9 @@ public:
     virtual uint32_t GetMemoryLoad() override;
 
     virtual void DiagGetGCSettings(EtwGCSettingsInfo* etw_settings) override;
+
+    // Inherited via IGCHeapInternal
+    virtual unsigned int GetGenerationWithRange(Object* object, uint8_t** ppStart, uint8_t** ppAllocated, uint8_t** ppReserved) override;
 };
 
 #endif
