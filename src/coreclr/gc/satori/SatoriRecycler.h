@@ -100,7 +100,6 @@ private:
     SatoriRegionQueue* m_tenuredFinalizationTrackingRegions;
 
     // temporary store while processing finalizables
-    SatoriRegionQueue* m_finalizationScanCompleteRegions;
     SatoriRegionQueue* m_finalizationPendingRegions;
 
     // temporary store for planning and relocating
