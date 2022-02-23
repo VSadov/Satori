@@ -85,7 +85,6 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_tenuredRegions = new SatoriRegionQueue(QueueKind::RecyclerTenured);
     m_tenuredFinalizationTrackingRegions = new SatoriRegionQueue(QueueKind::RecyclerTenuredFinalizationTracking);
 
-    m_finalizationScanCompleteRegions = new SatoriRegionQueue(QueueKind::RecyclerFinalizationScanComplete);
     m_finalizationPendingRegions = new SatoriRegionQueue(QueueKind::RecyclerFinalizationPending);
 
     m_stayingRegions = new SatoriRegionQueue(QueueKind::RecyclerStaying);
@@ -2319,7 +2318,7 @@ void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContex
                             if (finalizable->RawGetMethodTable()->HasCriticalFinalizer())
                             {
                                 // can't schedule just yet, because CriticalFinalizables must go
-                                // after regular finalizables scheduled in this GC
+                                // after regular finalizables scheduled in the same GC
                                 hasPendingCF = true;
                                 (size_t&)finalizable |= Satori::FINALIZATION_PENDING;
                             }
@@ -2345,7 +2344,7 @@ void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContex
                 }
             );
 
-            (hasPendingCF ? m_finalizationPendingRegions : m_finalizationScanCompleteRegions)->Push(region);
+            (hasPendingCF ? m_finalizationPendingRegions : m_ephemeralRegions)->Push(region);
         }
     }
 }
@@ -2384,7 +2383,7 @@ void SatoriRecycler::QueueCriticalFinalizablesWorker()
                 }
             );
 
-            m_finalizationScanCompleteRegions->Push(region);
+            m_ephemeralRegions->Push(region);
         }
 
         if (c.m_markChunk != nullptr)
@@ -2519,7 +2518,6 @@ void SatoriRecycler::Plan()
 void SatoriRecycler::PlanWorker()
 {
     PlanRegions(m_ephemeralRegions);
-    PlanRegions(m_finalizationScanCompleteRegions);
 
     if (m_condemnedGeneration == 2)
     {
