@@ -240,6 +240,7 @@ bool SatoriRegion::Sweep()
     bool isEscapeTracking = this->IsEscapeTracking();
     size_t occupancy = 0;
     size_t objCount = 0;
+    bool hasFinalizables = false;
     SatoriObject* o = FirstObject();
     do
     {
@@ -274,12 +275,19 @@ bool SatoriRegion::Sweep()
             UpdatePointersInObject(o);
         }
 
+        if (!hasFinalizables && o->RawGetMethodTable()->HasFinalizer())
+        {
+            hasFinalizables = true;
+        }
+
         size_t size = o->Size();
         objCount++;
         occupancy += size;
         o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);
 
+    _ASSERTE(hasFinalizables || !m_finalizableTrackers);
+    this->m_hasFinalizables = hasFinalizables;
     this->HasMarksSet() = false;
     this->HasPinnedObjects() = false;
 
@@ -287,9 +295,9 @@ bool SatoriRegion::Sweep()
     return cannotRecycle;
 }
 
-inline bool SatoriRegion::EverHadFinalizables()
+inline bool SatoriRegion::HasFinalizables()
 {
-    return m_everHadFinalizables;
+    return m_hasFinalizables;
 }
 
 inline bool& SatoriRegion::HasPendingFinalizables()
