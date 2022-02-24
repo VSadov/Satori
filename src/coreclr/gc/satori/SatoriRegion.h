@@ -145,7 +145,7 @@ public:
     void UnlockFinalizableTrackers();
 
     bool RegisterForFinalization(SatoriObject* finalizable);
-    bool EverHadFinalizables();
+    bool HasFinalizables();
     bool& HasPendingFinalizables();
 
     size_t Occupancy();
@@ -240,7 +240,7 @@ private:
             size_t m_objCount;
             size_t m_allocBytesAtCollect;
 
-            bool m_everHadFinalizables;
+            bool m_hasFinalizables;
             bool m_hasPendingFinalizables;
             bool m_hasPinnedObjects;
             bool m_hasMarksSet;
