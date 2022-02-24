@@ -151,7 +151,7 @@ void SatoriRegion::MakeBlank()
     m_objCount = 0;
     m_allocBytesAtCollect = 0;
 
-    m_everHadFinalizables = false;
+    m_hasFinalizables = false;
     m_hasPinnedObjects = false;
     m_hasMarksSet = false;
     m_reusableFor = ReuseLevel::None;
@@ -1465,13 +1465,13 @@ tryAgain:
 bool SatoriRegion::RegisterForFinalization(SatoriObject* finalizable)
 {
     _ASSERTE(finalizable->ContainingRegion() == this);
-    _ASSERTE(this->m_everHadFinalizables || this->IsAttachedToContext());
+    _ASSERTE(this->m_hasFinalizables || this->IsAttachedToContext());
 
     LockFinalizableTrackers();
 
     if (!m_finalizableTrackers || !m_finalizableTrackers->TryPush(finalizable))
     {
-        m_everHadFinalizables = true;
+        m_hasFinalizables = true;
         SatoriMarkChunk* markChunk = Allocator()->TryGetMarkChunk();
         if (!markChunk)
         {
@@ -1727,7 +1727,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
 void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
 {
     _ASSERTE(!other->HasPinnedObjects());
-    m_everHadFinalizables |= other->m_everHadFinalizables;
+    m_hasFinalizables |= other->m_hasFinalizables;
     SatoriMarkChunk* otherFinalizables = other->m_finalizableTrackers;
     if (otherFinalizables)
     {
