@@ -102,6 +102,9 @@ private:
     // temporary store while processing finalizables
     SatoriRegionQueue* m_finalizationPendingRegions;
 
+    // temporary store of regions to update
+    SatoriRegionQueue* m_updateRegions;
+
     // temporary store for planning and relocating
     SatoriRegionQueue* m_stayingRegions;
     SatoriRegionQueue* m_relocatingRegions;
