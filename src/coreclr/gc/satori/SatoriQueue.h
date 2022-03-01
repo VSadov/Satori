@@ -50,6 +50,7 @@ enum class QueueKind
     RecyclerStaying,
     RecyclerRelocating,
     RecyclerRelocated,
+    RecyclerUpdating,
     RecyclerRelocatedToHigherGen,
     RecyclerRelocationTarget,
 
@@ -148,6 +149,32 @@ public:
         }
 
         m_tail = item;
+    }
+
+    void AppendUnsafe(SatoriQueue<T>* other)
+    {
+        size_t otherCount = other->Count();
+        if (otherCount == 0)
+        {
+            return;
+        }
+
+        m_count += otherCount;
+
+        if (m_tail == nullptr)
+        {
+            _ASSERTE(m_head == nullptr);
+            m_head = other->m_head;
+        }
+        else
+        {
+            other->m_head->m_prev = m_tail;
+            m_tail->m_next = other->m_head;
+        }
+
+        m_tail = other->m_tail;
+        other->m_head = other->m_tail = nullptr;
+        other->m_count = 0;
     }
 
     bool TryRemove(T* item)
