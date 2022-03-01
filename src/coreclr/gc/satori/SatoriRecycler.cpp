@@ -86,6 +86,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_tenuredFinalizationTrackingRegions = new SatoriRegionQueue(QueueKind::RecyclerTenuredFinalizationTracking);
 
     m_finalizationPendingRegions = new SatoriRegionQueue(QueueKind::RecyclerFinalizationPending);
+    m_updateRegions = new SatoriRegionQueue(QueueKind::RecyclerUpdating);
 
     m_stayingRegions = new SatoriRegionQueue(QueueKind::RecyclerStaying);
     m_relocatingRegions = new SatoriRegionQueue(QueueKind::RecyclerRelocating);
@@ -2834,6 +2835,15 @@ void SatoriRecycler::Update()
 
     RunWithHelp(&SatoriRecycler::UpdateRootsWorker);
 
+
+    // collect all regions that need updating.
+    for (int i = 0; i < Satori::FREELIST_COUNT; i++)
+    {
+        m_updateRegions->AppendUnsafe(m_relocationTargets[i]);
+    }
+
+    m_updateRegions->AppendUnsafe(m_stayingRegions);
+
     // must run after updating through cards since update may change generations
     RunWithHelp(&SatoriRecycler::UpdateRegionsWorker);
 
@@ -2914,14 +2924,7 @@ void SatoriRecycler::UpdateRootsWorker()
 
 void SatoriRecycler::UpdateRegionsWorker()
 {
-    // update and return target regions
-    for (int i = 0; i < Satori::FREELIST_COUNT; i++)
-    {
-        UpdateRegions(m_relocationTargets[i]);
-    }
-
-    // update and return staying regions
-    UpdateRegions(m_stayingRegions);
+    UpdateRegions(m_updateRegions);
 
     // if we saw large objects we may have ranges to update
     if (!m_workQueue->IsEmpty())
