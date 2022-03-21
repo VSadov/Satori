@@ -93,23 +93,23 @@ private:
     SatoriMarkChunkQueue* m_workQueue;
     SatoriTrimmer* m_trimmer;
 
-    // regions owned by recycler
-    SatoriRegionQueue* m_ephemeralRegions;
-    SatoriRegionQueue* m_ephemeralFinalizationTrackingRegions;
-    SatoriRegionQueue* m_tenuredRegions;
-    SatoriRegionQueue* m_tenuredFinalizationTrackingRegions;
-
     // temporary store while processing finalizables
     SatoriRegionQueue* m_finalizationPendingRegions;
 
     // temporary store of regions to update
     SatoriRegionQueue* m_updateRegions;
 
-    // temporary store for planning and relocating
+    // regions owned by recycler
+    SatoriRegionQueue* m_ephemeralRegions;
+    SatoriRegionQueue* m_ephemeralFinalizationTrackingRegions;
+    SatoriRegionQueue* m_tenuredRegions;
+    SatoriRegionQueue* m_tenuredFinalizationTrackingRegions;
+
     SatoriRegionQueue* m_stayingRegions;
-    SatoriRegionQueue* m_relocatingRegions;
+    SatoriRegionQueue* m_relocationCandidates;
     SatoriRegionQueue* m_relocationTargets[Satori::FREELIST_COUNT];
     SatoriRegionQueue* m_relocatedRegions;
+
     SatoriRegionQueue* m_relocatedToHigherGenRegions;
 
     // store regions for concurrent sweep

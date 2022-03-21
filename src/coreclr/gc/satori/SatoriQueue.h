@@ -48,11 +48,11 @@ enum class QueueKind
     RecyclerFinalizationScanComplete,
 
     RecyclerStaying,
-    RecyclerRelocating,
+    RecyclerRelocationCandidates,
     RecyclerRelocated,
     RecyclerUpdating,
     RecyclerRelocatedToHigherGen,
-    RecyclerRelocationTarget,
+    RecyclerRelocationTargets,
 
     RecyclerDeferredSweep,
     RecyclerReusable,

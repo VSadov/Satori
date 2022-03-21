@@ -41,6 +41,7 @@
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
 #include "SatoriMarkChunk.h"
+#include "SatoriRecyclerQueues.h"
 #include "SatoriAllocationContext.h"
 #include "SatoriFinalizationQueue.h"
 #include "../gcscan.h"
@@ -89,13 +90,13 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_updateRegions = new SatoriRegionQueue(QueueKind::RecyclerUpdating);
 
     m_stayingRegions = new SatoriRegionQueue(QueueKind::RecyclerStaying);
-    m_relocatingRegions = new SatoriRegionQueue(QueueKind::RecyclerRelocating);
+    m_relocationCandidates = new SatoriRegionQueue(QueueKind::RecyclerRelocationCandidates);
     m_relocatedRegions = new SatoriRegionQueue(QueueKind::RecyclerRelocated);
     m_relocatedToHigherGenRegions = new SatoriRegionQueue(QueueKind::RecyclerRelocatedToHigherGen);
 
     for (int i = 0; i < Satori::FREELIST_COUNT; i++)
     {
-        m_relocationTargets[i] = new SatoriRegionQueue(QueueKind::RecyclerRelocationTarget);
+        m_relocationTargets[i] = new SatoriRegionQueue(QueueKind::RecyclerRelocationTargets);
     }
 
     m_deferredSweepRegions = new SatoriRegionQueue(QueueKind::RecyclerDeferredSweep);
@@ -2594,7 +2595,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         }
         else
         {
-            m_relocatingRegions->Push(curRegion);
+            m_relocationCandidates->Push(curRegion);
         }
     } while ((curRegion = regions->TryPop()));
 };
@@ -2692,7 +2693,7 @@ void SatoriRecycler::Relocate()
     // They are not relocatable and generally have very few objects too.
     size_t desiredRelocating = (m_condemnedRegionsCount - m_condemnedNurseryRegionsCount) / 4;
 
-    if (m_relocatingRegions->Count() < desiredRelocating)
+    if (m_relocationCandidates->Count() < desiredRelocating)
     {
         m_isRelocating = false;
     }
@@ -2736,12 +2737,12 @@ void SatoriRecycler::RelocateWorker()
         AddTenuredRegionsToPlan(m_tenuredFinalizationTrackingRegions);
     }
 
-    if (!m_relocatingRegions->IsEmpty())
+    if (!m_relocationCandidates->IsEmpty())
     {
         MaybeAskForHelp();
 
         SatoriRegion* curRegion;
-        while ((curRegion = m_relocatingRegions->TryPop()))
+        while ((curRegion = m_relocationCandidates->TryPop()))
         {
             if (m_isRelocating)
             {
