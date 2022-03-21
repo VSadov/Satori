@@ -50,7 +50,6 @@ enum class QueueKind
     RecyclerStaying,
     RecyclerRelocating,
     RecyclerRelocated,
-    RecyclerUpdating,
     RecyclerRelocatedToHigherGen,
     RecyclerRelocationTarget,
 
@@ -230,6 +229,17 @@ public:
     QueueKind Kind()
     {
         return m_kind;
+    }
+
+    template<typename F>
+    void ForEachRegion(F lambda)
+    {
+        T* item = m_head;
+        while (item)
+        {
+            lambda(item);
+            item = item->m_next;
+        }
     }
 
 protected:
