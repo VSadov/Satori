@@ -102,9 +102,6 @@ private:
     // temporary store while processing finalizables
     SatoriRegionQueue* m_finalizationPendingRegions;
 
-    // temporary store of regions to update
-    SatoriRegionQueue* m_updateRegions;
-
     // temporary store for planning and relocating
     SatoriRegionQueue* m_stayingRegions;
     SatoriRegionQueue* m_relocatingRegions;
@@ -193,6 +190,7 @@ private:
     static void HelperThreadFn(void* param);
 
     void PushToEphemeralQueues(SatoriRegion* region);
+    void PushToTenuredQueues(SatoriRegion* region);
 
     void DeactivateAllStacks();
     void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);

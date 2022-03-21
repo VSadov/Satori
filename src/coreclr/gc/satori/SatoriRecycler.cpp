@@ -86,7 +86,6 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_tenuredFinalizationTrackingRegions = new SatoriRegionQueue(QueueKind::RecyclerTenuredFinalizationTracking);
 
     m_finalizationPendingRegions = new SatoriRegionQueue(QueueKind::RecyclerFinalizationPending);
-    m_updateRegions = new SatoriRegionQueue(QueueKind::RecyclerUpdating);
 
     m_stayingRegions = new SatoriRegionQueue(QueueKind::RecyclerStaying);
     m_relocatingRegions = new SatoriRegionQueue(QueueKind::RecyclerRelocating);
@@ -239,9 +238,25 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
     {
         m_demotedRegions->Push(region);
     }
+    else if (region->HasFinalizables())
+    {
+        m_ephemeralFinalizationTrackingRegions->Push(region);
+    }
     else
     {
-        (region->HasFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(region);
+        m_ephemeralRegions->Push(region);
+    }
+}
+
+void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
+{
+    if (region->HasFinalizables())
+    {
+        m_tenuredFinalizationTrackingRegions->Push(region);
+    }
+    else
+    {
+        m_tenuredRegions->Push(region);
     }
 }
 
@@ -289,7 +304,7 @@ void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
     _ASSERTE(!region->HasMarksSet());
 
     region->Verify();
-    (region->HasFinalizables() ? m_tenuredFinalizationTrackingRegions : m_tenuredRegions)->Push(region);
+    PushToTenuredQueues(region);
     Interlocked::ExchangeAdd64(&m_gen2AddedSinceLastCollection, region->Size() >> Satori::REGION_BITS);
 
     _ASSERTE(region->Generation() == 1);
@@ -756,7 +771,7 @@ void SatoriRecycler::BlockingCollect()
     m_gcState = GC_STATE_BLOCKED;
 
     // assume that we will relocate. we will rethink later.
-    m_isRelocating = m_condemnedGeneration == 2 ? SatoriUtil::IsRelocatingInGen2() : SatoriUtil::IsRelocatingInGen1();
+    m_isRelocating = false; // m_condemnedGeneration == 2 ? SatoriUtil::IsRelocatingInGen2() : SatoriUtil::IsRelocatingInGen1();
 
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
 
@@ -2513,6 +2528,33 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
 
 void SatoriRecycler::Plan()
 {
+    auto F = [&](SatoriRegion* region)
+    {
+        // we have just marked all condemened generations
+        _ASSERTE(!region->HasMarksSet());
+        region->HasMarksSet() = true;
+    };
+
+    m_ephemeralRegions->ForEachRegion(F);
+    if (m_condemnedGeneration == 2)
+    {
+        m_occupancyAcc[2] = 0;
+        m_tenuredRegions->ForEachRegion(F);
+        m_tenuredFinalizationTrackingRegions->ForEachRegion(F);
+    }
+
+    if (!m_isRelocating)
+    {
+        m_stayingRegions->AppendUnsafe(m_ephemeralRegions);
+        if (m_condemnedGeneration == 2)
+        {
+            m_stayingRegions->AppendUnsafe(m_tenuredRegions);
+            m_stayingRegions->AppendUnsafe(m_tenuredFinalizationTrackingRegions);
+        }
+
+        return;
+    }
+
     RunWithHelp(&SatoriRecycler::PlanWorker);
 }
 
@@ -2522,7 +2564,6 @@ void SatoriRecycler::PlanWorker()
 
     if (m_condemnedGeneration == 2)
     {
-        m_occupancyAcc[2] = 0;
         PlanRegions(m_tenuredRegions);
         PlanRegions(m_tenuredFinalizationTrackingRegions);
     }
@@ -2543,13 +2584,11 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
 
     do
     {
+        _ASSERTE(m_isRelocating);
         _ASSERTE(curRegion->Generation() <= m_condemnedGeneration);
-        // we have just marked all condemened generations
-        _ASSERTE(!curRegion->HasMarksSet());
-        curRegion->HasMarksSet() = true;
 
         // nursery regions do not participate in relocations
-        if (!m_isRelocating || curRegion->IsAttachedToContext())
+        if (curRegion->IsAttachedToContext())
         {
             m_stayingRegions->Push(curRegion);
             continue;
@@ -2835,15 +2874,6 @@ void SatoriRecycler::Update()
 
     RunWithHelp(&SatoriRecycler::UpdateRootsWorker);
 
-
-    // collect all regions that need updating.
-    for (int i = 0; i < Satori::FREELIST_COUNT; i++)
-    {
-        m_updateRegions->AppendUnsafe(m_relocationTargets[i]);
-    }
-
-    m_updateRegions->AppendUnsafe(m_stayingRegions);
-
     // must run after updating through cards since update may change generations
     RunWithHelp(&SatoriRecycler::UpdateRegionsWorker);
 
@@ -2924,7 +2954,14 @@ void SatoriRecycler::UpdateRootsWorker()
 
 void SatoriRecycler::UpdateRegionsWorker()
 {
-    UpdateRegions(m_updateRegions);
+    // update and return target regions
+    for (int i = 0; i < Satori::FREELIST_COUNT; i++)
+    {
+        UpdateRegions(m_relocationTargets[i]);
+    }
+
+    // update and return staying regions
+    UpdateRegions(m_stayingRegions);
 
     // if we saw large objects we may have ranges to update
     if (!m_workQueue->IsEmpty())
