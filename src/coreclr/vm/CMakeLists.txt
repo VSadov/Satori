@@ -517,6 +517,7 @@ set(GC_SOURCES_WKS
     ../gc/satori/SatoriHandlePartitioner.cpp
     ../gc/satori/SatoriHeap.cpp
     ../gc/satori/SatoriPage.cpp
+    ../gc/satori/SatoriRecyclerQueues.cpp
     ../gc/satori/SatoriObject.cpp
     ../gc/satori/SatoriRegion.cpp
     ../gc/satori/SatoriRegionQueue.cpp
@@ -554,6 +555,7 @@ set(GC_HEADERS_WKS
     ../gc/satori/SatoriGC.h
     ../gc/satori/SatoriHeap.h
     ../gc/satori/SatoriPage.h
+    ../gc/satori/SatoriRecyclerQueues.h
     ../gc/satori/SatoriRegion.h
     ../gc/satori/SatoriRegion.inl
     ../gc/satori/SatoriObject.h

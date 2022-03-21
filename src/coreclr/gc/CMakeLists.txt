@@ -29,6 +29,7 @@ set( GC_SOURCES
   satori/SatoriHandlePartitioner.cpp
   satori/SatoriHeap.cpp
   satori/SatoriPage.cpp
+  satori/SatoriRecyclerQueues.cpp
   satori/SatoriRegion.cpp
   satori/SatoriObject.cpp
   satori/SatoriRegionQueue.cpp
@@ -110,6 +111,7 @@ if (CLR_CMAKE_TARGET_WIN32)
     satori/SatoriHandlePartitioner.h
     satori/SatoriHeap.h
     satori/SatoriPage.h
+    satori/SatoriRecyclerQueues.h
     satori/SatoriRegion.h
     satori/SatoriRegion.inl
     satori/SatoriObject.h
