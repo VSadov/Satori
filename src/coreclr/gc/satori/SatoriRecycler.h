@@ -193,6 +193,7 @@ private:
     static void HelperThreadFn(void* param);
 
     void PushToEphemeralQueues(SatoriRegion* region);
+    void PushToTenuredQueues(SatoriRegion* region);
 
     void DeactivateAllStacks();
     void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);

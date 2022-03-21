@@ -239,9 +239,25 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
     {
         m_demotedRegions->Push(region);
     }
+    else if (region->HasFinalizables())
+    {
+        m_ephemeralFinalizationTrackingRegions->Push(region);
+    }
     else
     {
-        (region->HasFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(region);
+        m_ephemeralRegions->Push(region);
+    }
+}
+
+void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
+{
+    if (region->HasFinalizables())
+    {
+        m_tenuredFinalizationTrackingRegions->Push(region);
+    }
+    else
+    {
+        m_tenuredRegions->Push(region);
     }
 }
 
@@ -289,7 +305,7 @@ void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
     _ASSERTE(!region->HasMarksSet());
 
     region->Verify();
-    (region->HasFinalizables() ? m_tenuredFinalizationTrackingRegions : m_tenuredRegions)->Push(region);
+    PushToTenuredQueues(region);
     Interlocked::ExchangeAdd64(&m_gen2AddedSinceLastCollection, region->Size() >> Satori::REGION_BITS);
 
     _ASSERTE(region->Generation() == 1);
