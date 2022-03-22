@@ -40,6 +40,33 @@ class SatoriRecyclerQueues
 {
 public:
 
+    SatoriRecyclerQueues()
+    {
+        m_ephemeralRegions = new SatoriRegionQueue(QueueKind::RecyclerEphemeral);
+        m_ephemeralFinalizationTrackingRegions = new SatoriRegionQueue(QueueKind::RecyclerEphemeralFinalizationTracking);
+        m_tenuredRegions = new SatoriRegionQueue(QueueKind::RecyclerTenured);
+        m_tenuredFinalizationTrackingRegions = new SatoriRegionQueue(QueueKind::RecyclerTenuredFinalizationTracking);
+
+        m_stayingRegions = new SatoriRegionQueue(QueueKind::RecyclerStaying);
+        m_relocationCandidates = new SatoriRegionQueue(QueueKind::RecyclerRelocationCandidates);
+
+        for (int i = 0; i < Satori::FREELIST_COUNT; i++)
+        {
+            m_relocationTargets[i] = new SatoriRegionQueue(QueueKind::RecyclerRelocationTargets);
+        }
+    }
+
+    SatoriRegionQueue* m_ephemeralFinalizationTrackingRegions;
+    SatoriRegionQueue* m_tenuredFinalizationTrackingRegions;
+
+    SatoriRegionQueue* m_stayingRegions;
+    SatoriRegionQueue* m_relocationCandidates;
+
+    SatoriRegionQueue* m_ephemeralRegions;
+    SatoriRegionQueue* m_tenuredRegions;
+
+    SatoriRegionQueue* m_relocationTargets[Satori::FREELIST_COUNT];
+
 private:
 
 };

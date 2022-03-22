@@ -35,6 +35,7 @@
 class SatoriHeap;
 class SatoriTrimmer;
 class SatoriRegion;
+class SatoriRecyclerQueues;
 class MarkContext;
 
 class SatoriRecycler
@@ -96,21 +97,11 @@ private:
     // temporary store while processing finalizables
     SatoriRegionQueue* m_finalizationPendingRegions;
 
-    // temporary store of regions to update
+    // temporary store of regions
     SatoriRegionQueue* m_updateRegions;
-
-    // regions owned by recycler
-    SatoriRegionQueue* m_ephemeralRegions;
-    SatoriRegionQueue* m_ephemeralFinalizationTrackingRegions;
-    SatoriRegionQueue* m_tenuredRegions;
-    SatoriRegionQueue* m_tenuredFinalizationTrackingRegions;
-
-    SatoriRegionQueue* m_stayingRegions;
-    SatoriRegionQueue* m_relocationCandidates;
-    SatoriRegionQueue* m_relocationTargets[Satori::FREELIST_COUNT];
-    SatoriRegionQueue* m_relocatedRegions;
-
     SatoriRegionQueue* m_relocatedToHigherGenRegions;
+    // TODO: VS do we need this?
+    SatoriRegionQueue* m_relocatedRegions;
 
     // store regions for concurrent sweep
     SatoriRegionQueue* m_deferredSweepRegions;
@@ -120,6 +111,8 @@ private:
     SatoriRegionQueue* m_reusableRegionsAlternate;
 
     SatoriRegionQueue* m_demotedRegions;
+
+    SatoriRecyclerQueues* m_queues;
 
     static const int GC_STATE_NONE = 0;
     static const int GC_STATE_CONCURRENT = 1;
