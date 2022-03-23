@@ -42,10 +42,8 @@ public:
 
     SatoriRecyclerQueues()
     {
-        m_ephemeralRegions = new SatoriRegionQueue(QueueKind::RecyclerEphemeral);
-        m_ephemeralFinalizationTrackingRegions = new SatoriRegionQueue(QueueKind::RecyclerEphemeralFinalizationTracking);
-        m_tenuredRegions = new SatoriRegionQueue(QueueKind::RecyclerTenured);
-        m_tenuredFinalizationTrackingRegions = new SatoriRegionQueue(QueueKind::RecyclerTenuredFinalizationTracking);
+        m_regions = new SatoriRegionQueue(QueueKind::Recycler);
+        m_finalizationTrackingRegions = new SatoriRegionQueue(QueueKind::RecyclerFinalizationTracking);
 
         m_stayingRegions = new SatoriRegionQueue(QueueKind::RecyclerStaying);
         m_relocationCandidates = new SatoriRegionQueue(QueueKind::RecyclerRelocationCandidates);
@@ -56,16 +54,39 @@ public:
         }
     }
 
-    SatoriRegionQueue* m_ephemeralFinalizationTrackingRegions;
-    SatoriRegionQueue* m_tenuredFinalizationTrackingRegions;
-
     SatoriRegionQueue* m_stayingRegions;
     SatoriRegionQueue* m_relocationCandidates;
 
-    SatoriRegionQueue* m_ephemeralRegions;
-    SatoriRegionQueue* m_tenuredRegions;
-
+    SatoriRegionQueue* m_finalizationTrackingRegions;
+    SatoriRegionQueue* m_regions;
     SatoriRegionQueue* m_relocationTargets[Satori::FREELIST_COUNT];
+
+    size_t Count()
+    {
+        size_t count = m_stayingRegions->Count() +
+            m_relocationCandidates->Count() +
+            m_finalizationTrackingRegions->Count() +
+            m_regions->Count();
+
+        for (int i = 0; i < Satori::FREELIST_COUNT; i++)
+        {
+            count+= m_relocationTargets[i]->Count();
+        }
+
+        return count;
+    }
+
+    void Push(SatoriRegion* region)
+    {
+        if (region->HasFinalizables())
+        {
+            m_finalizationTrackingRegions->Push(region);
+        }
+        else
+        {
+            m_regions->Push(region);
+        }
+    }
 
 private:
 

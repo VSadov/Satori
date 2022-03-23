@@ -88,7 +88,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_deferredSweepRegions = new SatoriRegionQueue(QueueKind::RecyclerDeferredSweep);
 
-    m_queues = new SatoriRecyclerQueues();
+    m_ephemeralQueues = new SatoriRecyclerQueues();
+    m_tenuredQueues = new SatoriRecyclerQueues();
 
     m_deferredSweepCount = 0;
     m_gen1AddedSinceLastCollection = 0;
@@ -204,14 +205,13 @@ int SatoriRecycler::CondemnedGeneration()
 
 size_t SatoriRecycler::Gen1RegionCount()
 {
-    return m_queues->m_ephemeralFinalizationTrackingRegions->Count() +
-        m_queues->m_ephemeralRegions->Count() +
+    return m_ephemeralQueues->Count() +
         m_demotedRegions->Count();
 }
 
 size_t SatoriRecycler::Gen2RegionCount()
 {
-    return m_queues->m_tenuredFinalizationTrackingRegions->Count() + m_queues->m_tenuredRegions->Count();
+    return m_tenuredQueues->Count();
 }
 
 size_t SatoriRecycler::RegionCount()
@@ -230,26 +230,16 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
     {
         m_demotedRegions->Push(region);
     }
-    else if (region->HasFinalizables())
-    {
-        m_queues->m_ephemeralFinalizationTrackingRegions->Push(region);
-    }
     else
     {
-        m_queues->m_ephemeralRegions->Push(region);
+        m_ephemeralQueues->Push(region);
     }
 }
 
 void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
 {
-    if (region->HasFinalizables())
-    {
-        m_queues->m_tenuredFinalizationTrackingRegions->Push(region);
-    }
-    else
-    {
-        m_queues->m_tenuredRegions->Push(region);
-    }
+    m_tenuredQueues->Push(region);
+
 }
 
 // NOTE: recycler owns nursery regions only temporarily for the duration of GC when mutators are stopped.
@@ -1242,8 +1232,7 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
         while ((curRegion = m_demotedRegions->TryPop()))
         {
             MarkDemoted(curRegion, c);
-            //TODO: VS push to queues
-            (curRegion->HasFinalizables() ? m_queues->m_ephemeralFinalizationTrackingRegions : m_queues->m_ephemeralRegions)->Push(curRegion);
+            m_ephemeralQueues->Push(curRegion);
 
             if (deadline && ((GCToOSInterface::QueryPerformanceCounter() - deadline) > 0))
             {
@@ -1342,8 +1331,7 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
         while ((curRegion = m_demotedRegions->TryPop()))
         {
             MarkDemoted(curRegion, c);
-            //TODO: VS push to queues
-            (curRegion->HasFinalizables() ? m_queues->m_ephemeralFinalizationTrackingRegions : m_queues->m_ephemeralRegions)->Push(curRegion);
+            m_ephemeralQueues->Push(curRegion);
         }
     }
     else
@@ -2268,12 +2256,12 @@ void SatoriRecycler::ScanAllFinalizableRegionsWorker()
 {
     MarkContext c = MarkContext(this);
 
-    ScanFinalizableRegions(m_queues->m_ephemeralFinalizationTrackingRegions, &c);
+    ScanFinalizableRegions(m_ephemeralQueues->m_finalizationTrackingRegions, &c);
     _ASSERTE(m_reusableRegions->IsEmpty());
     
     if (m_condemnedGeneration == 2)
     {
-        ScanFinalizableRegions(m_queues->m_tenuredFinalizationTrackingRegions, &c);
+        ScanFinalizableRegions(m_tenuredQueues->m_finalizationTrackingRegions, &c);
     }
 
     if (c.m_markChunk != nullptr)
@@ -2354,7 +2342,7 @@ void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContex
                 }
             );
 
-            (hasPendingCF ? m_finalizationPendingRegions : m_queues->m_ephemeralRegions)->Push(region);
+            (hasPendingCF ? m_finalizationPendingRegions : m_ephemeralQueues->m_regions)->Push(region);
         }
     }
 }
@@ -2393,7 +2381,7 @@ void SatoriRecycler::QueueCriticalFinalizablesWorker()
                 }
             );
 
-            m_queues->m_ephemeralRegions->Push(region);
+            m_ephemeralQueues->m_regions->Push(region);
         }
 
         if (c.m_markChunk != nullptr)
@@ -2527,13 +2515,13 @@ void SatoriRecycler::Plan()
 
 void SatoriRecycler::PlanWorker()
 {
-    PlanRegions(m_queues->m_ephemeralRegions);
+    PlanRegions(m_ephemeralQueues->m_regions);
 
     if (m_condemnedGeneration == 2)
     {
         m_occupancyAcc[2] = 0;
-        PlanRegions(m_queues->m_tenuredRegions);
-        PlanRegions(m_queues->m_tenuredFinalizationTrackingRegions);
+        PlanRegions(m_tenuredQueues->m_regions);
+        PlanRegions(m_tenuredQueues->m_finalizationTrackingRegions);
     }
 }
 
@@ -2560,7 +2548,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         // nursery regions do not participate in relocations
         if (!m_isRelocating || curRegion->IsAttachedToContext())
         {
-            m_queues->m_stayingRegions->Push(curRegion);
+            m_ephemeralQueues->m_stayingRegions->Push(curRegion);
             continue;
         }
 
@@ -2587,7 +2575,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         }
         else
         {
-            m_queues->m_relocationCandidates->Push(curRegion);
+            m_ephemeralQueues->m_relocationCandidates->Push(curRegion);
         }
     } while ((curRegion = regions->TryPop()));
 };
@@ -2598,7 +2586,7 @@ void SatoriRecycler::AddRelocationTarget(SatoriRegion* region)
 
     if (maxFree < Satori::MIN_FREELIST_SIZE)
     {
-        m_queues->m_stayingRegions->Push(region);
+        m_ephemeralQueues->m_stayingRegions->Push(region);
     }
     else
     {
@@ -2610,11 +2598,11 @@ void SatoriRecycler::AddRelocationTarget(SatoriRegion* region)
 
         if (region->HasPinnedObjects())
         {
-            m_queues->m_relocationTargets[bucket]->Push(region);
+            m_ephemeralQueues->m_relocationTargets[bucket]->Push(region);
         }
         else
         {
-            m_queues->m_relocationTargets[bucket]->Enqueue(region);
+            m_ephemeralQueues->m_relocationTargets[bucket]->Enqueue(region);
         }
     }
 }
@@ -2645,7 +2633,7 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool exis
 
     for (; bucket < Satori::FREELIST_COUNT; bucket++)
     {
-        SatoriRegionQueue* queue = m_queues->m_relocationTargets[bucket];
+        SatoriRegionQueue* queue = m_ephemeralQueues->m_relocationTargets[bucket];
         if (queue)
         {
             SatoriRegion* region = queue->TryPop();
@@ -2685,7 +2673,7 @@ void SatoriRecycler::Relocate()
     // They are not relocatable and generally have very few objects too.
     size_t desiredRelocating = (m_condemnedRegionsCount - m_condemnedNurseryRegionsCount) / 4;
 
-    if (m_queues->m_relocationCandidates->Count() < desiredRelocating)
+    if (m_ephemeralQueues->m_relocationCandidates->Count() < desiredRelocating)
     {
         m_isRelocating = false;
     }
@@ -2713,7 +2701,7 @@ void SatoriRecycler::AddTenuredRegionsToPlan(SatoriRegionQueue* regions)
             }
             else
             {
-                m_queues->m_stayingRegions->Push(curRegion);
+                m_ephemeralQueues->m_stayingRegions->Push(curRegion);
             }
         }
     }
@@ -2725,16 +2713,16 @@ void SatoriRecycler::RelocateWorker()
         (m_promoteAllRegions || (m_allowPromotingRelocations && m_isRelocating)))
     {
         m_occupancyAcc[2] = 0;
-        AddTenuredRegionsToPlan(m_queues->m_tenuredRegions);
-        AddTenuredRegionsToPlan(m_queues->m_tenuredFinalizationTrackingRegions);
+        AddTenuredRegionsToPlan(m_tenuredQueues->m_regions);
+        AddTenuredRegionsToPlan(m_tenuredQueues->m_finalizationTrackingRegions);
     }
 
-    if (!m_queues->m_relocationCandidates->IsEmpty())
+    if (!m_ephemeralQueues->m_relocationCandidates->IsEmpty())
     {
         MaybeAskForHelp();
 
         SatoriRegion* curRegion;
-        while ((curRegion = m_queues->m_relocationCandidates->TryPop()))
+        while ((curRegion = m_ephemeralQueues->m_relocationCandidates->TryPop()))
         {
             if (m_isRelocating)
             {
@@ -2742,7 +2730,7 @@ void SatoriRecycler::RelocateWorker()
             }
             else
             {
-                m_queues->m_stayingRegions->Push(curRegion);
+                m_ephemeralQueues->m_stayingRegions->Push(curRegion);
             }
         }
     }
@@ -2848,10 +2836,10 @@ void SatoriRecycler::Update()
     // collect all regions that need updating.
     for (int i = 0; i < Satori::FREELIST_COUNT; i++)
     {
-        m_updateRegions->AppendUnsafe(m_queues->m_relocationTargets[i]);
+        m_updateRegions->AppendUnsafe(m_ephemeralQueues->m_relocationTargets[i]);
     }
 
-    m_updateRegions->AppendUnsafe(m_queues->m_stayingRegions);
+    m_updateRegions->AppendUnsafe(m_ephemeralQueues->m_stayingRegions);
 
     // must run after updating through cards since update may change generations
     RunWithHelp(&SatoriRecycler::UpdateRegionsWorker);
@@ -3139,8 +3127,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
     RecordOccupancy(curRegion->Generation(), curRegion->Occupancy());
     if (curRegion->Generation() == 2)
     {
-        //TODO: VS push to queues
-        (curRegion->HasFinalizables() ? m_queues->m_tenuredFinalizationTrackingRegions : m_queues->m_tenuredRegions)->Push(curRegion);
+        m_tenuredQueues->Push(curRegion);
     }
     else
     {

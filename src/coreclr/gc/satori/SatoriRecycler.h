@@ -112,7 +112,8 @@ private:
 
     SatoriRegionQueue* m_demotedRegions;
 
-    SatoriRecyclerQueues* m_queues;
+    SatoriRecyclerQueues* m_ephemeralQueues;
+    SatoriRecyclerQueues* m_tenuredQueues;
 
     static const int GC_STATE_NONE = 0;
     static const int GC_STATE_CONCURRENT = 1;

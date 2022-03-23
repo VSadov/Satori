@@ -36,11 +36,8 @@ enum class QueueKind
     Allocator,
     MarkChunk,
 
-    RecyclerEphemeral,
-    RecyclerEphemeralFinalizationTracking,
-
-    RecyclerTenured,
-    RecyclerTenuredFinalizationTracking,
+    Recycler,
+    RecyclerFinalizationTracking,
 
     RecyclerNursery,
 
