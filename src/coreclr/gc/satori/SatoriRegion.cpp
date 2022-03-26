@@ -91,7 +91,6 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     result->m_allocEnd = result->End();
     result->m_escapeFunc = nullptr;
     result->m_generation = -1;
-    result->m_finalizableTrackersLock = 0;
 
     result->m_containingPage->RegionInitialized(result);
     return result;
@@ -154,6 +153,7 @@ void SatoriRegion::MakeBlank()
     m_hasFinalizables = false;
     m_hasPinnedObjects = false;
     m_hasMarksSet = false;
+    m_doNotSweep = false;
     m_reusableFor = ReuseLevel::None;
 
     //clear index and free list
