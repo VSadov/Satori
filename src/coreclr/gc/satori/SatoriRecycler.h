@@ -238,6 +238,7 @@ private:
     void DrainAndCleanWorker();
     void Plan();
     void PlanWorker();
+    bool IsRelocatible(SatoriRegion* region);
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);
