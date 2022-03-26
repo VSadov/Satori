@@ -2528,30 +2528,54 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
 
 void SatoriRecycler::Plan()
 {
-    auto planFn = [&](SatoriRegion* region)
+    _ASSERTE(m_ephemeralFinalizationTrackingRegions->Count() == 0);
+    if (m_condemnedGeneration == 2)
+    {
+        _ASSERTE(m_tenuredFinalizationTrackingRegions->Count() == 0);
+    }
+
+    int relocatable = 0;
+    auto prePlanFn = [&](SatoriRegion* region)
     {
         // we have just marked all condemened generations
         _ASSERTE(!region->HasMarksSet());
         region->HasMarksSet() = true;
+        if (IsRelocatible(region))
+        {
+            relocatable++;
+        }
     };
 
-    m_ephemeralRegions->ForEachRegion(planFn);
+    // sequential scan of all condemned regions.
+    // it should be quick even for large heaps. no point to make it concurrent.
+    m_ephemeralRegions->ForEachRegion(prePlanFn);
     if (m_condemnedGeneration == 2)
     {
-        m_occupancyAcc[2] = 0;
-        m_tenuredRegions->ForEachRegion(planFn);
-        m_tenuredFinalizationTrackingRegions->ForEachRegion(planFn);
+        m_tenuredRegions->ForEachRegion(prePlanFn);
     }
 
-    if (!m_isRelocating)
+    // TUNING: 
+    // If we can reduce condemned generation by 12-25% regions, then do relocations.
+    // We do not consider nursery regions in the benefit/cost ratio here.
+    // They are not relocatable and generally have very few live objects too.
+    size_t desiredRelocating = (m_condemnedRegionsCount - m_condemnedNurseryRegionsCount) / 4;
+    if (relocatable < desiredRelocating)
     {
+        m_isRelocating = false;
+
         m_stayingRegions->AppendUnsafe(m_ephemeralRegions);
         if (m_condemnedGeneration == 2)
         {
+            m_occupancyAcc[2] = 0;
+            m_stayingRegions->AppendUnsafe(m_tenuredRegions);
+        }
+        else if (m_promoteAllRegions)
+        {
+            m_occupancyAcc[2] = 0;
             m_stayingRegions->AppendUnsafe(m_tenuredRegions);
             m_stayingRegions->AppendUnsafe(m_tenuredFinalizationTrackingRegions);
         }
-
+    
         return;
     }
 
@@ -2584,20 +2608,20 @@ bool SatoriRecycler::IsRelocatible(SatoriRegion* region)
 
 void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
 {
-    SatoriRegion* curRegion = regions->TryPop();
+    _ASSERTE(m_isRelocating);
 
+    SatoriRegion* curRegion = regions->TryPop();
     if (!curRegion)
     {
         return;
     }
 
     // TODO: VS it is not profitable to parallelize planning
-    //       consider moving to concurrent stage
+    //       unless there is a way to grab big chunks of the queue.
     // MaybeAskForHelp();
 
     do
     {
-        _ASSERTE(m_isRelocating);
         _ASSERTE(curRegion->Generation() <= m_condemnedGeneration);
 
         // nursery regions do not participate in relocations
@@ -2706,22 +2730,16 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool exis
 
 void SatoriRecycler::Relocate()
 {
-    // TUNING: 
-    // If we can reduce condemned generation by 12-25% regions, then do relocations.
-    // We do not consider nursery regions in the benefit/cost ratio here.
-    // They are not relocatable and generally have very few objects too.
-    size_t desiredRelocating = (m_condemnedRegionsCount - m_condemnedNurseryRegionsCount) / 4;
-
-    if (m_relocatingRegions->Count() < desiredRelocating)
+    if (m_isRelocating)
     {
-        m_isRelocating = false;
+        RunWithHelp(&SatoriRecycler::RelocateWorker);
     }
-
-    RunWithHelp(&SatoriRecycler::RelocateWorker);
 }
 
 void SatoriRecycler::AddTenuredRegionsToPlan(SatoriRegionQueue* regions)
 {
+    _ASSERTE(m_isRelocating);
+
     if (!regions->IsEmpty())
     {
         MaybeAskForHelp();
@@ -2729,27 +2747,21 @@ void SatoriRecycler::AddTenuredRegionsToPlan(SatoriRegionQueue* regions)
         SatoriRegion* curRegion;
         while ((curRegion = regions->TryPop()))
         {
-            // we have just marked all condemened generations
+            // we mark only condemened generations
             _ASSERTE(!curRegion->HasMarksSet());
             // condemned regions should go through Plan
             _ASSERTE(curRegion->Generation() > m_condemnedGeneration);
-
-            if (m_allowPromotingRelocations && m_isRelocating)
-            {
-                AddRelocationTarget(curRegion);
-            }
-            else
-            {
-                m_stayingRegions->Push(curRegion);
-            }
+            AddRelocationTarget(curRegion);
         }
     }
 };
 
 void SatoriRecycler::RelocateWorker()
 {
+    _ASSERTE(m_isRelocating);
+
     if (m_condemnedGeneration != 2 &&
-        (m_promoteAllRegions || (m_allowPromotingRelocations && m_isRelocating)))
+        (m_promoteAllRegions || m_allowPromotingRelocations))
     {
         m_occupancyAcc[2] = 0;
         AddTenuredRegionsToPlan(m_tenuredRegions);
@@ -2763,14 +2775,7 @@ void SatoriRecycler::RelocateWorker()
         SatoriRegion* curRegion;
         while ((curRegion = m_relocatingRegions->TryPop()))
         {
-            if (m_isRelocating)
-            {
-                RelocateRegion(curRegion);
-            }
-            else
-            {
-                m_stayingRegions->Push(curRegion);
-            }
+            RelocateRegion(curRegion);
         }
     }
 }
@@ -2871,7 +2876,20 @@ void SatoriRecycler::Update()
 
     RunWithHelp(&SatoriRecycler::UpdateRootsWorker);
 
-    // must run after updating through cards since update may change generations
+    // regions must me updated 
+    // after updating through cards since region update may change generations
+
+    _ASSERTE(m_ephemeralRegions->Count() == 0);
+    _ASSERTE(m_ephemeralFinalizationTrackingRegions->Count() == 0);
+    _ASSERTE(m_occupancyAcc[0] == 0);
+    _ASSERTE(m_occupancyAcc[1] == 0);
+    if (m_condemnedGeneration == 2 || m_promoteAllRegions)
+    {
+        _ASSERTE(m_tenuredRegions->Count() == 0);
+        _ASSERTE(m_tenuredFinalizationTrackingRegions->Count() == 0);
+        _ASSERTE(m_occupancyAcc[2] == 0);
+    }
+
     RunWithHelp(&SatoriRecycler::UpdateRegionsWorker);
 
     // promoting handles must be after handles are updated (since update needs to know unpromoted generations).
