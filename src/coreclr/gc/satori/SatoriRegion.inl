@@ -210,6 +210,8 @@ bool SatoriRegion::Sweep()
 {
     // we should only sweep when we have marks
     _ASSERTE(HasMarksSet());
+    _ASSERTE(!DoNotSweep());
+
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
 
     // in a huge region there is only one real object. If it is unreachable the region is all empty.
@@ -225,6 +227,7 @@ bool SatoriRegion::Sweep()
             SatoriObject::FormatAsFree(fistObjStart, objLimit - fistObjStart);
 #endif
             this->HasMarksSet() = false;
+            this->DoNotSweep() = true;
             SetOccupancy(0, 0);
             return false;
         }
@@ -289,6 +292,7 @@ bool SatoriRegion::Sweep()
     _ASSERTE(hasFinalizables || !m_finalizableTrackers);
     this->m_hasFinalizables = hasFinalizables;
     this->HasMarksSet() = false;
+    this->DoNotSweep() = true;
     this->HasPinnedObjects() = false;
 
     SetOccupancy(occupancy, objCount);
@@ -323,6 +327,11 @@ inline bool& SatoriRegion::HasPinnedObjects()
 inline bool& SatoriRegion::HasMarksSet()
 {
     return m_hasMarksSet;
+}
+
+inline bool& SatoriRegion::DoNotSweep()
+{
+    return m_doNotSweep;
 }
 
 inline bool& SatoriRegion::AcceptedPromotedObjects()
