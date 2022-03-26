@@ -2588,6 +2588,7 @@ void SatoriRecycler::PlanWorker()
 
     if (m_condemnedGeneration == 2)
     {
+        m_occupancyAcc[2] = 0;
         PlanRegions(m_tenuredRegions);
         PlanRegions(m_tenuredFinalizationTrackingRegions);
     }
