@@ -771,7 +771,7 @@ void SatoriRecycler::BlockingCollect()
     m_gcState = GC_STATE_BLOCKED;
 
     // assume that we will relocate. we will rethink later.
-    m_isRelocating = false; // m_condemnedGeneration == 2 ? SatoriUtil::IsRelocatingInGen2() : SatoriUtil::IsRelocatingInGen1();
+    m_isRelocating = m_condemnedGeneration == 2 ? SatoriUtil::IsRelocatingInGen2() : SatoriUtil::IsRelocatingInGen1();
 
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
 
@@ -2528,19 +2528,19 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
 
 void SatoriRecycler::Plan()
 {
-    auto F = [&](SatoriRegion* region)
+    auto planFn = [&](SatoriRegion* region)
     {
         // we have just marked all condemened generations
         _ASSERTE(!region->HasMarksSet());
         region->HasMarksSet() = true;
     };
 
-    m_ephemeralRegions->ForEachRegion(F);
+    m_ephemeralRegions->ForEachRegion(planFn);
     if (m_condemnedGeneration == 2)
     {
         m_occupancyAcc[2] = 0;
-        m_tenuredRegions->ForEachRegion(F);
-        m_tenuredFinalizationTrackingRegions->ForEachRegion(F);
+        m_tenuredRegions->ForEachRegion(planFn);
+        m_tenuredFinalizationTrackingRegions->ForEachRegion(planFn);
     }
 
     if (!m_isRelocating)
@@ -2569,6 +2569,19 @@ void SatoriRecycler::PlanWorker()
     }
 }
 
+bool SatoriRecycler::IsRelocatible(SatoriRegion* region)
+{
+    if (region->IsAttachedToContext() ||        // nursery regions do not participate in relocations
+        region->HasPinnedObjects() ||           // pinned cannot be evacuated
+        region->Occupancy() == 0 ||             // freshly added region with unknown occupancy
+        region->Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2)  // too full
+    {
+        return false;
+    }
+
+    return true;
+}
+
 void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
 {
     SatoriRegion* curRegion = regions->TryPop();
@@ -2594,30 +2607,14 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
             continue;
         }
 
-        // pinned cannot be evacuated
-        if (curRegion->HasPinnedObjects())
-        {
-            AddRelocationTarget(curRegion);
-            continue;
-        }
-
-        // freshly added region with unknown occupancy
-        if (curRegion->Occupancy() == 0)
-        {
-            _ASSERTE(curRegion->Generation() == 1);
-            AddRelocationTarget(curRegion);
-            continue;
-        }
-
         // select evacuation candidates and relocation targets according to sizes.
-        if (curRegion->Occupancy() == 0 ||
-            curRegion->Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2)
+        if (IsRelocatible(curRegion))
         {
-            AddRelocationTarget(curRegion);
+            m_relocatingRegions->Push(curRegion);
         }
         else
         {
-            m_relocatingRegions->Push(curRegion);
+            AddRelocationTarget(curRegion);
         }
     } while ((curRegion = regions->TryPop()));
 };
