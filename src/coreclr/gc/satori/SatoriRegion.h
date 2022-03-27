@@ -236,14 +236,14 @@ private:
             // counting escaped objects
             // when size goes too high, we stop escaping and do not do local GC.
             size_t m_escapedSize;
-            size_t m_occupancy;
-            size_t m_objCount;
             size_t m_allocBytesAtCollect;
+            size_t m_objCount;
+            size_t m_occupancy;
 
-            bool m_hasFinalizables;
-            bool m_hasPendingFinalizables;
             bool m_hasPinnedObjects;
             bool m_hasMarksSet;
+            bool m_hasFinalizables;
+            bool m_hasPendingFinalizables;
             bool m_acceptedPromotedObjects;
 
             SatoriMarkChunk* m_gen2Objects;
