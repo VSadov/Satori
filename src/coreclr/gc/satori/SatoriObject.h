@@ -86,10 +86,10 @@ public:
 
     void Validate();
 
-    template<typename F>
+    template <typename F>
     void ForEachObjectRef(F lambda, bool includeCollectibleAllocator = false);
 
-    template<typename F>
+    template <typename F>
     void ForEachObjectRef(F lambda, size_t start, size_t end);
 
 private:
