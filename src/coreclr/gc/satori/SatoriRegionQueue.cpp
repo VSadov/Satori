@@ -48,7 +48,8 @@ SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*
     _ASSERTE(result->ValidateBlank());
     _ASSERTE(result->Size() >= regionSize);
 
-    if (result->Size() - SatoriUtil::RoundDownPwr2(result->Size()) > regionSize)
+    if (result->Size() - SatoriUtil::RoundDownPwr2(result->Size()) > regionSize &&
+        result->CanSplitWithoutCommit(regionSize))
     {
         // inplace case
         // split "size" and return as a new region
@@ -59,6 +60,7 @@ SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*
         m_lock.Leave();
 
         result = SatoriRegion::InitializeAt(containgPage, nextStart, regionSize, nextCommitted, nextUsed);
+        _ASSERTE(result);
         _ASSERTE(result->ValidateBlank());
         putBack = nullptr;
     }
@@ -86,7 +88,7 @@ SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*
         {
             // if there is a diff, split what is needed and put the rest back to appropriate queue.
             putBack = result;
-            result = putBack->Split(regionSize);
+            result = putBack->TrySplit(regionSize);
         }
     }
 
@@ -116,7 +118,8 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
 
     _ASSERTE(result->ValidateBlank());
 
-    if (result->Size() - SatoriUtil::RoundDownPwr2(result->Size()) > regionSize)
+    if (result->Size() - SatoriUtil::RoundDownPwr2(result->Size()) > regionSize &&
+        result->CanSplitWithoutCommit(regionSize))
     {
         // inplace case
         // split "size" and return as a new region
@@ -127,6 +130,7 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
         m_lock.Leave();
 
         result = SatoriRegion::InitializeAt(containgPage, nextStart, regionSize, nextCommitted, nextUsed);
+        _ASSERTE(result);
         _ASSERTE(result->ValidateBlank());
         putBack = nullptr;
     }
@@ -162,7 +166,7 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
         {
              // if there is a diff, split what is needed and put the rest back to appropriate queue.
             putBack = result;
-            result = putBack->Split(regionSize);
+            result = putBack->TrySplit(regionSize);
         }
     }
 
