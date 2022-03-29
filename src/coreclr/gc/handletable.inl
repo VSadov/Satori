@@ -115,8 +115,6 @@ inline BOOL HndFirstAssignHandle(OBJECTHANDLE handle, OBJECTREF objref)
     _UNCHECKED_OBJECTREF value = OBJECTREF_TO_UNCHECKED_OBJECTREF(objref);
     _UNCHECKED_OBJECTREF null = NULL;
 
-    //TODO: VS this looks like a dead code.
-
     // if we are doing a non-NULL pointer store then invoke the write-barrier
     if (value)
         HndWriteBarrier(handle, objref);

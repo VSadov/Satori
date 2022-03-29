@@ -30,7 +30,7 @@
 #include "common.h"
 #include "../gc.h"
 #include "SatoriRegionQueue.h"
-#include "SatoriMarkChunkQueue.h"
+#include "SatoriWorkChunkQueue.h"
 
 class SatoriHeap;
 class SatoriTrimmer;
@@ -48,6 +48,8 @@ public:
     void AddTenuredRegion(SatoriRegion* region);
 
     size_t GetNowMillis();
+    int64_t HelpQuantum();
+    bool& IsLowLatencyMode();
 
     void TryStartGC(int generation, gc_reason reason);
     void HelpOnce();
@@ -90,7 +92,7 @@ private:
     int m_rootScanTicket;
     uint8_t m_cardScanTicket;
 
-    SatoriMarkChunkQueue* m_workQueue;
+    SatoriWorkChunkQueue* m_workQueue;
     SatoriTrimmer* m_trimmer;
 
     // regions owned by recycler
@@ -138,7 +140,8 @@ private:
     void(SatoriRecycler::* m_activeHelperFn)();
 
     int m_condemnedGeneration;
-    bool m_isRelocating;   
+    bool m_isRelocating;
+    bool m_isLowLatencyMode;
     bool m_promoteAllRegions;  
     bool m_allowPromotingRelocations;
     bool m_isBarrierConcurrent;
@@ -160,6 +163,9 @@ private:
 
     size_t m_occupancy[3];
     size_t m_occupancyAcc[3];
+
+    size_t m_relocatableEphemeralEstimate;
+    size_t m_relocatableTenuredEstimate;
 
     int64_t m_currentAllocBytesLiveThreads;
     int64_t m_currentAllocBytesDeadThreads;
@@ -188,20 +194,23 @@ private:
     static void MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 
     static void HelperThreadFn(void* param);
+    int MaxHelpers();
 
     void PushToEphemeralQueues(SatoriRegion* region);
+    void PushToEphemeralQueuesIgnoringDemoted(SatoriRegion* region);
+    void PushToEphemeralQueue(SatoriRegion* region);
     void PushToTenuredQueues(SatoriRegion* region);
 
     void DeactivateAllStacks();
-    void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
+    void PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o);
     bool MarkOwnStackAndDrainQueues(int64_t deadline = 0);
     void MarkDemoted(SatoriRegion* curRegion, MarkContext& c);
     void MarkAllStacksFinalizationAndDemotedRoots();
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();
     uint8_t GetCardScanTicket();
-    void DrainMarkQueues(SatoriMarkChunk* srcChunk = nullptr);
-    bool DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk = nullptr, int64_t deadline = 0);
+    void DrainMarkQueues(SatoriWorkChunk* srcChunk = nullptr);
+    bool DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk = nullptr, int64_t deadline = 0);
     void MarkThroughCards();
     bool HasDirtyCards();
     bool MarkThroughCardsConcurrent(int64_t deadline);
@@ -238,7 +247,8 @@ private:
     void DrainAndCleanWorker();
     void Plan();
     void PlanWorker();
-    bool IsRelocatible(SatoriRegion* region);
+    bool IsRelocatable(SatoriRegion* region);
+    void DenyRelocation();
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);
