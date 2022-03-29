@@ -56,7 +56,7 @@ inline SatoriHeap* SatoriPage::Heap()
     return m_heap;
 }
 
-template<typename F>
+template <typename F>
     void SatoriPage::ForEachRegion(F lambda)
     {
         SatoriRegion* region = (SatoriRegion*)this->End();

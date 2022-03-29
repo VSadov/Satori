@@ -38,8 +38,8 @@
 #include "SatoriRegion.inl"
 #include "SatoriRegionQueue.h"
 #include "SatoriAllocationContext.h"
-#include "SatoriMarkChunk.h"
-#include "SatoriMarkChunkQueue.h"
+#include "SatoriWorkChunk.h"
+#include "SatoriWorkChunkQueue.h"
 
 void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
@@ -50,7 +50,7 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
         m_queues[i] = new SatoriRegionQueue(QueueKind::Allocator);
     }
 
-    m_markChunks = new SatoriMarkChunkQueue();
+    m_WorkChunks = new SatoriWorkChunkQueue();
 }
 
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
@@ -102,7 +102,7 @@ tryAgain:
             if (page)
             {
                 putBack = page->MakeInitialRegion();
-                region = putBack->Split(regionSize);
+                region = putBack->TrySplit(regionSize);
                 AddRegion(putBack);
                 return region;
             }
@@ -120,8 +120,17 @@ tryAgain:
             _ASSERTE(region->Size() >= regionSize);
             if (region->Size() > regionSize)
             {
-                putBack = region->Split(region->Size() - regionSize);
-                AddRegion(putBack);
+                putBack = region->TrySplit(region->Size() - regionSize);
+                if (putBack)
+                {
+                    AddRegion(putBack);
+                }
+                else
+                {
+                    // OOM
+                    AddRegion(region);
+                    region = nullptr;
+                }
             }
 
             return region;
@@ -203,9 +212,9 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             if (moreSpace <= allocRemaining)
             {
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
-                if (zeroInitialize && moreSpace < Satori::MIN_REGULAR_ALLOC)
+                if (zeroInitialize && moreSpace < SatoriUtil::MinZeroInitSize())
                 {
-                    moreSpace = min(allocRemaining, Satori::MIN_REGULAR_ALLOC);
+                    moreSpace = min(allocRemaining, SatoriUtil::MinZeroInitSize());
                 }
 
                 if (region->Allocate(moreSpace, zeroInitialize))
@@ -452,23 +461,42 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     return result;
 }
 
-SatoriMarkChunk* SatoriAllocator::TryGetMarkChunk()
+SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
 {
-    // TODO: VS try returning nullptr sometimes in debug
-    SatoriMarkChunk* chunk = m_markChunks->TryPop();
-    while (!chunk && AddMoreMarkChunks())
+    SatoriWorkChunk* chunk = m_WorkChunks->TryPop();
+
+#if _DEBUG
+    // simulate low memory case once in a while
+    if (!chunk && GCToOSInterface::GetCurrentProcessorNumber() == 2)
     {
-        chunk = m_markChunks->TryPop();
+        return nullptr;
+    }
+#endif
+
+    while (!chunk && AddMoreWorkChunks())
+    {
+        chunk = m_WorkChunks->TryPop();
     }
 
     _ASSERTE(chunk->Count() == 0);
     return chunk;
 }
 
-bool SatoriAllocator::AddMoreMarkChunks()
+// returns NULL only in OOM case
+SatoriWorkChunk* SatoriAllocator::GetWorkChunk()
 {
-    //TODO: VS if committing by OS page get one region at the beginning and dispense by a piece (take a lock),
-    //      then just do whole regions.
+    SatoriWorkChunk* chunk = m_WorkChunks->TryPop();
+    while (!chunk && AddMoreWorkChunks())
+    {
+        chunk = m_WorkChunks->TryPop();
+    }
+
+    _ASSERTE(chunk->Count() == 0);
+    return chunk;
+}
+
+bool SatoriAllocator::AddMoreWorkChunks()
+{
     SatoriRegion* region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
     if (!region)
     {
@@ -483,15 +511,15 @@ bool SatoriAllocator::AddMoreMarkChunks()
             break;
         }
 
-        SatoriMarkChunk* chunk = SatoriMarkChunk::InitializeAt(mem);
-        m_markChunks->Push(chunk);
+        SatoriWorkChunk* chunk = SatoriWorkChunk::InitializeAt(mem);
+        m_WorkChunks->Push(chunk);
     }
 
     return true;
 }
 
-void SatoriAllocator::ReturnMarkChunk(SatoriMarkChunk* chunk)
+void SatoriAllocator::ReturnWorkChunk(SatoriWorkChunk* chunk)
 {
     _ASSERTE(chunk->Count() == 0);
-    m_markChunks->Push(chunk);
+    m_WorkChunks->Push(chunk);
 }

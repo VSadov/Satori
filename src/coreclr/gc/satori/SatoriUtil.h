@@ -31,7 +31,7 @@
 #include "../gc.h"
 
 
-//TODO: VS rename move somewhere
+// Constants
 namespace Satori
 {
     class StackOnly {
@@ -41,13 +41,12 @@ namespace Satori
     };
 
     // page granularity is 1 Gb, but they can be bigger
-    // (on 32 bit we will have smaller sizes)
     static const int PAGE_BITS = 30;
     static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
 
     // regions are aligned at 2 Mb
     // objects can be larger than that and straddle multiple region granules.
-    // all real objects start in the first tile though to allow for fixed size of the metadata.
+    // all real objects start in the first granule though to allow for fixed size of the metadata.
     const static int REGION_BITS = 21;
     const static size_t REGION_SIZE_GRANULARITY = 1 << REGION_BITS;
 
@@ -67,26 +66,11 @@ namespace Satori
     // we use a trivial array object to fill holes, thus this is the size of a shortest array object.
     static const size_t MIN_FREE_SIZE = 3 * sizeof(size_t);
 
-    // TUNING: Needs tuning?
-    // When doing regular allocation we clean this much memory
-    // if we do cleaning, and if available.
-    // Set to 1/2 of a typical 32K L1 cache.
-    static const size_t MIN_REGULAR_ALLOC = 16 * 1024;
-
-    // 8K for now, we can fiddle with size a bit later
-    const static size_t MARK_CHUNK_SIZE = 8 * 1024;
+    // ~128 items for now, we can fiddle with size a bit later
+    const static size_t MARK_CHUNK_SIZE = 128 * sizeof(size_t);
 
     // address bits set to track finalizable that needs to be scheduled to F-queue
     const static size_t FINALIZATION_PENDING = 1;
-
-    // TODO: VS move to something like SatoriConfig, MIN_REGULAR_ALLOC too. These are not constants.
-    static size_t CommitGranularity()
-    {
-        // we can support sizes that are > OS page and binary fractions of REGION_SIZE_GRANULARITY.
-        // we can also support 1G
-        // TODO: VS this should be configured or computed at start up, but should not change dynamically.
-        return 4096 * 4;
-    }
 
     static const int BYTES_PER_CARD_BYTE = 512;
     static const int CARD_BYTES_IN_CARD_GROUP = Satori::REGION_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;
@@ -174,6 +158,27 @@ public:
 #endif
     }
 
+    static size_t CommitGranularity()
+    {
+        // TODO: VS make configurable and consider OS page size.
+        // we can support sizes that are > OS page and binary fractions of REGION_SIZE_GRANULARITY.
+        // we can also support PAGE_SIZE_GRANULARITY
+        return 4096 * 4;
+
+        //return Satori::REGION_SIZE_GRANULARITY;
+
+        // return Satori::PAGE_SIZE_GRANULARITY;
+    }
+
+    // TUNING: Needs tuning?
+    // When doing regular allocation we clean this much memory
+    // if we do cleaning, and if available.
+    // Set to 1/2 of a typical 32K L1 cache for now
+    static const size_t MinZeroInitSize()
+    {
+        return 16 * 1024;
+    }
+
     static bool IsConservativeMode()
     {
 #ifdef FEATURE_CONSERVATIVE_GC
@@ -208,6 +213,11 @@ public:
         return (GCConfig::GetTrimmigGC());
     }
 
+    static bool IsLowLatencyMode()
+    {
+        return (GCConfig::GetLatencyMode()) >= 2;
+    }
+
     static int HandlePartitionsCount()
     {
         int partitionCount = (int)GCConfig::GetHeapCount();
@@ -221,13 +231,7 @@ public:
 
     static int MaxHelpersCount()
     {
-        int specifiedHelpers = (int)GCConfig::GetParallelGC();
-        if (specifiedHelpers < 0)
-        {
-            specifiedHelpers = GCToOSInterface::GetTotalProcessorCount();
-        }
-
-        return specifiedHelpers;
+        return (int)GCConfig::GetParallelGC();
     }
 };
 
