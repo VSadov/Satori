@@ -2528,7 +2528,9 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
 
             if (SatoriUtil::IsConcurrent())
             {
+#if _DEBUG
                 curRegion->HasMarksSet() = false;
+#endif
                 curRegion->DoNotSweep() = true;
                 curRegion->SetOccupancy(0, 0);
                 m_deferredSweepRegions->Enqueue(curRegion);
@@ -2564,26 +2566,34 @@ void SatoriRecycler::Plan()
         _ASSERTE(m_tenuredFinalizationTrackingRegions->Count() == 0);
     }
 
-    int relocatable = 0;
-    auto prePlanFn = [&](SatoriRegion* region)
+#if _DEBUG
+    auto setHasMarksFn = [&](SatoriRegion* region)
     {
         // we have just marked all condemened generations
         _ASSERTE(!region->HasMarksSet());
         region->HasMarksSet() = true;
+    };
+
+    m_ephemeralRegions->ForEachRegion(setHasMarksFn);
+    if (m_condemnedGeneration == 2)
+    {
+        m_tenuredRegions->ForEachRegion(setHasMarksFn);
+    }
+#endif
+
+    int relocatable = 0;
+    auto countRelocatableFn = [&](SatoriRegion* region)
+    {
         if (IsRelocatible(region))
         {
             relocatable++;
         }
     };
 
-    // TODO: VS this is a sequential scan of all condemned regions.
-    // it should be quick for moderately large heaps.
-    // At 100ns mem access, 2Gb heap will take 0.1 ms.
-    // 2Tb will be 100ms though. think about this.
-    m_ephemeralRegions->ForEachRegion(prePlanFn);
+    m_ephemeralRegions->ForEachRegion(countRelocatableFn);
     if (m_condemnedGeneration == 2)
     {
-        m_tenuredRegions->ForEachRegion(prePlanFn);
+        m_tenuredRegions->ForEachRegion(countRelocatableFn);
     }
 
     // TUNING: 

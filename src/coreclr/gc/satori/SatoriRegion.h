@@ -152,9 +152,12 @@ public:
     size_t ObjCount();
 
     bool& HasPinnedObjects();
-    bool& HasMarksSet();
     bool& DoNotSweep();
     bool& AcceptedPromotedObjects();
+
+#if _DEBUG
+    bool& HasMarksSet();
+#endif
 
     enum class ReuseLevel : uint8_t
     {

@@ -225,8 +225,8 @@ bool SatoriRegion::Sweep()
 #if _DEBUG
             size_t fistObjStart = FirstObject()->Start();
             SatoriObject::FormatAsFree(fistObjStart, objLimit - fistObjStart);
-#endif
             this->HasMarksSet() = false;
+#endif
             this->DoNotSweep() = true;
             SetOccupancy(0, 0);
             return false;
@@ -290,8 +290,11 @@ bool SatoriRegion::Sweep()
     } while (o->Start() < objLimit);
 
     _ASSERTE(hasFinalizables || !m_finalizableTrackers);
-    this->m_hasFinalizables = hasFinalizables;
+#if _DEBUG
     this->HasMarksSet() = false;
+#endif
+
+    this->m_hasFinalizables = hasFinalizables;
     this->DoNotSweep() = true;
     this->HasPinnedObjects() = false;
 
@@ -324,10 +327,12 @@ inline bool& SatoriRegion::HasPinnedObjects()
     return m_hasPinnedObjects;
 }
 
+#if _DEBUG
 inline bool& SatoriRegion::HasMarksSet()
 {
     return m_hasMarksSet;
 }
+#endif
 
 inline bool& SatoriRegion::DoNotSweep()
 {
