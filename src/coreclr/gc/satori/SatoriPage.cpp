@@ -29,6 +29,7 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 
+#include "SatoriUtil.h"
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
 #include "SatoriRegion.h"
@@ -47,7 +48,14 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     size_t cardTableSize = pageSize / Satori::BYTES_PER_CARD_BYTE;
     _ASSERTE(cardTableSize % Satori::REGION_SIZE_GRANULARITY == 0);
 
-    size_t commitSize = ALIGN_UP(cardTableSize, Satori::CommitGranularity());
+    // when commit granularity is larger than region granularity (1Gb), commit the entire page.
+    // we can't have sparse commit coarser than regions.
+    // besides we would end up comitting the entire page anyways once the obj size
+    // is aligned up and committed.
+    size_t commitSize = SatoriUtil::CommitGranularity() > Satori::REGION_SIZE_GRANULARITY ?
+        pageSize :
+        ALIGN_UP(cardTableSize, SatoriUtil::CommitGranularity());
+
     if (!GCToOSInterface::VirtualCommit((void*)address, commitSize))
     {
         GCToOSInterface::VirtualRelease((void*)address, pageSize);

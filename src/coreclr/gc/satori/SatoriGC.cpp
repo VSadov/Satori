@@ -127,13 +127,22 @@ Object* SatoriGC::GetNextFinalizable()
 
 int SatoriGC::GetGcLatencyMode()
 {
-    // NYI
-    return 0;
+    return m_heap->Recycler()->IsLowLatencyMode() ?
+        2 :  //pause_low_latency
+        1;   //pause_interactive
 }
 
 int SatoriGC::SetGcLatencyMode(int newLatencyMode)
 {
-    // NYI
+    if (newLatencyMode >= 2) //pause_low_latency
+    {
+        m_heap->Recycler()->IsLowLatencyMode() = true;
+    }
+    else
+    {
+        m_heap->Recycler()->IsLowLatencyMode() = false;
+    }
+
     return 0;
 }
 
@@ -232,7 +241,8 @@ HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
     generation = (generation < 0) ? 2 : min(generation, 2);
     generation = max(1, generation);
 
-    // TODO: VS forced compaction
+    // NYI: forced compaction
+
     m_heap->Recycler()->Collect(
         generation,
         !(mode & collection_mode::collection_optimized),
@@ -345,18 +355,14 @@ unsigned SatoriGC::GetGcCount()
 
 bool SatoriGC::IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, int thread_number)
 {
-    // TODO: VS should prefer when running on the same core as recorded in alloc region, if present.
-    //       negative thread_number could indicate "do not care"
-    //       also need to assign numbers to threads when scanning.
-    //       at very least there is dependency on 0 being unique.
-
-    // for now we just return true if given context has not been scanned for the current scan ticket. 
+    // we just return true if given context has not been scanned for the current scan ticket. 
     int currentScanTicket = m_heap->Recycler()->GetRootScanTicket();
     int threadScanTicket = VolatileLoadWithoutBarrier(&acontext->alloc_count);
     if (threadScanTicket != currentScanTicket)
     {
         if (Interlocked::CompareExchange(&acontext->alloc_count, currentScanTicket, threadScanTicket) == threadScanTicket)
         {
+            m_heap->Recycler()->MaybeAskForHelp();
             return true;
         }
     }

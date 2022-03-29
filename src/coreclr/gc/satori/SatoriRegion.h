@@ -59,7 +59,7 @@ public:
     void RearmCardsForTenured();
     void ResetCardsForEphemeral();
 
-    SatoriRegion* Split(size_t regionSize);
+    SatoriRegion* TrySplit(size_t regionSize);
     bool CanDecommit();
     bool TryCoalesceWithNext();
     void Coalesce(SatoriRegion* next);
@@ -95,7 +95,7 @@ public:
     bool MaybeAttachedToContextAcquire();
 
     bool IsDemoted();
-    SatoriMarkChunk* &DemotedObjects();
+    SatoriWorkChunk* &DemotedObjects();
 
     int Generation();
     int GenerationAcquire();
@@ -120,8 +120,10 @@ public:
     void UpdateFinalizableTrackers();
     bool NothingMarked();
     void UpdatePointers();
-    void UpdatePointersInPromotedObjects();
     void UpdatePointersInObject(SatoriObject* o);
+
+    template <bool promotingAllRegions>
+    void UpdatePointersInPromotedObjects();
 
     template <bool updatePointers>
     bool Sweep();
@@ -134,10 +136,10 @@ public:
     void EscapeShallow(SatoriObject* o);
     void SetOccupancy(size_t occupancy, size_t objCount);
 
-    template<typename F>
+    template <typename F>
     void ForEachFinalizable(F lambda);
 
-    template<typename F>
+    template <typename F>
     void ForEachFinalizableThreadLocal(F lambda);
 
     // used for exclusive access to trackers when accessing concurrently with user threads
@@ -152,9 +154,12 @@ public:
     size_t ObjCount();
 
     bool& HasPinnedObjects();
-    bool& HasMarksSet();
     bool& DoNotSweep();
     bool& AcceptedPromotedObjects();
+
+#if _DEBUG
+    bool& HasMarksSet();
+#endif
 
     enum class ReuseLevel : uint8_t
     {
@@ -222,7 +227,7 @@ private:
             SatoriRegion* m_next;
             SatoriQueue<SatoriRegion>* m_containingQueue;
 
-            SatoriMarkChunk* m_finalizableTrackers;
+            SatoriWorkChunk* m_finalizableTrackers;
             int m_finalizableTrackersLock;
 
             // active allocation may happen in the following range.
@@ -248,7 +253,7 @@ private:
             bool m_hasPendingFinalizables;
             bool m_acceptedPromotedObjects;
 
-            SatoriMarkChunk* m_gen2Objects;
+            SatoriWorkChunk* m_gen2Objects;
 
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
         };
@@ -260,7 +265,9 @@ private:
     SatoriObject m_firstObject;
 
 private:
+    bool CanSplitWithoutCommit(size_t size);
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
+    void UndoSplitCore(size_t regionSize, size_t nextStart, size_t nextCommitted, size_t nextUsed);
 
     template <bool isConservative>
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
