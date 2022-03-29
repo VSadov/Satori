@@ -1581,8 +1581,7 @@ SetCardsAfterBulkCopy(Object** dst, Object **src, size_t len)
         SatoriPage* page = PageForAddressCheckedSatori(dst);
         if (page)
         {
-            bool sameRegion = (((size_t)dst ^ (size_t)src) >> 21) == 0;
-            if (!sameRegion && !GCHeapUtilities::SoftwareWriteWatchIsEnabled())
+            if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
             {
                 page->SetCardsForRange((size_t)dst, (size_t)dst + len);
             }
