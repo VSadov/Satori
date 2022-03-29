@@ -190,7 +190,7 @@ inline bool SatoriObject::IsUnmovable()
     return ((DWORD*)this)[-1] & BIT_SBLK_GC_RESERVE;
 }
 
-template<typename F>
+template <typename F>
 inline void SatoriObject::ForEachObjectRef(F lambda, bool includeCollectibleAllocator)
 {
     MethodTable* mt = RawGetMethodTable();
@@ -264,7 +264,7 @@ inline void SatoriObject::ForEachObjectRef(F lambda, bool includeCollectibleAllo
     }
 }
 
-template<typename F>
+template <typename F>
 inline void SatoriObject::ForEachObjectRef(F lambda, size_t start, size_t end)
 {
     MethodTable* mt = RawGetMethodTable();
