@@ -47,7 +47,7 @@ public:
     void SetOverflow(int generation);
     void ResetOverflow(int generation);
 
-    template<typename F>
+    template <typename F>
     void ForEachObjectRef(F lambda)
     {
         for (int i = m_dequeue; i != m_enqueue; i++)

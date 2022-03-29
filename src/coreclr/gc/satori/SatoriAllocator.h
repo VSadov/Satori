@@ -37,8 +37,8 @@ class SatoriHeap;
 class SatoriRegion;
 class SatoriObject;
 class SatoriAllocationContext;
-class SatoriMarkChunk;
-class SatoriMarkChunkQueue;
+class SatoriWorkChunk;
+class SatoriWorkChunkQueue;
 
 class SatoriAllocator
 {
@@ -50,15 +50,15 @@ public:
     void AddRegion(SatoriRegion* region);
     Object* Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
-    //TODO: VS when understand constraints we need a not-allocating version for recycler (recycler is able to handle failures)
-    SatoriMarkChunk* TryGetMarkChunk();
-    void ReturnMarkChunk(SatoriMarkChunk* chunk);
+    SatoriWorkChunk* TryGetWorkChunk();
+    SatoriWorkChunk* GetWorkChunk();
+    void ReturnWorkChunk(SatoriWorkChunk* chunk);
 
 private:
     SatoriHeap* m_heap;
     SatoriRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
 
-    SatoriMarkChunkQueue* m_markChunks;
+    SatoriWorkChunkQueue* m_WorkChunks;
 
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
     void TryGetRegularRegion(SatoriRegion*& region);
@@ -78,7 +78,7 @@ private:
         return min(highestBit - Satori::REGION_BITS, Satori::ALLOCATOR_BUCKET_COUNT - 1);
     }
 
-    bool AddMoreMarkChunks();
+    bool AddMoreWorkChunks();
 };
 
 #endif
