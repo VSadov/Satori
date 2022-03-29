@@ -190,6 +190,8 @@ private:
     static void HelperThreadFn(void* param);
 
     void PushToEphemeralQueues(SatoriRegion* region);
+    void PushToEphemeralQueuesIgnoringDemoted(SatoriRegion* region);
+    void PushToEphemeralQueue(SatoriRegion* region);
     void PushToTenuredQueues(SatoriRegion* region);
 
     void DeactivateAllStacks();

@@ -238,14 +238,27 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
     {
         m_demotedRegions->Push(region);
     }
-    else if (region->HasFinalizables())
+    else
+    {
+        PushToEphemeralQueuesIgnoringDemoted(region);
+    }
+}
+
+void SatoriRecycler::PushToEphemeralQueuesIgnoringDemoted(SatoriRegion* region)
+{
+    if (region->HasFinalizables())
     {
         m_ephemeralFinalizationTrackingRegions->Push(region);
     }
     else
     {
-        m_ephemeralRegions->Push(region);
+        PushToEphemeralQueue(region);
     }
+}
+
+void SatoriRecycler::PushToEphemeralQueue(SatoriRegion* region)
+{
+    m_ephemeralRegions->Push(region);
 }
 
 void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
@@ -1252,7 +1265,7 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
         while ((curRegion = m_demotedRegions->TryPop()))
         {
             MarkDemoted(curRegion, c);
-            (curRegion->HasFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
+            PushToEphemeralQueuesIgnoringDemoted(curRegion);
 
             if (deadline && ((GCToOSInterface::QueryPerformanceCounter() - deadline) > 0))
             {
@@ -1351,7 +1364,7 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
         while ((curRegion = m_demotedRegions->TryPop()))
         {
             MarkDemoted(curRegion, c);
-            (curRegion->HasFinalizables() ? m_ephemeralFinalizationTrackingRegions : m_ephemeralRegions)->Push(curRegion);
+            PushToEphemeralQueuesIgnoringDemoted(curRegion);
         }
     }
     else
@@ -2401,7 +2414,7 @@ void SatoriRecycler::QueueCriticalFinalizablesWorker()
                 }
             );
 
-            m_ephemeralRegions->Push(region);
+            PushToEphemeralQueue(region);
         }
 
         if (c.m_markChunk != nullptr)
@@ -3197,7 +3210,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
     RecordOccupancy(curRegion->Generation(), curRegion->Occupancy());
     if (curRegion->Generation() == 2)
     {
-        (curRegion->HasFinalizables() ? m_tenuredFinalizationTrackingRegions : m_tenuredRegions)->Push(curRegion);
+        PushToTenuredQueues(curRegion);
     }
     else
     {
