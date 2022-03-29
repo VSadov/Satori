@@ -34,7 +34,7 @@
 enum class QueueKind
 {
     Allocator,
-    MarkChunk,
+    WorkChunk,
 
     RecyclerEphemeral,
     RecyclerEphemeralFinalizationTracking,
@@ -58,7 +58,7 @@ enum class QueueKind
     RecyclerDemoted,
 };
 
-template<class T>
+template <class T>
 class SatoriQueue
 {
 public:
@@ -231,7 +231,7 @@ public:
         return m_kind;
     }
 
-    template<typename F>
+    template <typename F>
     void ForEachRegion(F lambda)
     {
         T* item = m_head;

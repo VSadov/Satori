@@ -24,20 +24,20 @@
 // SatoriRegionQueue.h
 //
 
-#ifndef __SATORI_MARK_CHUNK_QUEUE_H__
-#define __SATORI_MARK_CHUNK_QUEUE_H__
+#ifndef __SATORI_WORK_CHUNK_QUEUE_H__
+#define __SATORI_WORK_CHUNK_QUEUE_H__
 
 #include "common.h"
 #include "../gc.h"
 #include "SatoriQueue.h"
 
-class SatoriMarkChunk;
+class SatoriWorkChunk;
 
-class SatoriMarkChunkQueue : public SatoriQueue<SatoriMarkChunk>
+class SatoriWorkChunkQueue : public SatoriQueue<SatoriWorkChunk>
 {
 public:
-    SatoriMarkChunkQueue() :
-        SatoriQueue<SatoriMarkChunk>(QueueKind::MarkChunk) {}
+    SatoriWorkChunkQueue() :
+        SatoriQueue<SatoriWorkChunk>(QueueKind::WorkChunk) {}
 };
 
 #endif

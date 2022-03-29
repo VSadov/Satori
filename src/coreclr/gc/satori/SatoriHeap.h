@@ -88,7 +88,7 @@ public:
 
     SatoriRegion* RegionForAddressChecked(size_t address);
 
-    template<typename F>
+    template <typename F>
     void ForEachPage(F lambda)
     {
         size_t mapIndex = m_usedMapLength - 1;
@@ -102,7 +102,7 @@ public:
         }
     }
 
-    template<typename F>
+    template <typename F>
     void ForEachPageUntil(F lambda)
     {
         size_t mapIndex = m_usedMapLength - 1;
