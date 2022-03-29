@@ -2617,7 +2617,8 @@ void SatoriRecycler::Plan()
     // They are not relocatable and generally have very few live objects too.
     size_t desiredRelocating = (m_condemnedRegionsCount - m_condemnedNurseryRegionsCount) / 4;
 
-    if (relocatableEstimate <= desiredRelocating)
+    if (m_isRelocating == false ||
+        relocatableEstimate <= desiredRelocating)
     {
         DenyRelocation();    
         return;
