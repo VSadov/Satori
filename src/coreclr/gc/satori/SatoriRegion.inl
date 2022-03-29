@@ -33,7 +33,13 @@
 #include "../env/gcenv.os.h"
 #include "../env/gcenv.ee.h"
 #include "SatoriRegion.h"
-#include "SatoriMarkChunk.h"
+#include "SatoriPage.h"
+#include "SatoriWorkChunk.h"
+
+inline bool SatoriRegion::CanSplitWithoutCommit(size_t size)
+{
+    return m_committed > (m_end - size + offsetof(SatoriRegion, m_syncBlock) + SatoriUtil::MinZeroInitSize());
+}
 
 inline bool SatoriRegion::IsEscapeTracking()
 {
@@ -148,12 +154,12 @@ inline void SatoriRegion::StopEscapeTracking()
     }
 }
 
-template<typename F>
+template <typename F>
 void SatoriRegion::ForEachFinalizable(F lambda)
 {
     size_t items = 0;
     size_t nulls = 0;
-    SatoriMarkChunk* chunk = m_finalizableTrackers;
+    SatoriWorkChunk* chunk = m_finalizableTrackers;
     while (chunk)
     {
         items += chunk->Count();
@@ -197,7 +203,7 @@ void SatoriRegion::ForEachFinalizable(F lambda)
 
 // Used by threadlocal GC concurrently with user threads,
 // thus must lock - in case a user thread tries to reregister an object for finalization
-template<typename F>
+template <typename F>
 void SatoriRegion::ForEachFinalizableThreadLocal(F lambda)
 {
     LockFinalizableTrackers();
@@ -225,8 +231,8 @@ bool SatoriRegion::Sweep()
 #if _DEBUG
             size_t fistObjStart = FirstObject()->Start();
             SatoriObject::FormatAsFree(fistObjStart, objLimit - fistObjStart);
-#endif
             this->HasMarksSet() = false;
+#endif
             this->DoNotSweep() = true;
             SetOccupancy(0, 0);
             return false;
@@ -290,8 +296,11 @@ bool SatoriRegion::Sweep()
     } while (o->Start() < objLimit);
 
     _ASSERTE(hasFinalizables || !m_finalizableTrackers);
-    this->m_hasFinalizables = hasFinalizables;
+#if _DEBUG
     this->HasMarksSet() = false;
+#endif
+
+    this->m_hasFinalizables = hasFinalizables;
     this->DoNotSweep() = true;
     this->HasPinnedObjects() = false;
 
@@ -324,10 +333,12 @@ inline bool& SatoriRegion::HasPinnedObjects()
     return m_hasPinnedObjects;
 }
 
+#if _DEBUG
 inline bool& SatoriRegion::HasMarksSet()
 {
     return m_hasMarksSet;
 }
+#endif
 
 inline bool& SatoriRegion::DoNotSweep()
 {
@@ -392,7 +403,7 @@ inline bool SatoriRegion::IsDemoted()
     return m_gen2Objects;
 }
 
-inline SatoriMarkChunk* &SatoriRegion::DemotedObjects()
+inline SatoriWorkChunk* &SatoriRegion::DemotedObjects()
 {
     return m_gen2Objects;
 }
@@ -406,10 +417,6 @@ inline void SatoriRegion::SetMarked(SatoriObject* o)
     size_t mask = (size_t)1 << ((word >> 3) & 63);
 
     m_bitmap[bitmapIndex] |= mask;
-
-    //TODO: VS consider on x64
-    //size_t bitIndex = (Start() & Satori::REGION_SIZE_GRANULARITY - 1) / sizeof(size_t);
-    //_bittestandset64((long long*)ContainingRegion()->m_bitmap, bitIndex);
 }
 
 inline void SatoriRegion::SetMarkedAtomic(SatoriObject* o)
@@ -570,6 +577,61 @@ inline void SatoriRegion::ClearIndicesForAllocRange()
         }
 #endif
     }
+}
+
+template <bool promotingAllRegions>
+void SatoriRegion::UpdatePointersInPromotedObjects()
+{
+    _ASSERTE(HasMarksSet());
+
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+    SatoriObject* o = FirstObject();
+    do
+    {
+        o = SkipUnmarked(o);
+        if (o->Start() >= objLimit)
+        {
+            break;
+        }
+
+        _ASSERTE(IsMarked(o));
+
+        ptrdiff_t r = ((ptrdiff_t*)o)[-1];
+        _ASSERTE(r < 0);
+        SatoriObject* relocated = (SatoriObject*)-r;
+        _ASSERTE(relocated->RawGetMethodTable() == o->RawGetMethodTable());
+        _ASSERTE(!relocated->IsFree());
+
+        SatoriPage* page = relocated->ContainingRegion()->ContainingPage();
+        relocated->ForEachObjectRef(
+            [&](SatoriObject** ppObject)
+            {
+                // prevent re-reading o, UpdatePointersThroughCards could be doing the same update.
+                SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
+                if (child)
+                {
+                    ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                    if (ptr < 0)
+                    {
+                        _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
+                        child = (SatoriObject*)-ptr;
+                        VolatileStoreWithoutBarrier(ppObject, child);
+                    }
+
+                    // update the card as if the relocated object got a child assigned
+                    if (!promotingAllRegions)
+                    {
+                        if (child->ContainingRegion()->Generation() < 2)
+                        {
+                            page->SetCardForAddress((size_t)ppObject);
+                        }
+                    }
+                }
+            }
+        );
+
+        o = o->Next();
+    } while (o->Start() < objLimit);
 }
 
 #endif
