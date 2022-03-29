@@ -46,7 +46,7 @@
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
 #include "SatoriQueue.h"
-#include "SatoriMarkChunk.h"
+#include "SatoriWorkChunk.h"
 
 const int SatoriRegion::MAX_LARGE_OBJ_SIZE = Satori::REGION_SIZE_GRANULARITY - Satori::MIN_FREE_SIZE - offsetof(SatoriRegion, m_firstObject);
 
@@ -61,15 +61,17 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     used = max(address, used);
 
     // make sure the header is comitted
-    ptrdiff_t toCommit = (size_t)&result->m_syncBlock - committed;
+    ptrdiff_t toCommit = (size_t)&result->m_syncBlock + SatoriUtil::MinZeroInitSize() - committed;
     if (toCommit > 0)
     {
-        toCommit = ALIGN_UP(toCommit, Satori::CommitGranularity());
-
+        toCommit = ALIGN_UP(toCommit, SatoriUtil::CommitGranularity());
+        _ASSERTE(committed + (size_t)toCommit <= address + regionSize);
         if (!GCToOSInterface::VirtualCommit((void*)committed, toCommit))
         {
+            // OOM
             return nullptr;
         }
+
         committed += toCommit;
     }
 
@@ -111,12 +113,12 @@ void SatoriRegion::RearmCardsForTenured()
     _ASSERTE(Generation() == 2);
     m_containingPage->WipeCardsForRange(Start(), End(), /* tenured */ true);
 
-    SatoriMarkChunk* gen2Objects = DemotedObjects();
+    SatoriWorkChunk* gen2Objects = DemotedObjects();
     if (gen2Objects)
     {
         DemotedObjects() = nullptr;
         gen2Objects->Clear();
-        Allocator()->ReturnMarkChunk(gen2Objects);
+        Allocator()->ReturnWorkChunk(gen2Objects);
     }
 }
 
@@ -362,14 +364,31 @@ void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextC
     _ASSERTE(Size() >= Satori::REGION_SIZE_GRANULARITY);
 }
 
-SatoriRegion* SatoriRegion::Split(size_t regionSize)
+void SatoriRegion::UndoSplitCore(size_t regionSize, size_t nextStart, size_t nextCommitted, size_t nextUsed)
+{
+    m_end += regionSize;
+    m_committed = max(m_committed, nextCommitted);
+    m_used = max(m_used, nextUsed);
+    m_allocEnd = min(m_allocEnd, m_end);
+}
+
+SatoriRegion* SatoriRegion::TrySplit(size_t regionSize)
 {
     size_t nextStart, nextCommitted, nextUsed;
     SplitCore(regionSize, nextStart, nextCommitted, nextUsed);
 
     // format the rest as a new region 
     SatoriRegion* result = InitializeAt(m_containingPage, nextStart, regionSize, nextCommitted, nextUsed);
-    _ASSERTE(result->ValidateBlank());
+    if (result == nullptr)
+    {
+        // OOM
+        this->UndoSplitCore(regionSize, nextStart, nextCommitted, nextUsed);
+    }
+    else
+    {
+        _ASSERTE(result->ValidateBlank());
+    }
+
     return result;
 }
 
@@ -438,7 +457,7 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
     {
         _ASSERTE(next->m_committed > next->Start());
         size_t toDecommit = next->m_committed - next->Start();
-        _ASSERTE(toDecommit % Satori::CommitGranularity() == 0);
+        _ASSERTE(toDecommit % SatoriUtil::CommitGranularity() == 0);
         GCToOSInterface::VirtualDecommit(next, toDecommit);
     }
 
@@ -447,8 +466,12 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
 
 bool SatoriRegion::CanDecommit()
 {
-    size_t decommitStart = ALIGN_UP((size_t)&m_syncBlock, Satori::CommitGranularity());
-    _ASSERTE(m_committed >= decommitStart);
+    size_t decommitStart = ALIGN_UP((size_t)&m_syncBlock, SatoriUtil::CommitGranularity());
+    if (decommitStart > m_committed)
+    {
+        _ASSERTE(SatoriUtil::CommitGranularity() > Satori::REGION_SIZE_GRANULARITY);
+        return false;
+    }
 
     size_t decommitSize = m_committed - decommitStart;
     return (decommitSize > Satori::REGION_SIZE_GRANULARITY / 8);
@@ -456,8 +479,12 @@ bool SatoriRegion::CanDecommit()
 
 bool SatoriRegion::TryDecommit()
 {
-    size_t decommitStart = ALIGN_UP((size_t)&m_syncBlock, Satori::CommitGranularity());
-    _ASSERTE(m_committed >= decommitStart);
+    size_t decommitStart = ALIGN_UP((size_t)&m_syncBlock, SatoriUtil::CommitGranularity());
+    if (decommitStart > m_committed)
+    {
+        _ASSERTE(SatoriUtil::CommitGranularity() > Satori::REGION_SIZE_GRANULARITY);
+        return false;
+    }
 
     size_t decommitSize = m_committed - decommitStart;
     if (decommitSize > Satori::REGION_SIZE_GRANULARITY / 8)
@@ -483,7 +510,7 @@ size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
         size_t ensureCommitted = chunkEnd + Satori::MIN_FREE_SIZE;
         if (ensureCommitted > m_committed)
         {
-            size_t newComitted = ALIGN_UP(ensureCommitted, Satori::CommitGranularity());
+            size_t newComitted = ALIGN_UP(ensureCommitted, SatoriUtil::CommitGranularity());
             if (!GCToOSInterface::VirtualCommit((void*)m_committed, newComitted - m_committed))
             {
                 return 0;
@@ -534,7 +561,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     size_t ensureCommitted = chunkEnd + Satori::MIN_FREE_SIZE;
     if (ensureCommitted > m_committed)
     {
-        size_t newComitted = ALIGN_UP(ensureCommitted, Satori::CommitGranularity());
+        size_t newComitted = ALIGN_UP(ensureCommitted, SatoriUtil::CommitGranularity());
         if (!GCToOSInterface::VirtualCommit((void*)m_committed, newComitted - m_committed))
         {
             return 0;
@@ -1472,17 +1499,17 @@ bool SatoriRegion::RegisterForFinalization(SatoriObject* finalizable)
     if (!m_finalizableTrackers || !m_finalizableTrackers->TryPush(finalizable))
     {
         m_hasFinalizables = true;
-        SatoriMarkChunk* markChunk = Allocator()->TryGetMarkChunk();
-        if (!markChunk)
+        SatoriWorkChunk* WorkChunk = Allocator()->GetWorkChunk();
+        if (!WorkChunk)
         {
             // OOM 
             UnlockFinalizableTrackers();
             return false;
         }
 
-        markChunk->SetNext(m_finalizableTrackers);
-        m_finalizableTrackers = markChunk;
-        markChunk->Push(finalizable);
+        WorkChunk->SetNext(m_finalizableTrackers);
+        m_finalizableTrackers = WorkChunk;
+        WorkChunk->Push(finalizable);
     }
 
     UnlockFinalizableTrackers();
@@ -1509,12 +1536,12 @@ void SatoriRegion::UnlockFinalizableTrackers()
 
 void SatoriRegion::CompactFinalizableTrackers()
 {
-    SatoriMarkChunk* oldTrackers = m_finalizableTrackers;
+    SatoriWorkChunk* oldTrackers = m_finalizableTrackers;
     m_finalizableTrackers = nullptr;
 
     while (oldTrackers)
     {
-        SatoriMarkChunk* current = oldTrackers;
+        SatoriWorkChunk* current = oldTrackers;
         oldTrackers = oldTrackers->Next();
 
         if (m_finalizableTrackers)
@@ -1537,7 +1564,7 @@ void SatoriRegion::CompactFinalizableTrackers()
         }
 
         current->SetNext(nullptr);
-        Allocator()->ReturnMarkChunk(current);
+        Allocator()->ReturnWorkChunk(current);
     }
 }
 
@@ -1672,66 +1699,14 @@ void SatoriRegion::UpdatePointers()
     } while (o->Start() < objLimit);
 }
 
-void SatoriRegion::UpdatePointersInPromotedObjects()
-{
-    _ASSERTE(HasMarksSet());
-
-    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
-    SatoriObject* o = FirstObject();
-    do
-    {
-        o = SkipUnmarked(o);
-        if (o->Start() >= objLimit)
-        {
-            break;
-        }
-
-        _ASSERTE(IsMarked(o));
-
-        ptrdiff_t r = ((ptrdiff_t*)o)[-1];
-        _ASSERTE(r < 0);
-        SatoriObject* relocated = (SatoriObject*)-r;
-        _ASSERTE(relocated->RawGetMethodTable() == o->RawGetMethodTable());
-        _ASSERTE(!relocated->IsFree());
-
-        SatoriPage* page = relocated->ContainingRegion()->ContainingPage();
-        relocated->ForEachObjectRef(
-            [&](SatoriObject** ppObject)
-            {
-                // prevent re-reading o, UpdatePointersThroughCards could be doing the same update.
-                SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
-                if (child)
-                {
-                    ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
-                    if (ptr < 0)
-                    {
-                        _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
-                        child = (SatoriObject*)-ptr;
-                        VolatileStoreWithoutBarrier(ppObject, child);
-                    }
-
-                    // TODO: VS no need to do this when promoting everything
-                    // update the card as if the relocated object got a child assigned
-                    if (child->ContainingRegion()->Generation() < 2)
-                    {
-                        page->SetCardForAddress((size_t)ppObject);
-                    }
-                }
-            }
-        );
-
-        o = o->Next();
-    } while (o->Start() < objLimit);
-}
-
 void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
 {
     _ASSERTE(!other->HasPinnedObjects());
     m_hasFinalizables |= other->m_hasFinalizables;
-    SatoriMarkChunk* otherFinalizables = other->m_finalizableTrackers;
+    SatoriWorkChunk* otherFinalizables = other->m_finalizableTrackers;
     if (otherFinalizables)
     {
-        SatoriMarkChunk* tail = otherFinalizables;
+        SatoriWorkChunk* tail = otherFinalizables;
         while (tail->Next() != nullptr)
         {
             tail = tail->Next();
@@ -1749,12 +1724,12 @@ bool SatoriRegion::TryDemote()
     _ASSERTE(Generation() == 2);
     _ASSERTE(ObjCount() != 0);
 
-    if (ObjCount() > SatoriMarkChunk::Capacity())
+    if (ObjCount() > SatoriWorkChunk::Capacity())
     {
         return false;
     }
 
-    SatoriMarkChunk* gen2Objects = Allocator()->TryGetMarkChunk();
+    SatoriWorkChunk* gen2Objects = Allocator()->TryGetWorkChunk();
     if (!gen2Objects)
     {
         return false;
