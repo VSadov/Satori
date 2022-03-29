@@ -153,6 +153,7 @@ public:
 
     bool& HasPinnedObjects();
     bool& HasMarksSet();
+    bool& DoNotSweep();
     bool& AcceptedPromotedObjects();
 
     enum class ReuseLevel : uint8_t
@@ -242,6 +243,7 @@ private:
 
             bool m_hasPinnedObjects;
             bool m_hasMarksSet;
+            bool m_doNotSweep;
             bool m_hasFinalizables;
             bool m_hasPendingFinalizables;
             bool m_acceptedPromotedObjects;
