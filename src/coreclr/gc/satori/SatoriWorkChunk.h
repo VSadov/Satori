@@ -21,29 +21,29 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 // OTHER DEALINGS IN THE SOFTWARE.
 //
-// SatoriMarkChunk.h
+// SatoriWorkChunk.h
 //
 
-#ifndef __SATORI_MARK_CHUNK_H__
-#define __SATORI_MARK_CHUNK_H__
+#ifndef __SATORI_WORK_CHUNK_H__
+#define __SATORI_WORK_CHUNK_H__
 
 #include "common.h"
 #include "../gc.h"
 #include "SatoriUtil.h"
 #include "SatoriQueue.h"
 
-class SatoriMarkChunk
+class SatoriWorkChunk
 {
-    friend class SatoriQueue<SatoriMarkChunk>;
+    friend class SatoriQueue<SatoriWorkChunk>;
     friend class SatoriObject;
 
 public:
-    SatoriMarkChunk() = delete;
-    ~SatoriMarkChunk() = delete;
+    SatoriWorkChunk() = delete;
+    ~SatoriWorkChunk() = delete;
 
-    static SatoriMarkChunk* InitializeAt(size_t address)
+    static SatoriWorkChunk* InitializeAt(size_t address)
     {
-        SatoriMarkChunk* self = (SatoriMarkChunk*)address;
+        SatoriWorkChunk* self = (SatoriWorkChunk*)address;
         self->m_top = 0;
         self->m_prev = self->m_next = nullptr;
         self->m_containingQueue = nullptr;
@@ -53,7 +53,7 @@ public:
 
     static size_t Capacity()
     {
-        return (Satori::MARK_CHUNK_SIZE - sizeof(SatoriMarkChunk)) / sizeof(SatoriObject*);
+        return (Satori::MARK_CHUNK_SIZE - sizeof(SatoriWorkChunk)) / sizeof(SatoriObject*);
     }
 
     size_t Count()
@@ -104,13 +104,13 @@ public:
         return false;
     }
 
-    void SetNext(SatoriMarkChunk* next)
+    void SetNext(SatoriWorkChunk* next)
     {
         _ASSERTE(m_containingQueue == nullptr);
         m_next = next;
     }
 
-    SatoriMarkChunk* Next()
+    SatoriWorkChunk* Next()
     {
         _ASSERTE(m_containingQueue == nullptr);
         return m_next;
@@ -169,9 +169,9 @@ public:
 private:
     size_t m_top;
 
-    SatoriMarkChunk* m_prev;
-    SatoriMarkChunk* m_next;
-    SatoriQueue<SatoriMarkChunk>* m_containingQueue;
+    SatoriWorkChunk* m_prev;
+    SatoriWorkChunk* m_next;
+    SatoriQueue<SatoriWorkChunk>* m_containingQueue;
 
     SatoriObject* m_data[1];
     size_t m_start;
