@@ -148,7 +148,7 @@ inline void SatoriRegion::StopEscapeTracking()
     }
 }
 
-template<typename F>
+template <typename F>
 void SatoriRegion::ForEachFinalizable(F lambda)
 {
     size_t items = 0;
@@ -197,7 +197,7 @@ void SatoriRegion::ForEachFinalizable(F lambda)
 
 // Used by threadlocal GC concurrently with user threads,
 // thus must lock - in case a user thread tries to reregister an object for finalization
-template<typename F>
+template <typename F>
 void SatoriRegion::ForEachFinalizableThreadLocal(F lambda)
 {
     LockFinalizableTrackers();
@@ -575,6 +575,61 @@ inline void SatoriRegion::ClearIndicesForAllocRange()
         }
 #endif
     }
+}
+
+template <bool promotingAllRegions>
+void SatoriRegion::UpdatePointersInPromotedObjects()
+{
+    _ASSERTE(HasMarksSet());
+
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+    SatoriObject* o = FirstObject();
+    do
+    {
+        o = SkipUnmarked(o);
+        if (o->Start() >= objLimit)
+        {
+            break;
+        }
+
+        _ASSERTE(IsMarked(o));
+
+        ptrdiff_t r = ((ptrdiff_t*)o)[-1];
+        _ASSERTE(r < 0);
+        SatoriObject* relocated = (SatoriObject*)-r;
+        _ASSERTE(relocated->RawGetMethodTable() == o->RawGetMethodTable());
+        _ASSERTE(!relocated->IsFree());
+
+        SatoriPage* page = relocated->ContainingRegion()->ContainingPage();
+        relocated->ForEachObjectRef(
+            [&](SatoriObject** ppObject)
+            {
+                // prevent re-reading o, UpdatePointersThroughCards could be doing the same update.
+                SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
+                if (child)
+                {
+                    ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                    if (ptr < 0)
+                    {
+                        _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
+                        child = (SatoriObject*)-ptr;
+                        VolatileStoreWithoutBarrier(ppObject, child);
+                    }
+
+                    // update the card as if the relocated object got a child assigned
+                    if (!promotingAllRegions)
+                    {
+                        if (child->ContainingRegion()->Generation() < 2)
+                        {
+                            page->SetCardForAddress((size_t)ppObject);
+                        }
+                    }
+                }
+            }
+        );
+
+        o = o->Next();
+    } while (o->Start() < objLimit);
 }
 
 #endif

@@ -73,7 +73,7 @@ public:
         return (int)(value % (uint32_t)s_partitionCount);
     }
 
-    template<typename F>
+    template <typename F>
     static bool ForEachUnscannedPartition(F lambda, int64_t deadline = 0)
     {
         if (s_completedTicket != s_currentTicket)

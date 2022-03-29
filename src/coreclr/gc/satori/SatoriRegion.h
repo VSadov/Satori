@@ -120,8 +120,10 @@ public:
     void UpdateFinalizableTrackers();
     bool NothingMarked();
     void UpdatePointers();
-    void UpdatePointersInPromotedObjects();
     void UpdatePointersInObject(SatoriObject* o);
+
+    template <bool promotingAllRegions>
+    void UpdatePointersInPromotedObjects();
 
     template <bool updatePointers>
     bool Sweep();
@@ -134,10 +136,10 @@ public:
     void EscapeShallow(SatoriObject* o);
     void SetOccupancy(size_t occupancy, size_t objCount);
 
-    template<typename F>
+    template <typename F>
     void ForEachFinalizable(F lambda);
 
-    template<typename F>
+    template <typename F>
     void ForEachFinalizableThreadLocal(F lambda);
 
     // used for exclusive access to trackers when accessing concurrently with user threads

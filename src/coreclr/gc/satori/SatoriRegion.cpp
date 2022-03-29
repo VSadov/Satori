@@ -1672,58 +1672,6 @@ void SatoriRegion::UpdatePointers()
     } while (o->Start() < objLimit);
 }
 
-void SatoriRegion::UpdatePointersInPromotedObjects()
-{
-    _ASSERTE(HasMarksSet());
-
-    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
-    SatoriObject* o = FirstObject();
-    do
-    {
-        o = SkipUnmarked(o);
-        if (o->Start() >= objLimit)
-        {
-            break;
-        }
-
-        _ASSERTE(IsMarked(o));
-
-        ptrdiff_t r = ((ptrdiff_t*)o)[-1];
-        _ASSERTE(r < 0);
-        SatoriObject* relocated = (SatoriObject*)-r;
-        _ASSERTE(relocated->RawGetMethodTable() == o->RawGetMethodTable());
-        _ASSERTE(!relocated->IsFree());
-
-        SatoriPage* page = relocated->ContainingRegion()->ContainingPage();
-        relocated->ForEachObjectRef(
-            [&](SatoriObject** ppObject)
-            {
-                // prevent re-reading o, UpdatePointersThroughCards could be doing the same update.
-                SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
-                if (child)
-                {
-                    ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
-                    if (ptr < 0)
-                    {
-                        _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
-                        child = (SatoriObject*)-ptr;
-                        VolatileStoreWithoutBarrier(ppObject, child);
-                    }
-
-                    // TODO: VS no need to do this when promoting everything
-                    // update the card as if the relocated object got a child assigned
-                    if (child->ContainingRegion()->Generation() < 2)
-                    {
-                        page->SetCardForAddress((size_t)ppObject);
-                    }
-                }
-            }
-        );
-
-        o = o->Next();
-    } while (o->Start() < objLimit);
-}
-
 void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
 {
     _ASSERTE(!other->HasPinnedObjects());

@@ -3096,7 +3096,10 @@ void SatoriRecycler::UpdatePointersInPromotedObjects()
     SatoriRegion* curRegion;
     while ((curRegion = m_relocatedToHigherGenRegions->TryPop()))
     {
-        curRegion->UpdatePointersInPromotedObjects();
+        m_promoteAllRegions ?
+            curRegion->UpdatePointersInPromotedObjects<true>():
+            curRegion->UpdatePointersInPromotedObjects<false>();
+
         m_relocatedRegions->Push(curRegion);
     }
 }
