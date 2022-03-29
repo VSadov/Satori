@@ -161,6 +161,9 @@ private:
     size_t m_occupancy[3];
     size_t m_occupancyAcc[3];
 
+    size_t m_relocatableEphemeralEstimate;
+    size_t m_relocatableTenuredEstimate;
+
     int64_t m_currentAllocBytesLiveThreads;
     int64_t m_currentAllocBytesDeadThreads;
     int64_t m_totalAllocBytes;
@@ -240,7 +243,8 @@ private:
     void DrainAndCleanWorker();
     void Plan();
     void PlanWorker();
-    bool IsRelocatible(SatoriRegion* region);
+    bool IsRelocatable(SatoriRegion* region);
+    void DenyRelocation();
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);

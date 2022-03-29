@@ -116,6 +116,9 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_condemnedGeneration = 0;
 
+    m_relocatableEphemeralEstimate = 0;
+    m_relocatableTenuredEstimate = 0;
+
     m_occupancy[0] = 0;
     m_occupancy[1] = 0;
     m_occupancy[2] = 0;
@@ -258,6 +261,11 @@ void SatoriRecycler::PushToEphemeralQueuesIgnoringDemoted(SatoriRegion* region)
 
 void SatoriRecycler::PushToEphemeralQueue(SatoriRegion* region)
 {
+    if (IsRelocatable(region))
+    {
+        Interlocked::Increment(&m_relocatableEphemeralEstimate);
+    }
+
     m_ephemeralRegions->Push(region);
 }
 
@@ -269,6 +277,11 @@ void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
     }
     else
     {
+        if (IsRelocatable(region))
+        {
+            Interlocked::Increment(&m_relocatableTenuredEstimate);
+        }
+
         m_tenuredRegions->Push(region);
     }
 }
@@ -284,6 +297,12 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
     _ASSERTE(!region->HasMarksSet());
     _ASSERTE(!region->DoNotSweep());
 
+    // the region has just done allocating, so real occupancy will be known only after we sweep.
+    // for now put 0 and for planning purposes treat the region as completely full
+    // that is a fair estimate for detached regions anyways and for nursery regions
+    // it does not matter, since they will not participate in relocations
+    region->SetOccupancy(0, 0);
+
     PushToEphemeralQueues(region);
     Interlocked::ExchangeAdd64(&m_gen1AddedSinceLastCollection, region->Size() >> Satori::REGION_BITS);
     if (region->IsEscapeTracking())
@@ -296,12 +315,6 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
     // When concurrent marking is allowed we may have marks already.
     // Demoted regions could be pre-marked
     region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrent());
-
-    // the region has just done allocating, so real occupancy will be known only after we sweep.
-    // for now put 0 and treat the region as completely full
-    // that is a fair estimate for detached regions anyways and for nursery regions
-    // it does not matter, since they will not participate in relocations
-    region->SetOccupancy(0, 0);
 
     if (region->IsAttachedToContext())
     {
@@ -2375,7 +2388,14 @@ void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContex
                 }
             );
 
-            (hasPendingCF ? m_finalizationPendingRegions : m_ephemeralRegions)->Push(region);
+            if (hasPendingCF)
+            {
+                m_finalizationPendingRegions->Push(region);
+            }
+            else
+            {
+                PushToEphemeralQueue(region);
+            }
         }
     }
 }
@@ -2544,7 +2564,7 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
     }
 }
 
-bool SatoriRecycler::IsRelocatible(SatoriRegion* region)
+bool SatoriRecycler::IsRelocatable(SatoriRegion* region)
 {
     if (region->Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2 || // too full
         region->Occupancy() == 0 ||             // freshly added region with unknown occupancy
@@ -2569,11 +2589,11 @@ void SatoriRecycler::Plan()
 #if _DEBUG
     auto setHasMarksFn = [&](SatoriRegion* region)
     {
-        // we have just marked all condemened generations
         _ASSERTE(!region->HasMarksSet());
         region->HasMarksSet() = true;
     };
 
+    // we have just marked all condemened generations
     m_ephemeralRegions->ForEachRegion(setHasMarksFn);
     if (m_condemnedGeneration == 2)
     {
@@ -2581,19 +2601,14 @@ void SatoriRecycler::Plan()
     }
 #endif
 
-    int relocatable = 0;
-    auto countRelocatableFn = [&](SatoriRegion* region)
-    {
-        if (IsRelocatible(region))
-        {
-            relocatable++;
-        }
-    };
+    size_t relocatableEstimate = m_relocatableEphemeralEstimate;
+    m_relocatableEphemeralEstimate = 0;
 
-    m_ephemeralRegions->ForEachRegion(countRelocatableFn);
     if (m_condemnedGeneration == 2)
     {
-        m_tenuredRegions->ForEachRegion(countRelocatableFn);
+        relocatableEstimate += m_relocatableTenuredEstimate;
+        m_occupancyAcc[2] = 0;
+        m_relocatableTenuredEstimate = 0;
     }
 
     // TUNING: 
@@ -2601,27 +2616,46 @@ void SatoriRecycler::Plan()
     // We do not consider nursery regions in the benefit/cost ratio here.
     // They are not relocatable and generally have very few live objects too.
     size_t desiredRelocating = (m_condemnedRegionsCount - m_condemnedNurseryRegionsCount) / 4;
-    if (relocatable < desiredRelocating)
-    {
-        m_isRelocating = false;
 
-        m_stayingRegions->AppendUnsafe(m_ephemeralRegions);
-        if (m_condemnedGeneration == 2)
-        {
-            m_occupancyAcc[2] = 0;
-            m_stayingRegions->AppendUnsafe(m_tenuredRegions);
-        }
-        else if (m_promoteAllRegions)
-        {
-            m_occupancyAcc[2] = 0;
-            m_stayingRegions->AppendUnsafe(m_tenuredRegions);
-            m_stayingRegions->AppendUnsafe(m_tenuredFinalizationTrackingRegions);
-        }
-    
+    if (relocatableEstimate <= desiredRelocating)
+    {
+        DenyRelocation();    
         return;
     }
 
     RunWithHelp(&SatoriRecycler::PlanWorker);
+
+    printf("ESTIMATED: %zu ACTUAL: %zu GENERATION: %d \n", relocatableEstimate, m_relocatingRegions->Count(), m_condemnedGeneration);
+
+    // the actual relocatable number could be less than the estimate due to pinning,
+    // which we know only after marking.
+    // check again if it we are still meeting the relocation criteria.
+    size_t relocatableActual = m_relocatingRegions->Count();
+    _ASSERTE(relocatableActual <= relocatableEstimate);
+    if (relocatableActual <= desiredRelocating)
+    {
+        m_stayingRegions->AppendUnsafe(m_relocatingRegions);
+        DenyRelocation();
+    }
+}
+
+void SatoriRecycler::DenyRelocation()
+{
+    m_isRelocating = false;
+
+    // put all affected regions into staying queue
+    m_stayingRegions->AppendUnsafe(m_ephemeralRegions);
+    if (m_condemnedGeneration == 2)
+    {
+        m_stayingRegions->AppendUnsafe(m_tenuredRegions);
+    }
+    else if (m_promoteAllRegions)
+    {
+        m_occupancyAcc[2] = 0;
+        m_relocatableTenuredEstimate = 0;
+        m_stayingRegions->AppendUnsafe(m_tenuredRegions);
+        m_stayingRegions->AppendUnsafe(m_tenuredFinalizationTrackingRegions);
+    }
 }
 
 void SatoriRecycler::PlanWorker()
@@ -2630,7 +2664,6 @@ void SatoriRecycler::PlanWorker()
 
     if (m_condemnedGeneration == 2)
     {
-        m_occupancyAcc[2] = 0;
         PlanRegions(m_tenuredRegions);
     }
 }
@@ -2645,8 +2678,11 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         return;
     }
 
-    // TODO: VS it is not profitable to parallelize planning
-    //       unless there is a way to grab big chunks of the queue.
+    // TODO: VS It is not profitable to parallelize planning.
+    //       The main cost is walking the linked list of regions.
+    //       It is relatively cheap, but for very large heaps could
+    //       add up. By rough estimates planning 1Tb heap could take 100ms+.
+    //       Think about this.
     // MaybeAskForHelp();
 
     do
@@ -2661,7 +2697,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         }
 
         // select evacuation candidates and relocation targets according to sizes.
-        if (IsRelocatible(curRegion))
+        if (IsRelocatable(curRegion))
         {
             m_relocatingRegions->Push(curRegion);
         }
@@ -2794,6 +2830,8 @@ void SatoriRecycler::RelocateWorker()
         (m_promoteAllRegions || m_allowPromotingRelocations))
     {
         m_occupancyAcc[2] = 0;
+        m_relocatableTenuredEstimate = 0;
+
         AddTenuredRegionsToPlan(m_tenuredRegions);
         AddTenuredRegionsToPlan(m_tenuredFinalizationTrackingRegions);
     }
