@@ -107,7 +107,7 @@ public:
         return Start() + ((size_t)cardPtr - Start()) * Satori::BYTES_PER_CARD_BYTE;
     }
 
-    template<typename F>
+    template <typename F>
     void ForEachRegion(F lambda);
 
 private:
