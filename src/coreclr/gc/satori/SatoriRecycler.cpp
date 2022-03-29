@@ -2623,9 +2623,8 @@ void SatoriRecycler::Plan()
         return;
     }
 
+    // plan relocations
     RunWithHelp(&SatoriRecycler::PlanWorker);
-
-    printf("ESTIMATED: %zu ACTUAL: %zu GENERATION: %d \n", relocatableEstimate, m_relocatingRegions->Count(), m_condemnedGeneration);
 
     // the actual relocatable number could be less than the estimate due to pinning,
     // which we know only after marking.
