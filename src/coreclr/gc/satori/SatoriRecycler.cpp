@@ -754,10 +754,10 @@ void SatoriRecycler::AdjustHeuristics()
             max(MIN_GEN2_BUDGET, (m_gen2BudgetBytes - occupancy) / Satori::REGION_SIZE_GRANULARITY) :
             MIN_GEN2_BUDGET;
 
-        if (ephemeralOccupancy * 20 > occupancy)
-        {
-            m_allowPromotingRelocations = true;
-        }
+        //if (ephemeralOccupancy * 20 > occupancy)
+        //{
+        //    m_allowPromotingRelocations = true;
+        //}
 
         if (ephemeralOccupancy * 10 > occupancy)
         {
@@ -1995,6 +1995,13 @@ bool SatoriRecycler::CleanCards()
             int8_t pageState = page->CardState();
             if (pageState >= Satori::CardState::PROCESSING)
             {
+                // move the page to PROCESSING state and make sure it does not reorder past reading the card group states
+                pageState = Interlocked::CompareExchange(& page->CardState(), Satori::CardState::PROCESSING, Satori::CardState::DIRTY);
+                if (pageState < Satori::CardState::PROCESSING)
+                {
+                    return;
+                }
+
                 size_t groupCount = page->CardGroupCount();
 
                 // there is unfinished page. Maybe should ask for help
@@ -2002,9 +2009,6 @@ bool SatoriRecycler::CleanCards()
 
                 // get a thread specific offset, to separate somewhat what different threads work on to reduce sharing
                 size_t offset = ThreadSpecificNumber();
-
-                // move the page to PROCESSING state and make sure it does not reorder past reading the card group states
-                Interlocked::Exchange(&page->CardState(), Satori::CardState::PROCESSING);
 
                 for (size_t ii = 0; ii < groupCount; ii++)
                 {
