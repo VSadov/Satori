@@ -33,6 +33,7 @@
 #include "../env/gcenv.os.h"
 #include "../env/gcenv.ee.h"
 #include "SatoriRegion.h"
+#include "SatoriPage.h"
 #include "SatoriMarkChunk.h"
 
 inline bool SatoriRegion::IsEscapeTracking()
