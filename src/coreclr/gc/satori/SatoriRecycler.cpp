@@ -615,7 +615,7 @@ void SatoriRecycler::ConcurrentHelp()
 
 void SatoriRecycler::MaybeAskForHelp()
 {
-    if (m_activeHelperFn && m_activeHelpers < SatoriHandlePartitioner::PartitionCount())
+    if (m_activeHelperFn && m_activeHelpers < SatoriUtil::MaxHelpersCount())
     {
         AskForHelp();
     }

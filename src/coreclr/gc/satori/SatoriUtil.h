@@ -41,7 +41,6 @@ namespace Satori
     };
 
     // page granularity is 1 Gb, but they can be bigger
-    // (on 32 bit we will have smaller sizes)
     static const int PAGE_BITS = 30;
     static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
 
@@ -73,8 +72,8 @@ namespace Satori
     // Set to 1/2 of a typical 32K L1 cache.
     static const size_t MIN_REGULAR_ALLOC = 16 * 1024;
 
-    // 8K for now, we can fiddle with size a bit later
-    const static size_t MARK_CHUNK_SIZE = 8 * 1024;
+    // ~128 items for now, we can fiddle with size a bit later
+    const static size_t MARK_CHUNK_SIZE = 8 * 128;
 
     // address bits set to track finalizable that needs to be scheduled to F-queue
     const static size_t FINALIZATION_PENDING = 1;
@@ -221,13 +220,13 @@ public:
 
     static int MaxHelpersCount()
     {
-        int specifiedHelpers = (int)GCConfig::GetParallelGC();
-        if (specifiedHelpers < 0)
+        int helperCount = (int)GCConfig::GetParallelGC();
+        if (helperCount < 0)
         {
-            specifiedHelpers = GCToOSInterface::GetTotalProcessorCount();
+            helperCount = GCToOSInterface::GetTotalProcessorCount() - 1;
         }
 
-        return specifiedHelpers;
+        return helperCount;
     }
 };
 
