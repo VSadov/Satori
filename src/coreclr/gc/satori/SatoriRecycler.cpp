@@ -3370,16 +3370,16 @@ void SatoriRecycler::DrainDeferredSweepQueueHelp()
 {
     _ASSERTE(IsHelperThread());
 
-    if (!m_deferredSweepRegions->IsEmpty())
+    SatoriRegion* curRegion = m_deferredSweepRegions->TryPop();
+    if (curRegion)
     {
         MaybeAskForHelp();
 
-        SatoriRegion* curRegion;
-        while ((curRegion = m_deferredSweepRegions->TryPop()))
+        do
         {
             SweepAndReturnRegion(curRegion);
             Interlocked::Decrement(&m_deferredSweepCount);
-        }
+        } while ((curRegion = m_deferredSweepRegions->TryPop()));
     }
 }
 

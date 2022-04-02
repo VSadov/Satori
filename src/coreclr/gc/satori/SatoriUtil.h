@@ -223,7 +223,11 @@ public:
         int helperCount = (int)GCConfig::GetParallelGC();
         if (helperCount < 0)
         {
-            helperCount = GCToOSInterface::GetTotalProcessorCount() - 1;
+            int cpuCount = GCToOSInterface::GetTotalProcessorCount();
+
+            // we will take CPU - 2, to leave some space for the user code
+            // but not less than CPU / 2
+            helperCount = max(cpuCount - 2, cpuCount / 2);
         }
 
         return helperCount;
