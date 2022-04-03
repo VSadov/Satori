@@ -138,6 +138,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_activeHelperFn = nullptr;
     m_rootScanTicket = 0;
     m_cardScanTicket = 0;
+
+    m_isLowLatencyMode = SatoriUtil::IsLowLatencyMode();
 }
 
 void SatoriRecycler::ShutDown()
@@ -613,9 +615,31 @@ void SatoriRecycler::ConcurrentHelp()
     while ((m_gcState == GC_STATE_CONCURRENT) && HelpOnceCore());
 }
 
+int SatoriRecycler::MaxHelpers()
+{
+    if (IsBlockingPhase())
+    {
+        return GCToOSInterface::GetTotalProcessorCount() - 1;
+    }
+
+    int helperCount = SatoriUtil::MaxHelpersCount();
+    if (helperCount < 0)
+    {
+        int cpuCount = GCToOSInterface::GetTotalProcessorCount();
+
+        // TUNING: should this be more dynamic? check CPU load and such.
+        //         cpuCount is too aggressive?
+        helperCount = IsLowLatencyMode() ?
+            max(1, cpuCount / 2) : // leave some space for the mutator
+            cpuCount;
+    }
+
+    return helperCount;
+}
+
 void SatoriRecycler::MaybeAskForHelp()
 {
-    if (m_activeHelperFn && m_activeHelpers < SatoriUtil::MaxHelpersCount())
+    if (m_activeHelperFn && m_activeHelpers < MaxHelpers())
     {
         AskForHelp();
     }
@@ -625,7 +649,7 @@ void SatoriRecycler::AskForHelp()
 {
     int totalHelpers = m_totalHelpers;
     if (m_activeHelpers >= totalHelpers &&
-        totalHelpers < SatoriUtil::MaxHelpersCount() &&
+        totalHelpers < MaxHelpers() &&
         Interlocked::CompareExchange(&m_totalHelpers, totalHelpers + 1, totalHelpers) == totalHelpers)
     {
         GCToEEInterface::CreateThread(HelperThreadFn, this, false, "Satori GC Helper Thread");
@@ -800,6 +824,10 @@ void SatoriRecycler::BlockingCollect()
 
     // assume that we will relocate. we will rethink later.
     m_isRelocating = m_condemnedGeneration == 2 ? SatoriUtil::IsRelocatingInGen2() : SatoriUtil::IsRelocatingInGen1();
+    if (IsLowLatencyMode())
+    {
+        m_isRelocating = false;
+    }
 
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
 
@@ -3421,5 +3449,10 @@ size_t SatoriRecycler::GetRecyclerOccupancy()
 size_t SatoriRecycler::GetGcStartMillis(int generation)
 {
     return m_gcStartMillis[generation];
+}
+
+bool& SatoriRecycler::IsLowLatencyMode()
+{
+    return m_isLowLatencyMode;
 }
 

@@ -127,13 +127,22 @@ Object* SatoriGC::GetNextFinalizable()
 
 int SatoriGC::GetGcLatencyMode()
 {
-    // NYI
-    return 0;
+    return m_heap->Recycler()->IsLowLatencyMode() ?
+        2 :  //pause_low_latency
+        1;   //pause_interactive
 }
 
 int SatoriGC::SetGcLatencyMode(int newLatencyMode)
 {
-    // NYI
+    if (newLatencyMode >= 2) //pause_low_latency
+    {
+        m_heap->Recycler()->IsLowLatencyMode() = true;
+    }
+    else
+    {
+        m_heap->Recycler()->IsLowLatencyMode() = false;
+    }
+
     return 0;
 }
 

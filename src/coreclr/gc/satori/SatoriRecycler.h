@@ -48,6 +48,7 @@ public:
     void AddTenuredRegion(SatoriRegion* region);
 
     size_t GetNowMillis();
+    bool& IsLowLatencyMode();
 
     void TryStartGC(int generation, gc_reason reason);
     void HelpOnce();
@@ -138,7 +139,8 @@ private:
     void(SatoriRecycler::* m_activeHelperFn)();
 
     int m_condemnedGeneration;
-    bool m_isRelocating;   
+    bool m_isRelocating;
+    bool m_isLowLatencyMode;
     bool m_promoteAllRegions;  
     bool m_allowPromotingRelocations;
     bool m_isBarrierConcurrent;
@@ -191,6 +193,7 @@ private:
     static void MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 
     static void HelperThreadFn(void* param);
+    int MaxHelpers();
 
     void PushToEphemeralQueues(SatoriRegion* region);
     void PushToEphemeralQueuesIgnoringDemoted(SatoriRegion* region);
