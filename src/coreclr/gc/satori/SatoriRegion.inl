@@ -412,10 +412,6 @@ inline void SatoriRegion::SetMarked(SatoriObject* o)
     size_t mask = (size_t)1 << ((word >> 3) & 63);
 
     m_bitmap[bitmapIndex] |= mask;
-
-    //TODO: VS consider on x64
-    //size_t bitIndex = (Start() & Satori::REGION_SIZE_GRANULARITY - 1) / sizeof(size_t);
-    //_bittestandset64((long long*)ContainingRegion()->m_bitmap, bitIndex);
 }
 
 inline void SatoriRegion::SetMarkedAtomic(SatoriObject* o)

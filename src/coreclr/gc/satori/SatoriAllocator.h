@@ -50,8 +50,8 @@ public:
     void AddRegion(SatoriRegion* region);
     Object* Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
-    //TODO: VS when understand constraints we need a not-allocating version for recycler (recycler is able to handle failures)
     SatoriMarkChunk* TryGetMarkChunk();
+    SatoriMarkChunk* GetMarkChunk();
     void ReturnMarkChunk(SatoriMarkChunk* chunk);
 
 private:

@@ -454,7 +454,28 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
 
 SatoriMarkChunk* SatoriAllocator::TryGetMarkChunk()
 {
-    // TODO: VS try returning nullptr sometimes in debug
+    SatoriMarkChunk* chunk = m_markChunks->TryPop();
+
+#if _DEBUG
+    // simulate low memory case once in a while
+    if (!chunk && GCToOSInterface::GetCurrentProcessorNumber() == 2)
+    {
+        return nullptr;
+    }
+#endif
+
+    while (!chunk && AddMoreMarkChunks())
+    {
+        chunk = m_markChunks->TryPop();
+    }
+
+    _ASSERTE(chunk->Count() == 0);
+    return chunk;
+}
+
+// returns NULL only in OOM case
+SatoriMarkChunk* SatoriAllocator::GetMarkChunk()
+{
     SatoriMarkChunk* chunk = m_markChunks->TryPop();
     while (!chunk && AddMoreMarkChunks())
     {

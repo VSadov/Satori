@@ -1472,7 +1472,7 @@ bool SatoriRegion::RegisterForFinalization(SatoriObject* finalizable)
     if (!m_finalizableTrackers || !m_finalizableTrackers->TryPush(finalizable))
     {
         m_hasFinalizables = true;
-        SatoriMarkChunk* markChunk = Allocator()->TryGetMarkChunk();
+        SatoriMarkChunk* markChunk = Allocator()->GetMarkChunk();
         if (!markChunk)
         {
             // OOM 
