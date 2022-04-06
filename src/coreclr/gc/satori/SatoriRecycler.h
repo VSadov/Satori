@@ -30,7 +30,7 @@
 #include "common.h"
 #include "../gc.h"
 #include "SatoriRegionQueue.h"
-#include "SatoriMarkChunkQueue.h"
+#include "SatoriWorkChunkQueue.h"
 
 class SatoriHeap;
 class SatoriTrimmer;
@@ -91,7 +91,7 @@ private:
     int m_rootScanTicket;
     uint8_t m_cardScanTicket;
 
-    SatoriMarkChunkQueue* m_workQueue;
+    SatoriWorkChunkQueue* m_workQueue;
     SatoriTrimmer* m_trimmer;
 
     // regions owned by recycler
@@ -201,15 +201,15 @@ private:
     void PushToTenuredQueues(SatoriRegion* region);
 
     void DeactivateAllStacks();
-    void PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, SatoriObject* o);
+    void PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o);
     bool MarkOwnStackAndDrainQueues(int64_t deadline = 0);
     void MarkDemoted(SatoriRegion* curRegion, MarkContext& c);
     void MarkAllStacksFinalizationAndDemotedRoots();
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();
     uint8_t GetCardScanTicket();
-    void DrainMarkQueues(SatoriMarkChunk* srcChunk = nullptr);
-    bool DrainMarkQueuesConcurrent(SatoriMarkChunk* srcChunk = nullptr, int64_t deadline = 0);
+    void DrainMarkQueues(SatoriWorkChunk* srcChunk = nullptr);
+    bool DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk = nullptr, int64_t deadline = 0);
     void MarkThroughCards();
     bool HasDirtyCards();
     bool MarkThroughCardsConcurrent(int64_t deadline);

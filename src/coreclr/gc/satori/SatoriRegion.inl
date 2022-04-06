@@ -34,7 +34,7 @@
 #include "../env/gcenv.ee.h"
 #include "SatoriRegion.h"
 #include "SatoriPage.h"
-#include "SatoriMarkChunk.h"
+#include "SatoriWorkChunk.h"
 
 inline bool SatoriRegion::IsEscapeTracking()
 {
@@ -154,7 +154,7 @@ void SatoriRegion::ForEachFinalizable(F lambda)
 {
     size_t items = 0;
     size_t nulls = 0;
-    SatoriMarkChunk* chunk = m_finalizableTrackers;
+    SatoriWorkChunk* chunk = m_finalizableTrackers;
     while (chunk)
     {
         items += chunk->Count();
@@ -398,7 +398,7 @@ inline bool SatoriRegion::IsDemoted()
     return m_gen2Objects;
 }
 
-inline SatoriMarkChunk* &SatoriRegion::DemotedObjects()
+inline SatoriWorkChunk* &SatoriRegion::DemotedObjects()
 {
     return m_gen2Objects;
 }

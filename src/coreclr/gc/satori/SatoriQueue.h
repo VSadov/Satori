@@ -34,7 +34,7 @@
 enum class QueueKind
 {
     Allocator,
-    MarkChunk,
+    WorkChunk,
 
     RecyclerEphemeral,
     RecyclerEphemeralFinalizationTracking,

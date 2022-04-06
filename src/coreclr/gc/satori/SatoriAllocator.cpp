@@ -38,8 +38,8 @@
 #include "SatoriRegion.inl"
 #include "SatoriRegionQueue.h"
 #include "SatoriAllocationContext.h"
-#include "SatoriMarkChunk.h"
-#include "SatoriMarkChunkQueue.h"
+#include "SatoriWorkChunk.h"
+#include "SatoriWorkChunkQueue.h"
 
 void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
@@ -50,7 +50,7 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
         m_queues[i] = new SatoriRegionQueue(QueueKind::Allocator);
     }
 
-    m_markChunks = new SatoriMarkChunkQueue();
+    m_WorkChunks = new SatoriWorkChunkQueue();
 }
 
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
@@ -452,9 +452,9 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     return result;
 }
 
-SatoriMarkChunk* SatoriAllocator::TryGetMarkChunk()
+SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
 {
-    SatoriMarkChunk* chunk = m_markChunks->TryPop();
+    SatoriWorkChunk* chunk = m_WorkChunks->TryPop();
 
 #if _DEBUG
     // simulate low memory case once in a while
@@ -464,9 +464,9 @@ SatoriMarkChunk* SatoriAllocator::TryGetMarkChunk()
     }
 #endif
 
-    while (!chunk && AddMoreMarkChunks())
+    while (!chunk && AddMoreWorkChunks())
     {
-        chunk = m_markChunks->TryPop();
+        chunk = m_WorkChunks->TryPop();
     }
 
     _ASSERTE(chunk->Count() == 0);
@@ -474,19 +474,19 @@ SatoriMarkChunk* SatoriAllocator::TryGetMarkChunk()
 }
 
 // returns NULL only in OOM case
-SatoriMarkChunk* SatoriAllocator::GetMarkChunk()
+SatoriWorkChunk* SatoriAllocator::GetWorkChunk()
 {
-    SatoriMarkChunk* chunk = m_markChunks->TryPop();
-    while (!chunk && AddMoreMarkChunks())
+    SatoriWorkChunk* chunk = m_WorkChunks->TryPop();
+    while (!chunk && AddMoreWorkChunks())
     {
-        chunk = m_markChunks->TryPop();
+        chunk = m_WorkChunks->TryPop();
     }
 
     _ASSERTE(chunk->Count() == 0);
     return chunk;
 }
 
-bool SatoriAllocator::AddMoreMarkChunks()
+bool SatoriAllocator::AddMoreWorkChunks()
 {
     //TODO: VS if committing by OS page get one region at the beginning and dispense by a piece (take a lock),
     //      then just do whole regions.
@@ -504,15 +504,15 @@ bool SatoriAllocator::AddMoreMarkChunks()
             break;
         }
 
-        SatoriMarkChunk* chunk = SatoriMarkChunk::InitializeAt(mem);
-        m_markChunks->Push(chunk);
+        SatoriWorkChunk* chunk = SatoriWorkChunk::InitializeAt(mem);
+        m_WorkChunks->Push(chunk);
     }
 
     return true;
 }
 
-void SatoriAllocator::ReturnMarkChunk(SatoriMarkChunk* chunk)
+void SatoriAllocator::ReturnWorkChunk(SatoriWorkChunk* chunk)
 {
     _ASSERTE(chunk->Count() == 0);
-    m_markChunks->Push(chunk);
+    m_WorkChunks->Push(chunk);
 }

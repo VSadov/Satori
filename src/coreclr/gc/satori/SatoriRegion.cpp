@@ -46,7 +46,7 @@
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
 #include "SatoriQueue.h"
-#include "SatoriMarkChunk.h"
+#include "SatoriWorkChunk.h"
 
 const int SatoriRegion::MAX_LARGE_OBJ_SIZE = Satori::REGION_SIZE_GRANULARITY - Satori::MIN_FREE_SIZE - offsetof(SatoriRegion, m_firstObject);
 
@@ -111,12 +111,12 @@ void SatoriRegion::RearmCardsForTenured()
     _ASSERTE(Generation() == 2);
     m_containingPage->WipeCardsForRange(Start(), End(), /* tenured */ true);
 
-    SatoriMarkChunk* gen2Objects = DemotedObjects();
+    SatoriWorkChunk* gen2Objects = DemotedObjects();
     if (gen2Objects)
     {
         DemotedObjects() = nullptr;
         gen2Objects->Clear();
-        Allocator()->ReturnMarkChunk(gen2Objects);
+        Allocator()->ReturnWorkChunk(gen2Objects);
     }
 }
 
@@ -1472,17 +1472,17 @@ bool SatoriRegion::RegisterForFinalization(SatoriObject* finalizable)
     if (!m_finalizableTrackers || !m_finalizableTrackers->TryPush(finalizable))
     {
         m_hasFinalizables = true;
-        SatoriMarkChunk* markChunk = Allocator()->GetMarkChunk();
-        if (!markChunk)
+        SatoriWorkChunk* WorkChunk = Allocator()->GetWorkChunk();
+        if (!WorkChunk)
         {
             // OOM 
             UnlockFinalizableTrackers();
             return false;
         }
 
-        markChunk->SetNext(m_finalizableTrackers);
-        m_finalizableTrackers = markChunk;
-        markChunk->Push(finalizable);
+        WorkChunk->SetNext(m_finalizableTrackers);
+        m_finalizableTrackers = WorkChunk;
+        WorkChunk->Push(finalizable);
     }
 
     UnlockFinalizableTrackers();
@@ -1509,12 +1509,12 @@ void SatoriRegion::UnlockFinalizableTrackers()
 
 void SatoriRegion::CompactFinalizableTrackers()
 {
-    SatoriMarkChunk* oldTrackers = m_finalizableTrackers;
+    SatoriWorkChunk* oldTrackers = m_finalizableTrackers;
     m_finalizableTrackers = nullptr;
 
     while (oldTrackers)
     {
-        SatoriMarkChunk* current = oldTrackers;
+        SatoriWorkChunk* current = oldTrackers;
         oldTrackers = oldTrackers->Next();
 
         if (m_finalizableTrackers)
@@ -1537,7 +1537,7 @@ void SatoriRegion::CompactFinalizableTrackers()
         }
 
         current->SetNext(nullptr);
-        Allocator()->ReturnMarkChunk(current);
+        Allocator()->ReturnWorkChunk(current);
     }
 }
 
@@ -1676,10 +1676,10 @@ void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
 {
     _ASSERTE(!other->HasPinnedObjects());
     m_hasFinalizables |= other->m_hasFinalizables;
-    SatoriMarkChunk* otherFinalizables = other->m_finalizableTrackers;
+    SatoriWorkChunk* otherFinalizables = other->m_finalizableTrackers;
     if (otherFinalizables)
     {
-        SatoriMarkChunk* tail = otherFinalizables;
+        SatoriWorkChunk* tail = otherFinalizables;
         while (tail->Next() != nullptr)
         {
             tail = tail->Next();
@@ -1697,12 +1697,12 @@ bool SatoriRegion::TryDemote()
     _ASSERTE(Generation() == 2);
     _ASSERTE(ObjCount() != 0);
 
-    if (ObjCount() > SatoriMarkChunk::Capacity())
+    if (ObjCount() > SatoriWorkChunk::Capacity())
     {
         return false;
     }
 
-    SatoriMarkChunk* gen2Objects = Allocator()->TryGetMarkChunk();
+    SatoriWorkChunk* gen2Objects = Allocator()->TryGetWorkChunk();
     if (!gen2Objects)
     {
         return false;

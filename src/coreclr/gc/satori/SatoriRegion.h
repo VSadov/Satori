@@ -95,7 +95,7 @@ public:
     bool MaybeAttachedToContextAcquire();
 
     bool IsDemoted();
-    SatoriMarkChunk* &DemotedObjects();
+    SatoriWorkChunk* &DemotedObjects();
 
     int Generation();
     int GenerationAcquire();
@@ -227,7 +227,7 @@ private:
             SatoriRegion* m_next;
             SatoriQueue<SatoriRegion>* m_containingQueue;
 
-            SatoriMarkChunk* m_finalizableTrackers;
+            SatoriWorkChunk* m_finalizableTrackers;
             int m_finalizableTrackersLock;
 
             // active allocation may happen in the following range.
@@ -253,7 +253,7 @@ private:
             bool m_hasPendingFinalizables;
             bool m_acceptedPromotedObjects;
 
-            SatoriMarkChunk* m_gen2Objects;
+            SatoriWorkChunk* m_gen2Objects;
 
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
         };
