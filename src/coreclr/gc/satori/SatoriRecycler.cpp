@@ -1088,7 +1088,7 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriMarkChunk*& currentMarkChunk, Sa
         // handle mark overflow by dirtying the cards
         o->DirtyCardsForContent();
 
-        // since this o will not be popped from the mark queue,
+        // since this o will not be popped from the work queue,
         // check for unmovable here
         if (o->IsUnmovable())
         {

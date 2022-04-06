@@ -88,8 +88,6 @@ SatoriHeap* SatoriHeap::Create()
         return nullptr;
     }
 
-    // TODO: VS under very low memory, some of the following Initialize calls may fail
-    //       do we care to handle that?
     SatoriHeap* heap = (SatoriHeap*)reserved;
     heap->m_reservedMapSize = mapSize;
     heap->m_committedMapSize = commitSize - sizeof(SatoriHeap) + sizeof(SatoriPage*);
