@@ -3299,6 +3299,9 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
         if (curRegion->IsReusable())
         {
             _ASSERTE(curRegion->Size() <= Satori::REGION_SIZE_GRANULARITY);
+            // TUNING: VS any others worth pushing? pinned, too full?
+            //         it feels we should prefer regions that have less chance to
+            //         decay into empty or compactible state.
             if (curRegion->IsDemoted())
             {
                 m_reusableRegions->Push(curRegion);
