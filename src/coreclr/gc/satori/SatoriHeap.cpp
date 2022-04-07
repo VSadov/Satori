@@ -80,7 +80,7 @@ SatoriHeap* SatoriHeap::Create()
     size_t rezerveSize = mapSize + sizeof(SatoriHeap);
 
     void* reserved = GCToOSInterface::VirtualReserve(rezerveSize, 0, VirtualReserveFlags::None);
-    size_t commitSize = min(Satori::CommitGranularity(), rezerveSize);
+    size_t commitSize = min(SatoriUtil::CommitGranularity(), rezerveSize);
     if (!GCToOSInterface::VirtualCommit(reserved, commitSize))
     {
         // failure
@@ -106,7 +106,7 @@ SatoriHeap* SatoriHeap::Create()
 bool SatoriHeap::CommitMoreMap(size_t currentCommittedMapSize)
 {
     void* commitFrom = (void*)((size_t)&m_pageMap + currentCommittedMapSize);
-    size_t commitSize = Satori::CommitGranularity();
+    size_t commitSize = SatoriUtil::CommitGranularity();
 
     SatoriLockHolder<SatoriLock> holder(&m_mapLock);
     if (currentCommittedMapSize <= m_committedMapSize)

@@ -203,9 +203,9 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             if (moreSpace <= allocRemaining)
             {
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
-                if (zeroInitialize && moreSpace < Satori::MIN_REGULAR_ALLOC)
+                if (zeroInitialize && moreSpace < SatoriUtil::MinZeroInitSize())
                 {
-                    moreSpace = min(allocRemaining, Satori::MIN_REGULAR_ALLOC);
+                    moreSpace = min(allocRemaining, SatoriUtil::MinZeroInitSize());
                 }
 
                 if (region->Allocate(moreSpace, zeroInitialize))

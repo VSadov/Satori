@@ -48,6 +48,7 @@ public:
     void AddTenuredRegion(SatoriRegion* region);
 
     size_t GetNowMillis();
+    int64_t HelpQuantum();
     bool& IsLowLatencyMode();
 
     void TryStartGC(int generation, gc_reason reason);

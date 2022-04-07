@@ -401,6 +401,12 @@ bool IsHelperThread()
     return GCToEEInterface::GetThread() == nullptr;
 }
 
+int64_t SatoriRecycler::HelpQuantum()
+{
+    // TUNING: 1/8 msec for now
+    return m_perfCounterFrequencyMHz / 8;
+}
+
 bool SatoriRecycler::HelpOnceCore()
 {
     if (m_condemnedGeneration == 0)
@@ -424,7 +430,7 @@ bool SatoriRecycler::HelpOnceCore()
     }
 
     int64_t timeStamp = GCToOSInterface::QueryPerformanceCounter();
-    int64_t deadline = timeStamp + m_perfCounterFrequencyMHz / 8; // 1/8 msec.
+    int64_t deadline = timeStamp + HelpQuantum(); // 1/8 msec.
 
     // this should be done before scanning stacks or cards
     // since the regions must be swept before we can use FindObject
@@ -592,9 +598,8 @@ void SatoriRecycler::HelpOnce()
             }
             else
             {
-                // TODO: VS make help quantum a const or macro.
                 if (!m_activeHelpers &&
-                    (time - m_noWorkSince) > m_perfCounterFrequencyMHz / 8 * 2) // 4 help quantums
+                    (time - m_noWorkSince) > HelpQuantum() * 4) // 4 help quantums without work returned
                 {
                     // we see no concurrent work, initiate blocking stage
                     if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
@@ -923,7 +928,7 @@ void SatoriRecycler::RunWithHelp(void(SatoriRecycler::* method)())
     MemoryBarrier();
     while (m_activeHelpers > 0)
     {
-        // TUNING: are we wasting too much cycles here?
+        // TUNING: are we wasting too many cycles here?
         //         should we find something more useful to do than mmpause,
         //         or perhaps Sleep(0) after a few spins?
         YieldProcessor();
@@ -995,11 +1000,9 @@ void SatoriRecycler::MarkStrongReferences()
 void SatoriRecycler::MarkStrongReferencesWorker()
 {
     // in concurrent case the current stack is unlikely to have anything unmarked
-    // so no advantage to mark it early
-    if (!SatoriUtil::IsConcurrent())
-    {
-        MarkOwnStackAndDrainQueues();
-    }
+    // it is still preferred to lookat own stack on same thread.
+    // this will also ask for helpers.
+    MarkOwnStackAndDrainQueues();
 
     MarkHandles();
     MarkAllStacksFinalizationAndDemotedRoots();
@@ -1367,7 +1370,6 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
 
     bool isBlockingPhase = IsBlockingPhase();
 
-    // TODO: VS ask for help? (also check the update counterpart)
     if (SatoriUtil::IsConservativeMode())
         //generations are meaningless here, so we pass -1
         GCToEEInterface::GcScanRoots(isBlockingPhase ? MarkFn<true> : MarkFnConcurrent<true>, -1, -1, &sc);
@@ -3035,7 +3037,6 @@ void SatoriRecycler::UpdateRootsWorker()
             }
         );
 
-        // TODO: VS ask for help? (also check the mark counterpart)
         if (SatoriUtil::IsConservativeMode())
             //generations are meaningless here, so we pass -1
             GCToEEInterface::GcScanRoots(UpdateFn<true>, -1, -1, &sc);

@@ -64,7 +64,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     ptrdiff_t toCommit = (size_t)&result->m_syncBlock - committed;
     if (toCommit > 0)
     {
-        toCommit = ALIGN_UP(toCommit, Satori::CommitGranularity());
+        toCommit = ALIGN_UP(toCommit, SatoriUtil::CommitGranularity());
 
         if (!GCToOSInterface::VirtualCommit((void*)committed, toCommit))
         {
@@ -438,7 +438,7 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
     {
         _ASSERTE(next->m_committed > next->Start());
         size_t toDecommit = next->m_committed - next->Start();
-        _ASSERTE(toDecommit % Satori::CommitGranularity() == 0);
+        _ASSERTE(toDecommit % SatoriUtil::CommitGranularity() == 0);
         GCToOSInterface::VirtualDecommit(next, toDecommit);
     }
 
@@ -447,8 +447,12 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
 
 bool SatoriRegion::CanDecommit()
 {
-    size_t decommitStart = ALIGN_UP((size_t)&m_syncBlock, Satori::CommitGranularity());
-    _ASSERTE(m_committed >= decommitStart);
+    size_t decommitStart = ALIGN_UP((size_t)&m_syncBlock, SatoriUtil::CommitGranularity());
+    if (decommitStart > m_committed)
+    {
+        _ASSERTE(SatoriUtil::CommitGranularity() > Satori::REGION_SIZE_GRANULARITY);
+        return false;
+    }
 
     size_t decommitSize = m_committed - decommitStart;
     return (decommitSize > Satori::REGION_SIZE_GRANULARITY / 8);
@@ -456,8 +460,12 @@ bool SatoriRegion::CanDecommit()
 
 bool SatoriRegion::TryDecommit()
 {
-    size_t decommitStart = ALIGN_UP((size_t)&m_syncBlock, Satori::CommitGranularity());
-    _ASSERTE(m_committed >= decommitStart);
+    size_t decommitStart = ALIGN_UP((size_t)&m_syncBlock, SatoriUtil::CommitGranularity());
+    if (decommitStart > m_committed)
+    {
+        _ASSERTE(SatoriUtil::CommitGranularity() > Satori::REGION_SIZE_GRANULARITY);
+        return false;
+    }
 
     size_t decommitSize = m_committed - decommitStart;
     if (decommitSize > Satori::REGION_SIZE_GRANULARITY / 8)
@@ -483,7 +491,7 @@ size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
         size_t ensureCommitted = chunkEnd + Satori::MIN_FREE_SIZE;
         if (ensureCommitted > m_committed)
         {
-            size_t newComitted = ALIGN_UP(ensureCommitted, Satori::CommitGranularity());
+            size_t newComitted = ALIGN_UP(ensureCommitted, SatoriUtil::CommitGranularity());
             if (!GCToOSInterface::VirtualCommit((void*)m_committed, newComitted - m_committed))
             {
                 return 0;
@@ -534,7 +542,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     size_t ensureCommitted = chunkEnd + Satori::MIN_FREE_SIZE;
     if (ensureCommitted > m_committed)
     {
-        size_t newComitted = ALIGN_UP(ensureCommitted, Satori::CommitGranularity());
+        size_t newComitted = ALIGN_UP(ensureCommitted, SatoriUtil::CommitGranularity());
         if (!GCToOSInterface::VirtualCommit((void*)m_committed, newComitted - m_committed))
         {
             return 0;
