@@ -923,8 +923,9 @@ void SatoriRecycler::RunWithHelp(void(SatoriRecycler::* method)())
     MemoryBarrier();
     while (m_activeHelpers > 0)
     {
-        // TODO: VS should find something more useful to do than mmpause,
-        //       or perhaps Sleep(0) after a few spins?
+        // TUNING: are we wasting too much cycles here?
+        //         should we find something more useful to do than mmpause,
+        //         or perhaps Sleep(0) after a few spins?
         YieldProcessor();
     }
 }
@@ -2710,7 +2711,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         return;
     }
 
-    // TODO: VS It is not profitable to parallelize planning.
+    // TODO: TUNING It is not profitable to parallelize planning.
     //       The main cost is walking the linked list of regions.
     //       It is relatively cheap, but for very large heaps could
     //       add up. By rough estimates planning 1Tb heap could take 100ms+.
@@ -3253,8 +3254,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
     //         the cost here is inability to trace byrefs concurrently, not huge,
     //         byref is rarely the only ref.
     curRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
-    if (curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 2 &&
-        curRegion->HasFreeSpaceInTop3Buckets())
+    if (curRegion->HasFreeSpaceInTop3Buckets())
     {
         _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
 
@@ -3299,9 +3299,9 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
         if (curRegion->IsReusable())
         {
             _ASSERTE(curRegion->Size() <= Satori::REGION_SIZE_GRANULARITY);
-            // TUNING: VS any others worth pushing? pinned, too full?
-            //         it feels we should prefer regions that have less chance to
+            // TUNING: it feels we should use first the regions that have less chance to
             //         decay into empty or compactible state.
+            //         however we would generally consume all reusables, so it may not matter
             if (curRegion->IsDemoted())
             {
                 m_reusableRegions->Push(curRegion);

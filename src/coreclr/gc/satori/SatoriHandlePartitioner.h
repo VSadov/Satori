@@ -79,8 +79,7 @@ public:
         if (s_completedTicket != s_currentTicket)
         {
             int startPartition = CurrentThreadPartition();
-            //TODO: VS partition walk should be NUMA-aware, if possible
-            for (int i = 0; i < s_partitionCount; i++)
+             for (int i = 0; i < s_partitionCount; i++)
             {
                 int partition = (i + startPartition) % s_partitionCount;
                 uint8_t partitionTicket = VolatileLoadWithoutBarrier(&s_scanTickets[partition]);
