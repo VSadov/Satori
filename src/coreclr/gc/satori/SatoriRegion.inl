@@ -36,6 +36,11 @@
 #include "SatoriPage.h"
 #include "SatoriWorkChunk.h"
 
+inline bool SatoriRegion::CanSplitWithoutCommit(size_t size)
+{
+    return m_committed > (m_end - size + offsetof(SatoriRegion, m_syncBlock));
+}
+
 inline bool SatoriRegion::IsEscapeTracking()
 {
     _ASSERTE(!m_ownerThreadTag || m_generation == 0);

@@ -59,7 +59,7 @@ public:
     void RearmCardsForTenured();
     void ResetCardsForEphemeral();
 
-    SatoriRegion* Split(size_t regionSize);
+    SatoriRegion* TrySplit(size_t regionSize);
     bool CanDecommit();
     bool TryCoalesceWithNext();
     void Coalesce(SatoriRegion* next);
@@ -265,7 +265,9 @@ private:
     SatoriObject m_firstObject;
 
 private:
+    bool CanSplitWithoutCommit(size_t size);
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
+    void UndoSplitCore(size_t regionSize, size_t nextStart, size_t nextCommitted, size_t nextUsed);
 
     template <bool isConservative>
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);

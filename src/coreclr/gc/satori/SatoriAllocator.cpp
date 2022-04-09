@@ -102,7 +102,7 @@ tryAgain:
             if (page)
             {
                 putBack = page->MakeInitialRegion();
-                region = putBack->Split(regionSize);
+                region = putBack->TrySplit(regionSize);
                 AddRegion(putBack);
                 return region;
             }
@@ -120,8 +120,17 @@ tryAgain:
             _ASSERTE(region->Size() >= regionSize);
             if (region->Size() > regionSize)
             {
-                putBack = region->Split(region->Size() - regionSize);
-                AddRegion(putBack);
+                putBack = region->TrySplit(region->Size() - regionSize);
+                if (putBack)
+                {
+                    AddRegion(putBack);
+                }
+                else
+                {
+                    // OOM
+                    AddRegion(region);
+                    region = nullptr;
+                }
             }
 
             return region;

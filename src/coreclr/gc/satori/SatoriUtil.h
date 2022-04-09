@@ -160,14 +160,13 @@ public:
 
     static size_t CommitGranularity()
     {
-        // TODO: VS make configurable
+        // TODO: VS make configurable and consider OS page size.
         // we can support sizes that are > OS page and binary fractions of REGION_SIZE_GRANULARITY.
         // we can also support 1G
         return 4096 * 4;
 
-        // return Satori::REGION_SIZE_GRANULARITY;
+        //return Satori::REGION_SIZE_GRANULARITY;
 
-        // TODO: VS this is broken
         // return Satori::PAGE_SIZE_GRANULARITY;
     }
 

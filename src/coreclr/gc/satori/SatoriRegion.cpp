@@ -65,11 +65,13 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     if (toCommit > 0)
     {
         toCommit = ALIGN_UP(toCommit, SatoriUtil::CommitGranularity());
-
+        _ASSERTE((size_t)toCommit <= address + regionSize);
         if (!GCToOSInterface::VirtualCommit((void*)committed, toCommit))
         {
+            // OOM
             return nullptr;
         }
+
         committed += toCommit;
     }
 
@@ -362,14 +364,31 @@ void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextC
     _ASSERTE(Size() >= Satori::REGION_SIZE_GRANULARITY);
 }
 
-SatoriRegion* SatoriRegion::Split(size_t regionSize)
+void SatoriRegion::UndoSplitCore(size_t regionSize, size_t nextStart, size_t nextCommitted, size_t nextUsed)
+{
+    m_end += regionSize;
+    m_committed = max(m_committed, nextCommitted);
+    m_used = max(m_used, nextUsed);
+    m_allocEnd = min(m_allocEnd, m_end);
+}
+
+SatoriRegion* SatoriRegion::TrySplit(size_t regionSize)
 {
     size_t nextStart, nextCommitted, nextUsed;
     SplitCore(regionSize, nextStart, nextCommitted, nextUsed);
 
     // format the rest as a new region 
     SatoriRegion* result = InitializeAt(m_containingPage, nextStart, regionSize, nextCommitted, nextUsed);
-    _ASSERTE(result->ValidateBlank());
+    if (result == nullptr)
+    {
+        // OOM
+        this->UndoSplitCore(regionSize, nextStart, nextCommitted, nextUsed);
+    }
+    else
+    {
+        _ASSERTE(result->ValidateBlank());
+    }
+
     return result;
 }
 
