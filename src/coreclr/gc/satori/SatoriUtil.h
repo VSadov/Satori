@@ -67,7 +67,7 @@ namespace Satori
     static const size_t MIN_FREE_SIZE = 3 * sizeof(size_t);
 
     // ~128 items for now, we can fiddle with size a bit later
-    const static size_t MARK_CHUNK_SIZE = 8 * 128;
+    const static size_t MARK_CHUNK_SIZE = 128 * sizeof(size_t);
 
     // address bits set to track finalizable that needs to be scheduled to F-queue
     const static size_t FINALIZATION_PENDING = 1;
@@ -162,7 +162,7 @@ public:
     {
         // TODO: VS make configurable and consider OS page size.
         // we can support sizes that are > OS page and binary fractions of REGION_SIZE_GRANULARITY.
-        // we can also support 1G
+        // we can also support PAGE_SIZE_GRANULARITY
         return 4096 * 4;
 
         //return Satori::REGION_SIZE_GRANULARITY;

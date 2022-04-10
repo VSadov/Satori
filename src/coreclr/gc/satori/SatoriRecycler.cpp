@@ -884,12 +884,9 @@ void SatoriRecycler::BlockingCollect()
     GCToEEInterface::GcDone(m_condemnedGeneration);
 
 #ifdef TIMED
-    printf("GenDone%i , relocating: %d \n", m_condemnedGeneration, m_isRelocating);
-#endif
-
-#ifdef TIMED
+    printf("GenDone. Gen: %i , relocating: %d \n", m_condemnedGeneration, m_isRelocating);
     time = (GCToOSInterface::QueryPerformanceCounter() - time) * 1000000 / GCToOSInterface::QueryPerformanceFrequency();
-    printf("%zu\n", time);
+    printf("usec: %zu\n", time);
 #endif
 
     FIRE_EVENT(GCEnd_V1, int(m_gcCount[0] - 1), m_condemnedGeneration);
