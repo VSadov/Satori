@@ -61,11 +61,11 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     used = max(address, used);
 
     // make sure the header is comitted
-    ptrdiff_t toCommit = (size_t)&result->m_syncBlock - committed;
+    ptrdiff_t toCommit = (size_t)&result->m_syncBlock + SatoriUtil::MinZeroInitSize() - committed;
     if (toCommit > 0)
     {
         toCommit = ALIGN_UP(toCommit, SatoriUtil::CommitGranularity());
-        _ASSERTE((size_t)toCommit <= address + regionSize);
+        _ASSERTE(committed + (size_t)toCommit <= address + regionSize);
         if (!GCToOSInterface::VirtualCommit((void*)committed, toCommit))
         {
             // OOM
