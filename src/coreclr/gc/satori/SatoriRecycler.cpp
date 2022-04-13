@@ -51,8 +51,8 @@
 
 //#define TIMED
 
-static const int MIN_GEN1_BUDGET = 2;
-static const int MIN_GEN2_BUDGET = 8;
+static const int MIN_GEN1_BUDGET = 10;
+static const int MIN_GEN2_BUDGET = 40;
 
 void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
 {
@@ -533,7 +533,7 @@ void SatoriRecycler::MarkDemotedAttachedRegionsFn(gc_alloc_context* gcContext, v
     SatoriRecycler* recycler = markContext->m_recycler;
 
     SatoriRegion* region = context->RegularRegion();
-    if (region && region->IsDemoted())
+    if (region && region->IsDemoted() && !region->IsEscapeTracking())
     {
         recycler->MarkDemoted(region, *markContext);
     }
@@ -1219,7 +1219,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         // that shortened the found region and the region no longer matches the ref (which means the ref is not real).
         // Note that the split could only happen before we are done with allocator queue (which is synchronising)
         // and assign 0+ gen to the region.
-        // So check here in the opposite order - first that region is 0+ gen and then that the size is stil right.
+        // So check here in the opposite order - first that region is 0+ gen and then that the size is still right.
         if (isConservative &&
             (containingRegion->GenerationAcquire() < 0 || location >= containingRegion->End()))
         {
@@ -1341,6 +1341,7 @@ void SatoriRecycler::MarkDemoted(SatoriRegion* curRegion, MarkContext& c)
     SatoriWorkChunk* gen2Objects = curRegion->DemotedObjects();
     if (m_condemnedGeneration == 1)
     {
+        _ASSERTE(!curRegion->MaybeEscapeTrackingAcquire());
         curRegion->HasPinnedObjects() = true;
         for (int i = 0; i < gen2Objects->Count(); i++)
         {
@@ -1397,8 +1398,8 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
         );
     }
 
-    // going through demoted queue does not require EE stopped,
-    // so in concurrent case we will do that later
+    // EE is stopped here for root marking, but this could be either
+    // a part of the blocking phase or a part of concurrent GC 
     if (isBlockingPhase)
     {
         SatoriRegion* curRegion;
@@ -1410,10 +1411,14 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
     }
     else
     {
+        // going through demoted queue does not require EE stopped,
+        // so in concurrent case we will do that later.
+        // but there could be demoted regions in reusable queue
+        // we can mark tenured objects in those.
         SatoriRegion* curRegion;
         while ((curRegion = m_reusableRegionsAlternate->TryPop()))
         {
-            if (curRegion->IsDemoted())
+            if (curRegion->IsDemoted() && curRegion->ReusableFor() != SatoriRegion::ReuseLevel::Gen0)
             {
                 MarkDemoted(curRegion, c);
             }
