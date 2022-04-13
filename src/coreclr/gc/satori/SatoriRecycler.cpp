@@ -51,8 +51,8 @@
 
 //#define TIMED
 
-static const int MIN_GEN1_BUDGET = 10;
-static const int MIN_GEN2_BUDGET = 40;
+static const int MIN_GEN1_BUDGET = 2;
+static const int MIN_GEN2_BUDGET = 8;
 
 void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
 {
@@ -2888,11 +2888,11 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
 
     relocationSource->Verify(true);
 
-    size_t copySize = relocationSource->Occupancy();
+    size_t occupancy = relocationSource->Occupancy();
     // if half region is contiguously free, relocate only into existing regions,
     // otherwise we would rather make this one a target of relocations.
     bool existingRegionOnly = relocationSource->HasFreeSpaceInTopBucket();
-    SatoriRegion* relocationTarget = TryGetRelocationTarget(copySize, existingRegionOnly);
+    SatoriRegion* relocationTarget = TryGetRelocationTarget(occupancy, existingRegionOnly);
 
     // could not get a region. we must be low on available memory.
     // we can try using the source region as a target for other relocations.
@@ -2906,7 +2906,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     relocationTarget->TakeFinalizerInfoFrom(relocationSource);
 
     // allocate space for relocated objects
-    size_t dst = relocationTarget->Allocate(copySize, /*zeroInitialize*/ false);
+    size_t dst = relocationTarget->Allocate(occupancy, /*zeroInitialize*/ false);
 
     // actually relocate src objects into the allocated space.
     size_t dstOrig = dst;
@@ -2949,6 +2949,8 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     } while (o->Start() < objLimit);
 
     size_t used = dst - dstOrig;
+    // we have new marks, but have not swept at this point, so could use less.
+    _ASSERTE(used <= occupancy);
     relocationTarget->SetOccupancy(relocationTarget->Occupancy() + used, relocationTarget->ObjCount() + objectsRelocated);
     relocationTarget->StopAllocating(dst);
     // the target may yet have more space and be a target for more relocations.
