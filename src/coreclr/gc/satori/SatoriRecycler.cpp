@@ -2715,7 +2715,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         return;
     }
 
-    // TODO: TUNING It is not profitable to parallelize planning.
+    // TUNING: It is not profitable to parallelize planning.
     //       The main cost is walking the linked list of regions.
     //       It is relatively cheap, but for very large heaps could
     //       add up. By rough estimates planning 1Tb heap could take 100ms+.
