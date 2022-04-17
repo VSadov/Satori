@@ -49,7 +49,9 @@ inline bool SatoriRegion::IsEscapeTracking()
 
 inline bool SatoriRegion::MaybeEscapeTrackingAcquire()
 {
-    return m_reusableFor == ReuseLevel::Gen0 || VolatileLoad(&m_ownerThreadTag);
+    // must check reusable level before the owner tag, before doing whatever follows
+    return VolatileLoad((uint8_t*)&m_reusableFor) == (uint8_t)ReuseLevel::Gen0 ||
+        VolatileLoad(&m_ownerThreadTag);
 }
 
 inline bool SatoriRegion::IsEscapeTrackedByCurrentThread()
@@ -128,9 +130,9 @@ inline SatoriObject* SatoriRegion::FirstObject()
     return &m_firstObject;
 }
 
-inline void SatoriRegion::StartEscapeTracking(size_t threadTag)
+inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag)
 {
-    _ASSERTE(m_generation == -1 || ReusableFor() == ReuseLevel::Gen0);
+    _ASSERTE(m_generation == -1 || m_reusableFor == ReuseLevel::Gen0);
     m_escapeFunc = EscapeFn;
     m_ownerThreadTag = threadTag;
     VolatileStore(&m_generation, 0);
@@ -256,7 +258,7 @@ bool SatoriRegion::Sweep()
         if (!CheckAndClearMarked(o))
         {
             size_t lastMarkedEnd = o->Start();
-            o = SkipUnmarked(o);
+            o = SkipUnmarkedAndClear(o);
             size_t skipped = o->Start() - lastMarkedEnd;
             SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
             SetIndicesForObject(free, o->Start());
@@ -264,18 +266,16 @@ bool SatoriRegion::Sweep()
 
             if (o->Start() >= objLimit)
             {
+                _ASSERTE(o->Start() == objLimit);
                 break;
             }
-
-            _ASSERTE(IsMarked(o));
-            ClearMarked(o);
         }
 
         _ASSERTE(!o->IsFree());
         cannotRecycle = true;
 
         if (isEscapeTracking)
-        {
+        { 
             this->EscapeShallow(o);
         }
 
@@ -290,11 +290,12 @@ bool SatoriRegion::Sweep()
         }
 
         size_t size = o->Size();
-        objCount++;
+        objCount++; 
         occupancy += size;
         o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);
 
+    _ASSERTE(o->Start() == objLimit || End() > objLimit);
     _ASSERTE(hasFinalizables || !m_finalizableTrackers);
 #if _DEBUG
     this->HasMarksSet() = false;
@@ -320,7 +321,14 @@ inline bool& SatoriRegion::HasPendingFinalizables()
 
 inline size_t SatoriRegion::Occupancy()
 {
+    _ASSERTE(!IsAllocating());
     return m_occupancy;
+}
+
+inline size_t &SatoriRegion::OccupancyAtReuse()
+{
+    _ASSERTE(!IsAllocating());
+    return m_occupancyAtReuse;
 }
 
 inline size_t SatoriRegion::ObjCount()
@@ -365,7 +373,7 @@ inline SatoriQueue<SatoriRegion>* SatoriRegion::ContainingQueue()
     return VolatileLoadWithoutBarrier(&m_containingQueue);
 }
 
-inline void SatoriRegion::Attach(SatoriRegion** attachementPoint)
+inline void SatoriRegion::AttachToContext(SatoriRegion** attachementPoint)
 {
     _ASSERTE(!m_allocationContextAttachmentPoint);
     _ASSERTE(!*attachementPoint);
@@ -374,7 +382,7 @@ inline void SatoriRegion::Attach(SatoriRegion** attachementPoint)
     m_allocationContextAttachmentPoint = attachementPoint;
 }
 
-inline void SatoriRegion::DetachFromContext()
+inline void SatoriRegion::DetachFromContextRelease()
 {
     _ASSERTE(*m_allocationContextAttachmentPoint == this);
 
@@ -395,7 +403,14 @@ inline bool SatoriRegion::IsAttachedToContext()
 
 inline bool SatoriRegion::MaybeAttachedToContextAcquire()
 {
-    return IsReusable() || VolatileLoad(&m_allocationContextAttachmentPoint);
+    // must check reusable level before the attach point, before doing whatever follows
+    return VolatileLoad((uint8_t*)&m_reusableFor) ||
+        VolatileLoad(&m_allocationContextAttachmentPoint);
+}
+
+inline void SatoriRegion::ResetReusableForRelease()
+{
+    VolatileStore(&m_reusableFor, SatoriRegion::ReuseLevel::None);
 }
 
 inline bool SatoriRegion::IsDemoted()
@@ -422,6 +437,7 @@ inline void SatoriRegion::SetMarked(SatoriObject* o)
 inline void SatoriRegion::SetMarkedAtomic(SatoriObject* o)
 {
     _ASSERTE(o->ContainingRegion() == this);
+    _ASSERTE(!o->IsFree());
 
     size_t word = o->Start();
     size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
@@ -591,6 +607,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
         o = SkipUnmarked(o);
         if (o->Start() >= objLimit)
         {
+            _ASSERTE(o->Start() == objLimit);
             break;
         }
 
