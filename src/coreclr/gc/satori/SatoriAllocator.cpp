@@ -269,7 +269,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             }
 
             context->alloc_ptr = context->alloc_limit = nullptr;
-            region->DetachFromContext();
+            region->DetachFromContextRelease();
             m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
@@ -281,7 +281,14 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             return nullptr;
         }
 
-        region->Attach(&context->RegularRegion());
+        // the order of assignments:
+        // 1) Attach  (optional: set escape tag)
+        // 2) Set Generation to 0 or 1
+        // 3) Reset ReusableFor
+        // <objects allocated>
+        // 4) (optional: clear escape tag) Detach       
+
+        region->AttachToContext(&context->RegularRegion());
         if (SatoriUtil::IsThreadLocalGCEnabled())
         {
             switch (region->ReusableFor())
@@ -291,7 +298,8 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                 goto fallthrough;
             case SatoriRegion::ReuseLevel::None:
             fallthrough:
-                region->StartEscapeTracking(SatoriUtil::GetCurrentThreadTag());
+                //NB: sets Generation to 0
+                region->StartEscapeTrackingRelease(SatoriUtil::GetCurrentThreadTag());
                 break;
             case SatoriRegion::ReuseLevel::Gen1:
                 region->SetGenerationRelease(1);
@@ -303,7 +311,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             region->SetGenerationRelease(1);
         }
 
-        region->ReusableFor() = SatoriRegion::ReuseLevel::None;
+        region->ResetReusableForRelease();
         context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
     }
 }
@@ -408,23 +416,35 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
                 continue;
             }
 
-            region->DetachFromContext();
+            region->DetachFromContextRelease();
             m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
         // get a new regular region.
         m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_loh);
         _ASSERTE(SatoriRegion::RegionSizeForAlloc(size) == Satori::REGION_SIZE_GRANULARITY);
-        region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
-        if (!region)
+
+        region = nullptr;
+        if (size < Satori::REGION_SIZE_GRANULARITY / 2)
         {
-            //OOM
-            return nullptr;
+            region = m_heap->Recycler()->TryGetReusableForLarge();
         }
 
-        _ASSERTE(region->NothingMarked());
-        region->Attach(&context->LargeRegion());
+        if (!region)
+        {
+            region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
+            if (!region)
+            {
+                //OOM
+                return nullptr;
+            }
+
+            _ASSERTE(region->NothingMarked());
+        }
+
+        region->AttachToContext(&context->LargeRegion());
         region->SetGenerationRelease(1);
+        region->ResetReusableForRelease();
     }
 }
 
