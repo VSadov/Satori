@@ -172,3 +172,39 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
 
     return result;
 }
+
+SatoriRegion* SatoriRegionQueue::TryDequeueIfHasFreeSpaceInTopBucket()
+{
+    if (!m_tail)
+    {
+        return nullptr;
+    }
+
+    m_lock.Enter();
+
+    SatoriRegion* result = m_tail;
+    if (result == nullptr || !result->HasFreeSpaceInTopBucket())
+    {
+        m_lock.Leave();
+        return nullptr;
+    }
+
+    // take out the result
+    m_count--;
+    result->m_containingQueue = nullptr;
+    m_tail = result->m_prev;
+    if (m_tail == nullptr)
+    {
+        m_head = nullptr;
+    }
+    else
+    {
+        m_tail->m_next = nullptr;
+    }
+
+    m_lock.Leave();
+
+    _ASSERTE(result->m_next == nullptr);
+    result->m_prev = nullptr;
+    return result;
+}
