@@ -45,7 +45,6 @@ public:
 
     void RegionInitialized(SatoriRegion* region);
 
-    SatoriRegion* RegionForAddress(size_t address);
     SatoriRegion* RegionForAddressChecked(size_t address);
     SatoriRegion* RegionForCardGroup(size_t group);
 
