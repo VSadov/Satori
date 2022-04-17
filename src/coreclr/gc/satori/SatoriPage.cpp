@@ -116,18 +116,6 @@ void SatoriPage::RegionInitialized(SatoriRegion* region)
     }
 }
 
-SatoriRegion* SatoriPage::RegionForAddress(size_t address)
-{
-    _ASSERTE(address >= Start() && address < End());
-    size_t mapIndex = (address - Start()) >> Satori::REGION_BITS;
-    while (RegionMap()[mapIndex] > 1)
-    {
-        mapIndex -= ((size_t)1 << (RegionMap()[mapIndex] - 2));
-    }
-
-    return (SatoriRegion*)((mapIndex << Satori::REGION_BITS) + Start());
-}
-
 SatoriRegion* SatoriPage::RegionForAddressChecked(size_t address)
 {
     _ASSERTE(address >= Start() && address < End());

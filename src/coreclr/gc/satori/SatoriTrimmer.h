@@ -41,6 +41,7 @@ public:
     void SetStopSuggested();
     void SetOkToRun();
     void WaitForStop();
+    bool IsActive();
 
 private:
     static const int TRIMMER_STATE_BLOCKED = -1;
