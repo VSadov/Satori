@@ -454,28 +454,19 @@ void SatoriGC::PublishObject(uint8_t* obj)
     // until we get here.
     if (!region->IsAttachedToContext())
     {
-        region->SetGenerationRelease(1);
         _ASSERTE(region->Size() > Satori::REGION_SIZE_GRANULARITY);
-        if (!so->RawGetMethodTable()->ContainsPointers())
-        {
-            // this is a single-object region and it's body has no pointers.
-            // it is relatively cheap to have it in gen1, so give it a chance to collect early.
-            m_heap->Recycler()->AddEphemeralRegion(region);
-        }
-        else
-        {
-            // promote to gen2
-            m_heap->Recycler()->AddTenuredRegion(region);
+        region->SetGenerationRelease(1);
+        region->SetOccupancy(so->Size(), 1);
 
-            // the region has seen no writes, so no need to worry about cards.
-            // unless the obj has a collectible type.
-            // in such case we simulate retroactive write by dirtying the card for the MT location.
-            if (so->RawGetMethodTable()->Collectible())
-            {
-                region->ContainingPage()->DirtyCardForAddressUnordered(so->Start());
-            }
+        // promote to gen2
+        m_heap->Recycler()->AddTenuredRegion(region);
 
-            region->SetOccupancy(so->Size(), 1);
+        // the region has seen no writes, so no need to worry about cards.
+        // unless the obj has a collectible type.
+        // in such case we simulate retroactive write by dirtying the card for the MT location.
+        if (so->RawGetMethodTable()->Collectible())
+        {
+            region->ContainingPage()->DirtyCardForAddressUnordered(so->Start());
         }
     }
 }
