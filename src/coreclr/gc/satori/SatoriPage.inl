@@ -63,7 +63,13 @@ template <typename F>
 
         do
         {
-            region = RegionForAddress(region->Start() - 1);
+            region = RegionForAddressChecked(region->Start() - 1);
+            if (!region)
+            {
+                // page is not done formatting the region map.
+                break;
+            }
+
             lambda(region);
         }
         while (region->Start() != m_firstRegion);
