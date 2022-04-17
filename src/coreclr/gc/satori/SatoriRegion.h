@@ -57,6 +57,7 @@ public:
     bool ValidateIndexEmpty();
 
     void RearmCardsForTenured();
+    void FreeDemotedTrackers();
     void ResetCardsForEphemeral();
 
     SatoriRegion* TrySplit(size_t regionSize);
@@ -79,20 +80,22 @@ public:
     size_t StartAllocating(size_t minSize);
 
     bool HasFreeSpaceInTopBucket();
-    bool HasFreeSpaceInTop3Buckets();
+    bool HasFreeSpaceInTop4Buckets();
 
     bool IsAllocating();
 
-    void StartEscapeTracking(size_t threadTag);
+    void StartEscapeTrackingRelease(size_t threadTag);
     void StopEscapeTracking();
     bool IsEscapeTracking();
     bool MaybeEscapeTrackingAcquire();
     bool IsEscapeTrackedByCurrentThread();
 
-    void Attach(SatoriRegion** attachementPoint);
-    void DetachFromContext();
+    void AttachToContext(SatoriRegion** attachementPoint);
+    void DetachFromContextRelease();
     bool IsAttachedToContext();
     bool MaybeAttachedToContextAcquire();
+
+    void ResetReusableForRelease();
 
     bool IsDemoted();
     SatoriWorkChunk* &DemotedObjects();
@@ -114,6 +117,7 @@ public:
     void ClearIndicesForAllocRange();
 
     SatoriObject* SkipUnmarked(SatoriObject* from);
+    SatoriObject* SkipUnmarkedAndClear(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
 
     void TakeFinalizerInfoFrom(SatoriRegion* other);
@@ -151,6 +155,7 @@ public:
     bool& HasPendingFinalizables();
 
     size_t Occupancy();
+    size_t& OccupancyAtReuse();
     size_t ObjCount();
 
     bool& HasPinnedObjects();
@@ -245,6 +250,7 @@ private:
             size_t m_allocBytesAtCollect;
             size_t m_objCount;
             size_t m_occupancy;
+            size_t m_occupancyAtReuse;
 
             bool m_hasPinnedObjects;
             bool m_hasMarksSet;

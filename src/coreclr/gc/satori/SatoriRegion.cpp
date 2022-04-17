@@ -91,6 +91,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
 
     result->m_allocStart = (size_t)&result->m_firstObject;
     result->m_allocEnd = result->End();
+    result->m_occupancy = result->m_allocEnd - result->m_allocStart;
     result->m_escapeFunc = nullptr;
     result->m_generation = -1;
 
@@ -113,10 +114,16 @@ void SatoriRegion::RearmCardsForTenured()
     _ASSERTE(Generation() == 2);
     m_containingPage->WipeCardsForRange(Start(), End(), /* tenured */ true);
 
-    SatoriWorkChunk* gen2Objects = DemotedObjects();
-    if (gen2Objects)
+    FreeDemotedTrackers();
+}
+
+void SatoriRegion::FreeDemotedTrackers()
+{
+    while (DemotedObjects())
     {
-        DemotedObjects() = nullptr;
+        SatoriWorkChunk* gen2Objects = DemotedObjects();
+        DemotedObjects() = gen2Objects->Next();
+        gen2Objects->SetNext(nullptr);
         gen2Objects->Clear();
         Allocator()->ReturnWorkChunk(gen2Objects);
     }
@@ -146,9 +153,10 @@ void SatoriRegion::MakeBlank()
     m_escapeFunc = EscapeFn;
     m_allocStart = (size_t)&m_firstObject;
     m_allocEnd = End();
+    m_occupancy = m_allocEnd - m_allocStart;
+    m_occupancyAtReuse = 0;
     m_markStack = 0;
     m_escapedSize = 0;
-    m_occupancy = 0;
     m_objCount = 0;
     m_allocBytesAtCollect = 0;
 
@@ -233,48 +241,7 @@ bool SatoriRegion::ValidateIndexEmpty()
     return true;
 }
 
-void SatoriRegion::StopAllocating(size_t allocPtr)
-{
-    _ASSERTE(IsAllocating());
-
-    if (allocPtr)
-    {
-        _ASSERTE(allocPtr <= m_allocStart);
-        m_allocStart = allocPtr;
-    }
-
-    // make unused allocation span parseable
-    if (m_allocStart != m_allocEnd)
-    {
-        m_used = max(m_used, m_allocStart + Satori::MIN_FREE_SIZE);
-        SatoriObject* freeObj = SatoriObject::FormatAsFree(m_allocStart, m_allocEnd - m_allocStart);
-        AddFreeSpace(freeObj);
-    }
-
-    m_allocStart = m_allocEnd = 0;
-}
-
 static const int FREE_LIST_NEXT_OFFSET = sizeof(ArrayBase);
-
-void SatoriRegion::AddFreeSpace(SatoriObject* freeObj)
-{
-    // allocSize is smaller than size to make sure the span can always be made parseable
-    // after allocating objects in it.
-    ptrdiff_t allocSize = freeObj->Size() - Satori::MIN_FREE_SIZE;
-    if (allocSize < Satori::MIN_FREELIST_SIZE)
-    {
-        return;
-    }
-
-    DWORD bucket;
-    BitScanReverse64(&bucket, allocSize);
-    bucket -= (Satori::MIN_FREELIST_SIZE_BITS);
-    _ASSERTE(bucket >= 0);
-    _ASSERTE(bucket < Satori::FREELIST_COUNT);
-
-    *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET) = m_freeLists[bucket];
-    m_freeLists[bucket] = freeObj;
-}
 
 size_t SatoriRegion::StartAllocating(size_t minAllocSize)
 {
@@ -303,6 +270,7 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
             m_freeLists[bucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
             m_allocStart = freeObj->Start();
             m_allocEnd = freeObj->End();
+            SetOccupancy(m_occupancy + m_allocEnd - m_allocStart, ObjCount());
             ClearIndicesForAllocRange();
             _ASSERTE(AllocRemaining() >= minAllocSize);
             return m_allocStart;
@@ -312,14 +280,59 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
     return 0;
 }
 
+void SatoriRegion::StopAllocating(size_t allocPtr)
+{
+    _ASSERTE(IsAllocating());
+
+    if (allocPtr)
+    {
+        _ASSERTE(allocPtr <= m_allocStart);
+        m_allocStart = allocPtr;
+    }
+
+    // make unused allocation span parseable
+    if (m_allocStart != m_allocEnd)
+    {
+        m_used = max(m_used, m_allocStart + Satori::MIN_FREE_SIZE);
+        size_t unused = m_allocEnd - m_allocStart;
+        _ASSERTE(m_occupancy >= unused);
+        SetOccupancy(m_occupancy - unused, ObjCount());
+        SatoriObject* freeObj = SatoriObject::FormatAsFree(m_allocStart, unused);
+        AddFreeSpace(freeObj);
+    }
+
+    m_allocStart = m_allocEnd = 0;
+}
+
+void SatoriRegion::AddFreeSpace(SatoriObject* freeObj)
+{
+    // allocSize is smaller than size to make sure the span can always be made parseable
+    // after allocating objects in it.
+    ptrdiff_t allocSize = freeObj->Size() - Satori::MIN_FREE_SIZE;
+    if (allocSize < Satori::MIN_FREELIST_SIZE)
+    {
+        return;
+    }
+
+    DWORD bucket;
+    BitScanReverse64(&bucket, allocSize);
+    bucket -= (Satori::MIN_FREELIST_SIZE_BITS);
+    _ASSERTE(bucket >= 0);
+    _ASSERTE(bucket < Satori::FREELIST_COUNT);
+
+    *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET) = m_freeLists[bucket];
+    m_freeLists[bucket] = freeObj;
+}
+
 bool SatoriRegion::HasFreeSpaceInTopBucket()
 {
     return m_freeLists[Satori::FREELIST_COUNT - 1];
 }
 
-bool SatoriRegion::HasFreeSpaceInTop3Buckets()
+bool SatoriRegion::HasFreeSpaceInTop4Buckets()
 {
-    for (int bucket = Satori::FREELIST_COUNT - 1; bucket >= 0; bucket--)
+    //TUNING: more buckets means more aggressive demotion.
+    for (int bucket = Satori::FREELIST_COUNT -  4; bucket < Satori::FREELIST_COUNT; bucket++)
     {
         if (m_freeLists[bucket])
         {
@@ -348,8 +361,8 @@ void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextC
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
     _ASSERTE(regionSize < this->Size());
-    _ASSERTE(m_allocEnd == 0 || m_allocEnd == m_end);
-    _ASSERTE((size_t)m_allocStart < m_end - regionSize - Satori::MIN_FREE_SIZE);
+    _ASSERTE(m_allocEnd == m_end);
+    _ASSERTE(m_allocStart == m_firstObject.Start());
 
     size_t newEnd = m_end - regionSize;
     nextStart = newEnd;
@@ -359,17 +372,23 @@ void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextC
     m_end = newEnd;
     m_committed = min(newEnd, m_committed);
     m_used = min(newEnd, m_used);
-    m_allocEnd = min(m_allocEnd, newEnd);
+    m_allocEnd = newEnd;
+    m_occupancy = m_allocEnd - m_allocStart;
 
     _ASSERTE(Size() >= Satori::REGION_SIZE_GRANULARITY);
 }
 
 void SatoriRegion::UndoSplitCore(size_t regionSize, size_t nextStart, size_t nextCommitted, size_t nextUsed)
 {
+    _ASSERTE(m_allocEnd == m_end);
+    _ASSERTE(m_allocStart == m_firstObject.Start());
+    _ASSERTE(nextStart == m_end);
+
     m_end += regionSize;
     m_committed = max(m_committed, nextCommitted);
     m_used = max(m_used, nextUsed);
-    m_allocEnd = min(m_allocEnd, m_end);
+    m_allocEnd = m_end;
+    m_occupancy = m_allocEnd - m_allocStart;
 }
 
 SatoriRegion* SatoriRegion::TrySplit(size_t regionSize)
@@ -845,7 +864,7 @@ void SatoriRegion::EscapeShallow(SatoriObject* o)
 
 void SatoriRegion::SetOccupancy(size_t occupancy, size_t objCount)
 {
-    _ASSERTE((occupancy == 0) == (objCount == 0));
+    _ASSERTE(objCount == 0 || occupancy != 0);
     _ASSERTE(occupancy <= (Size() - offsetof(SatoriRegion, m_firstObject)));
     m_occupancy = occupancy;
     m_objCount = objCount;
@@ -1570,6 +1589,12 @@ void SatoriRegion::CompactFinalizableTrackers()
 
 SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
 {
+    //SatoriObject* tmp = from;
+    //while (tmp->Start() < this->End() && !tmp->IsMarked())
+    //    tmp = tmp->Next();
+
+    //return tmp;
+
     _ASSERTE(from->Start() < End());
     size_t bitmapIndex;
     int markBitOffset = from->GetMarkBitAndWord(&bitmapIndex);
@@ -1595,6 +1620,37 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
         } while (bitmapIndex < SatoriRegion::BITMAP_LENGTH);
     }
 
+    return ObjectForMarkBit(bitmapIndex, markBitOffset);
+}
+
+SatoriObject* SatoriRegion::SkipUnmarkedAndClear(SatoriObject* from)
+{
+    _ASSERTE(from->Start() < End());
+    size_t bitmapIndex;
+    int markBitOffset = from->GetMarkBitAndWord(&bitmapIndex);
+
+    DWORD offset;
+    if (BitScanForward64(&offset, m_bitmap[bitmapIndex] >> markBitOffset))
+    {
+        // got mark bit
+        markBitOffset += offset;
+    }
+    else
+    {
+        markBitOffset = 0;
+        do
+        {
+            bitmapIndex++;
+            if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
+            {
+                // got mark bit
+                markBitOffset = offset;
+                break;
+            }
+        } while (bitmapIndex < SatoriRegion::BITMAP_LENGTH);
+    }
+
+    m_bitmap[bitmapIndex] &= ~((size_t)1 << markBitOffset);
     return ObjectForMarkBit(bitmapIndex, markBitOffset);
 }
 
@@ -1724,7 +1780,12 @@ bool SatoriRegion::TryDemote()
     _ASSERTE(Generation() == 2);
     _ASSERTE(ObjCount() != 0);
 
-    if (ObjCount() > SatoriWorkChunk::Capacity())
+    // TUNING: heuristic for demoting -  could consider occupancy, pinning, etc...
+    //         the cost here is increasing  gen1, which is supposed to be small.
+    //         demoted objects will have to be marked regardless of cards.
+    //         NOTE: caller requires 3rd bucket, so region is ~ 1/4 empty
+
+   if (ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION)
     {
         return false;
     }
@@ -1735,19 +1796,38 @@ bool SatoriRegion::TryDemote()
         return false;
     }
 
-    this->ResetCardsForEphemeral();
-    this->SetGeneration(1);
-
+    // fail if we can't get chunks
+    bool failed = false;
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     for (SatoriObject* o = FirstObject(); o->Start() < objLimit; o = o->Next())
     {
         if (!o->IsFree())
         {
-            gen2Objects->Push(o);
+            if (!gen2Objects->TryPush(o))
+            {
+                SatoriWorkChunk* chunk = Allocator()->TryGetWorkChunk();
+                if (!chunk)
+                {
+                    failed = true;
+                    break;
+                }
+
+                chunk->SetNext(gen2Objects);
+                gen2Objects = chunk;
+                gen2Objects->Push(o);
+            }
         }
     }
 
     this->m_gen2Objects = gen2Objects;
+    if (failed)
+    {
+        this->FreeDemotedTrackers();
+        return false;
+    }
+
+    this->ResetCardsForEphemeral();
+    this->SetGeneration(1);
     return true;
 }
 

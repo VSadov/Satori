@@ -216,5 +216,10 @@ void SatoriTrimmer::WaitForStop()
         }
     }
 
-    _ASSERTE(m_state <= TRIMMER_STATE_STOPPED);
+    _ASSERTE(!IsActive());
+}
+
+bool SatoriTrimmer::IsActive()
+{
+    return m_state > TRIMMER_STATE_STOPPED;
 }
