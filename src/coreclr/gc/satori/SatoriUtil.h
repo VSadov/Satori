@@ -66,8 +66,8 @@ namespace Satori
     // we use a trivial array object to fill holes, thus this is the size of a shortest array object.
     static const size_t MIN_FREE_SIZE = 3 * sizeof(size_t);
 
-    // ~128 items for now, we can fiddle with size a bit later
-    const static size_t MARK_CHUNK_SIZE = 128 * sizeof(size_t);
+    // ~1024 items for now, we can fiddle with size a bit later
+    const static size_t MARK_CHUNK_SIZE = 1024 * sizeof(size_t);
 
     // address bits set to track finalizable that needs to be scheduled to F-queue
     const static size_t FINALIZATION_PENDING = 1;
@@ -92,6 +92,10 @@ namespace Satori
     static const int MIN_FREELIST_SIZE_BITS = 12;
     static const size_t MIN_FREELIST_SIZE = 1 << MIN_FREELIST_SIZE_BITS;
     static const int FREELIST_COUNT = Satori::REGION_BITS - MIN_FREELIST_SIZE_BITS;
+
+    // we will limit number of demoted objects to not use too many chunks
+    // it will softly limit the occupancy as well.
+    const static size_t MAX_DEMOTED_OBJECTS_IN_REGION = 2048;
 }
 
 class SatoriUtil
@@ -179,40 +183,43 @@ public:
         return 16 * 1024;
     }
 
+    // COMPlus_gcConservative
     static bool IsConservativeMode()
     {
-#ifdef FEATURE_CONSERVATIVE_GC
         return (GCConfig::GetConservativeGC());
-#else
-        return false;
-#endif
     }
 
+    // COMPlus_gcConcurrent
     static bool IsConcurrent()
     {
         return (GCConfig::GetConcurrentGC());
     }
 
+    // COMPlus_gcRelocatingGen1
     static bool IsRelocatingInGen1()
     {
         return (GCConfig::GetRelocatingInGen1());
     }
 
+    // COMPlus_gcRelocatingGen2
     static bool IsRelocatingInGen2()
     {
         return (GCConfig::GetRelocatingInGen2());
     }
 
+    // COMPlus_gcThreadLocal
     static bool IsThreadLocalGCEnabled()
     {
         return (GCConfig::GetThreadLocalGC());
     }
 
+    // COMPlus_gcTrim
     static bool IsTrimmingEnabled()
     {
         return (GCConfig::GetTrimmigGC());
     }
 
+    // COMPlus_GCLatencyMode
     static bool IsLowLatencyMode()
     {
         return (GCConfig::GetLatencyMode()) >= 2;
@@ -229,6 +236,7 @@ public:
         return partitionCount;
     }
 
+    // COMPlus_gcParallel
     static int MaxHelpersCount()
     {
         return (int)GCConfig::GetParallelGC();
