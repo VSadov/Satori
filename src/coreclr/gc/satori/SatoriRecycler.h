@@ -75,6 +75,7 @@ public:
     size_t RegionCount();
 
     SatoriRegion* TryGetReusable();
+    SatoriRegion* TryGetReusableForLarge();
     void ReportThreadAllocBytes(int64_t bytes, bool isLive);
     int64_t GetTotalAllocatedBytes();
 
@@ -152,8 +153,8 @@ private:
     int64_t m_gcStartMillis[3];
 
     size_t m_gen1Budget;
-    size_t m_gen2BudgetBytes;
-    size_t m_gen2Budget;
+    size_t m_totalBudget;
+    size_t m_totalLimit;
     size_t m_condemnedRegionsCount;
     size_t m_condemnedNurseryRegionsCount;
     size_t m_deferredSweepCount;
@@ -182,7 +183,7 @@ private:
 
 private:
     static void DeactivateFn(gc_alloc_context* context, void* param);
-    static void MarkDemotedAttachedRegionsFn(gc_alloc_context* gcContext, void* param);
+    static void ConcurrentPhasePrepFn(gc_alloc_context* gcContext, void* param);
 
     template <bool isConservative>
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
@@ -204,6 +205,7 @@ private:
     void DeactivateAllStacks();
     void PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o);
     bool MarkOwnStackAndDrainQueues(int64_t deadline = 0);
+    void MarkOwnStack(gc_alloc_context* aContext, MarkContext* mc);
     void MarkDemoted(SatoriRegion* curRegion, MarkContext& c);
     void MarkAllStacksFinalizationAndDemotedRoots();
     void IncrementRootScanTicket();
@@ -214,6 +216,7 @@ private:
     void MarkThroughCards();
     bool HasDirtyCards();
     bool MarkThroughCardsConcurrent(int64_t deadline);
+    bool ScanDirtyCardsConcurrent(int64_t deadline);
     bool CleanCards();
     bool MarkHandles(int64_t deadline = 0);
     void ShortWeakPtrScan();
