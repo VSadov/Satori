@@ -141,16 +141,18 @@ tryAgain:
     return nullptr;
 }
 
-void SatoriAllocator::ReturnRegion(SatoriRegion* region)
-{
-    _ASSERTE(region->Generation() == -1);
-    m_queues[SizeToBucket(region->Size())]->Push(region);
-}
-
 void SatoriAllocator::AddRegion(SatoriRegion* region)
 {
     _ASSERTE(region->Generation() == -1);
     m_queues[SizeToBucket(region->Size())]->Enqueue(region);
+}
+
+// same as AddRegion, just puts it in front of the queue
+// this is for recently used regions
+void SatoriAllocator::ReturnRegion(SatoriRegion* region)
+{
+    _ASSERTE(region->Generation() == -1);
+    m_queues[SizeToBucket(region->Size())]->Push(region);
 }
 
 Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags)
@@ -204,11 +206,11 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
     {
         if (region != nullptr)
         {
-            _ASSERTE((size_t)context->alloc_limit == region->AllocStart());
+            _ASSERTE((size_t)context->alloc_limit == region->GetAllocStart());
             size_t moreSpace = context->alloc_ptr + size - context->alloc_limit;
 
             // try allocate more to form a contiguous chunk to fit size 
-            size_t allocRemaining = region->AllocRemaining();
+            size_t allocRemaining = region->GetAllocRemaining();
             if (moreSpace <= allocRemaining)
             {
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
@@ -250,7 +252,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             if (region->StartAllocating(size))
             {
                 // we have enough free space in the region to continue
-                context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
+                context->alloc_ptr = context->alloc_limit = (uint8_t*)region->GetAllocStart();
                 continue;
             }
 
@@ -262,7 +264,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                     if (region->StartAllocating(size))
                     {
                         // we have enough free space in the region to continue
-                        context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
+                        context->alloc_ptr = context->alloc_limit = (uint8_t*)region->GetAllocStart();
                         continue;
                     }
                 }
@@ -312,7 +314,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
         }
 
         region->ResetReusableForRelease();
-        context->alloc_ptr = context->alloc_limit = (uint8_t*)region->AllocStart();
+        context->alloc_ptr = context->alloc_limit = (uint8_t*)region->GetAllocStart();
     }
 }
 
@@ -374,7 +376,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
     {
         if (region)
         {
-            size_t allocRemaining = region->AllocRemaining();
+            size_t allocRemaining = region->GetAllocRemaining();
             if (allocRemaining >= size)
             {
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
