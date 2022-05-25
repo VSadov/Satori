@@ -58,6 +58,7 @@ public:
     }
 };
 
+// TODO: VS
 class SatoriSpinLock
 {
 private:
