@@ -54,30 +54,29 @@ public:
 
     void MakeBlank();
     bool ValidateBlank();
-    bool ValidateIndexEmpty();
+
+    void FreeDemotedTrackers();
 
     void RearmCardsForTenured();
-    void FreeDemotedTrackers();
     void ResetCardsForEphemeral();
 
     SatoriRegion* TrySplit(size_t regionSize);
     bool CanDecommit();
-    bool TryCoalesceWithNext();
-    void Coalesce(SatoriRegion* next);
-
     bool TryDecommit();
+    bool TryCoalesceWithNext();
 
-    size_t AllocStart();
-    size_t AllocRemaining();
     static size_t RegionSizeForAlloc(size_t allocSize);
-    size_t MaxAllocEstimate();
+
+    size_t GetAllocStart();
+    size_t GetAllocRemaining();
+    size_t GetMaxAllocEstimate();
     size_t Allocate(size_t size, bool zeroInitialize);
     size_t AllocateHuge(size_t size, bool zeroInitialize);
+
+    size_t StartAllocating(size_t minSize);
     void StopAllocating(size_t allocPtr);
 
     void AddFreeSpace(SatoriObject* freeObj);
-
-    size_t StartAllocating(size_t minSize);
 
     bool HasFreeSpaceInTopBucket();
     bool HasFreeSpaceInTop4Buckets();
@@ -259,6 +258,7 @@ private:
             bool m_hasPendingFinalizables;
             bool m_acceptedPromotedObjects;
 
+            // when demoted, we remember our gen2 objects here
             SatoriWorkChunk* m_gen2Objects;
 
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
@@ -319,6 +319,10 @@ private:
     bool IsEscapedOrPinned(SatoriObject* o);
 
     void SetExposed(SatoriObject** location);
+
+    bool ValidateIndexEmpty();
+    void Coalesce(SatoriRegion* next);
+
 };
 
 #endif
