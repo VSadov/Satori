@@ -211,7 +211,7 @@ int64_t SatoriRecycler::GetCollectionCount(int gen)
     return m_gcCount[gen];
 }
 
-int SatoriRecycler::CondemnedGeneration()
+int SatoriRecycler::GetCondemnedGeneration()
 {
     return m_condemnedGeneration;
 }
@@ -311,8 +311,8 @@ void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
 //       concurrently by allocating a finalizable object.
 void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 {
-    _ASSERTE(region->AllocStart() == 0);
-    _ASSERTE(region->AllocRemaining() == 0);
+    _ASSERTE(region->GetAllocStart() == 0);
+    _ASSERTE(region->GetAllocRemaining() == 0);
     _ASSERTE(region->Generation() == 0 || region->Generation() == 1);
     _ASSERTE(!region->HasMarksSet());
     _ASSERTE(!region->DoNotSweep());
@@ -342,8 +342,8 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 
 void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
 {
-    _ASSERTE(region->AllocStart() == 0);
-    _ASSERTE(region->AllocRemaining() == 0);
+    _ASSERTE(region->GetAllocStart() == 0);
+    _ASSERTE(region->GetAllocRemaining() == 0);
     _ASSERTE(!region->IsEscapeTracking());
     _ASSERTE(!region->HasMarksSet());
     _ASSERTE(!region->DoNotSweep());
@@ -2965,7 +2965,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
 
 void SatoriRecycler::AddRelocationTarget(SatoriRegion* region)
 {
-    size_t maxFree = region->MaxAllocEstimate();
+    size_t maxFree = region->GetMaxAllocEstimate();
 
     if (maxFree < Satori::MIN_FREELIST_SIZE)
     {
@@ -3675,11 +3675,6 @@ size_t SatoriRecycler::GetTotalOccupancy()
     return m_occupancy[0] +
            m_occupancy[1] +
            m_occupancy[2];
-}
-
-size_t SatoriRecycler::GetRecyclerOccupancy()
-{
-    return m_occupancy[1] + m_occupancy[2];
 }
 
 size_t SatoriRecycler::GetGcStartMillis(int generation)
