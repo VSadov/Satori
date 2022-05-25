@@ -191,6 +191,7 @@ void SatoriPage::SetCardForAddress(size_t address)
     }
 }
 
+// does not set card groups and page state
 void SatoriPage::SetCardForAddressOnly(size_t address)
 {
     size_t offset = address - Start();
