@@ -324,7 +324,7 @@ bool SatoriGC::IsPromoted(Object* object)
     // objects outside of the collected generation (including null) are considered marked.
     // (existing behavior)
     return o == nullptr ||
-        o->IsMarkedOrOlderThan(m_heap->Recycler()->CondemnedGeneration());
+        o->IsMarkedOrOlderThan(m_heap->Recycler()->GetCondemnedGeneration());
 }
 
 bool SatoriGC::IsHeapPointer(void* object, bool small_heap_only)
@@ -335,7 +335,7 @@ bool SatoriGC::IsHeapPointer(void* object, bool small_heap_only)
 
 unsigned SatoriGC::GetCondemnedGeneration()
 {
-    return m_heap->Recycler()->CondemnedGeneration();
+    return m_heap->Recycler()->GetCondemnedGeneration();
 }
 
 bool SatoriGC::IsGCInProgressHelper(bool bConsiderGCStart)
@@ -507,7 +507,7 @@ Object* SatoriGC::GetContainingObject(void* pInteriorPtr, bool fCollectedGenOnly
     }
 
     if (fCollectedGenOnly &&
-        region->Generation() > m_heap->Recycler()->CondemnedGeneration())
+        region->Generation() > m_heap->Recycler()->GetCondemnedGeneration())
     {
         return nullptr;
     }

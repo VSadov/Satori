@@ -30,8 +30,6 @@
 #include "common.h"
 #include "../gc.h"
 
-
-// Constants
 namespace Satori
 {
     class StackOnly {
