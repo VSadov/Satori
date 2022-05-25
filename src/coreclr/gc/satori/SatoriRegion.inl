@@ -108,12 +108,12 @@ inline size_t SatoriRegion::Size()
     return End() - Start();
 }
 
-inline size_t SatoriRegion::AllocStart()
+inline size_t SatoriRegion::GetAllocStart()
 {
     return m_allocStart;
 }
 
-inline size_t SatoriRegion::AllocRemaining()
+inline size_t SatoriRegion::GetAllocRemaining()
 {
     // reserve Satori::MIN_FREE_SIZE to be able to make the unused space parseable
     ptrdiff_t diff = m_allocEnd - m_allocStart - Satori::MIN_FREE_SIZE;
