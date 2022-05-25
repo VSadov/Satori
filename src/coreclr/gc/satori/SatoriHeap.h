@@ -66,10 +66,6 @@ public:
         return &m_finalizationQueue;
     }
 
-    size_t CommittedMapLength()
-    {
-        return m_committedMapSize / sizeof(SatoriPage*);
-    }
     SatoriPage* PageForAddressChecked(size_t address)
     {
         size_t mapIndex = address >> Satori::PAGE_BITS;
@@ -132,6 +128,11 @@ private:
     SatoriPage* m_pageMap[1];
 
     bool CommitMoreMap(size_t currentlyCommitted);
+
+    size_t CommittedMapLength()
+    {
+        return m_committedMapSize / sizeof(SatoriPage*);
+    }
 };
 
 #endif

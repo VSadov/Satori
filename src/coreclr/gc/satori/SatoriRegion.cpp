@@ -272,7 +272,7 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
             m_allocEnd = freeObj->End();
             SetOccupancy(m_occupancy + m_allocEnd - m_allocStart, ObjCount());
             ClearIndicesForAllocRange();
-            _ASSERTE(AllocRemaining() >= minAllocSize);
+            _ASSERTE(GetAllocRemaining() >= minAllocSize);
             return m_allocStart;
         }
     }
@@ -343,9 +343,9 @@ bool SatoriRegion::HasFreeSpaceInTop4Buckets()
     return false;
 }
 
-size_t SatoriRegion::MaxAllocEstimate()
+size_t SatoriRegion::GetMaxAllocEstimate()
 {
-    size_t maxRemaining = AllocRemaining();
+    size_t maxRemaining = GetAllocRemaining();
     for (int bucket = Satori::FREELIST_COUNT - 1; bucket >= 0; bucket--)
     {
         if (m_freeLists[bucket])
@@ -559,7 +559,7 @@ size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
 size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
 {
     _ASSERTE(ValidateBlank());
-    _ASSERTE(AllocRemaining() >= size);
+    _ASSERTE(GetAllocRemaining() >= size);
     _ASSERTE(m_allocEnd > Start() + Satori::REGION_SIZE_GRANULARITY);
 
     size_t chunkStart = m_allocStart;

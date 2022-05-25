@@ -56,6 +56,45 @@ inline SatoriHeap* SatoriPage::Heap()
     return m_heap;
 }
 
+// order is unimportant, but we want to read it only once when we read it, thus volatile.
+inline volatile int8_t& SatoriPage::CardState()
+{
+    return m_cardState;
+}
+
+// order is unimportant, but we want to read it only once when we read it, thus volatile.
+inline volatile int8_t& SatoriPage::ScanTicket()
+{
+    return m_scanTicket;
+}
+
+// order is unimportant, but we want to read it once when we read it, thus volatile.
+inline volatile int8_t& SatoriPage::CardGroupState(size_t i)
+{
+    return m_cardGroups[i * 2];
+}
+
+// order is unimportant, but we want to read it once when we read it, thus volatile.
+inline volatile int8_t& SatoriPage::CardGroupScanTicket(size_t i)
+{
+    return m_cardGroups[i * 2 + 1];
+}
+
+inline size_t SatoriPage::CardGroupCount()
+{
+    return (End() - Start()) >> Satori::REGION_BITS;
+}
+
+inline int8_t* SatoriPage::CardsForGroup(size_t i)
+{
+    return &m_cardTable[i * Satori::CARD_BYTES_IN_CARD_GROUP];
+}
+
+inline size_t SatoriPage::LocationForCard(int8_t* cardPtr)
+{
+    return Start() + ((size_t)cardPtr - Start()) * Satori::BYTES_PER_CARD_BYTE;
+}
+
 template <typename F>
     void SatoriPage::ForEachRegion(F lambda)
     {
