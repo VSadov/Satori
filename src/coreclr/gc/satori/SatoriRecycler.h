@@ -48,40 +48,34 @@ public:
     void AddTenuredRegion(SatoriRegion* region);
 
     size_t GetNowMillis();
-    int64_t HelpQuantum();
+
     bool& IsLowLatencyMode();
+
+    void Collect(int generation, bool force, bool blocking);
+    int GetCondemnedGeneration();
+    int GetRootScanTicket();
+    size_t IncrementGen0Count();
+    int64_t GetCollectionCount(int gen);
 
     void TryStartGC(int generation, gc_reason reason);
     void HelpOnce();
+    void MaybeTriggerGC(gc_reason reason);
+
     void ConcurrentHelp();
     void ShutDown();
-    bool HelpOnceCore();
+
     void BlockingMarkForConcurrentHelper();
     void BlockingMarkForConcurrent();
     void MaybeAskForHelp();
-    void AskForHelp();
-    void MaybeTriggerGC(gc_reason reason);
-
-    void Collect(int generation, bool force, bool blocking);
-    bool IsBlockingPhase();
-    size_t IncrementGen0Count();
-
-    int GetRootScanTicket();
-    int64_t GetCollectionCount(int gen);
-    int CondemnedGeneration();
-
-    size_t Gen1RegionCount();
-    size_t Gen2RegionCount();
-    size_t RegionCount();
 
     SatoriRegion* TryGetReusable();
     SatoriRegion* TryGetReusableForLarge();
+
     void ReportThreadAllocBytes(int64_t bytes, bool isLive);
     int64_t GetTotalAllocatedBytes();
 
     void RecordOccupancy(int generation, size_t size);
     size_t GetTotalOccupancy();
-    size_t GetRecyclerOccupancy();
     size_t GetGcStartMillis(int generation);
 
     void ScheduleMarkAsChildRanges(SatoriObject* o);
@@ -182,6 +176,13 @@ private:
     int64_t m_noWorkSince;
 
 private:
+
+    bool IsBlockingPhase();
+
+    size_t Gen1RegionCount();
+    size_t Gen2RegionCount();
+    size_t RegionCount();
+
     static void DeactivateFn(gc_alloc_context* context, void* param);
     static void ConcurrentPhasePrepFn(gc_alloc_context* gcContext, void* param);
 
@@ -196,6 +197,9 @@ private:
 
     static void HelperThreadFn(void* param);
     int MaxHelpers();
+    int64_t HelpQuantum();
+    void AskForHelp();
+    bool HelpOnceCore();
 
     void PushToEphemeralQueues(SatoriRegion* region);
     void PushToEphemeralQueuesIgnoringDemoted(SatoriRegion* region);
@@ -214,6 +218,7 @@ private:
     void DrainMarkQueues(SatoriWorkChunk* srcChunk = nullptr);
     bool DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk = nullptr, int64_t deadline = 0);
     void MarkThroughCards();
+
     bool HasDirtyCards();
     bool MarkThroughCardsConcurrent(int64_t deadline);
     bool ScanDirtyCardsConcurrent(int64_t deadline);
@@ -225,21 +230,16 @@ private:
     void LongWeakPtrScanWorker();
     void ScanFinalizables();
     void ScanFinalizableRegions(SatoriRegionQueue* regions, MarkContext* c);
-
     void ScanAllFinalizableRegionsWorker();
-
     void QueueCriticalFinalizablesWorker();
-
     void DependentHandlesInitialScan();
     void DependentHandlesInitialScanWorker();
     void DependentHandlesRescan();
     void DependentHandlesRescanWorker();
     void PromoteHandlesAndFreeRelocatedRegions();
-
     void PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker();
 
     void AdjustHeuristics();
-
     void BlockingCollect();
     void RunWithHelp(void(SatoriRecycler::* method)());
     void BlockingMark();
@@ -260,14 +260,11 @@ private:
     void FreeRelocatedRegionsWorker();
 
     void UpdateRootsWorker();
-
     void UpdateRegionsWorker();
-
     void UpdatePointersInObjectRanges();
-
     void UpdatePointersInPromotedObjects();
-
     void UpdateRegions(SatoriRegionQueue* queue);
+
     void KeepRegion(SatoriRegion* curRegion);
     void DrainDeferredSweepQueue();
     bool DrainDeferredSweepQueueConcurrent(int64_t deadline = 0);
