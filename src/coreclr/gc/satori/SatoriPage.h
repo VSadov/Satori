@@ -67,44 +67,14 @@ public:
 
     void WipeCardsForRange(size_t start, size_t end, bool isTenured);
 
-    // order is unimportant, but we want to read it only once when we read it, thus volatile.
-    volatile int8_t& CardState()
-    {
-        return m_cardState;
-    }
+    volatile int8_t& CardState();
+    volatile int8_t& ScanTicket();
+    volatile int8_t& CardGroupState(size_t i);
+    volatile int8_t& CardGroupScanTicket(size_t i);
 
-    // order is unimportant, but we want to read it only once when we read it, thus volatile.
-    volatile int8_t& ScanTicket()
-    {
-        return m_scanTicket;
-    }
-
-    size_t CardGroupCount()
-    {
-        return (End() - Start()) >> Satori::REGION_BITS;
-    }
-
-    // order is unimportant, but we want to read it once when we read it, thus volatile.
-    volatile int8_t& CardGroupState(size_t i)
-    {
-        return m_cardGroups[i * 2];
-    }
-
-    // order is unimportant, but we want to read it once when we read it, thus volatile.
-    volatile int8_t& CardGroupScanTicket(size_t i)
-    {
-        return m_cardGroups[i * 2 + 1];
-    }
-
-    int8_t* CardsForGroup(size_t i)
-    {
-        return &m_cardTable[i * Satori::CARD_BYTES_IN_CARD_GROUP];
-    }
-
-    size_t LocationForCard(int8_t* cardPtr)
-    {
-        return Start() + ((size_t)cardPtr - Start()) * Satori::BYTES_PER_CARD_BYTE;
-    }
+    size_t CardGroupCount();
+    int8_t* CardsForGroup(size_t i);
+    size_t LocationForCard(int8_t* cardPtr);
 
     template <typename F>
     void ForEachRegion(F lambda);
