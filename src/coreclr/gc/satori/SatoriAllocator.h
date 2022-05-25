@@ -44,11 +44,11 @@ class SatoriAllocator
 {
 public:
     void Initialize(SatoriHeap* heap);
-    SatoriRegion* GetRegion(size_t minSize);
-
-    void ReturnRegion(SatoriRegion* region);
-    void AddRegion(SatoriRegion* region);
     Object* Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags);
+
+    SatoriRegion* GetRegion(size_t minSize);
+    void AddRegion(SatoriRegion* region);
+    void ReturnRegion(SatoriRegion* region);
 
     SatoriWorkChunk* TryGetWorkChunk();
     SatoriWorkChunk* GetWorkChunk();
@@ -61,9 +61,12 @@ private:
     SatoriWorkChunkQueue* m_WorkChunks;
 
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
-    void TryGetRegularRegion(SatoriRegion*& region);
     SatoriObject* AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocHuge(SatoriAllocationContext* context, size_t size, uint32_t flags);
+
+    void TryGetRegularRegion(SatoriRegion*& region);
+
+    bool AddMoreWorkChunks();
 
     static int SizeToBucket(size_t size)
     {
@@ -77,8 +80,6 @@ private:
 #endif
         return min(highestBit - Satori::REGION_BITS, Satori::ALLOCATOR_BUCKET_COUNT - 1);
     }
-
-    bool AddMoreWorkChunks();
 };
 
 #endif
