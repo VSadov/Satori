@@ -58,13 +58,69 @@ public:
     }
 };
 
-// TODO: VS
 class SatoriSpinLock
 {
 private:
+    int m_backoff;
 
 public:
+    void Initialize()
+    {
+        m_backoff = 0;
+    }
 
+    void Enter()
+    {
+        int localBackoff = m_backoff;
+        while (VolatileLoadWithoutBarrier(&m_backoff) ||
+            CompareExchangeNf(&m_backoff, localBackoff / 4 + 1, 0) != 0)
+        {
+            localBackoff = Backoff(localBackoff);
+        }
+
+#if !defined(TARGET_AMD64)
+        MemoryBarrier();
+#endif
+    }
+
+    void Leave()
+    {
+        _ASSERTE(m_backoff);
+        VolatileStore(&m_backoff, 0);
+    }
+
+private:
+    NOINLINE
+    int Backoff(int backoff)
+    {
+        // TUNING: do we care about 1-proc machines?
+
+        for (int i = 0; i < backoff; i++)
+        {
+            YieldProcessor();
+
+            if ((i & 0x3FF) == 0x3FF)
+            {
+                GCToOSInterface::YieldThread(0);
+            }
+        }
+
+        return (backoff * 2 + 1) & 0x3FFF;
+    }
+
+    static int CompareExchangeNf(int volatile* destination, int exchange, int comparand)
+    {
+#ifdef _MSC_VER
+#if defined(TARGET_AMD64)
+        return _InterlockedCompareExchange((long*)destination, exchange, comparand);
+#else
+        return _InterlockedCompareExchange_nf((long*)destination, exchange, comparand);
+#endif
+#else
+        __atomic_compare_exchange_n(destination, &comparand, exchange, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+        return comparand;
+#endif
+    }
 };
 
 template <typename T>

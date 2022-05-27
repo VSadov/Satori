@@ -38,7 +38,7 @@ class SatoriRegion;
 class SatoriObject;
 class SatoriAllocationContext;
 class SatoriWorkChunk;
-class SatoriWorkChunkQueue;
+class SatoriWorkList;
 
 class SatoriAllocator
 {
@@ -58,7 +58,7 @@ private:
     SatoriHeap* m_heap;
     SatoriRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
 
-    SatoriWorkChunkQueue* m_WorkChunks;
+    SatoriWorkList* m_WorkChunks;
 
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags);

@@ -551,7 +551,7 @@ set(GC_HEADERS_WKS
     ../gc/satori/SatoriTrimmer.h
     ../gc/satori/SatoriFinalizationQueue.h
     ../gc/satori/SatoriWorkChunk.h
-    ../gc/satori/SatoriWorkChunkQueue.h
+    ../gc/satori/SatoriWorkList.h
     ../gc/satori/SatoriAllocationContext.h
     ../gc/satori/SatoriUtil.h
     ../gc/satori/SatoriLock.h

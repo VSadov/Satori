@@ -34,8 +34,7 @@
 
 class SatoriWorkChunk
 {
-    friend class SatoriQueue<SatoriWorkChunk>;
-    friend class SatoriObject;
+    friend class SatoriWorkList;
 
 public:
     SatoriWorkChunk() = delete;
@@ -45,8 +44,7 @@ public:
     {
         SatoriWorkChunk* self = (SatoriWorkChunk*)address;
         self->m_top = 0;
-        self->m_prev = self->m_next = nullptr;
-        self->m_containingQueue = nullptr;
+        self->m_next = nullptr;
 
         return self;
     }
@@ -106,13 +104,11 @@ public:
 
     void SetNext(SatoriWorkChunk* next)
     {
-        _ASSERTE(m_containingQueue == nullptr);
         m_next = next;
     }
 
     SatoriWorkChunk* Next()
     {
-        _ASSERTE(m_containingQueue == nullptr);
         return m_next;
     }
 
@@ -151,7 +147,7 @@ public:
 
     void SetRange(SatoriObject* obj, size_t start, size_t end)
     {
-        m_top = (size_t)- 1;
+        m_top = (size_t)-1;
         m_data[0] = obj;
         m_start = start;
         m_end = end;
@@ -168,10 +164,7 @@ public:
 
 private:
     size_t m_top;
-
-    SatoriWorkChunk* m_prev;
     SatoriWorkChunk* m_next;
-    SatoriQueue<SatoriWorkChunk>* m_containingQueue;
 
     SatoriObject* m_data[1];
     size_t m_start;

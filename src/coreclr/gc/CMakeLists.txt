@@ -107,7 +107,7 @@ if (CLR_CMAKE_TARGET_WIN32)
     satori/SatoriTrimmer.h
     satori/SatoriFinalizationQueue.h
     satori/SatoriWorkChunk.h
-    satori/SatoriWorkChunkQueue.h
+    satori/SatoriWorkList.h
     satori/SatoriAllocationContext.h
     satori/SatoriUtil.h
     satori/SatoriLock.h
