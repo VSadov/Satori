@@ -21,7 +21,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 // OTHER DEALINGS IN THE SOFTWARE.
 //
-// SatoriGC.h
+// SatoriHeap.h
 //
 
 #ifndef __SATORI_HEAP_H__
@@ -124,7 +124,7 @@ private:
     size_t m_committedMapSize;
     size_t m_usedMapLength;
     size_t m_nextPageIndex;
-    SatoriLock m_mapLock;
+    SatoriSpinLock m_mapLock;
     SatoriPage* m_pageMap[1];
 
     bool CommitMoreMap(size_t currentlyCommitted);
