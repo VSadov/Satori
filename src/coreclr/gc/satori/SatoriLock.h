@@ -58,13 +58,51 @@ public:
     }
 };
 
-// TODO: VS
 class SatoriSpinLock
 {
 private:
+    int m_backoff;
 
 public:
+    void Initialize()
+    {
+        m_backoff = 0;
+    }
 
+    void Enter()
+    {
+        int localBackoff = m_backoff;
+        while (VolatileLoadWithoutBarrier(&m_backoff) ||
+            Interlocked::CompareExchange(&m_backoff, localBackoff / 4 + 1, 0) != 0)
+        {
+            localBackoff = Backoff(localBackoff);
+        }
+    }
+
+    void Leave()
+    {
+        _ASSERTE(m_backoff);
+        VolatileStore(&m_backoff, 0);
+    }
+
+private:
+    NOINLINE
+    int Backoff(int backoff)
+    {
+        // TUNING: do we care about 1-proc machines?
+
+        for (int i = 0; i < backoff; i++)
+        {
+            YieldProcessor();
+
+            if ((i & 0x3FF) == 0x3FF)
+            {
+                GCToOSInterface::YieldThread(0);
+            }
+        }
+
+        return (backoff * 2 + 1) & 0x3FFF;
+    }
 };
 
 template <typename T>
