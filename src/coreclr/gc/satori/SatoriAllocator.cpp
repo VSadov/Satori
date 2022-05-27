@@ -39,7 +39,7 @@
 #include "SatoriRegionQueue.h"
 #include "SatoriAllocationContext.h"
 #include "SatoriWorkChunk.h"
-#include "SatoriWorkChunkQueue.h"
+#include "SatoriWorkList.h"
 
 void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
@@ -50,7 +50,7 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
         m_queues[i] = new SatoriRegionQueue(QueueKind::Allocator);
     }
 
-    m_WorkChunks = new SatoriWorkChunkQueue();
+    m_WorkChunks = new SatoriWorkList();
 }
 
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
