@@ -21,7 +21,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 // OTHER DEALINGS IN THE SOFTWARE.
 //
-// TQueue.h
+// SatoriQueue.h
 //
 
 #ifndef __SATORI_QUEUE_H__
@@ -75,7 +75,7 @@ public:
         _ASSERTE(item->m_prev == nullptr);
         _ASSERTE(item->m_containingQueue == nullptr);
 
-        SatoriLockHolder<SatoriLock> holder(&m_lock);
+        SatoriLockHolder<SatoriSpinLock> holder(&m_lock);
         m_count++;
         item->m_containingQueue = this;
         if (m_head == nullptr)
@@ -101,7 +101,7 @@ public:
 
         T* result;
         {
-            SatoriLockHolder<SatoriLock> holder(&m_lock);
+            SatoriLockHolder<SatoriSpinLock> holder(&m_lock);
             result = m_head;
             if (result == nullptr)
             {
@@ -133,7 +133,7 @@ public:
         _ASSERTE(item->m_prev == nullptr);
         _ASSERTE(item->m_containingQueue == nullptr);
 
-        SatoriLockHolder<SatoriLock> holder(&m_lock);
+        SatoriLockHolder<SatoriSpinLock> holder(&m_lock);
         m_count++;
         item->m_containingQueue = this;
         if (m_tail == nullptr)
@@ -179,7 +179,7 @@ public:
     bool TryRemove(T* item)
     {
         {
-            SatoriLockHolder<SatoriLock> holder(&m_lock);
+            SatoriLockHolder<SatoriSpinLock> holder(&m_lock);
             if (!Contains(item))
             {
                 return false;
@@ -244,7 +244,7 @@ public:
 
 protected:
     QueueKind m_kind;
-    SatoriLock m_lock;
+    SatoriSpinLock m_lock;
     T* m_head;
     T* m_tail;
     size_t m_count;
