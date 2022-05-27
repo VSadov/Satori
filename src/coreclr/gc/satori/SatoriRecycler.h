@@ -30,7 +30,7 @@
 #include "common.h"
 #include "../gc.h"
 #include "SatoriRegionQueue.h"
-#include "SatoriWorkChunkQueue.h"
+#include "SatoriWorkList.h"
 
 class SatoriHeap;
 class SatoriTrimmer;
@@ -87,7 +87,7 @@ private:
     int m_rootScanTicket;
     uint8_t m_cardScanTicket;
 
-    SatoriWorkChunkQueue* m_workQueue;
+    SatoriWorkList* m_workList;
     SatoriTrimmer* m_trimmer;
 
     // regions owned by recycler

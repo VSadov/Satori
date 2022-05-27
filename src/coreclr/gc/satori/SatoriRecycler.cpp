@@ -110,7 +110,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_reusableRegionsAlternate = new SatoriRegionQueue(QueueKind::RecyclerReusable);
     m_demotedRegions = new SatoriRegionQueue(QueueKind::RecyclerDemoted);
 
-    m_workQueue = new SatoriWorkChunkQueue();
+    m_workList = new SatoriWorkList();
     m_gcState = GC_STATE_NONE;
     m_isBarrierConcurrent = false;
 
@@ -492,7 +492,7 @@ bool SatoriRecycler::HelpOnceCore()
     }
 
     // if queues are empty we see no more work
-    return !m_workQueue->IsEmpty();
+    return !m_workList->IsEmpty();
 }
 
 class MarkContext
@@ -574,7 +574,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
         // swap reusable and alternate so that we could filter through reusables.
         // the swap needs to be done when EE is stopped, but before marking has started.
         SatoriRegionQueue* alternate = m_reusableRegionsAlternate;
-        _ASSERTE(alternate->Count() == 0);
+        _ASSERTE(alternate->IsEmpty());
         m_reusableRegionsAlternate = m_reusableRegions;
         m_reusableRegions = alternate;
 
@@ -586,7 +586,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
         GCToEEInterface::GcEnumAllocContexts(ConcurrentPhasePrepFn, &c);
         if (c.m_WorkChunk != nullptr)
         {
-            m_workQueue->Push(c.m_WorkChunk);
+            m_workList->Push(c.m_WorkChunk);
         }
 
         // now join everybody else and mark some roots
@@ -639,7 +639,7 @@ void SatoriRecycler::HelpOnce()
 
         GCToEEInterface::GcPoll();
     }
-    else if (m_deferredSweepRegions->Count() > 0)
+    else if (!m_deferredSweepRegions->IsEmpty())
     {
         int64_t timeStamp = GCToOSInterface::QueryPerformanceCounter();
         int64_t deadline = timeStamp + HelpQuantum();
@@ -947,12 +947,12 @@ void SatoriRecycler::BlockingCollect()
     m_prevCondemnedGeneration = m_condemnedGeneration;
     m_condemnedGeneration = 0;
     m_gcState = GC_STATE_NONE;
-    m_deferredSweepCount = m_deferredSweepRegions->Count();
     m_gen1AddedSinceLastCollection = 0;
     m_gen2AddedSinceLastCollection = 0;
 
-    if (SatoriUtil::IsConcurrent() && m_deferredSweepCount > 0)
+    if (SatoriUtil::IsConcurrent() && !m_deferredSweepRegions->IsEmpty())
     {
+        m_deferredSweepCount = m_deferredSweepRegions->Count();
         m_activeHelperFn = &SatoriRecycler::DrainDeferredSweepQueueHelp;
         MaybeAskForHelp();
     }
@@ -1018,7 +1018,7 @@ void SatoriRecycler::DrainAndCleanWorker()
     {
         DrainMarkQueues();
         revisitCards = CleanCards();
-    } while (!m_workQueue->IsEmpty() || revisitCards);
+    } while (!m_workList->IsEmpty() || revisitCards);
 }
 
 void SatoriRecycler::MarkNewReachable()
@@ -1026,7 +1026,7 @@ void SatoriRecycler::MarkNewReachable()
     // it is nearly impossible to have dirty cards and empty work queue.
     // basically only if we completely ran out of chunks.
     // we will just check for simplicity.
-    while (!m_workQueue->IsEmpty() || HasDirtyCards())
+    while (!m_workList->IsEmpty() || HasDirtyCards())
     {
         RunWithHelp(&SatoriRecycler::DrainAndCleanWorker);
         DependentHandlesRescan();
@@ -1069,7 +1069,7 @@ void SatoriRecycler::MarkStrongReferencesWorker()
 
 void SatoriRecycler::ASSERT_NO_WORK()
 {
-    _ASSERTE(m_workQueue->IsEmpty());
+    _ASSERTE(m_workList->IsEmpty());
 
     m_heap->ForEachPage(
         [&](SatoriPage* page)
@@ -1120,7 +1120,7 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, Sa
 
     if (currentWorkChunk)
     {
-        m_workQueue->Push(currentWorkChunk);
+        m_workList->Push(currentWorkChunk);
         MaybeAskForHelp();
     }
 
@@ -1128,7 +1128,7 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, Sa
     // Limit work queue in debug/chk.
     // This is just to force more overflows. Otherwise they are very rare.
     currentWorkChunk = nullptr;
-    if (m_workQueue->Count() < 10)
+    if (m_workList->Count() < 10)
 #endif
     {
         currentWorkChunk = m_heap->Allocator()->TryGetWorkChunk();
@@ -1359,7 +1359,7 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
                 {
                     if (c.m_WorkChunk != nullptr)
                     {
-                        m_workQueue->Push(c.m_WorkChunk);
+                        m_workList->Push(c.m_WorkChunk);
                     }
 
                     return true;
@@ -1517,7 +1517,7 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
 
     if (c.m_WorkChunk != nullptr)
     {
-        m_workQueue->Push(c.m_WorkChunk);
+        m_workList->Push(c.m_WorkChunk);
     }
 }
 
@@ -1525,10 +1525,10 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
 {
     if (!srcChunk)
     {
-        srcChunk = m_workQueue->TryPop();
+        srcChunk = m_workList->TryPop();
     }
 
-    if (!m_workQueue->IsEmpty())
+    if (!m_workList->IsEmpty())
     {
         MaybeAskForHelp();
     }
@@ -1616,10 +1616,10 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         {
             if ((GCToOSInterface::QueryPerformanceCounter() - deadline) > 0)
             {
-                m_workQueue->Push(srcChunk);
+                m_workList->Push(srcChunk);
                 if (dstChunk)
                 {
-                    m_workQueue->Push(dstChunk);
+                    m_workList->Push(dstChunk);
                 }
                 return true;
             }
@@ -1639,7 +1639,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         else
         {
             m_heap->Allocator()->ReturnWorkChunk(srcChunk);
-            srcChunk = m_workQueue->TryPop();
+            srcChunk = m_workList->TryPop();
         }
     }
 
@@ -1671,7 +1671,7 @@ void SatoriRecycler::ScheduleMarkAsChildRanges(SatoriObject* o)
             chunk->SetRange(o, start, start + len);
             start += len;
             remains -= len;
-            m_workQueue->Push(chunk);
+            m_workList->Push(chunk);
         }
 
         // done with current object
@@ -1697,7 +1697,7 @@ bool SatoriRecycler::ScheduleUpdateAsChildRanges(SatoriObject* o)
             chunk->SetRange(o, start, start + len);
             start += len;
             remains -= len;
-            m_workQueue->Push(chunk);
+            m_workList->Push(chunk);
         }
 
         // done with current object
@@ -1711,10 +1711,10 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
 {
     if (!srcChunk)
     {
-        srcChunk = m_workQueue->TryPop();
+        srcChunk = m_workList->TryPop();
     }
 
-    if (!m_workQueue->IsEmpty())
+    if (!m_workList->IsEmpty())
     {
         MaybeAskForHelp();
     }
@@ -1783,7 +1783,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         else
         {
             m_heap->Allocator()->ReturnWorkChunk(srcChunk);
-            srcChunk = m_workQueue->TryPop();
+            srcChunk = m_workList->TryPop();
         }
     }
 
@@ -1953,7 +1953,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
 
     if (dstChunk)
     {
-        m_workQueue->Push(dstChunk);
+        m_workList->Push(dstChunk);
     }
 
     return revisit;
@@ -2089,7 +2089,7 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
 
     if (dstChunk)
     {
-        m_workQueue->Push(dstChunk);
+        m_workList->Push(dstChunk);
     }
 
     return revisit;
@@ -2226,7 +2226,7 @@ void SatoriRecycler::MarkThroughCards()
 
     if (dstChunk)
     {
-        m_workQueue->Push(dstChunk);
+        m_workList->Push(dstChunk);
     }
 }
 
@@ -2354,7 +2354,7 @@ bool SatoriRecycler::CleanCards()
 
     if (dstChunk)
     {
-        m_workQueue->Push(dstChunk);
+        m_workList->Push(dstChunk);
     }
 
     return revisit;
@@ -2498,7 +2498,7 @@ bool SatoriRecycler::MarkHandles(int64_t deadline)
 
     if (c.m_WorkChunk != nullptr)
     {
-        m_workQueue->Push(c.m_WorkChunk);
+        m_workList->Push(c.m_WorkChunk);
     }
 
     return revisit;
@@ -2573,7 +2573,7 @@ void SatoriRecycler::ScanAllFinalizableRegionsWorker()
     if (c.m_WorkChunk != nullptr)
     {
         GCToEEInterface::EnableFinalization(true);
-        m_workQueue->Push(c.m_WorkChunk);
+        m_workList->Push(c.m_WorkChunk);
     }
 }
 
@@ -2699,7 +2699,7 @@ void SatoriRecycler::QueueCriticalFinalizablesWorker()
         if (c.m_WorkChunk != nullptr)
         {
             GCToEEInterface::EnableFinalization(true);
-            m_workQueue->Push(c.m_WorkChunk);
+            m_workList->Push(c.m_WorkChunk);
         }
     }
 }
@@ -2727,7 +2727,7 @@ void SatoriRecycler::DependentHandlesInitialScanWorker()
 
     if (c.m_WorkChunk != nullptr)
     {
-        m_workQueue->Push(c.m_WorkChunk);
+        m_workList->Push(c.m_WorkChunk);
     }
 }
 
@@ -2757,7 +2757,7 @@ void SatoriRecycler::DependentHandlesRescanWorker()
 
     if (c.m_WorkChunk != nullptr)
     {
-        m_workQueue->Push(c.m_WorkChunk);
+        m_workList->Push(c.m_WorkChunk);
     }
 }
 
@@ -2837,10 +2837,10 @@ bool SatoriRecycler::IsRelocatable(SatoriRegion* region)
 
 void SatoriRecycler::Plan()
 {
-    _ASSERTE(m_ephemeralFinalizationTrackingRegions->Count() == 0);
+    _ASSERTE(m_ephemeralFinalizationTrackingRegions->IsEmpty());
     if (m_condemnedGeneration == 2)
     {
-        _ASSERTE(m_tenuredFinalizationTrackingRegions->Count() == 0);
+        _ASSERTE(m_tenuredFinalizationTrackingRegions->IsEmpty());
     }
 
 #if _DEBUG
@@ -3211,14 +3211,14 @@ void SatoriRecycler::Update()
     // regions must me updated 
     // after updating through cards since region update may change generations
 
-    _ASSERTE(m_ephemeralRegions->Count() == 0);
-    _ASSERTE(m_ephemeralFinalizationTrackingRegions->Count() == 0);
+    _ASSERTE(m_ephemeralRegions->IsEmpty());
+    _ASSERTE(m_ephemeralFinalizationTrackingRegions->IsEmpty());
     _ASSERTE(m_occupancyAcc[0] == 0);
     _ASSERTE(m_occupancyAcc[1] == 0);
     if (m_condemnedGeneration == 2 || m_promoteAllRegions)
     {
-        _ASSERTE(m_tenuredRegions->Count() == 0);
-        _ASSERTE(m_tenuredFinalizationTrackingRegions->Count() == 0);
+        _ASSERTE(m_tenuredRegions->IsEmpty());
+        _ASSERTE(m_tenuredFinalizationTrackingRegions->IsEmpty());
         _ASSERTE(m_occupancyAcc[2] == 0);
     }
 
@@ -3314,7 +3314,7 @@ void SatoriRecycler::UpdateRegionsWorker()
     UpdateRegions(m_stayingRegions);
 
     // if we saw large objects we may have ranges to update
-    if (!m_workQueue->IsEmpty())
+    if (!m_workList->IsEmpty())
     {
         UpdatePointersInObjectRanges();
     }
@@ -3322,7 +3322,7 @@ void SatoriRecycler::UpdateRegionsWorker()
 
 void SatoriRecycler::UpdatePointersInObjectRanges()
 {
-    SatoriWorkChunk* srcChunk = m_workQueue->TryPop();
+    SatoriWorkChunk* srcChunk = m_workList->TryPop();
     if (srcChunk)
     {
         MaybeAskForHelp();
@@ -3352,7 +3352,7 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
                 },
                 start,
                     end);
-        } while ((srcChunk = m_workQueue->TryPop()));
+        } while ((srcChunk = m_workList->TryPop()));
     }
 }
 
