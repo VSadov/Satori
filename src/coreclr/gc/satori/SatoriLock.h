@@ -73,10 +73,14 @@ public:
     {
         int localBackoff = m_backoff;
         while (VolatileLoadWithoutBarrier(&m_backoff) ||
-            Interlocked::CompareExchange(&m_backoff, localBackoff / 4 + 1, 0) != 0)
+            CompareExchangeNf(&m_backoff, localBackoff / 4 + 1, 0) != 0)
         {
             localBackoff = Backoff(localBackoff);
         }
+
+#if !defined(TARGET_AMD64)
+        MemoryBarrier();
+#endif
     }
 
     void Leave()
@@ -102,6 +106,19 @@ private:
         }
 
         return (backoff * 2 + 1) & 0x3FFF;
+    }
+
+    static int CompareExchangeNf(int volatile* destination, int exchange, int comparand)
+    {
+#ifdef _MSC_VER
+#if defined(TARGET_AMD64)
+        return _InterlockedCompareExchange((long*)destination, exchange, comparand);
+#else
+        return _InterlockedCompareExchange_nf((long*)destination, exchange, comparand);
+#endif
+#else
+        return __atomic_compare_exchange_n(destination, &exchange, comparand, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+#endif
     }
 };
 
