@@ -117,7 +117,8 @@ private:
         return _InterlockedCompareExchange_nf((long*)destination, exchange, comparand);
 #endif
 #else
-        return __atomic_compare_exchange_n(destination, &exchange, comparand, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+        __atomic_compare_exchange_n(destination, &exchange, comparand, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+        return exchange;
 #endif
     }
 };
