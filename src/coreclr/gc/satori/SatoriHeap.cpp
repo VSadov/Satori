@@ -143,7 +143,7 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
             {
                 // SYNCRONIZATION:
                 // A page map update must be seen by all threads before seeing objects allocated
-                // in the new page or checked barriers may consider the objects not in the heap.
+                // in the new page, otherwise checked barriers may consider the objects not in the heap.
                 //
                 // If another thread checks if object is in heap, its read of the map element is dependent on object,
                 // therefore the read will happen after the object is obtained.
@@ -176,7 +176,7 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
 }
 
 // it is harder to find a contiguous space for a large page
-// also unlikely that we cross-use one if just comitted
+// also unlikely that we cross-use one if just comitted.
 // we scan ahead and claim, but do not move m_nextPageIndex
 // unless we claimed contiguously.
 SatoriPage* SatoriHeap::AddLargePage(size_t minSize)

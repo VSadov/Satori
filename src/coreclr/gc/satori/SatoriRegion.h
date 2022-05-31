@@ -38,6 +38,7 @@ class SatoriRegionQueue;
 class SatoriObject;
 class SatoriAllocationContext;
 
+// The Region contains objects and their metadata.
 class SatoriRegion
 {
     friend class SatoriObject;
@@ -48,14 +49,11 @@ public:
     SatoriRegion() = delete;
     ~SatoriRegion() = delete;
 
-    static SatoriRegion* InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used);
-
     static const int MAX_LARGE_OBJ_SIZE;
 
+    static SatoriRegion* InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used);
     void MakeBlank();
     bool ValidateBlank();
-
-    void FreeDemotedTrackers();
 
     void RearmCardsForTenured();
     void ResetCardsForEphemeral();
@@ -63,6 +61,7 @@ public:
     SatoriRegion* TrySplit(size_t regionSize);
     bool CanDecommit();
     bool TryDecommit();
+    bool CanCoalesceWithNext();
     bool TryCoalesceWithNext();
 
     static size_t RegionSizeForAlloc(size_t allocSize);
@@ -75,13 +74,12 @@ public:
 
     size_t StartAllocating(size_t minSize);
     void StopAllocating(size_t allocPtr);
+    bool IsAllocating();
 
     void AddFreeSpace(SatoriObject* freeObj);
 
     bool HasFreeSpaceInTopBucket();
     bool HasFreeSpaceInTop4Buckets();
-
-    bool IsAllocating();
 
     void StartEscapeTrackingRelease(size_t threadTag);
     void StopEscapeTracking();
@@ -96,8 +94,10 @@ public:
 
     void ResetReusableForRelease();
 
+    bool TryDemote();
     bool IsDemoted();
     SatoriWorkChunk* &DemotedObjects();
+    void FreeDemotedTrackers();
 
     int Generation();
     int GenerationAcquire();
@@ -121,7 +121,6 @@ public:
 
     void TakeFinalizerInfoFrom(SatoriRegion* other);
     void UpdateFinalizableTrackers();
-    bool NothingMarked();
     void UpdatePointers();
     void UpdatePointersInObject(SatoriObject* o);
 
@@ -134,10 +133,8 @@ public:
     bool IsExposed(SatoriObject** location);
     bool AnyExposed(size_t from, size_t length);
     void EscapeRecursively(SatoriObject* obj);
-
     void EscsapeAll();
     void EscapeShallow(SatoriObject* o);
-    void SetOccupancy(size_t occupancy, size_t objCount);
 
     template <typename F>
     void ForEachFinalizable(F lambda);
@@ -153,6 +150,7 @@ public:
     bool HasFinalizables();
     bool& HasPendingFinalizables();
 
+    void SetOccupancy(size_t occupancy, size_t objCount);
     size_t Occupancy();
     size_t& OccupancyAtReuse();
     size_t ObjCount();
@@ -160,10 +158,6 @@ public:
     bool& HasPinnedObjects();
     bool& DoNotSweep();
     bool& AcceptedPromotedObjects();
-
-#if _DEBUG
-    bool& HasMarksSet();
-#endif
 
     enum class ReuseLevel : uint8_t
     {
@@ -177,6 +171,11 @@ public:
 
     SatoriQueue<SatoriRegion>* ContainingQueue();
 
+#if _DEBUG
+    bool& HasMarksSet();
+#endif
+
+    bool NothingMarked();
     void ClearMarks();
     void ClearIndex();
     void ClearFreeLists();
@@ -187,10 +186,6 @@ public:
 
     SatoriPage* ContainingPage();
     SatoriRegion* NextInPage();
-
-    bool CanCoalesceWithNext();
-
-    bool TryDemote();
 
     void Verify(bool allowMarked = false);
 
@@ -207,7 +202,7 @@ private:
         // it may be possible to repurpose the bits for other needs as we see fit.
         //
         // we will overlap the map and the header for simplicity of map operations.
-        // it is ok because the first BITMAP_START elements of the map cover the header/map and thus will not be used.
+        // it is ok because the first BITMAP_START elements of the map cover the header/map itself and thus will not be used.
         // +1 to include End(), it will always be 0, but it is conveninet to make it legal map index.
         size_t m_bitmap[BITMAP_LENGTH + 1];
 

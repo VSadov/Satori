@@ -122,8 +122,9 @@ inline void SatoriObject::UnSuppressFinalization()
 }
 
 //
-// Implementation note on mark overflow and relocation - we could use temporary maps,
-// but we will use unused bits in the syncblock instead.
+// Implementation note on mark overflow and relocation:
+//    we could use temporary maps (we would have to on 32bit),
+//    but on 64bit we will use unused bits in the syncblock instead.
 //
 
 inline int32_t SatoriObject::GetNextInLocalMarkStack()
@@ -180,6 +181,7 @@ inline int SatoriObject::GetMarkBitAndWord(size_t* bitmapIndex)
     return (start >> 3) & 63;     // % bits in a word
 }
 
+// used by pinned allocations
 inline void SatoriObject::SetUnmovable()
 {
     ((DWORD*)this)[-1] |= BIT_SBLK_GC_RESERVE;
@@ -212,9 +214,9 @@ inline void SatoriObject::ForEachObjectRef(F lambda, bool includeCollectibleAllo
     CGCDescSeries* cur = map->GetHighestSeries();
 
     // GetNumSeries is actually signed.
-    // Negative value means the pattern repeats -cnt times such as in a case of arrays
-    ptrdiff_t cnt = (ptrdiff_t)map->GetNumSeries();
-    if (cnt >= 0)
+    // Negative value means the pattern repeats -numSeries times such as in a case of arrays
+    ptrdiff_t numSeries = (ptrdiff_t)map->GetNumSeries();
+    if (numSeries >= 0)
     {
         CGCDescSeries* last = map->GetLowestSeries();
 
@@ -248,7 +250,7 @@ inline void SatoriObject::ForEachObjectRef(F lambda, bool includeCollectibleAllo
         uint32_t componentNum = ((ArrayBase*)this)->GetNumComponents();
         while (componentNum-- > 0)
         {
-            for (ptrdiff_t i = 0; i > cnt; i--)
+            for (ptrdiff_t i = 0; i > numSeries; i--)
             {
                 val_serie_item item = cur->val_serie[i];
                 size_t refPtrStop = refPtr + item.nptrs * sizeof(size_t);
@@ -272,8 +274,9 @@ inline void SatoriObject::ForEachObjectRef(F lambda, size_t start, size_t end)
     if (start <= Start() && mt->Collectible())
     {
         uint8_t* loaderAllocator = GCToEEInterface::GetLoaderAllocatorObjectForGC(this);
-        // NB: Allocator ref location is fake. The actual location is a handle).
-        //     it is ok to "update" the ref, but it will have no effect
+        // NB: Allocator ref location is fake. The allocator is accessed via a handle indirection.
+        //     It is ok to "update" the ref, but it will have no effect.
+        //     The real update is when the handle is updated, which should happen separately.
         lambda((SatoriObject**)&loaderAllocator);
     }
 
@@ -286,7 +289,7 @@ inline void SatoriObject::ForEachObjectRef(F lambda, size_t start, size_t end)
     CGCDescSeries* cur = map->GetHighestSeries();
 
     // GetNumSeries is actually signed.
-    // Negative value means the pattern repeats -cnt times such as in a case of arrays
+    // Negative value means the pattern repeats -numSeries times such as in a case of arrays
     ptrdiff_t cnt = (ptrdiff_t)map->GetNumSeries();
     if (cnt >= 0)
     {

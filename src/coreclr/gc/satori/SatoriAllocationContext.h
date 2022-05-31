@@ -46,7 +46,7 @@ public:
         return (SatoriRegion*&)this->gc_reserved_2;
     }
 
-    // stop allocating on all associated regions and pass them to recycler.
+    // stop allocating on all associated regions and optionally detach from the context.
     void Deactivate(SatoriRecycler* recycler, bool detach);
 
 private:
