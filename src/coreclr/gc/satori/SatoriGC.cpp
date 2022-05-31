@@ -231,7 +231,7 @@ size_t SatoriGC::GetCurrentObjSize()
 uint64_t SatoriGC::GetTotalAllocatedBytes()
 {
     // monotonically increasing number produced by allocator when allocating objects.
-    // threads know the number and we update the total when doing GCs
+    // threads know their number and we update the total when doing GCs
     return m_heap->Recycler()->GetTotalAllocatedBytes();
 }
 

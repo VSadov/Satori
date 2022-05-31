@@ -95,7 +95,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     result->m_escapeFunc = nullptr;
     result->m_generation = -1;
 
-    result->m_containingPage->RegionInitialized(result);
+    result->m_containingPage->OnRegionInitialized(result);
     return result;
 }
 
@@ -109,6 +109,7 @@ SatoriRecycler* SatoriRegion::Recycler()
     return m_containingPage->Heap()->Recycler();
 }
 
+// rearm cards for a tenured region (ex: after en-masse promotion)
 void SatoriRegion::RearmCardsForTenured()
 {
     _ASSERTE(Generation() == 2);
@@ -129,6 +130,7 @@ void SatoriRegion::FreeDemotedTrackers()
     }
 }
 
+// reset all cards when the region will no longer be tenured.
 void SatoriRegion::ResetCardsForEphemeral()
 {
     _ASSERTE(Generation() == 2);
@@ -480,7 +482,7 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
         GCToOSInterface::VirtualDecommit(next, toDecommit);
     }
 
-    m_containingPage->RegionInitialized(this);
+    m_containingPage->OnRegionInitialized(this);
 }
 
 bool SatoriRegion::CanDecommit()
@@ -565,7 +567,8 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     size_t chunkStart = m_allocStart;
     size_t chunkEnd = chunkStart + size;
 
-    // in rare cases the object does not cross into the last granule. (when it needs extra because of free obj padding).
+    // in rare cases the object does not cross into the last granule.
+    // (when the allocation is huge only because of parseability padding).
     // in such case pad it in front.
     if (chunkEnd < End() - Satori::REGION_SIZE_GRANULARITY)
     {
@@ -618,7 +621,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     return chunkStart;
 }
 
-// Finds an object that contains given location.
+// Finds an object that contains the given location.
 //
 // Assumptions that caller must arrange or handle:
 //  - we may return a Free object here.
@@ -836,6 +839,8 @@ void SatoriRegion::EscsapeAll()
     }
 }
 
+// do not recurse into children
+// used when escaping all objects in the region anyways
 void SatoriRegion::EscapeShallow(SatoriObject* o)
 {
     _ASSERTE(o->ContainingRegion() == this);
@@ -870,7 +875,7 @@ void SatoriRegion::SetOccupancy(size_t occupancy, size_t objCount)
     m_objCount = objCount;
 }
 
-// NB: dst is unused, it is just to avoid arg shuffle in x64 barriers
+// NB: dst is unused, it is just to avoid argument shuffle in x64 barriers
 void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
 {
     region->EscapeRecursively(src);
@@ -885,7 +890,7 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
     // TUNING: 1/4 is not too greedy? maybe 1/8 ?
     if (allocBytes - m_allocBytesAtCollect < Satori::REGION_SIZE_GRANULARITY / 4)
     {
-        // this is too soon. last collection did not buy us as much as we wanted.
+        // this is too soon. last collection did not buy us as much as we wanted
         // either due to fragmentation or unfortunate allocation pattern in this thread.
         // we will not collect this region, lest it keeps coming back.
         return false;
@@ -1000,7 +1005,7 @@ void SatoriRegion::ThreadLocalMark()
         // - mark ref as finalizer pending to be queued after compaction.
         // - mark obj as reachable
         // - push to mark stack
-        // - re-trace to mark children that are now F-reachable
+        // - trace through reachable again to mark children that are now F-reachable
         ForEachFinalizableThreadLocal(
             [this](SatoriObject* finalizable)
             {
@@ -1052,11 +1057,11 @@ void SatoriRegion::ThreadLocalPlan()
     //  - Movable
     //      marked, but not escaped or pinned
     //
-    // we will shift left all movable objects - as long as they fit between unmovables
+    // we will slide all movable objects towards the region start - as long as they fit between unmovables
     //
 
     // planning will coalesce free objects.
-    // that alone does not invalidate the index, unless we fill free objects with junk.
+    // that does not invalidate the index, but it will if we fill free objects with junk.
 #ifdef JUNK_FILL_FREE_SPACE
     ClearIndex();
 #endif
@@ -1535,10 +1540,10 @@ bool SatoriRegion::RegisterForFinalization(SatoriObject* finalizable)
     return true;
 }
 
-// Finalizable trackers are generally accessed exclusively when EE stopped
+// Finalizable trackers are generally accessed exclusively, when EE is stopped.
 // The only case where we can have contention is when a user thread re-registers
 // concurrently with another thread doing the same or
-// concurrently with thread local collection.
+// concurrently with a thread local collection.
 // It is extremely unlikely to have such contention, so a simplest spinlock is ok
 void SatoriRegion::LockFinalizableTrackers()
 {
@@ -1623,6 +1628,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
     return ObjectForMarkBit(bitmapIndex, markBitOffset);
 }
 
+// clears the mark bit
 SatoriObject* SatoriRegion::SkipUnmarkedAndClear(SatoriObject* from)
 {
     _ASSERTE(from->Start() < End());
@@ -1697,7 +1703,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
 void SatoriRegion::UpdateFinalizableTrackers()
 {
     // if any finalizable trackers point outside,
-    // their objects have been relocated to this region
+    // their objects have been relocated to this region, we need to update these trackers
     if (m_finalizableTrackers)
     {
         ForEachFinalizable(
@@ -1781,9 +1787,9 @@ bool SatoriRegion::TryDemote()
     _ASSERTE(ObjCount() != 0);
 
     // TUNING: heuristic for demoting -  could consider occupancy, pinning, etc...
-    //         the cost here is increasing  gen1, which is supposed to be small.
+    //         the cost here is increasing  gen1, which is supposed to be short as 
     //         demoted objects will have to be marked regardless of cards.
-    //         NOTE: caller requires 3rd bucket, so region is ~ 1/4 empty
+    //         we can't have > MAX_DEMOTED_OBJECTS_IN_REGION objects, but they can be big
 
    if (ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION)
     {
