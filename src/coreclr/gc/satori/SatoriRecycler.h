@@ -199,6 +199,7 @@ private:
     int MaxHelpers();
     int64_t HelpQuantum();
     void AskForHelp();
+    void RunWithHelp(void(SatoriRecycler::* method)());
     bool HelpOnceCore();
 
     void PushToEphemeralQueues(SatoriRegion* region);
@@ -206,21 +207,25 @@ private:
     void PushToEphemeralQueue(SatoriRegion* region);
     void PushToTenuredQueues(SatoriRegion* region);
 
+    void AdjustHeuristics();
     void DeactivateAllStacks();
-    void PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o);
-    bool MarkOwnStackAndDrainQueues(int64_t deadline = 0);
-    void MarkOwnStack(gc_alloc_context* aContext, MarkContext* mc);
-    void MarkDemoted(SatoriRegion* curRegion, MarkContext& c);
-    void MarkAllStacksFinalizationAndDemotedRoots();
+
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();
     uint8_t GetCardScanTicket();
+
+    void MarkOwnStack(gc_alloc_context* aContext, MarkContext* mc);
+    void MarkThroughCards();
+    bool MarkThroughCardsConcurrent(int64_t deadline);
+    void MarkDemoted(SatoriRegion* curRegion, MarkContext& c);
+    void MarkAllStacksFinalizationAndDemotedRoots();
+
+    void PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o);
     void DrainMarkQueues(SatoriWorkChunk* srcChunk = nullptr);
     bool DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk = nullptr, int64_t deadline = 0);
-    void MarkThroughCards();
+    bool MarkOwnStackAndDrainQueues(int64_t deadline = 0);
 
     bool HasDirtyCards();
-    bool MarkThroughCardsConcurrent(int64_t deadline);
     bool ScanDirtyCardsConcurrent(int64_t deadline);
     bool CleanCards();
     bool MarkHandles(int64_t deadline = 0);
@@ -228,39 +233,46 @@ private:
     void ShortWeakPtrScanWorker();
     void LongWeakPtrScan();
     void LongWeakPtrScanWorker();
+
     void ScanFinalizables();
     void ScanFinalizableRegions(SatoriRegionQueue* regions, MarkContext* c);
     void ScanAllFinalizableRegionsWorker();
     void QueueCriticalFinalizablesWorker();
+
+    void DependentHandlesScan();
     void DependentHandlesInitialScan();
     void DependentHandlesInitialScanWorker();
     void DependentHandlesRescan();
     void DependentHandlesRescanWorker();
-    void PromoteHandlesAndFreeRelocatedRegions();
-    void PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker();
 
-    void AdjustHeuristics();
     void BlockingCollect();
-    void RunWithHelp(void(SatoriRecycler::* method)());
     void BlockingMark();
     void MarkNewReachable();
-    void DependentHandlesScan();
+    void DrainAndCleanWorker();
     void MarkStrongReferences();
     void MarkStrongReferencesWorker();
-    void DrainAndCleanWorker();
+
     void Plan();
     void PlanWorker();
+    void PlanRegions(SatoriRegionQueue* regions);
     bool IsRelocatable(SatoriRegion* region);
     void DenyRelocation();
+    void AddTenuredRegionsToPlan(SatoriRegionQueue* regions);
+    void AddRelocationTarget(SatoriRegion* region);
+    SatoriRegion* TryGetRelocationTarget(size_t size, bool existingRegionOnly);
+
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);
-    void Update();
-
     void FreeRelocatedRegionsWorker();
 
+    void PromoteHandlesAndFreeRelocatedRegions();
+    void PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker();
+
+    void Update();
     void UpdateRootsWorker();
     void UpdateRegionsWorker();
+    void UpdatePointersThroughCards();
     void UpdatePointersInObjectRanges();
     void UpdatePointersInPromotedObjects();
     void UpdateRegions(SatoriRegionQueue* queue);
@@ -270,13 +282,6 @@ private:
     bool DrainDeferredSweepQueueConcurrent(int64_t deadline = 0);
     void DrainDeferredSweepQueueHelp();
     void SweepAndReturnRegion(SatoriRegion* curRegion);
-    void UpdatePointersThroughCards();
-    void PlanRegions(SatoriRegionQueue* regions);
-    void AddRelocationTarget(SatoriRegion* region);
-
-    void AddTenuredRegionsToPlan(SatoriRegionQueue* regions);
-
-    SatoriRegion* TryGetRelocationTarget(size_t size, bool existingRegionOnly);
 
     void ASSERT_NO_WORK();
 };
