@@ -74,7 +74,6 @@ int SatoriFinalizationQueue::OverflowedGen()
     return m_overflowedGen;
 }
 
-
 void SatoriFinalizationQueue::SetOverflow(int generation)
 {
     if (generation > m_overflowedGen)
