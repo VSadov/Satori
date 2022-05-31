@@ -150,6 +150,8 @@ public:
         m_tail = item;
     }
 
+    // does not take locks, does not update contsaining queue.
+    // only used for intermediate merging of queues before consuming.
     void AppendUnsafe(SatoriQueue<T>* other)
     {
         size_t otherCount = other->Count();
