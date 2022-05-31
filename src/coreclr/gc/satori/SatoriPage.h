@@ -34,6 +34,7 @@
 class SatoriHeap;
 class SatoriRegion;
 
+// The Page is a memory reservation unit. Also manages cards.
 class SatoriPage
 {
 public:
@@ -43,7 +44,7 @@ public:
     static SatoriPage* InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap);
     SatoriRegion* MakeInitialRegion();
 
-    void RegionInitialized(SatoriRegion* region);
+    void OnRegionInitialized(SatoriRegion* region);
 
     SatoriRegion* RegionForAddressChecked(size_t address);
     SatoriRegion* RegionForCardGroup(size_t group);
