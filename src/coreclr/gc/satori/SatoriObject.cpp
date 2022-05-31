@@ -95,7 +95,6 @@ void SatoriObject::DirtyCardsForContent()
 void SatoriObject::Validate()
 {
 #ifdef _DEBUG
-    // _ASSERTE(this->GetReloc() == 0);
     _ASSERTE(this->Size() >= Satori::MIN_FREE_SIZE);
 
     if (ContainingRegion()->IsEscapeTrackedByCurrentThread())
