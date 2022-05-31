@@ -101,7 +101,7 @@ SatoriRegion* SatoriPage::MakeInitialRegion()
     return SatoriRegion::InitializeAt(this, m_firstRegion, m_end - m_firstRegion, m_initialCommit, used);
 }
 
-void SatoriPage::RegionInitialized(SatoriRegion* region)
+void SatoriPage::OnRegionInitialized(SatoriRegion* region)
 {
     _ASSERTE((size_t)region > Start() && (size_t)region < End());
     size_t startIndex = (region->Start() - Start()) >> Satori::REGION_BITS;
@@ -191,7 +191,8 @@ void SatoriPage::SetCardForAddress(size_t address)
     }
 }
 
-// does not set card groups and page state
+// only set cards, does not set card groups and page state
+// used in card refreshing
 void SatoriPage::SetCardForAddressOnly(size_t address)
 {
     size_t offset = address - Start();
@@ -290,7 +291,7 @@ void SatoriPage::DirtyCardsForRange(size_t start, size_t end)
     memset((void*)(m_cardTable + firstCard), Satori::CardState::DIRTY, lastCard - firstCard + 1);
 
     // dirtying can be concurrent with cleaning, so we must ensure order
-    // of writes - cards, then groups, then page
+    // of writes: cards, then groups, then page.
     // cleaning will read in the opposite order
     VolatileStoreBarrier();
 
