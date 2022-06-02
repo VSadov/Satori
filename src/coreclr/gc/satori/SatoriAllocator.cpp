@@ -301,7 +301,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             case SatoriRegion::ReuseLevel::None:
             fallthrough:
                 //NB: sets Generation to 0
-                region->StartEscapeTrackingRelease(SatoriUtil::GetCurrentThreadTag());
+                region->StartEscapeTrackingRelease(SatoriUtil::GetCurrentThreadTag(), context->alloc_bytes);
                 break;
             case SatoriRegion::ReuseLevel::Gen1:
                 region->SetGenerationRelease(1);

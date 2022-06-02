@@ -130,12 +130,14 @@ inline SatoriObject* SatoriRegion::FirstObject()
     return &m_firstObject;
 }
 
-inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag)
+inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag, size_t allocBytes)
 {
     _ASSERTE(m_generation == -1 || m_reusableFor == ReuseLevel::Gen0);
-    m_escapeFunc = EscapeFn;
     m_ownerThreadTag = threadTag;
     VolatileStore(&m_generation, 0);
+
+    m_escapeFunc = EscapeFn;
+    m_allocBytesAtCollect = allocBytes;
 }
 
 inline void SatoriRegion::StopEscapeTracking()

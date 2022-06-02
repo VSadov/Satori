@@ -81,7 +81,7 @@ public:
     bool HasFreeSpaceInTopBucket();
     bool HasFreeSpaceInTop4Buckets();
 
-    void StartEscapeTrackingRelease(size_t threadTag);
+    void StartEscapeTrackingRelease(size_t threadTag, size_t allocBytes);
     void StopEscapeTracking();
     bool IsEscapeTracking();
     bool MaybeEscapeTrackingAcquire();
@@ -186,6 +186,8 @@ public:
 
     SatoriPage* ContainingPage();
     SatoriRegion* NextInPage();
+
+    bool ShouldThreadLocalCollectOpportunistically(size_t allocBytes);
 
     void Verify(bool allowMarked = false);
 

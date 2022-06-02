@@ -885,6 +885,12 @@ void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion*
     }
 }
 
+bool SatoriRegion::ShouldThreadLocalCollectOpportunistically(size_t allocBytes)
+{
+    return IsEscapeTracking() &&
+        (allocBytes - m_allocBytesAtCollect > Satori::REGION_SIZE_GRANULARITY / 2);
+}
+
 bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
 {
     // TUNING: 1/4 is not too greedy? maybe 1/8 ?
@@ -905,6 +911,8 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
     ThreadLocalPlan();
     ThreadLocalUpdatePointers();
     ThreadLocalCompact();
+
+     printf("############  COLLECT: %d \n", (int)Occupancy());
 
     FIRE_EVENT(GCEnd_V1, (int)count - 1, 0);
 

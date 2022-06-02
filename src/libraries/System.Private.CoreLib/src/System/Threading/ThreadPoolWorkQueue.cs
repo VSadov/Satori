@@ -735,6 +735,8 @@ namespace System.Threading
                     // Reset thread state after all user code for the work item has completed
                     currentThread.ResetThreadPoolThread();
 
+                   GC.Collect(0, GCCollectionMode.Optimized);
+
                     //
                     // Notify the VM that we executed this workitem.  This is also our opportunity to ask whether Hill Climbing wants
                     // us to return the thread to the pool or not.

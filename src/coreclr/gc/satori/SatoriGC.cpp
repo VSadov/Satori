@@ -237,12 +237,35 @@ uint64_t SatoriGC::GetTotalAllocatedBytes()
 
 HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
 {
+    // NYI: forced compaction
+    
     // we do either Gen1 or Gen2 for now.
     generation = (generation < 0) ? 2 : min(generation, 2);
+
+    if (generation == 0 && (mode & collection_mode::collection_optimized))
+    {
+        SatoriAllocationContext* ctx = (SatoriAllocationContext*)GCToEEInterface::GetAllocContext();
+        if (ctx)
+        {
+            SatoriRegion* r = ctx->RegularRegion();
+            if (r && r->ShouldThreadLocalCollectOpportunistically(ctx->alloc_bytes))
+            {
+                if (r->IsAllocating())
+                {
+                    r->StopAllocating((size_t)ctx->alloc_ptr);
+                    ctx->alloc_bytes -= ctx->alloc_limit - ctx->alloc_ptr;
+                    ctx->alloc_limit = ctx->alloc_ptr = 0;
+                }
+
+                r->ThreadLocalCollect(ctx->alloc_bytes);
+                printf("############  OPPORTUNISTIC ");
+            }
+        }
+
+        return S_OK;
+    }
+
     generation = max(1, generation);
-
-    // NYI: forced compaction
-
     m_heap->Recycler()->Collect(
         generation,
         !(mode & collection_mode::collection_optimized),
