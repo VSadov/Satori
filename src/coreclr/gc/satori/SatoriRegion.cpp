@@ -331,10 +331,10 @@ bool SatoriRegion::HasFreeSpaceInTopBucket()
     return m_freeLists[Satori::FREELIST_COUNT - 1];
 }
 
-bool SatoriRegion::HasFreeSpaceInTop4Buckets()
+bool SatoriRegion::HasFreeSpaceInTopNBuckets(int n)
 {
     //TUNING: more buckets means more aggressive demotion.
-    for (int bucket = Satori::FREELIST_COUNT -  4; bucket < Satori::FREELIST_COUNT; bucket++)
+    for (int bucket = Satori::FREELIST_COUNT -  n; bucket < Satori::FREELIST_COUNT; bucket++)
     {
         if (m_freeLists[bucket])
         {
