@@ -3491,7 +3491,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
     // we will try reusing half-empty regions, unless they are too fragmented
     curRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
     if (curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 2 &&
-        curRegion->HasFreeSpaceInTop4Buckets())
+        curRegion->HasFreeSpaceInTopNBuckets(IsLowLatencyMode() ? 6 : 2))
     {
         _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
 
