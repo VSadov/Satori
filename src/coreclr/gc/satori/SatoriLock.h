@@ -79,7 +79,7 @@ public:
         }
 
 #if !defined(TARGET_AMD64)
-        MemoryBarrier();
+        VolatileLoadBarrier();
 #endif
     }
 
