@@ -696,6 +696,7 @@ RecordEscape
     ; 4) check if the source is escaped
         and         x12, x15, #0xFFFFFFFFFFE00000  ; source region
         add         x15, x15, #8                   ; escape bit is MT + 1
+        ubfx        x17, x15, #9,#12               ; word index = (dst >> 9) & 0x1FFFFF
         ldr         x17, [x12, x17, lsl #3]        ; mark word = [region + index * 8]
         lsr         x12, x15, #3                   ; bit = (dst >> 3) [& 63]
         sub         x15, x15, #8                   ; undo MT + 1
