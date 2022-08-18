@@ -3213,6 +3213,35 @@ COR_PRF_SUSPEND_REASON GCSuspendReasonToProfSuspendReason(ThreadSuspend::SUSPEND
 }
 #endif // PROFILING_SUPPORTED
 
+// exponential spinwait with an approximate time limit for waiting in microsecond range.
+// when iteration == -1, only usecLimit is used
+void SpinWait(int iteration, int usecLimit)
+{
+    LARGE_INTEGER li;
+    QueryPerformanceCounter(&li);
+    int64_t startTicks = li.QuadPart;
+
+    QueryPerformanceFrequency(&li);
+    int64_t ticksPerSecond = li.QuadPart;
+    int64_t endTicks = startTicks + (usecLimit * ticksPerSecond) / 1000000;
+
+    int l = min((unsigned)iteration, 30);
+    for (int i = 0; i < l; i++)
+    {
+        for (int j = 0; j < (1 << i); j++)
+        {
+            System_YieldProcessor();
+        }
+
+        QueryPerformanceCounter(&li);
+        int64_t currentTicks = li.QuadPart;
+        if (currentTicks > endTicks)
+        {
+            break;
+        }
+    }
+}
+
 //************************************************************************************
 //
 // SuspendRuntime is responsible for ensuring that all managed threads reach a
@@ -3348,6 +3377,7 @@ void ThreadSuspend::SuspendRuntime(ThreadSuspend::SUSPEND_REASON reason)
     DWORD dbgStartTimeout = GetTickCount();
 #endif
 
+    int retries = 0;
     while (true)
     {
         Thread* thread = NULL;
@@ -3554,7 +3584,7 @@ void ThreadSuspend::SuspendRuntime(ThreadSuspend::SUSPEND_REASON reason)
         if (g_SystemInfo.dwNumberOfProcessors > 1 && (hasProgress || !observeOnly))
         {
             // small pause
-            YieldProcessorNormalized();
+            SpinWait(-1, 5);
 
             STRESS_LOG1(LF_SYNC, LL_INFO1000, "Spinning, %d threads remaining\n", countThreads);
             observeOnly = true;
@@ -3575,7 +3605,19 @@ void ThreadSuspend::SuspendRuntime(ThreadSuspend::SUSPEND_REASON reason)
         // milliseconds, causing long GC pause times.
 
         STRESS_LOG1(LF_SYNC, LL_INFO1000, "Waiting for suspend event %d threads remaining\n", countThreads);
-        DWORD res = g_pGCSuspendEvent->Wait(PING_JIT_TIMEOUT, FALSE);
+        // DWORD res = g_pGCSuspendEvent->Wait(PING_JIT_TIMEOUT, FALSE);
+
+        SpinWait(retries++, 100);
+
+        // make sure our spining is not starving other threads, but not too often,
+        // this can cause a 1-15 msec delay, depending on OS, and that is a lot while
+        // very rarely needed, since threads are supposed to be releasing their CPUs
+        if ((retries & 127) == 0)
+        {
+            SwitchToThread();
+        }
+
+        DWORD res = WAIT_OBJECT_0;
 
 #ifdef TIME_SUSPEND
         g_SuspendStatistics.wait.Accumulate(
