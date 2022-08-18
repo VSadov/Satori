@@ -53,10 +53,7 @@
 
 //#define TIMED
 
-// TUNING: is this ok? do we need to differentiate min and initial?
-//         bigger machine does not mean the process needs more, but we could allow more initially, maybe, not sure.
 static const int MIN_GEN1_BUDGET = 10 * Satori::REGION_SIZE_GRANULARITY;
-static const int MIN_GEN2_BUDGET = 40 * Satori::REGION_SIZE_GRANULARITY;
 
 void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
 {
@@ -132,7 +129,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_gen1CountAtLastGen2 = 0;
     m_gen1Budget = MIN_GEN1_BUDGET;
-    m_totalBudget = MIN_GEN2_BUDGET;
+    m_totalBudget = MIN_GEN1_BUDGET;
     m_totalLimit = m_totalBudget;
     m_prevCondemnedGeneration = 2;
 
@@ -789,8 +786,8 @@ void SatoriRecycler::AdjustHeuristics()
 
     size_t currentTotalEstimate = occupancy + m_gen1AddedSinceLastCollection + m_gen2AddedSinceLastCollection;
     m_totalBudget = m_totalLimit > currentTotalEstimate ?
-        max(MIN_GEN2_BUDGET, m_totalLimit - currentTotalEstimate) :
-        MIN_GEN2_BUDGET;
+        max(MIN_GEN1_BUDGET, m_totalLimit - currentTotalEstimate) :
+        MIN_GEN1_BUDGET;
 
     // we will try not to use the last 10%
     size_t available = GetAvailableMemory() * 9 / 10;
