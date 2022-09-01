@@ -1048,7 +1048,7 @@ void SatoriRecycler::MarkStrongReferences()
 void SatoriRecycler::MarkStrongReferencesWorker()
 {
     // in concurrent case the current stack is unlikely to have anything unmarked
-    // it is still preferred to lookat own stack on same thread.
+    // it is still preferred to look at own stack on the same thread.
     // this will also ask for helpers.
     MarkOwnStackAndDrainQueues();
 
@@ -1267,7 +1267,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         }
 
         // since this is concurrent, in a conservative case an allocation could have caused a split
-        // that shortened the found region and the region no longer matches the ref (which means the ref is not real).
+        // that shortened the found region and the region no longer contains the ref (which means the ref is not real).
         // Note that the split could only happen before we are done with allocator queue (which is synchronising)
         // and assign 0+ gen to the region.
         // So check here in the opposite order - first that region is 0+ gen and then that the size is still right.
