@@ -1024,9 +1024,7 @@ int64_t GCToOSInterface::QueryPerformanceCounter()
     LARGE_INTEGER ts;
     if (!::QueryPerformanceCounter(&ts))
     {
-        DebugBreak();
         _ASSERTE(!"Fatal Error - cannot query performance counter.");
-        EEPOLICY_HANDLE_FATAL_ERROR(COR_E_EXECUTIONENGINE);        // TODO: fatal error
     }
 
     return ts.QuadPart;
@@ -1042,9 +1040,7 @@ int64_t GCToOSInterface::QueryPerformanceFrequency()
     LARGE_INTEGER frequency;
     if (!::QueryPerformanceFrequency(&frequency))
     {
-        DebugBreak();
         _ASSERTE(!"Fatal Error - cannot query performance counter.");
-        EEPOLICY_HANDLE_FATAL_ERROR(COR_E_EXECUTIONENGINE);        // TODO: fatal error
     }
 
     return frequency.QuadPart;
