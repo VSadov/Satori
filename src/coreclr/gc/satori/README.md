@@ -21,7 +21,7 @@ A simple garbage collector that incorporates various ideas that I had over time.
 - [x] Compacting GC.
    - can optionally relocate objects to reduce fragmentation.
 - [x] Concurrent GC. 
-   - all major phases, except relocation, can be done concurrently with managed code.
+   - all major phases, except optional relocation, can be done concurrently with user code.
 - [x] Parallel GC
   - GC can employ multiple threads as needed.
 - [x] Thread-local GC.
@@ -31,7 +31,7 @@ A simple garbage collector that incorporates various ideas that I had over time.
 - [x] Precise and Conservative modes
   - supports precise and conservative stack root reporting.
 - [x] Low-latency mode.
-  - "nearly pauseless" mode when sensitive to the heap size blocking phases are turned off.
+  - "nearly pauseless" mode when blocking phases sensitive to the heap size are turned off.
 - [x] Trimming of committed set.
   - lazy return of unused memory to the OS.
 
