@@ -73,7 +73,7 @@ public:
     {
         int localBackoff = m_backoff;
         while (VolatileLoadWithoutBarrier(&m_backoff) ||
-            CompareExchangeNf(&m_backoff, localBackoff / 4 + 1, 0) != 0)
+            !CompareExchangeNf(&m_backoff, localBackoff / 4 + 1, 0))
         {
             localBackoff = Backoff(localBackoff);
         }
@@ -108,17 +108,16 @@ private:
         return (backoff * 2 + 1) & 0x3FFF;
     }
 
-    static int CompareExchangeNf(int volatile* destination, int exchange, int comparand)
+    static bool CompareExchangeNf(int volatile* destination, int exchange, int comparand)
     {
 #ifdef _MSC_VER
 #if defined(TARGET_AMD64)
-        return _InterlockedCompareExchange((long*)destination, exchange, comparand);
+        return _InterlockedCompareExchange((long*)destination, exchange, comparand) == comparand;
 #else
-        return _InterlockedCompareExchange_nf((long*)destination, exchange, comparand);
+        return _InterlockedCompareExchange_nf((long*)destination, exchange, comparand) == comparand;
 #endif
 #else
-        __atomic_compare_exchange_n(destination, &comparand, exchange, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
-        return comparand;
+        return __atomic_compare_exchange_n(destination, &comparand, exchange, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
 #endif
     }
 };
