@@ -3667,6 +3667,14 @@ void SatoriRecycler::RecordOccupancy(int generation, size_t occupancy)
     Interlocked::ExchangeAdd64(&m_occupancyAcc[generation], occupancy);
 }
 
+size_t SatoriRecycler::GetOccupancy(int i)
+{
+    if (i < 0 || i > 2)
+        return 0;
+
+    return m_occupancy[i];
+}
+
 size_t SatoriRecycler::GetTotalOccupancy()
 {
     return m_occupancy[0] +

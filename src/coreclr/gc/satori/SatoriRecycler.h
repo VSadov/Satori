@@ -76,6 +76,7 @@ public:
 
     void RecordOccupancy(int generation, size_t size);
     size_t GetTotalOccupancy();
+    size_t GetOccupancy(int i);
     size_t GetGcStartMillis(int generation);
 
     void ScheduleMarkAsChildRanges(SatoriObject* o);
