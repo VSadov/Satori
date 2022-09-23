@@ -42,14 +42,14 @@
 
 bool SatoriGC::IsValidSegmentSize(size_t size)
 {
-    __UNREACHABLE();
-    return false;
+    // N/A
+    return true;
 }
 
 bool SatoriGC::IsValidGen0MaxSize(size_t size)
 {
-    __UNREACHABLE();
-    return false;
+    // N/A;
+    return true;
 }
 
 size_t SatoriGC::GetValidSegmentSize(bool large_seg)
@@ -60,7 +60,7 @@ size_t SatoriGC::GetValidSegmentSize(bool large_seg)
 
 void SatoriGC::SetReservedVMLimit(size_t vmlimit)
 {
-    __UNREACHABLE();
+    // NYI
 }
 
 void SatoriGC::WaitUntilConcurrentGCComplete()
@@ -102,8 +102,8 @@ HRESULT SatoriGC::WaitUntilConcurrentGCCompleteAsync(int millisecondsTimeout)
 
 size_t SatoriGC::GetNumberOfFinalizable()
 {
-    __UNREACHABLE();
-    return 0;
+    SatoriFinalizationQueue* queue = m_heap->FinalizationQueue();
+    return queue->Count();
 }
 
 Object* SatoriGC::GetNextFinalizable()
@@ -286,9 +286,7 @@ int SatoriGC::GetLastGCPercentTimeInGC()
 
 size_t SatoriGC::GetLastGCGenerationSize(int gen)
 {
-    // NYI
-    __UNREACHABLE();
-    return 0;
+    return m_heap->Recycler()->GetOccupancy(gen);
 }
 
 HRESULT SatoriGC::Initialize()
@@ -610,7 +608,7 @@ int SatoriGC::GetHomeHeapNumber()
 
 size_t SatoriGC::GetPromotedBytes(int heap_index)
 {
-    __UNREACHABLE();
+    // NYI
     return 0;
 }
 
@@ -625,13 +623,14 @@ void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* tota
     GCToOSInterface::GetMemoryStatus(totalLimit, &memLoad, &availPhysical, &availPage);
     *lastRecordedMemLoadBytes = memLoad * totalLimit / 100;
 
+    *lastRecordedHeapSizeBytes = GetTotalBytesInUse();
+    *finalizationPendingCount = GetNumberOfFinalizable();
+
     // the rest seems implementation specific and not strictly required.
-    *lastRecordedHeapSizeBytes = 0;
     *lastRecordedFragmentationBytes = 0;
     *totalCommittedBytes = 0;
     *promotedBytes = 0;
     *pinnedObjectCount = 0;
-    *finalizationPendingCount = 0;
     *index = 0;
     *generation = 0;
     *pauseTimePct = 0;
