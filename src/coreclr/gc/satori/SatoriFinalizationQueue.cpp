@@ -218,3 +218,10 @@ bool SatoriFinalizationQueue::HasItems()
 {
     return m_enqueue != m_dequeue;
 }
+
+// returns current number of items
+// only makes sense in quiescent state
+size_t SatoriFinalizationQueue::Count()
+{
+    return (m_dequeue - m_enqueue) & m_sizeMask;
+}

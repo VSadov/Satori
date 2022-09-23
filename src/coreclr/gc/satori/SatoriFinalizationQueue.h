@@ -42,6 +42,7 @@ public:
     bool TryScheduleForFinalization(SatoriObject* finalizable);
     SatoriObject* TryGetNextItem();
     bool HasItems();
+    size_t Count();
 
     int OverflowedGen();
     void SetOverflow(int generation);
