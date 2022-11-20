@@ -1354,13 +1354,17 @@ void GCToOSInterface::GetMemoryStatus(uint64_t restricted_limit, uint32_t* memor
 //  The counter value
 int64_t GCToOSInterface::QueryPerformanceCounter()
 {
-#if HAVE_CLOCK_GETTIME_NSEC_NP
-    return (int64_t)clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-#else
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return  ts.tv_sec * 1000000000ULL + ts.tv_nsec;
-#endif
+    // TODO: This is not a particularly efficient implementation - we certainly could
+    // do much more specific platform-dependent versions if we find that this method
+    // runs hot. However, most likely it does not.
+    struct timeval tv;
+    if (gettimeofday(&tv, NULL) == -1)
+    {
+        assert(!"gettimeofday() failed");
+        // TODO (segilles) unconditional asserts
+        return 0;
+    }
+    return (int64_t) tv.tv_sec * (int64_t) tccSecondsToMicroSeconds + (int64_t) tv.tv_usec;
 }
 
 // Get a frequency of the high precision performance counter
@@ -1368,8 +1372,8 @@ int64_t GCToOSInterface::QueryPerformanceCounter()
 //  The counter frequency
 int64_t GCToOSInterface::QueryPerformanceFrequency()
 {
-    // nanoseconds in a second.
-    return (int64_t)1000000000ULL;
+    // The counter frequency of gettimeofday is in microseconds.
+    return tccSecondsToMicroSeconds;
 }
 
 // Get a time stamp with a low precision

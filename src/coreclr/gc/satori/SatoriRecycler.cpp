@@ -53,10 +53,7 @@
 
 //#define TIMED
 
-// TUNING: is this ok? do we need to differentiate min and initial?
-//         bigger machine does not mean the process needs more, but we could allow more initially, maybe, not sure.
 static const int MIN_GEN1_BUDGET = 10 * Satori::REGION_SIZE_GRANULARITY;
-static const int MIN_GEN2_BUDGET = 40 * Satori::REGION_SIZE_GRANULARITY;
 
 void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
 {
@@ -132,7 +129,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_gen1CountAtLastGen2 = 0;
     m_gen1Budget = MIN_GEN1_BUDGET;
-    m_totalBudget = MIN_GEN2_BUDGET;
+    m_totalBudget = MIN_GEN1_BUDGET;
     m_totalLimit = m_totalBudget;
     m_prevCondemnedGeneration = 2;
 
@@ -789,8 +786,8 @@ void SatoriRecycler::AdjustHeuristics()
 
     size_t currentTotalEstimate = occupancy + m_gen1AddedSinceLastCollection + m_gen2AddedSinceLastCollection;
     m_totalBudget = m_totalLimit > currentTotalEstimate ?
-        max(MIN_GEN2_BUDGET, m_totalLimit - currentTotalEstimate) :
-        MIN_GEN2_BUDGET;
+        max(MIN_GEN1_BUDGET, m_totalLimit - currentTotalEstimate) :
+        MIN_GEN1_BUDGET;
 
     // we will try not to use the last 10%
     size_t available = GetAvailableMemory() * 9 / 10;
@@ -1051,7 +1048,7 @@ void SatoriRecycler::MarkStrongReferences()
 void SatoriRecycler::MarkStrongReferencesWorker()
 {
     // in concurrent case the current stack is unlikely to have anything unmarked
-    // it is still preferred to lookat own stack on same thread.
+    // it is still preferred to look at own stack on the same thread.
     // this will also ask for helpers.
     MarkOwnStackAndDrainQueues();
 
@@ -1270,7 +1267,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         }
 
         // since this is concurrent, in a conservative case an allocation could have caused a split
-        // that shortened the found region and the region no longer matches the ref (which means the ref is not real).
+        // that shortened the found region and the region no longer contains the ref (which means the ref is not real).
         // Note that the split could only happen before we are done with allocator queue (which is synchronising)
         // and assign 0+ gen to the region.
         // So check here in the opposite order - first that region is 0+ gen and then that the size is still right.
@@ -3668,6 +3665,14 @@ void SatoriRecycler::SweepAndReturnRegion(SatoriRegion* curRegion)
 void SatoriRecycler::RecordOccupancy(int generation, size_t occupancy)
 {
     Interlocked::ExchangeAdd64(&m_occupancyAcc[generation], occupancy);
+}
+
+size_t SatoriRecycler::GetOccupancy(int i)
+{
+    if (i < 0 || i > 2)
+        return 0;
+
+    return m_occupancy[i];
 }
 
 size_t SatoriRecycler::GetTotalOccupancy()
