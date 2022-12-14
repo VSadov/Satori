@@ -302,9 +302,7 @@ void SatoriPage::DirtyCardsForRange(size_t start, size_t end)
         this->m_cardGroups[i * 2] = Satori::CardState::DIRTY;
     }
 
-    VolatileStoreBarrier();
-
-    this->m_cardState = Satori::CardState::DIRTY;
+    VolatileStore(&this->m_cardState, Satori::CardState::DIRTY);
 }
 
 // dirtying in nonblocking phases could be unordered since we do not clean concurrently with mutator

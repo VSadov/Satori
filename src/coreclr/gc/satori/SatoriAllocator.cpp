@@ -485,15 +485,16 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
 
 SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
 {
-    SatoriWorkChunk* chunk = m_WorkChunks->TryPop();
-
 #if _DEBUG
+    static int i = 0;
     // simulate low memory case once in a while
-    if (!chunk && GCToOSInterface::GetCurrentProcessorNumber() == 2)
+    // This is just to force more overflows. Otherwise they are very rare.
+    if (i++ % 2 == 0)
     {
         return nullptr;
     }
 #endif
+    SatoriWorkChunk* chunk = m_WorkChunks->TryPop();
 
     while (!chunk && AddMoreWorkChunks())
     {

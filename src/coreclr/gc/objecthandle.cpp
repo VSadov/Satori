@@ -1906,6 +1906,9 @@ void Ref_AgeHandles(uint32_t condemned, uint32_t maxgen, ScanContext* sc)
 #ifdef FEATURE_VARIABLE_HANDLES
         HNDTYPE_VARIABLE,
 #endif
+#if FEATURE_SATORI_GC
+        HNDTYPE_DEPENDENT,
+#endif
 #ifdef FEATURE_REFCOUNTED_HANDLES
         HNDTYPE_REFCOUNTED,
 #endif
@@ -1950,6 +1953,10 @@ void Ref_AgeHandles(uint32_t condemned, uint32_t maxgen, ScanContext* sc)
 void Ref_RejuvenateHandles(uint32_t condemned, uint32_t maxgen, ScanContext* sc)
 {
     WRAPPER_NO_CONTRACT;
+
+#if FEATURE_SATORI_GC
+    __UNREACHABLE();
+#endif
 
     LOG((LF_GC, LL_INFO10000, "Rejuvenating handles.\n"));
 
