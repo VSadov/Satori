@@ -1747,6 +1747,9 @@ void Ref_AgeHandles(uint32_t condemned, uint32_t maxgen, ScanContext* sc)
 
         HNDTYPE_PINNED,
         HNDTYPE_VARIABLE,
+#if FEATURE_SATORI_GC
+        HNDTYPE_DEPENDENT,
+#endif
 #if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS) || defined(FEATURE_OBJCMARSHAL) || defined(FEATURE_NATIVEAOT)
         HNDTYPE_REFCOUNTED,
 #endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS || FEATURE_OBJCMARSHAL || FEATURE_NATIVEAOT
@@ -1785,6 +1788,10 @@ void Ref_AgeHandles(uint32_t condemned, uint32_t maxgen, ScanContext* sc)
 void Ref_RejuvenateHandles(uint32_t condemned, uint32_t maxgen, ScanContext* sc)
 {
     WRAPPER_NO_CONTRACT;
+
+#if FEATURE_SATORI_GC
+    __UNREACHABLE();
+#endif
 
     LOG((LF_GC, LL_INFO10000, "Rejuvenating handles.\n"));
 
