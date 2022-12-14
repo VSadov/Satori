@@ -71,16 +71,10 @@ public:
 
     void Enter()
     {
-        int localBackoff = m_backoff;
-        while (VolatileLoadWithoutBarrier(&m_backoff) ||
-            !CompareExchangeNf(&m_backoff, localBackoff / 4 + 1, 0))
+        if (!CompareExchangeAcq(&m_backoff, 1, 0))
         {
-            localBackoff = Backoff(localBackoff);
+            EnterSpin();
         }
-
-#if !defined(TARGET_AMD64)
-        VolatileLoadBarrier();
-#endif
     }
 
     void Leave()
@@ -90,7 +84,18 @@ public:
     }
 
 private:
+
     NOINLINE
+    void EnterSpin()
+    {
+        int localBackoff = m_backoff;
+        while (VolatileLoadWithoutBarrier(&m_backoff) ||
+            !CompareExchangeAcq(&m_backoff, localBackoff / 4 + 1, 0))
+        {
+            localBackoff = Backoff(localBackoff);
+        }
+    }
+
     int Backoff(int backoff)
     {
         // TUNING: do we care about 1-proc machines?
@@ -108,16 +113,16 @@ private:
         return (backoff * 2 + 1) & 0x3FFF;
     }
 
-    static bool CompareExchangeNf(int volatile* destination, int exchange, int comparand)
+    static bool CompareExchangeAcq(int volatile* destination, int exchange, int comparand)
     {
 #ifdef _MSC_VER
 #if defined(TARGET_AMD64)
         return _InterlockedCompareExchange((long*)destination, exchange, comparand) == comparand;
 #else
-        return _InterlockedCompareExchange_nf((long*)destination, exchange, comparand) == comparand;
+        return _InterlockedCompareExchange_acq((long*)destination, exchange, comparand) == comparand;
 #endif
 #else
-        return __atomic_compare_exchange_n(destination, &comparand, exchange, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+        return __atomic_compare_exchange_n(destination, &comparand, exchange, true, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
 #endif
     }
 };
