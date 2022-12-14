@@ -228,7 +228,7 @@ private:
 
     bool HasDirtyCards();
     bool ScanDirtyCardsConcurrent(int64_t deadline);
-    bool CleanCards();
+    void CleanCards();
     bool MarkHandles(int64_t deadline = 0);
     void ShortWeakPtrScan();
     void ShortWeakPtrScanWorker();
