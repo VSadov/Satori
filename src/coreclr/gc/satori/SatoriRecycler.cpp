@@ -1036,12 +1036,11 @@ void SatoriRecycler::BlockingMark()
 
 void SatoriRecycler::DrainAndCleanWorker()
 {
-    bool revisitCards;
     do
     {
         DrainMarkQueues();
-        revisitCards = CleanCards();
-    } while (!m_workList->IsEmpty() || revisitCards);
+        CleanCards();
+    } while (!m_workList->IsEmpty() || HasDirtyCards());
 }
 
 void SatoriRecycler::MarkNewReachable()
@@ -1147,16 +1146,7 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, Sa
         MaybeAskForHelp();
     }
 
-#ifdef _DEBUG
-    // Limit work queue in debug/chk.
-    // This is just to force more overflows. Otherwise they are very rare.
-    currentWorkChunk = nullptr;
-    if (m_workList->Count() < 10)
-#endif
-    {
-        currentWorkChunk = m_heap->Allocator()->TryGetWorkChunk();
-    }
-
+    currentWorkChunk = m_heap->Allocator()->TryGetWorkChunk();
     if (currentWorkChunk)
     {
         currentWorkChunk->Push(o);
@@ -1686,7 +1676,8 @@ void SatoriRecycler::ScheduleMarkAsChildRanges(SatoriObject* o)
             SatoriWorkChunk* chunk = m_heap->Allocator()->TryGetWorkChunk();
             if (chunk == nullptr)
             {
-                o->ContainingRegion()->ContainingPage()->DirtyCardsForRange(start, remains);
+                o->ContainingRegion()->ContainingPage()->DirtyCardsForRange(start, start + remains);
+                remains = 0;
                 break;
             }
 
@@ -2261,10 +2252,9 @@ bool SatoriRecycler::HasDirtyCards()
 }
 
 // cleaning is not concurrent, but could be parallel
-bool SatoriRecycler::CleanCards()
+void SatoriRecycler::CleanCards()
 {
     SatoriWorkChunk* dstChunk = nullptr;
-    bool revisit = false;
 
     m_heap->ForEachPage(
         [&](SatoriPage* page)
@@ -2366,11 +2356,9 @@ bool SatoriRecycler::CleanCards()
                     }
                 }
 
-                // we do not see more cleaning work so clean the page state, unless the page went dirty while we were working on it
-                // in such case record a missed clean to revisit the whole deal. 
+                // we do not see more cleaning work so clean the page state, use interlocked in case the page went dirty while we were working on it
                 int8_t origState = Interlocked::CompareExchange(&page->CardState(), Satori::CardState::REMEMBERED, Satori::CardState::PROCESSING);
                 _ASSERTE(origState != Satori::CardState::BLANK);
-                revisit |= origState == Satori::CardState::DIRTY;
             }
         }
     );
@@ -2379,8 +2367,6 @@ bool SatoriRecycler::CleanCards()
     {
         m_workList->Push(dstChunk);
     }
-
-    return revisit;
 }
 
 void SatoriRecycler::UpdatePointersThroughCards()
