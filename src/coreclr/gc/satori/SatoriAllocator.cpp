@@ -27,8 +27,9 @@
 #include "common.h"
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
-#include "SatoriUtil.h"
+#include "../gceventstatus.h"
 
+#include "SatoriUtil.h"
 #include "SatoriHeap.h"
 #include "SatoriObject.h"
 #include "SatoriObject.inl"
@@ -228,6 +229,14 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                     context->alloc_ptr += size;
                     result->CleanSyncBlock();
                     region->SetIndicesForObject(result, result->Start() + size);
+
+                    FIRE_EVENT(GCAllocationTick_V4,
+                        size,
+                        /*gen_number*/ 1,
+                        /*heap_number*/ 0,
+                        (void*)result,
+                        0);
+
                     return result;
                 }
                 else
@@ -386,6 +395,13 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
                     result->CleanSyncBlock();
                     context->alloc_bytes_uoh += size;
                     region->SetIndicesForObject(result, result->Start() + size);
+
+                    FIRE_EVENT(GCAllocationTick_V4,
+                        size,
+                        /*gen_number*/ 1,
+                        /*heap_number*/ 0,
+                        (void*)result,
+                        0);
                 }
                 else
                 {
@@ -480,20 +496,29 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     // but this one is not parseable yet since the new object has no MethodTable
     // we will keep the region in gen -1 for now and make it gen1 or gen2 in PublishObject.
     hugeRegion->StopAllocating(/* allocPtr */ 0);
+
+    FIRE_EVENT(GCAllocationTick_V4,
+        size,
+        /*gen_number*/ 2,
+        /*heap_number*/ 0,
+        (void*)result,
+        0);
+
     return result;
 }
 
 SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
 {
-    SatoriWorkChunk* chunk = m_WorkChunks->TryPop();
-
 #if _DEBUG
+    static int i = 0;
     // simulate low memory case once in a while
-    if (!chunk && GCToOSInterface::GetCurrentProcessorNumber() == 2)
+    // This is just to force more overflows. Otherwise they are very rare.
+    if (i++ % 2 == 0)
     {
         return nullptr;
     }
 #endif
+    SatoriWorkChunk* chunk = m_WorkChunks->TryPop();
 
     while (!chunk && AddMoreWorkChunks())
     {

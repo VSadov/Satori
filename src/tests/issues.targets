@@ -138,6 +138,10 @@
         <Issue>Satori GC apis, LOH expectations</Issue>
       </ExcludeList>
 
+      <ExcludeList Include="$(XunitTestBinBase)/baseservices/RuntimeConfiguration/TestConfig/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+
       <ExcludeList Include="$(XunitTestBinBase)/profiler/unittest/getappdomainstaticaddress/*">
         <Issue>Satori profiler tracing</Issue>
       </ExcludeList>

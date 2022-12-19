@@ -737,6 +737,16 @@ bool SatoriRecycler::IsBlockingPhase()
 //        - could collect and use past history of the program behavior
 //        - could consider user input as to favor latency or throughput
 //        - ??
+
+// we target 1/EPH_SURV_TARGET ephemeral survival rate
+#define EPH_SURV_TARGET 4
+
+// we target 1/10 of total heap to be ephemeral. If more, we promote.
+#define EPH_RATIO 10
+
+// do gen2 when total doubles
+#define GEN2_THRESHOLD 2
+
 void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 {
     int generation = 0;
@@ -746,7 +756,10 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
         generation = 1;
     }
 
-    if (m_gen1AddedSinceLastCollection + m_gen2AddedSinceLastCollection > m_totalBudget)
+    size_t currentAddedEstimate = m_gen2AddedSinceLastCollection +
+        m_gen1AddedSinceLastCollection / EPH_SURV_TARGET;
+
+    if (currentAddedEstimate > m_totalBudget)
     {
         generation = 2;
     }
@@ -775,16 +788,19 @@ size_t GetAvailableMemory()
 
 void SatoriRecycler::AdjustHeuristics()
 {
+    // ocupancies as of last collection
     size_t occupancy = GetTotalOccupancy();
     size_t ephemeralOccupancy = m_occupancy[1] + m_occupancy[0];
 
     if (m_prevCondemnedGeneration == 2)
     {
-        // we do gen2 if occupancy doubles, even if not using much memory
-        m_totalLimit = occupancy * 2;
+        m_totalLimit = occupancy * GEN2_THRESHOLD;
     }
 
-    size_t currentTotalEstimate = occupancy + m_gen1AddedSinceLastCollection + m_gen2AddedSinceLastCollection;
+    size_t currentTotalEstimate = occupancy +
+        m_gen2AddedSinceLastCollection +
+        m_gen1AddedSinceLastCollection / EPH_SURV_TARGET;
+
     m_totalBudget = m_totalLimit > currentTotalEstimate ?
         max(MIN_GEN1_BUDGET, m_totalLimit - currentTotalEstimate) :
         MIN_GEN1_BUDGET;
@@ -793,18 +809,16 @@ void SatoriRecycler::AdjustHeuristics()
     size_t available = GetAvailableMemory() * 9 / 10;
     m_totalBudget = min(m_totalBudget, available);
 
-    // if prev promoted, gen1 occupancy will be low, just keep the same budget.
-    // otherwise adjust
-    if (!m_promoteAllRegions)
-    {
-        // we look for ~20% ephemeral survivorship, also
-        // at least 1/8 total budget or gen1 min.
-        size_t minGen1 = max(MIN_GEN1_BUDGET, m_totalBudget / 8);
-        size_t newGen1Budget = max(minGen1, ephemeralOccupancy * 4);
+    // we look for 1 / EPH_SURV_TARGET ephemeral survivorship, thus budget is ephemeralOccupancy * EPH_SURV_TARGET
+    // we compute that based on actual ephemeralOccupancy or (occupancy / EPH_RATIO / 2), whichever is larger
+    // and limit that to MIN_GEN1_BUDGET
+    size_t minGen1 = max(MIN_GEN1_BUDGET, occupancy * EPH_SURV_TARGET / EPH_RATIO / 2);
 
-        // TUNING: using exponential smoothing with alpha == 1/2. is it a good smooth/lag balance?
-        m_gen1Budget = (m_gen1Budget + newGen1Budget) / 2;
-    }
+    size_t newGen1Budget = max(minGen1, ephemeralOccupancy * EPH_SURV_TARGET);
+
+    // smooth the budget a bit
+    // TUNING: using exponential smoothing with alpha == 1/2. is it a good smooth/lag balance?
+    m_gen1Budget = (m_gen1Budget + newGen1Budget) / 2;
 
     if (m_condemnedGeneration == 2)
     {
@@ -832,7 +846,7 @@ void SatoriRecycler::AdjustHeuristics()
         //    m_allowPromotingRelocations = true;
         //}
 
-        if (ephemeralOccupancy * 10 > occupancy)
+        if (ephemeralOccupancy * EPH_RATIO > occupancy)
         {
             m_promoteAllRegions = true;
         }
@@ -888,6 +902,18 @@ void SatoriRecycler::BlockingCollect()
     m_occupancyAcc[1] = 0;
 
     _ASSERTE(m_deferredSweepRegions->IsEmpty());
+
+    FIRE_EVENT(GCHeapStats_V2,
+        m_occupancy[0], 0,
+        m_occupancy[1], 0,
+        m_occupancy[2], 0,
+        0, 0,
+        0, 0,
+        0,
+        0,
+        0,
+        0,
+        0);
 
     // now we know survivorship after the last GC
     // and we can figure what we want to do in this GC and when we will do the next one
@@ -1010,12 +1036,11 @@ void SatoriRecycler::BlockingMark()
 
 void SatoriRecycler::DrainAndCleanWorker()
 {
-    bool revisitCards;
     do
     {
         DrainMarkQueues();
-        revisitCards = CleanCards();
-    } while (!m_workList->IsEmpty() || revisitCards);
+        CleanCards();
+    } while (!m_workList->IsEmpty() || HasDirtyCards());
 }
 
 void SatoriRecycler::MarkNewReachable()
@@ -1121,16 +1146,7 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, Sa
         MaybeAskForHelp();
     }
 
-#ifdef _DEBUG
-    // Limit work queue in debug/chk.
-    // This is just to force more overflows. Otherwise they are very rare.
-    currentWorkChunk = nullptr;
-    if (m_workList->Count() < 10)
-#endif
-    {
-        currentWorkChunk = m_heap->Allocator()->TryGetWorkChunk();
-    }
-
+    currentWorkChunk = m_heap->Allocator()->TryGetWorkChunk();
     if (currentWorkChunk)
     {
         currentWorkChunk->Push(o);
@@ -1660,7 +1676,8 @@ void SatoriRecycler::ScheduleMarkAsChildRanges(SatoriObject* o)
             SatoriWorkChunk* chunk = m_heap->Allocator()->TryGetWorkChunk();
             if (chunk == nullptr)
             {
-                o->ContainingRegion()->ContainingPage()->DirtyCardsForRange(start, remains);
+                o->ContainingRegion()->ContainingPage()->DirtyCardsForRange(start, start + remains);
+                remains = 0;
                 break;
             }
 
@@ -2235,10 +2252,9 @@ bool SatoriRecycler::HasDirtyCards()
 }
 
 // cleaning is not concurrent, but could be parallel
-bool SatoriRecycler::CleanCards()
+void SatoriRecycler::CleanCards()
 {
     SatoriWorkChunk* dstChunk = nullptr;
-    bool revisit = false;
 
     m_heap->ForEachPage(
         [&](SatoriPage* page)
@@ -2340,11 +2356,9 @@ bool SatoriRecycler::CleanCards()
                     }
                 }
 
-                // we do not see more cleaning work so clean the page state, unless the page went dirty while we were working on it
-                // in such case record a missed clean to revisit the whole deal. 
+                // we do not see more cleaning work so clean the page state, use interlocked in case the page went dirty while we were working on it
                 int8_t origState = Interlocked::CompareExchange(&page->CardState(), Satori::CardState::REMEMBERED, Satori::CardState::PROCESSING);
                 _ASSERTE(origState != Satori::CardState::BLANK);
-                revisit |= origState == Satori::CardState::DIRTY;
             }
         }
     );
@@ -2353,8 +2367,6 @@ bool SatoriRecycler::CleanCards()
     {
         m_workList->Push(dstChunk);
     }
-
-    return revisit;
 }
 
 void SatoriRecycler::UpdatePointersThroughCards()
