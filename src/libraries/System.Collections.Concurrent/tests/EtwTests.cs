@@ -28,7 +28,7 @@ namespace System.Collections.Concurrent.Tests
                         cd.TryAdd(1, 1);
                         cd.Clear();
                     });
-                    Assert.True(events.Count(i => i == AcquiringAllLocksEventId) > 0);
+                    Assert.True(events.Count(i => i == AcquiringAllLocksEventId) == 0);
 
                     const int TryTakeStealsEventId = 4;
                     const int TryPeekStealsEventId = 5;
