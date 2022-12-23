@@ -76,11 +76,13 @@ namespace System.Collections.Concurrent
         // the reprobe limit on a 'get' call acts as a 'miss'; on a 'put' call it
         // can trigger a table resize.  Several places must have exact agreement on
         // what the reprobe_limit is, so we share it here.
+        protected const int REPROBE_LIMIT = 4;
+        protected const int REPROBE_LIMIT_SHIFT = 8;
+
         protected static int ReprobeLimit(int lenMask)
         {
-            // limit to 4 reprobes on small tables, but allow more in larger ones
-            // to handle gracefully cases with poor hash functions.
-            return 4 + (lenMask >> 256);
+            // 1/2 of table with some extra
+            return REPROBE_LIMIT + (lenMask >> REPROBE_LIMIT_SHIFT);
         }
 
         protected static bool EntryValueNullOrDead(object entryValue)
@@ -94,7 +96,7 @@ namespace System.Collections.Concurrent
             var h = (uint)fullHash;
 
             // xor-shift some upper bits down, in case if variations are mostly in high bits
-            // and scatter the bits a little to break up clusters if hahses are periodic (like 42, 43, 44, ...)
+            // and scatter the bits a little to break up clusters if hashes are periodic (like 42, 43, 44, ...)
             // long clusters can cause long reprobes. small clusters are ok though.
             h ^= h >> 15;
             h ^= h >> 8;
@@ -112,13 +114,6 @@ namespace System.Collections.Concurrent
             }
 
             return (object)value ?? NULLVALUE;
-        }
-
-        internal static DictionaryImpl<TKey, TValue> CreateRef<TKey, TValue>(ConcurrentDictionary<TKey, TValue> topDict, int capacity)
-            where TKey : class
-        {
-            var result = new DictionaryImplRef<TKey, TKey, TValue>(capacity, topDict);
-            return result;
         }
     }
 }

@@ -217,7 +217,7 @@ namespace System.Collections.Concurrent
         /// otherwise returns the actual value or NULLVALUE if null is the actual value
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal override bool TryGetValue(TKey key, out TValue value)
+        internal override object TryGetValue(TKey key)
         {
             int fullHash = this.hash(key);
             var curTable = this;
@@ -256,8 +256,7 @@ namespace System.Collections.Concurrent
                     if ((curTable._newTable == null && entryValue != TOMBPRIME) ||
                         entryValue.GetType() != typeof(Prime))
                     {
-                        value = FromObjectValue(entryValue);
-                        return true;
+                        return entryValue;
                     }
 
                     // found a prime, that means the copying or sweeping has started
@@ -295,8 +294,7 @@ namespace System.Collections.Concurrent
                 idx = (idx + reprobeCount) & lenMask;
             }
 
-            value = default;
-            return false;
+            return null;
         }
 
         /// <summary>
@@ -355,7 +353,7 @@ namespace System.Collections.Concurrent
                     }
 
                     // no new table, so this is a miss
-                    break;
+                    goto FAILED;
                 }
 
                 // quadratic reprobing
@@ -940,31 +938,6 @@ namespace System.Collections.Concurrent
             }
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal TValue FromObjectValue(object obj)
-        {
-            // regular value type
-            if (default(TValue) != null)
-            {
-                return Unsafe.As<Boxed<TValue>>(obj).Value;
-            }
-
-            // null
-            if (obj == NULLVALUE)
-            {
-                return default(TValue);
-            }
-
-            // ref type
-            if (!typeof(TValue).IsValueType)
-            {
-                return Unsafe.As<object, TValue>(ref obj);
-            }
-
-            // nullable
-            return (TValue)obj;
-        }
-
         ///////////////////////////////////////////////////////////
         // Resize support
         ///////////////////////////////////////////////////////////
@@ -1325,7 +1298,7 @@ namespace System.Collections.Concurrent
             if (isForReprobe)
             {
                 // if half slots are dead, just do regular resize
-                // otherwise we want to double the length to not come here again too soon
+                // otherwise we want to double the length to not come here too soon
                 if (allocatedSlotCount.Value < oldsz * 2)
                 {
                     if (oldlen < (MAX_SIZE / 2))
