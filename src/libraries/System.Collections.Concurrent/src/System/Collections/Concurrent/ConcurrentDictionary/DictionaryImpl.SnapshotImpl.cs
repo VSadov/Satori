@@ -88,8 +88,10 @@ namespace System.Collections.Concurrent
                         }
 
                         _curKey = _table.keyFromEntry(nextKstore);
-                        if (_table.TryGetValue(_curKey, out _curValue))
+                        object nextV = _table.TryGetValue(_curKey);
+                        if (nextV != null)
                         {
+                            _curValue = _table.FromObjectValue(nextV);
                             return true;
                         }
                     }

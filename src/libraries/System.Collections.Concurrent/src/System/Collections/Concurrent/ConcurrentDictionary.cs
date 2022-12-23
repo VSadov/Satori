@@ -29,6 +29,7 @@ namespace System.Collections.Concurrent
     [DebuggerDisplay("Count = {Count}")]
     public class ConcurrentDictionary<TKey, TValue> : IDictionary<TKey, TValue>, IDictionary, IReadOnlyDictionary<TKey, TValue> where TKey : notnull
     {
+        internal readonly bool valueIsValueType = typeof(TValue).IsValueType;
         internal DictionaryImpl<TKey, TValue> _table;
         internal uint _lastResizeTickMillis;
         internal object _sweeperInstance;
@@ -138,26 +139,6 @@ namespace System.Collections.Concurrent
             }
         }
 
-        // We want to call DictionaryImpl.CreateRef<TKey, TValue>(topDict, capacity)
-        // TKey is a reference type, but that is not statically known, so
-        // we use the following to get around "as class" contraint.
-        internal static Func<ConcurrentDictionary<TKey, TValue>, int, DictionaryImpl<TKey, TValue>> CreateRefUnsafe =
-            (ConcurrentDictionary<TKey, TValue> topDict, int capacity) =>
-            {
-                var method = typeof(DictionaryImpl).
-                    GetMethod("CreateRef", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static).
-                    MakeGenericMethod(new Type[] { typeof(TKey), typeof(TValue) });
-
-                var del = (Func<ConcurrentDictionary<TKey, TValue>, int, DictionaryImpl<TKey, TValue>>)Delegate.CreateDelegate(
-                    typeof(Func<ConcurrentDictionary<TKey, TValue>, int, DictionaryImpl<TKey, TValue>>),
-                    method);
-
-                var result = del(topDict, capacity);
-                CreateRefUnsafe = del;
-
-                return result;
-            };
-
         /// <summary>
         /// Initializes a new instance of the <see cref="ConcurrentDictionary{TKey,TValue}"/>
         /// class that is empty, has the specified concurrency level, has the specified initial capacity, and
@@ -181,7 +162,7 @@ namespace System.Collections.Concurrent
 
             if (!typeof(TKey).IsValueType)
             {
-                _table = CreateRefUnsafe(this, capacity);
+                _table = new DictionaryImplRef<TKey, TKey, TValue>(capacity, this);
                 _table._keyComparer = comparer ?? EqualityComparer<TKey>.Default;
                 return;
             }
@@ -264,7 +245,10 @@ namespace System.Collections.Concurrent
         /// <exception cref="ArgumentNullException"><paramref name="key"/> is a null reference (Nothing in Visual Basic).</exception>
         public bool ContainsKey(TKey key) => TryGetValue(key, out _);
 
-            return _table.TryGetValue(key, out _);
+            object oldValObj = _table.TryGetValue(key);
+            Debug.Assert(!(oldValObj is Prime));
+
+            return oldValObj != null;
         }
 
         /// <summary>
@@ -315,6 +299,31 @@ namespace System.Collections.Concurrent
             return _table.RemoveIfMatch(item.Key, ref oldVal, ValueMatch.OldValue);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private TValue FromObjectValue(object obj)
+        {
+            // regular value type
+            if (default(TValue) != null)
+            {
+                return Unsafe.As<Boxed<TValue>>(obj).Value;
+            }
+
+            // null
+            if (obj == NULLVALUE)
+            {
+                return default(TValue);
+            }
+
+            // ref type
+            if (!valueIsValueType)
+            {
+                return Unsafe.As<object, TValue>(ref obj);
+            }
+
+            // nullable
+            return (TValue)obj;
+        }
+
         /// <summary>
         /// Attempts to get the value associated with the specified key from the <see cref="ConcurrentDictionary{TKey,TValue}"/>.
         /// </summary>
@@ -333,7 +342,20 @@ namespace System.Collections.Concurrent
                 ThrowHelper.ThrowKeyNullException();
             }
 
-            return _table.TryGetValue(key, out value);
+            object oldValObj = _table.TryGetValue(key);
+
+            Debug.Assert(!(oldValObj is Prime));
+
+            if (oldValObj != null)
+            {
+                value = FromObjectValue(oldValObj);
+                return true;
+            }
+            else
+            {
+                value = default(TValue);
+                return false;
+            }
         }
                     }
                         {
@@ -527,30 +549,41 @@ namespace System.Collections.Concurrent
         public IEnumerator<KeyValuePair<TKey, TValue>> GetEnumerator()
         {
             return new SnapshotEnumerator(_table.GetSnapshot());
-                                else
-                                {
-                                    var newNode = new Node(node._key, value, hashcode, node._next);
-                                    if (prev is null)
-                                    {
-                                        Volatile.Write(ref bucket, newNode);
-                                    }
-                                    else
-                                    {
-                                        prev._next = newNode;
-                                    }
-                                }
-                                resultingValue = value;
-                            }
-                            else
-                            {
-                                resultingValue = node._value;
-                            }
-                            return false;
-                        }
-                        prev = node;
-                    }
+        }
 
-            if (index < 0)
+        /// <summary>Gets or sets the value associated with the specified key.</summary>
+        /// <param name="key">The key of the value to get or set.</param>
+        /// <value>
+        /// The value associated with the specified key. If the specified key is not found, a get operation throws a
+        /// <see cref="KeyNotFoundException"/>, and a set operation creates a new element with the specified key.
+        /// </value>
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="key"/> is a null reference (Nothing in Visual Basic).
+        /// </exception>
+        /// <exception cref="KeyNotFoundException">
+        /// The property is retrieved and <paramref name="key"/> does not exist in the collection.
+        /// </exception>
+        public TValue this[TKey key]
+        {
+            get
+            {
+                if (key is null)
+                {
+                    ThrowHelper.ThrowKeyNullException();
+                }
+
+                object oldValObj = _table.TryGetValue(key);
+                Debug.Assert(!(oldValObj is Prime));
+                if (oldValObj != null)
+                {
+                    return FromObjectValue(oldValObj);
+                }
+
+                ThrowKeyNotFoundException(key);
+                // call above does not return
+                while (true) ;
+            }
+            set
             {
                 throw new ArgumentOutOfRangeException(nameof(index), SR.ConcurrentDictionary_IndexIsNegative);
             }
@@ -611,7 +644,7 @@ namespace System.Collections.Concurrent
         /// <remarks>Separate from ThrowHelper to avoid boxing at call site while reusing this generic instantiation.</remarks>
         [DoesNotReturn]
         private static void ThrowKeyNotFoundException(TKey key) =>
-            throw new KeyNotFoundException(SR.Format(SR.Arg_KeyNotFoundWithKey, key.ToString()));
+                throw new KeyNotFoundException(SR.Format(SR.Arg_KeyNotFoundWithKey, key.ToString()));
 
         /// <summary>
         /// Gets the <see cref="IEqualityComparer{TKey}" />
@@ -754,11 +787,27 @@ namespace System.Collections.Concurrent
             TValue tValue2;
             int hashcode = comparer is null ? key.GetHashCode() : comparer.GetHashCode(key);
 
-                TValue tValue;
-                if (this.TryGetValue(key, out tValue))
+            object oldValObj = _table.TryGetValue(key);
+            Debug.Assert(!(oldValObj is Prime));
+
+            if (oldValObj != null)
             {
-                    tValue2 = updateValueFactory(key, tValue, factoryArgument);
-                    if (this.TryUpdate(key, tValue2, tValue))
+                return FromObjectValue(oldValObj);
+            }
+            else
+            {
+                TValue newValue = valueFactory(key, factoryArgument);
+                TValue oldVal = default;
+                if (_table.PutIfMatch(key, newValue, ref oldVal, ValueMatch.NullOrDead))
+                {
+                    return newValue;
+                }
+                else
+                {
+                    return oldVal;
+                }
+            }
+        }
 
         /// <summary>
         /// Adds a key/value pair to the <see cref="ConcurrentDictionary{TKey,TValue}"/>
