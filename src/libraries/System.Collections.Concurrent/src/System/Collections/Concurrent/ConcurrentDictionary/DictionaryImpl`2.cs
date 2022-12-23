@@ -31,12 +31,14 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using Internal.Runtime.CompilerServices;
+using System.Runtime.CompilerServices;
 
 namespace System.Collections.Concurrent
 {
     internal abstract class DictionaryImpl<TKey, TValue>
         : DictionaryImpl
     {
+        internal readonly bool valueIsValueType = typeof(TValue).IsValueType;
         internal IEqualityComparer<TKey> _keyComparer;
 
         internal DictionaryImpl() { }
@@ -44,7 +46,7 @@ namespace System.Collections.Concurrent
         internal abstract void Clear();
         internal abstract int Count { get; }
 
-        internal abstract bool TryGetValue(TKey key, out TValue value);
+        internal abstract object TryGetValue(TKey key);
         internal abstract bool PutIfMatch(TKey key, TValue newVal, ref TValue oldValue, ValueMatch match);
         internal abstract bool RemoveIfMatch(TKey key, ref TValue oldValue, ValueMatch match);
         internal abstract TValue GetOrAdd(TKey key, Func<TKey, TValue> valueFactory);
@@ -76,6 +78,31 @@ namespace System.Collections.Concurrent
                     return new KeyValuePair<TKey, TValue>(this._curKey, _curValue);
                 }
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        protected TValue FromObjectValue(object obj)
+        {
+            // regular value type
+            if (default(TValue) != null)
+            {
+                return Unsafe.As<Boxed<TValue>>(obj).Value;
+            }
+
+            // null
+            if (obj == NULLVALUE)
+            {
+                return default(TValue);
+            }
+
+            // ref type
+            if (!valueIsValueType)
+            {
+                return Unsafe.As<object, TValue>(ref obj);
+            }
+
+            // nullable
+            return (TValue)obj;
         }
     }
 }
