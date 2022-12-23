@@ -122,7 +122,7 @@ namespace System.Collections.Concurrent
             this._size = new Counter32();
             this._topDict = topDict;
 
-            if (!typeof(TKeyStore).IsValueType)
+            if (RuntimeHelpers.IsReferenceOrContainsReferences<TKey>())
             {
                 // do not create a real sweeper just yet. Often it is not needed.
                 topDict._sweeperInstance = NULLVALUE;
