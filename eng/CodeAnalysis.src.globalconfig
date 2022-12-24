@@ -1453,7 +1453,7 @@ dotnet_diagnostic.IDE0071.severity = silent
 dotnet_diagnostic.IDE0072.severity = silent
 
 # IDE0073: FileHeaderMismatch
-dotnet_diagnostic.IDE0073.severity = warning
+dotnet_diagnostic.IDE0073.severity = silent
 
 # IDE0074: UseCoalesceCompoundAssignment
 dotnet_diagnostic.IDE0074.severity = silent
