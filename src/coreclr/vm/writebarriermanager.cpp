@@ -405,6 +405,9 @@ bool WriteBarrierManager::NeedDifferentWriteBarrier(bool bReqUpperBoundsCheck, b
         switch (writeBarrierType)
         {
         case WRITE_BARRIER_UNINITIALIZED:
+#ifdef FEATURE_SATORI_GC
+            writeBarrierType = WRITE_BARRIER_SATORI;
+#else
 #ifdef _DEBUG
             // The default slow write barrier has some good asserts
             if ((g_pConfig->GetHeapVerifyLevel() & EEConfig::HEAPVERIFY_BARRIERCHECK)) {

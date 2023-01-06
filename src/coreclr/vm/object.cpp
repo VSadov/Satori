@@ -496,14 +496,6 @@ VOID Object::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
     _ASSERTE(this->GetSize() > 0);
     return;
 
-    if (g_IBCLogger.InstrEnabled() && !GCStress<cfg_any>::IsEnabled())
-    {
-        // If we are instrumenting for IBC (and GCStress is not enabled)
-        // then skip these Object::Validate() as they slow down the
-        // instrument phase by an order of magnitude
-        return;
-    }
-
     if (g_fEEShutDown & ShutDown_Phase2)
     {
         // During second phase of shutdown the code below is not guaranteed to work.
