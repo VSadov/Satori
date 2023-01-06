@@ -726,6 +726,9 @@ bool WriteBarrierManager::NeedDifferentWriteBarrier(bool bReqUpperBoundsCheck, b
         switch (writeBarrierType)
         {
         case WRITE_BARRIER_UNINITIALIZED:
+#ifdef FEATURE_SATORI_GC
+            writeBarrierType = WRITE_BARRIER_SATORI;
+#else
 #ifdef _DEBUG
             // Use the default slow write barrier some of the time in debug builds because of of contains some good asserts
             if ((g_pConfig->GetHeapVerifyLevel() & EEConfig::HEAPVERIFY_BARRIERCHECK) || DbgRandomOnExe(0.5)) {
@@ -733,9 +736,6 @@ bool WriteBarrierManager::NeedDifferentWriteBarrier(bool bReqUpperBoundsCheck, b
             }
 #endif
 
-#ifdef FEATURE_SATORI_GC
-            writeBarrierType WRITE_BARRIER_SATORI :
-#else
             if (g_region_shr != 0)
             {
                 writeBarrierType = bUseBitwiseWriteBarrier ? WRITE_BARRIER_BIT_REGIONS64: WRITE_BARRIER_BYTE_REGIONS64;
