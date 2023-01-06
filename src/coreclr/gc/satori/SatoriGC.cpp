@@ -659,3 +659,14 @@ unsigned int SatoriGC::GetGenerationWithRange(Object* object, uint8_t** ppStart,
     // NYI
     return WhichGeneration(object);
 }
+
+int64_t SatoriGC::GetTotalPauseDuration()
+{
+    // NYI
+    return 0;
+}
+
+void SatoriGC::EnumerateConfigurationValues(void* context, ConfigurationValueFunc configurationValueFunc)
+{
+    GCConfig::EnumerateConfigurationValues(context, configurationValueFunc);
+}

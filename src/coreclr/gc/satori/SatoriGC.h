@@ -144,6 +144,10 @@ public:
 
     // Inherited via IGCHeapInternal
     virtual unsigned int GetGenerationWithRange(Object* object, uint8_t** ppStart, uint8_t** ppAllocated, uint8_t** ppReserved) override;
+
+    // Inherited via IGCHeapInternal
+    virtual int64_t GetTotalPauseDuration() override;
+    virtual void EnumerateConfigurationValues(void* context, ConfigurationValueFunc configurationValueFunc) override;
 };
 
 #endif
