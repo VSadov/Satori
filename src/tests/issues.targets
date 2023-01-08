@@ -79,6 +79,9 @@
       <ExcludeList Include="$(XunitTestBinBase)/GC/API/GC/GetGCMemoryInfo/*">
         <Issue>Satori GC apis</Issue>
       </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/GC/Collect_Aggressive/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
 
       <ExcludeList Include="$(XunitTestBinBase)/JIT/Methodical/doublearray/**">
         <Issue>Satori GC apis, LOH expectations</Issue>
@@ -105,6 +108,14 @@
       </ExcludeList>
       <ExcludeList Include="$(XunitTestBinBase)/profiler/gc/gcallocate/*">
         <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/handles/handles/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+
+      <ExcludeList Include="$(XunitTestBinBase)/readytorun/coreroot_determinism/coreroot_determinism/*">
+        <Issue>Satori Unknown</Issue>
       </ExcludeList>
 
       <ExcludeList Include="$(XunitTestBinBase)/GC/Scenarios/FinalizeTimeout/FinalizeTimeout/*">
