@@ -370,6 +370,10 @@ HRESULT GCHeapUtilities::LoadAndInitialize()
 {
     LIMITED_METHOD_CONTRACT;
 
+#if FEATURE_SATORI_GC
+    s_useThreadAllocationContexts = true;
+
+#else
     // When running on a single-proc Intel system, it's more efficient to use a single global
     // allocation context for SOH allocations than to use one for every thread.
 #if (defined(TARGET_X86) || defined(TARGET_AMD64)) && !defined(TARGET_UNIX)
@@ -381,6 +385,7 @@ HRESULT GCHeapUtilities::LoadAndInitialize()
     s_useThreadAllocationContexts = !useGlobalAllocationContext && (IsServerHeap() || ::g_SystemInfo.dwNumberOfProcessors != 1 || CPUGroupInfo::CanEnableGCCPUGroups());
 #else
     s_useThreadAllocationContexts = true;
+#endif
 #endif
 
     // we should only call this once on startup. Attempting to load a GC
