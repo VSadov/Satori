@@ -32,7 +32,6 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
-using Internal.Runtime.CompilerServices;
 
 namespace System.Collections.Concurrent
 {
@@ -108,7 +107,7 @@ namespace System.Collections.Concurrent
     }
 
 #pragma warning disable CS0659 // Type overrides Object.Equals(object o) but does not override Object.GetHashCode()
-    internal class Boxed<T>
+    internal sealed class Boxed<T>
     {
         // 0 - allow writes, 1 - someone is writing, 2 frozen.
         public int writeStatus;

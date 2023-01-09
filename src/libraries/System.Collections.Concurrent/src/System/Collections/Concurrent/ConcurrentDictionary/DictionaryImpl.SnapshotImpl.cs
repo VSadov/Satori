@@ -33,7 +33,6 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading;
-using Internal.Runtime.CompilerServices;
 
 namespace System.Collections.Concurrent
 {
@@ -45,7 +44,7 @@ namespace System.Collections.Concurrent
             return new SnapshotImpl(this);
         }
 
-        private class SnapshotImpl : Snapshot
+        private sealed class SnapshotImpl : Snapshot
         {
             private readonly DictionaryImpl<TKey, TKeyStore, TValue> _table;
 
