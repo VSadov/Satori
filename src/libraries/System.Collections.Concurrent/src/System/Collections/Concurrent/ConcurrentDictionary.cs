@@ -11,7 +11,6 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
-using Internal.Runtime.CompilerServices;
 using static System.Collections.Concurrent.DictionaryImpl;
 
 namespace System.Collections.Concurrent
@@ -1352,7 +1351,7 @@ namespace System.Collections.Concurrent
             return new ReadOnlyCollection<TValue>(values);
         }
 
-        internal class SnapshotEnumerator : IEnumerator<KeyValuePair<TKey, TValue>>
+        internal sealed class SnapshotEnumerator : IEnumerator<KeyValuePair<TKey, TValue>>
         {
             private DictionaryImpl<TKey, TValue>.Snapshot _snapshot;
             public SnapshotEnumerator(DictionaryImpl<TKey, TValue>.Snapshot snapshot)
@@ -1368,7 +1367,7 @@ namespace System.Collections.Concurrent
             public void Dispose() { }
         }
 
-        internal class SnapshotIDictionaryEnumerator : IDictionaryEnumerator
+        internal sealed class SnapshotIDictionaryEnumerator : IDictionaryEnumerator
         {
             private DictionaryImpl<TKey, TValue>.Snapshot _snapshot;
             public SnapshotIDictionaryEnumerator(DictionaryImpl<TKey, TValue>.Snapshot snapshot)
@@ -1384,7 +1383,9 @@ namespace System.Collections.Concurrent
 
             public bool MoveNext() => _snapshot.MoveNext();
             public void Reset() => _snapshot.Reset();
+#pragma warning disable CA1822 // Mark members as static
             public void Dispose() { }
+#pragma warning restore CA1822 // Mark members as static
         }
     }
 

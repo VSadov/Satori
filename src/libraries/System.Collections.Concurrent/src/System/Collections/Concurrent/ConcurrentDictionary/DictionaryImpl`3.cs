@@ -41,7 +41,6 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
-using Internal.Runtime.CompilerServices;
 
 namespace System.Collections.Concurrent
 {
@@ -646,7 +645,9 @@ namespace System.Collections.Concurrent
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+#pragma warning disable CA1822 // Mark members as static
         private bool ValueIsAtomicPrimitive()
+#pragma warning restore CA1822 // Mark members as static
         {
             return default(TValue) != null && valueIsAtomic;
         }
@@ -1393,7 +1394,7 @@ namespace System.Collections.Concurrent
             }
         }
 
-        private class Sweeper
+        private sealed class Sweeper
         {
             private DictionaryImpl<TKey, TKeyStore, TValue> _dict;
 
@@ -1411,7 +1412,9 @@ namespace System.Collections.Concurrent
 
             ~Sweeper()
             {
+#pragma warning disable IDE0200 // Lambda can be removed
                 Task.Run(() => Sweep());
+#pragma warning restore IDE0200
             }
 
             private void Sweep()
