@@ -11,7 +11,6 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
-using Internal.Runtime.CompilerServices;
 using static System.Collections.Concurrent.DictionaryImpl;
 
 namespace System.Collections.Concurrent
@@ -1490,7 +1489,7 @@ namespace System.Collections.Concurrent
             }
         }
 
-        internal class SnapshotEnumerator : IEnumerator<KeyValuePair<TKey, TValue>>
+        internal sealed class SnapshotEnumerator : IEnumerator<KeyValuePair<TKey, TValue>>
         {
             private DictionaryImpl<TKey, TValue>.Snapshot _snapshot;
             public SnapshotEnumerator(DictionaryImpl<TKey, TValue>.Snapshot snapshot)
@@ -1540,24 +1539,13 @@ namespace System.Collections.Concurrent
                 }
             }
 
-            /// <summary>Computes the bucket and lock number for a particular key.</summary>
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            internal ref Node? GetBucketAndLock(int hashcode, out uint lockNo)
+        internal sealed class SnapshotIDictionaryEnumerator : IDictionaryEnumerator
+        {
+            private DictionaryImpl<TKey, TValue>.Snapshot _snapshot;
+            public SnapshotIDictionaryEnumerator(DictionaryImpl<TKey, TValue>.Snapshot snapshot)
             {
-                Node?[] buckets = _buckets;
-                uint bucketNo;
-                if (IntPtr.Size == 8)
-                {
-                    bucketNo = HashHelpers.FastMod((uint)hashcode, (uint)buckets.Length, _fastModBucketsMultiplier);
-                }
-                else
-                {
-                    bucketNo = (uint)hashcode % (uint)buckets.Length;
-                }
-                lockNo = bucketNo % (uint)_locks.Length; // doesn't use FastMod, as it would require maintaining a different multiplier
-                return ref buckets[bucketNo];
+                _snapshot = snapshot;
             }
-        }
 
             public DictionaryEntry Entry => _snapshot.Entry;
             object IEnumerator.Current => _snapshot.Entry;
@@ -1567,7 +1555,9 @@ namespace System.Collections.Concurrent
 
             public bool MoveNext() => _snapshot.MoveNext();
             public void Reset() => _snapshot.Reset();
+#pragma warning disable CA1822 // Mark members as static
             public void Dispose() { }
+#pragma warning restore CA1822 // Mark members as static
         }
     }
 
