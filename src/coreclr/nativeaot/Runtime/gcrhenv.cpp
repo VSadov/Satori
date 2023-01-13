@@ -1178,7 +1178,9 @@ bool GCToEEInterface::EagerFinalized(Object* obj)
     // Eager finalization happens while scanning for unmarked finalizable objects
     // after marking strongly reachable and prior to marking dependent and long weak handles.
     // Managed code should not be running.
-    ASSERT(GCHeapUtilities::GetGCHeap()->IsGCInProgressHelper());
+
+    // TODO: VS threadlocal GC is also ok
+    // ASSERT(GCHeapUtilities::GetGCHeap()->IsGCInProgressHelper());
 
     // the lowermost 1 bit is reserved for storing additional info about the handle
     const uintptr_t HandleTagBits = 1;

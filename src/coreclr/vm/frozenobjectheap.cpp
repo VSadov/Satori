@@ -27,6 +27,11 @@ Object* FrozenObjectHeapManager::TryAllocateObject(PTR_MethodTable type, size_t 
     }
     CONTRACTL_END
 
+#if FEATURE_SATORI_GC
+    // Satori immortal objects NYI
+    return nullptr;
+#endif
+
 #ifndef FEATURE_BASICFREEZE
     // GC is required to support frozen segments
     return nullptr;

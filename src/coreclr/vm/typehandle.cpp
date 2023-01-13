@@ -369,24 +369,30 @@ void TypeHandle::AllocateManagedClassObject(RUNTIMETYPEHANDLE* pDest)
         {
             FrozenObjectHeapManager* foh = SystemDomain::GetFrozenObjectHeapManager();
             Object* obj = foh->TryAllocateObject(g_pRuntimeTypeClass, g_pRuntimeTypeClass->GetBaseSize());
-            _ASSERTE(obj != NULL);
-            // Since objects are aligned we can use the lowest bit as a storage for "is pinned object" flag
-            _ASSERTE((((SSIZE_T)obj) & 1) == 0);
-            refClass = (REFLECTCLASSBASEREF)ObjectToOBJECTREF(obj);
-            refClass->SetType(*this);
-            RUNTIMETYPEHANDLE handle = (RUNTIMETYPEHANDLE)obj;
-            // Set the bit to 1 (we'll have to reset it before use)
-            handle |= 1;
-            *pDest = handle;
+            if (obj != NULL)
+            {
+                // Since objects are aligned we can use the lowest bit as a storage for "is pinned object" flag
+                _ASSERTE((((SSIZE_T)obj) & 1) == 0);
+                refClass = (REFLECTCLASSBASEREF)ObjectToOBJECTREF(obj);
+                refClass->SetType(*this);
+                RUNTIMETYPEHANDLE handle = (RUNTIMETYPEHANDLE)obj;
+                // Set the bit to 1 (we'll have to reset it before use)
+                handle |= 1;
+                *pDest = handle;
+                return;
+            }
         }
     }
-    else
+
     {
         GCPROTECT_BEGIN(refClass);
-        refClass = (REFLECTCLASSBASEREF)AllocateObject(g_pRuntimeTypeClass);
+#ifdef FEATURE_COMINTEROP
+        refClass = (REFLECTCLASSBASEREF)AllocateObject(g_pRuntimeTypeClass, /*fHandleCom*/ false, /*fUnmovable*/ !allocator->CanUnload());
+#else
+        refClass = (REFLECTCLASSBASEREF)AllocateObject(g_pRuntimeTypeClass, /*fUnmovable*/ !allocator->CanUnload());
+#endif
         refClass->SetKeepAlive(allocator->GetExposedObject());
         LOADERHANDLE exposedClassObjectHandle = allocator->AllocateHandle(refClass);
-        _ASSERTE((exposedClassObjectHandle & 1) == 0);
         refClass->SetType(*this);
 
         // Let all threads fight over who wins using InterlockedCompareExchange.
