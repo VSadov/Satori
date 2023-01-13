@@ -570,7 +570,7 @@ void* GCToOSInterface::VirtualReserve(void* location, size_t size)
 
     if (pRetVal != location)
     {
-        munmap(location, size);
+        munmap(pRetVal, size);
         return NULL;
     }
 
@@ -578,8 +578,8 @@ void* GCToOSInterface::VirtualReserve(void* location, size_t size)
         // Do not include reserved memory in coredump.
         madvise(pRetVal, size, MADV_DONTDUMP);
 #endif
-        return pRetVal;
-    }
+    return pRetVal;
+}
 
 // Release virtual memory range previously reserved using VirtualReserve
 // Parameters:
