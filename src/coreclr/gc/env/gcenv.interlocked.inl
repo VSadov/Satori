@@ -45,7 +45,7 @@ __forceinline size_t Interlocked::Increment(size_t volatile* addend)
     return (size_t)_InterlockedIncrement64((volatile long long*)addend);
 #else
     size_t result = __sync_add_and_fetch(addend, 1);
-    ArmInterlockedOperationBarrier();
+    InterlockedOperationBarrier();
     return result;
 #endif
 }
@@ -75,7 +75,7 @@ __forceinline size_t Interlocked::Decrement(size_t volatile* addend)
     return (size_t)_InterlockedDecrement64((volatile long long*)addend);
 #else
     size_t result = __sync_sub_and_fetch(addend, 1);
-    ArmInterlockedOperationBarrier();
+    InterlockedOperationBarrier();
     return result;
 #endif
 }
@@ -106,7 +106,7 @@ __forceinline int8_t Interlocked::Exchange<int8_t>(int8_t volatile* destination,
     return (int8_t)_InterlockedExchange8((char*)destination, value);
 #else
     int8_t result = __atomic_exchange_n(destination, value, __ATOMIC_ACQ_REL);
-    ArmInterlockedOperationBarrier();
+    InterlockedOperationBarrier();
     return result;
 #endif
 }
@@ -139,7 +139,7 @@ __forceinline size_t Interlocked::CompareExchange<size_t>(size_t volatile * dest
     return _InterlockedCompareExchange64((volatile long long*)destination, exchange, comparand);
 #else
     size_t result = __sync_val_compare_and_swap(destination, comparand, exchange);
-    ArmInterlockedOperationBarrier();
+    InterlockedOperationBarrier();
     return result;
 #endif
 }
@@ -151,7 +151,7 @@ __forceinline int8_t Interlocked::CompareExchange<int8_t>(int8_t volatile* desti
     return (int8_t)_InterlockedCompareExchange8((char*)destination, exchange, comparand);
 #else
     int8_t result = __sync_val_compare_and_swap(destination, comparand, exchange);
-    ArmInterlockedOperationBarrier();
+    InterlockedOperationBarrier();
     return result;
 #endif
 }
@@ -163,7 +163,7 @@ __forceinline uint8_t Interlocked::CompareExchange<uint8_t>(uint8_t volatile* de
     return (uint8_t)_InterlockedCompareExchange8((char*)destination, exchange, comparand);
 #else
     uint8_t result = __sync_val_compare_and_swap(destination, comparand, exchange);
-    ArmInterlockedOperationBarrier();
+    InterlockedOperationBarrier();
     return result;
 #endif
 }
