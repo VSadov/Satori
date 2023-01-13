@@ -148,6 +148,9 @@ public:
     // Inherited via IGCHeapInternal
     virtual int64_t GetTotalPauseDuration() override;
     virtual void EnumerateConfigurationValues(void* context, ConfigurationValueFunc configurationValueFunc) override;
+
+    // Inherited via IGCHeapInternal
+    virtual void UpdateFrozenSegment(segment_handle seg, uint8_t* allocated, uint8_t* committed) override;
 };
 
 #endif
