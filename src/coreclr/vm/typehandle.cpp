@@ -386,7 +386,11 @@ void TypeHandle::AllocateManagedClassObject(RUNTIMETYPEHANDLE* pDest)
 
     {
         GCPROTECT_BEGIN(refClass);
+#ifdef FEATURE_COMINTEROP
         refClass = (REFLECTCLASSBASEREF)AllocateObject(g_pRuntimeTypeClass, /*fHandleCom*/ false, /*fUnmovable*/ !allocator->CanUnload());
+#else
+        refClass = (REFLECTCLASSBASEREF)AllocateObject(g_pRuntimeTypeClass, /*fUnmovable*/ !allocator->CanUnload());
+#endif
         refClass->SetKeepAlive(allocator->GetExposedObject());
         LOADERHANDLE exposedClassObjectHandle = allocator->AllocateHandle(refClass);
         refClass->SetType(*this);
