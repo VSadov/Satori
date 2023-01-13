@@ -1221,6 +1221,7 @@ OBJECTREF AllocateObject(MethodTable *pMT
 #ifdef FEATURE_COMINTEROP
                          , bool fHandleCom
 #endif
+                         , bool fUnmovable
     )
 {
     CONTRACTL {
@@ -1271,6 +1272,9 @@ OBJECTREF AllocateObject(MethodTable *pMT
         DWORD totalSize = pMT->GetBaseSize();
         if (totalSize >= LARGE_OBJECT_SIZE && totalSize >= GCHeapUtilities::GetGCHeap()->GetLOHThreshold())
             flags |= GC_ALLOC_LARGE_OBJECT_HEAP;
+
+        if (fUnmovable)
+            flags |= GC_ALLOC_PINNED_OBJECT_HEAP;
 
 #ifdef FEATURE_64BIT_ALIGNMENT
         if (pMT->RequiresAlign8())

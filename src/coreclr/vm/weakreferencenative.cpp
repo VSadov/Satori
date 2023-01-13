@@ -26,7 +26,9 @@ void FinalizeWeakReference(Object* obj)
     // Eager finalization happens while scanning for unmarked finalizable objects
     // after marking strongly reachable and prior to marking dependent and long weak handles.
     // Managed code should not be running.
-    _ASSERTE(GCHeapUtilities::IsGCInProgress());
+
+    // TODO: VS threadlocal GC is also ok
+    //_ASSERTE(GCHeapUtilities::IsGCInProgress());
 
     // the lowermost 2 bits are reserved for storing additional info about the handle
     // we can use these bits because handle is at least 4 byte aligned

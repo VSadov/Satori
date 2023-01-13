@@ -582,8 +582,8 @@ void SatoriGC::UnregisterFrozenSegment(segment_handle seg)
 
 bool SatoriGC::IsInFrozenSegment(Object* object)
 {
-    // N/A
-    return false;
+    // TODO: VS implement  actual frozen objects.
+    return ((SatoriObject*)object)->IsUnmovable();
 }
 
 void SatoriGC::ControlEvents(GCEventKeyword keyword, GCEventLevel level)
@@ -669,4 +669,8 @@ int64_t SatoriGC::GetTotalPauseDuration()
 void SatoriGC::EnumerateConfigurationValues(void* context, ConfigurationValueFunc configurationValueFunc)
 {
     GCConfig::EnumerateConfigurationValues(context, configurationValueFunc);
+}
+
+void SatoriGC::UpdateFrozenSegment(segment_handle seg, uint8_t* allocated, uint8_t* committed)
+{
 }
