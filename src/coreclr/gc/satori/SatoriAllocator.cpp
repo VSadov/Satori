@@ -51,7 +51,10 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
         m_queues[i] = new SatoriRegionQueue(QueueKind::Allocator);
     }
 
-    m_WorkChunks = new SatoriWorkList();
+    m_workChunks = new SatoriWorkList();
+
+    m_immortalRegion = nullptr;
+    m_immortalAlocLock.Initialize();
 }
 
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
@@ -162,7 +165,11 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 
     SatoriObject* result;
 
-    if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
+    if (flags & GC_ALLOC_IMMORTAL)
+    {
+        result = AllocImmortal(context, size, flags);
+    }
+    else if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
     {
         result = AllocLarge(context, size, flags);
     }
@@ -190,6 +197,7 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 
     if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
     {
+        // TODO: VS move under same condition above
         result->SetUnmovable();
     }
 
@@ -507,6 +515,86 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     return result;
 }
 
+SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, size_t size, uint32_t flags)
+{
+    // immortal allocs should be way less than region size.
+    _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY / 2);
+
+    SatoriLockHolder<SatoriLock> holder(&m_immortalAlocLock);
+
+    //TODO: VS alloc context for immortal - to ammortize zeroing.
+
+    SatoriRegion* region = m_immortalRegion;
+
+    while (true)
+    {
+        if (region)
+        {
+            size_t allocRemaining = region->GetAllocRemaining();
+            if (allocRemaining >= size)
+            {
+                bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
+                SatoriObject* result = (SatoriObject*)region->Allocate(size, zeroInitialize);
+                if (result)
+                {
+                    result->CleanSyncBlock();
+                    context->alloc_bytes_uoh += size;
+                    region->SetIndicesForObject(result, result->Start() + size);
+
+                    FIRE_EVENT(GCAllocationTick_V4,
+                        size,
+                        /*gen_number*/ 3,
+                        /*heap_number*/ 0,
+                        (void*)result,
+                        0);
+                }
+                else
+                {
+                    // OOM
+                }
+
+                return result;
+            }
+
+            // check if existing region has space
+            if (region->IsAllocating())
+            {
+                region->StopAllocating(/* allocPtr */ 0);
+            }
+
+            // try get from the free list
+            size_t desiredFreeSpace = size + Satori::MIN_FREE_SIZE;
+            if (region->StartAllocating(desiredFreeSpace))
+            {
+                // we have enough free space in the region to continue
+                continue;
+            }
+
+            // TODO: VS should not just leak.
+            //       pass it to recycler for keeping
+            //       we may not need to scan them for GC, if they do not have pointers to regular.
+            //       (we might want that eventually)
+            // region->DetachFromContextRelease();
+            // m_heap->Recycler()->AddEphemeralRegion(region);
+        }
+
+        // get a new regular region.
+        region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
+        if (!region)
+        {
+            //OOM
+            return nullptr;
+        }
+
+        _ASSERTE(region->NothingMarked());
+
+        region->SetGenerationRelease(3);
+        m_immortalRegion = region;
+    }
+
+    return nullptr;
+}
+
 SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
 {
 #if _DEBUG
@@ -518,11 +606,11 @@ SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
         return nullptr;
     }
 #endif
-    SatoriWorkChunk* chunk = m_WorkChunks->TryPop();
+    SatoriWorkChunk* chunk = m_workChunks->TryPop();
 
     while (!chunk && AddMoreWorkChunks())
     {
-        chunk = m_WorkChunks->TryPop();
+        chunk = m_workChunks->TryPop();
     }
 
     _ASSERTE(chunk->Count() == 0);
@@ -532,10 +620,10 @@ SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
 // returns NULL only in OOM case
 SatoriWorkChunk* SatoriAllocator::GetWorkChunk()
 {
-    SatoriWorkChunk* chunk = m_WorkChunks->TryPop();
+    SatoriWorkChunk* chunk = m_workChunks->TryPop();
     while (!chunk && AddMoreWorkChunks())
     {
-        chunk = m_WorkChunks->TryPop();
+        chunk = m_workChunks->TryPop();
     }
 
     _ASSERTE(chunk->Count() == 0);
@@ -559,7 +647,7 @@ bool SatoriAllocator::AddMoreWorkChunks()
         }
 
         SatoriWorkChunk* chunk = SatoriWorkChunk::InitializeAt(mem);
-        m_WorkChunks->Push(chunk);
+        m_workChunks->Push(chunk);
     }
 
     return true;
@@ -568,5 +656,5 @@ bool SatoriAllocator::AddMoreWorkChunks()
 void SatoriAllocator::ReturnWorkChunk(SatoriWorkChunk* chunk)
 {
     _ASSERTE(chunk->Count() == 0);
-    m_WorkChunks->Push(chunk);
+    m_workChunks->Push(chunk);
 }

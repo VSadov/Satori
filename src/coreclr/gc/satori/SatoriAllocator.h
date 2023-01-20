@@ -57,12 +57,15 @@ public:
 private:
     SatoriHeap* m_heap;
     SatoriRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
+    SatoriWorkList* m_workChunks;
 
-    SatoriWorkList* m_WorkChunks;
+    SatoriRegion* m_immortalRegion;
+    SatoriLock m_immortalAlocLock;
 
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocHuge(SatoriAllocationContext* context, size_t size, uint32_t flags);
+    SatoriObject* AllocImmortal(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     void TryGetRegularRegion(SatoriRegion*& region);
 

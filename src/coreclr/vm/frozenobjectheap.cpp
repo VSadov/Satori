@@ -27,17 +27,11 @@ Object* FrozenObjectHeapManager::TryAllocateObject(PTR_MethodTable type, size_t 
     }
     CONTRACTL_END
 
-#if FEATURE_SATORI_GC
-    // Satori immortal objects NYI
-    return nullptr;
-#endif
 
 #ifndef FEATURE_BASICFREEZE
     // GC is required to support frozen segments
     return nullptr;
 #else // FEATURE_BASICFREEZE
-
-    CrstHolder ch(&m_Crst);
 
     _ASSERT(type != nullptr);
     _ASSERT(FOH_COMMIT_SIZE >= MIN_OBJECT_SIZE);
@@ -56,6 +50,11 @@ Object* FrozenObjectHeapManager::TryAllocateObject(PTR_MethodTable type, size_t 
         return nullptr;
     }
 
+#if FEATURE_SATORI_GC
+    return AllocateImmortalObject(type, objectSize);
+#endif
+
+    CrstHolder ch(&m_Crst);
     if (m_CurrentSegment == nullptr)
     {
         // Create the first segment on first allocation

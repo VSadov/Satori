@@ -369,30 +369,24 @@ void TypeHandle::AllocateManagedClassObject(RUNTIMETYPEHANDLE* pDest)
         {
             FrozenObjectHeapManager* foh = SystemDomain::GetFrozenObjectHeapManager();
             Object* obj = foh->TryAllocateObject(g_pRuntimeTypeClass, g_pRuntimeTypeClass->GetBaseSize());
-            if (obj != NULL)
-            {
-                // Since objects are aligned we can use the lowest bit as a storage for "is pinned object" flag
-                _ASSERTE((((SSIZE_T)obj) & 1) == 0);
-                refClass = (REFLECTCLASSBASEREF)ObjectToOBJECTREF(obj);
-                refClass->SetType(*this);
-                RUNTIMETYPEHANDLE handle = (RUNTIMETYPEHANDLE)obj;
-                // Set the bit to 1 (we'll have to reset it before use)
-                handle |= 1;
-                *pDest = handle;
-                return;
-            }
+            _ASSERTE(obj != NULL);
+            // Since objects are aligned we can use the lowest bit as a storage for "is pinned object" flag
+            _ASSERTE((((SSIZE_T)obj) & 1) == 0);
+            refClass = (REFLECTCLASSBASEREF)ObjectToOBJECTREF(obj);
+            refClass->SetType(*this);
+            RUNTIMETYPEHANDLE handle = (RUNTIMETYPEHANDLE)obj;
+            // Set the bit to 1 (we'll have to reset it before use)
+            handle |= 1;
+            *pDest = handle;
         }
     }
-
+    else
     {
         GCPROTECT_BEGIN(refClass);
-#ifdef FEATURE_COMINTEROP
-        refClass = (REFLECTCLASSBASEREF)AllocateObject(g_pRuntimeTypeClass, /*fHandleCom*/ false, /*fUnmovable*/ !allocator->CanUnload());
-#else
-        refClass = (REFLECTCLASSBASEREF)AllocateObject(g_pRuntimeTypeClass, /*fUnmovable*/ !allocator->CanUnload());
-#endif
+        refClass = (REFLECTCLASSBASEREF)AllocateObject(g_pRuntimeTypeClass);
         refClass->SetKeepAlive(allocator->GetExposedObject());
         LOADERHANDLE exposedClassObjectHandle = allocator->AllocateHandle(refClass);
+        _ASSERTE((exposedClassObjectHandle & 1) == 0);
         refClass->SetType(*this);
 
         // Let all threads fight over who wins using InterlockedCompareExchange.
@@ -427,7 +421,7 @@ Instantiation TypeHandle::GetInstantiation() const
 
     if (!IsTypeDesc()) return AsMethodTable()->GetInstantiation();
     else return Instantiation();
-}
+} 
 
 
 BOOL TypeHandle::IsValueType()  const
