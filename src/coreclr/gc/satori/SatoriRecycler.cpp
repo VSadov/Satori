@@ -1862,7 +1862,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                         _ASSERTE(!region->HasMarksSet());
 
                         // sometimes we set cards without checking dst generation, but REMEMBERED only has meaning in tenured
-                        if (region->Generation() != 2)
+                        if (region->Generation() < 2)
                         {
                             // This is optimization. Not needed for correctness.
                             // If not dirty, we wipe the group, to not look at this again in the next scans.
@@ -2066,7 +2066,7 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                                                 // cannot mark stuff in thread local regions. just mark as dirty to visit later.
                                                 if (!childRegion->MaybeEscapeTrackingAcquire())
                                                 {
-                                                    if (!child->IsMarked())
+                                                    if (!child->IsMarkedOrOlderThan(2))
                                                     {
                                                         child->SetMarkedAtomic();
                                                         if (!dstChunk || !dstChunk->TryPush(child))
@@ -2154,7 +2154,7 @@ void SatoriRecycler::MarkThroughCards()
                         _ASSERTE(!region->HasMarksSet());
 
                         // sometimes we set cards without checking dst generation, but REMEMBERED only has meaning in tenured
-                        if (region->Generation() != 2)
+                        if (region->Generation() < 2)
                         {
                             // This is optimization. Not needed for correctness.
                             // If not dirty, we wipe the group, to not look at this again in the next scans.
@@ -2286,7 +2286,7 @@ void SatoriRecycler::CleanCards()
                     if (groupState == Satori::CardState::DIRTY)
                     {
                         SatoriRegion* region = page->RegionForCardGroup(i);
-                        const int8_t resetValue = region->Generation() == 2 ? Satori::CardState::REMEMBERED : Satori::CardState::EPHEMERAL;
+                        const int8_t resetValue = region->Generation() >= 2 ? Satori::CardState::REMEMBERED : Satori::CardState::EPHEMERAL;
 
                         // clean the group, but must do that before reading the cards.
                         if (Interlocked::CompareExchange(&page->CardGroupState(i), resetValue, Satori::CardState::DIRTY) != Satori::CardState::DIRTY)
@@ -2298,7 +2298,7 @@ void SatoriRecycler::CleanCards()
                         bool considerAllMarked = region->Generation() > m_condemnedGeneration;
 
                         _ASSERTE(Satori::CardState::EPHEMERAL == -1);
-                        const size_t unsetValue = region->Generation() == 2 ? 0 : -1;
+                        const size_t unsetValue = region->Generation() >= 2 ? 0 : -1;
 
                         int8_t* cards = page->CardsForGroup(i);
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
@@ -2409,7 +2409,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                         page->CardGroupScanTicket(i) = currentScanTicket;
 
                         SatoriRegion* region = page->RegionForCardGroup(i);
-                        _ASSERTE(region->Generation() == 2);
+                        _ASSERTE(region->Generation() >= 2);
 
                         _ASSERTE(groupTicket == 0 || currentScanTicket - groupTicket <= 2);
                         int8_t* cards = page->CardsForGroup(i);
@@ -3536,7 +3536,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
     //
 
     RecordOccupancy(curRegion->Generation(), curRegion->Occupancy());
-    if (curRegion->Generation() == 2)
+    if (curRegion->Generation() >= 2)
     {
         PushToTenuredQueues(curRegion);
     }
