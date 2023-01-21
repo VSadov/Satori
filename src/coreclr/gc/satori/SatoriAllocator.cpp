@@ -167,11 +167,15 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 
     if (flags & GC_ALLOC_IMMORTAL)
     {
-        result = AllocImmortal(context, size, flags);
+        return AllocImmortal(context, size, flags);
     }
     else if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
     {
         result = AllocLarge(context, size, flags);
+        if (result != nullptr)
+        {
+            result->SetUnmovable();
+        }
     }
     else if (context->alloc_ptr + size <= context->alloc_limit)
     {
@@ -187,18 +191,12 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
         result = AllocLarge(context, size, flags);
     }
 
-    if (flags & GC_ALLOC_FINALIZE)
+    if (result != nullptr && flags & GC_ALLOC_FINALIZE)
     {
         if (!result->ContainingRegion()->RegisterForFinalization(result))
         {
             return nullptr;
         }
-    }
-
-    if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
-    {
-        // TODO: VS move under same condition above
-        result->SetUnmovable();
     }
 
     return result;
@@ -521,9 +519,6 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
     _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY / 2);
 
     SatoriLockHolder<SatoriLock> holder(&m_immortalAlocLock);
-
-    //TODO: VS alloc context for immortal - to ammortize zeroing.
-
     SatoriRegion* region = m_immortalRegion;
 
     while (true)
@@ -533,11 +528,11 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
             size_t allocRemaining = region->GetAllocRemaining();
             if (allocRemaining >= size)
             {
-                bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
-                SatoriObject* result = (SatoriObject*)region->Allocate(size, zeroInitialize);
+                // we usually get a fresh region early or we ensure it is zero-inited
+                // so we do not need to clear for typically small objects
+                SatoriObject* result = (SatoriObject*)region->Allocate(size, /*zeroInitialize*/ false);
                 if (result)
                 {
-                    result->CleanSyncBlock();
                     context->alloc_bytes_uoh += size;
                     region->SetIndicesForObject(result, result->Start() + size);
 
@@ -569,13 +564,6 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
                 // we have enough free space in the region to continue
                 continue;
             }
-
-            // TODO: VS should not just leak.
-            //       pass it to recycler for keeping
-            //       we may not need to scan them for GC, if they do not have pointers to regular.
-            //       (we might want that eventually)
-            // region->DetachFromContextRelease();
-            // m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
         // get a new regular region.
@@ -587,8 +575,9 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
         }
 
         _ASSERTE(region->NothingMarked());
-
         region->SetGenerationRelease(3);
+        // we usually get a fresh region early or we ensure it is zero-inited
+        region->ZeroInitAndLink(m_immortalRegion);
         m_immortalRegion = region;
     }
 

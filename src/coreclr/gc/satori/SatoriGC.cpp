@@ -582,8 +582,7 @@ void SatoriGC::UnregisterFrozenSegment(segment_handle seg)
 
 bool SatoriGC::IsInFrozenSegment(Object* object)
 {
-    // TODO: VS implement  actual frozen objects.
-    return ((SatoriObject*)object)->IsUnmovable();
+    return ((SatoriObject*)object)->ContainingRegion()->Generation() == 3;
 }
 
 void SatoriGC::ControlEvents(GCEventKeyword keyword, GCEventLevel level)

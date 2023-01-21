@@ -1055,9 +1055,6 @@ Object* AllocateImmortalObject(MethodTable* pMT, size_t objectSize)
     if (pMT->ContainsPointers())
         flags |= GC_ALLOC_CONTAINS_REF;
 
-    // TODO: VS is this needed?
-    flags |= GC_ALLOC_PINNED_OBJECT_HEAP;
-
 #ifdef FEATURE_64BIT_ALIGNMENT
     if (pMT->RequiresAlign8())
     {

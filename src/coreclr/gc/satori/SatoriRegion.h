@@ -64,6 +64,8 @@ public:
     bool CanCoalesceWithNext();
     bool TryCoalesceWithNext();
 
+    void ZeroInitAndLink(SatoriRegion* prev);
+
     static size_t RegionSizeForAlloc(size_t allocSize);
 
     size_t GetAllocStart();

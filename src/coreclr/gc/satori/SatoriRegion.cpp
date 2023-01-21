@@ -519,6 +519,20 @@ bool SatoriRegion::TryDecommit()
     return false;
 }
 
+void SatoriRegion::ZeroInitAndLink(SatoriRegion* prev)
+{
+    if (m_used > (size_t)&m_syncBlock)
+    {
+        memset(&m_syncBlock, 0, m_used - (size_t)&m_syncBlock);
+    }
+
+    m_next = prev;
+    if (prev)
+    {
+        prev->m_prev = this;
+    }
+}
+
 size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
 {
     _ASSERTE(m_containingQueue == nullptr);
