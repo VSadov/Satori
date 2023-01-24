@@ -450,7 +450,7 @@ void SatoriGC::PublishObject(uint8_t* obj)
     // but the region is not parseable until the object has a MethodTable,
     // so we delay taking the region out of generation -1 and passing to recycler
     // until we get here.
-    if (!region->IsAttachedToContext() && region->Generation() < 2)
+    if (!region->IsAttachedToAllocatingOwner() && region->Generation() < 2)
     {
         _ASSERTE(region->Size() > Satori::REGION_SIZE_GRANULARITY);
         region->SetGenerationRelease(1);

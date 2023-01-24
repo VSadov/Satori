@@ -54,6 +54,8 @@ public:
     SatoriWorkChunk* GetWorkChunk();
     void ReturnWorkChunk(SatoriWorkChunk* chunk);
 
+    void DeactivateImmortalRegion();
+
 private:
     SatoriHeap* m_heap;
     SatoriRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
@@ -68,7 +70,6 @@ private:
     SatoriObject* AllocImmortal(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     void TryGetRegularRegion(SatoriRegion*& region);
-
     bool AddMoreWorkChunks();
 
     static int SizeToBucket(size_t size)

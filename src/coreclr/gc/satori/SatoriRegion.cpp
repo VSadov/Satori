@@ -1530,7 +1530,7 @@ tryAgain:
 bool SatoriRegion::RegisterForFinalization(SatoriObject* finalizable)
 {
     _ASSERTE(finalizable->ContainingRegion() == this);
-    _ASSERTE(this->m_hasFinalizables || this->IsAttachedToContext());
+    _ASSERTE(this->m_hasFinalizables || this->IsAttachedToAllocatingOwner());
 
     LockFinalizableTrackers();
 

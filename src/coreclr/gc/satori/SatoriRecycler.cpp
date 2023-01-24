@@ -330,7 +330,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
     // Demoted regions could be pre-marked
     region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrent());
 
-    if (region->IsAttachedToContext())
+    if (region->IsAttachedToAllocatingOwner())
     {
         _ASSERTE(IsBlockingPhase());
         m_condemnedNurseryRegionsCount++;
@@ -1134,6 +1134,9 @@ void SatoriRecycler::DeactivateAllStacks()
     m_currentAllocBytesLiveThreads = 0;
     GCToEEInterface::GcEnumAllocContexts(DeactivateFn, m_heap->Recycler());
     m_totalAllocBytes = m_currentAllocBytesLiveThreads + m_currentAllocBytesDeadThreads;
+
+    // make immortal region parseable, in case we have byrefs pointing to it.
+    m_heap->Allocator()->DeactivateImmortalRegion();
 }
 
 void SatoriRecycler::PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o)
@@ -1296,7 +1299,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         // Concurrent FindObject is unsafe in active regions. While ref may be in a real obj,
         // the path to it from the first obj or prev indexed may cross unparsable ranges.
         // The check must acquire to be sure we check before actually doing FindObject.
-        if (containingRegion->MaybeAttachedToContextAcquire())
+        if (containingRegion->MaybeAttachedToAllocatingOwnerAcquire())
         {
             return;
         }
@@ -2021,7 +2024,7 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                         _ASSERTE(!region->HasMarksSet());
 
                         // allocating region is not parseable.
-                        if (region->MaybeAttachedToContextAcquire())
+                        if (region->MaybeAttachedToAllocatingOwnerAcquire())
                         {
                             continue;
                         }
@@ -2835,7 +2838,7 @@ bool SatoriRecycler::IsRelocatable(SatoriRegion* region)
 {
     if (region->Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2 || // too full
         region->HasPinnedObjects() ||           // pinned cannot be evacuated
-        region->IsAttachedToContext()           // nursery regions do not participate in relocations
+        region->IsAttachedToAllocatingOwner()           // nursery regions do not participate in relocations
         )
     {
         return false;
@@ -2953,7 +2956,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
             _ASSERTE(curRegion->Generation() <= m_condemnedGeneration);
 
             // nursery regions do not participate in relocations
-            if (curRegion->IsAttachedToContext())
+            if (curRegion->IsAttachedToAllocatingOwner())
             {
                 m_stayingRegions->Push(curRegion);
                 continue;
@@ -3428,7 +3431,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
             }
 
             // recycler owns nursery regions only temporarily, we should not keep them.
-            if (curRegion->IsAttachedToContext())
+            if (curRegion->IsAttachedToAllocatingOwner())
             {
                 // when promoting, all nursery regions should be detached
                 _ASSERTE(!m_promoteAllRegions);
@@ -3439,7 +3442,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
 
                 if (curRegion->Occupancy() == 0)
                 {
-                    curRegion->DetachFromContextRelease();
+                    curRegion->DetachFromAlocatingOwnerRelease();
                     curRegion->MakeBlank();
                     m_heap->Allocator()->ReturnRegion(curRegion);
                 }
