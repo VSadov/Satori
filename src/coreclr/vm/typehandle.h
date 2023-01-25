@@ -342,7 +342,7 @@ public:
         if (handle & 1)
         {
             // Clear the "is pinned object" bit from the managed reference
-            *pRef = *(OBJECTREF*)(handle - 1);
+            *pRef = (OBJECTREF)(handle - 1);
             return true;
         }
         return false;
