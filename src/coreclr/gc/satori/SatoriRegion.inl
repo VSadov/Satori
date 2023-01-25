@@ -247,7 +247,7 @@ bool SatoriRegion::Sweep()
     }
 
     m_escapedSize = 0;
-    bool cannotRecycle = this->IsAttachedToContext();
+    bool cannotRecycle = this->IsAttachedToAllocatingOwner();
     bool isEscapeTracking = this->IsEscapeTracking();
     size_t occupancy = 0;
     size_t objCount = 0;
@@ -373,39 +373,39 @@ inline SatoriQueue<SatoriRegion>* SatoriRegion::ContainingQueue()
     return VolatileLoadWithoutBarrier(&m_containingQueue);
 }
 
-inline void SatoriRegion::AttachToContext(SatoriRegion** attachementPoint)
+inline void SatoriRegion::AttachToAllocatingOwner(SatoriRegion** attachementPoint)
 {
-    _ASSERTE(!m_allocationContextAttachmentPoint);
+    _ASSERTE(!m_allocatingOwnerAttachmentPoint);
     _ASSERTE(!*attachementPoint);
 
     *attachementPoint = this;
-    m_allocationContextAttachmentPoint = attachementPoint;
+    m_allocatingOwnerAttachmentPoint = attachementPoint;
 }
 
-inline void SatoriRegion::DetachFromContextRelease()
+inline void SatoriRegion::DetachFromAlocatingOwnerRelease()
 {
-    _ASSERTE(*m_allocationContextAttachmentPoint == this);
+    _ASSERTE(*m_allocatingOwnerAttachmentPoint == this);
 
     if (IsEscapeTracking())
     {
         StopEscapeTracking();
     }
 
-    *m_allocationContextAttachmentPoint = nullptr;
+    *m_allocatingOwnerAttachmentPoint = nullptr;
     // all allocations must be committed prior to detachement.
-    VolatileStore(&m_allocationContextAttachmentPoint, (SatoriRegion**)nullptr);
+    VolatileStore(&m_allocatingOwnerAttachmentPoint, (SatoriRegion**)nullptr);
 }
 
-inline bool SatoriRegion::IsAttachedToContext()
+inline bool SatoriRegion::IsAttachedToAllocatingOwner()
 {
-    return m_allocationContextAttachmentPoint;
+    return m_allocatingOwnerAttachmentPoint;
 }
 
-inline bool SatoriRegion::MaybeAttachedToContextAcquire()
+inline bool SatoriRegion::MaybeAttachedToAllocatingOwnerAcquire()
 {
     // must check reusable level before the attach point, before doing whatever follows
     return VolatileLoad((uint8_t*)&m_reusableFor) ||
-        VolatileLoad(&m_allocationContextAttachmentPoint);
+        VolatileLoad(&m_allocatingOwnerAttachmentPoint);
 }
 
 inline void SatoriRegion::ResetReusableForRelease()
