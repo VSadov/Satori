@@ -330,7 +330,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
     // Demoted regions could be pre-marked
     region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrent());
 
-    if (region->IsAttachedToContext())
+    if (region->IsAttachedToAllocatingOwner())
     {
         _ASSERTE(IsBlockingPhase());
         m_condemnedNurseryRegionsCount++;
@@ -1134,6 +1134,9 @@ void SatoriRecycler::DeactivateAllStacks()
     m_currentAllocBytesLiveThreads = 0;
     GCToEEInterface::GcEnumAllocContexts(DeactivateFn, m_heap->Recycler());
     m_totalAllocBytes = m_currentAllocBytesLiveThreads + m_currentAllocBytesDeadThreads;
+
+    // make immortal region parseable, in case we have byrefs pointing to it.
+    m_heap->Allocator()->DeactivateImmortalRegion();
 }
 
 void SatoriRecycler::PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o)
@@ -1296,7 +1299,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         // Concurrent FindObject is unsafe in active regions. While ref may be in a real obj,
         // the path to it from the first obj or prev indexed may cross unparsable ranges.
         // The check must acquire to be sure we check before actually doing FindObject.
-        if (containingRegion->MaybeAttachedToContextAcquire())
+        if (containingRegion->MaybeAttachedToAllocatingOwnerAcquire())
         {
             return;
         }
@@ -1862,7 +1865,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                         _ASSERTE(!region->HasMarksSet());
 
                         // sometimes we set cards without checking dst generation, but REMEMBERED only has meaning in tenured
-                        if (region->Generation() != 2)
+                        if (region->Generation() < 2)
                         {
                             // This is optimization. Not needed for correctness.
                             // If not dirty, we wipe the group, to not look at this again in the next scans.
@@ -2021,7 +2024,7 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                         _ASSERTE(!region->HasMarksSet());
 
                         // allocating region is not parseable.
-                        if (region->MaybeAttachedToContextAcquire())
+                        if (region->MaybeAttachedToAllocatingOwnerAcquire())
                         {
                             continue;
                         }
@@ -2066,7 +2069,7 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                                                 // cannot mark stuff in thread local regions. just mark as dirty to visit later.
                                                 if (!childRegion->MaybeEscapeTrackingAcquire())
                                                 {
-                                                    if (!child->IsMarked())
+                                                    if (!child->IsMarkedOrOlderThan(2))
                                                     {
                                                         child->SetMarkedAtomic();
                                                         if (!dstChunk || !dstChunk->TryPush(child))
@@ -2154,7 +2157,7 @@ void SatoriRecycler::MarkThroughCards()
                         _ASSERTE(!region->HasMarksSet());
 
                         // sometimes we set cards without checking dst generation, but REMEMBERED only has meaning in tenured
-                        if (region->Generation() != 2)
+                        if (region->Generation() < 2)
                         {
                             // This is optimization. Not needed for correctness.
                             // If not dirty, we wipe the group, to not look at this again in the next scans.
@@ -2286,7 +2289,7 @@ void SatoriRecycler::CleanCards()
                     if (groupState == Satori::CardState::DIRTY)
                     {
                         SatoriRegion* region = page->RegionForCardGroup(i);
-                        const int8_t resetValue = region->Generation() == 2 ? Satori::CardState::REMEMBERED : Satori::CardState::EPHEMERAL;
+                        const int8_t resetValue = region->Generation() >= 2 ? Satori::CardState::REMEMBERED : Satori::CardState::EPHEMERAL;
 
                         // clean the group, but must do that before reading the cards.
                         if (Interlocked::CompareExchange(&page->CardGroupState(i), resetValue, Satori::CardState::DIRTY) != Satori::CardState::DIRTY)
@@ -2298,7 +2301,7 @@ void SatoriRecycler::CleanCards()
                         bool considerAllMarked = region->Generation() > m_condemnedGeneration;
 
                         _ASSERTE(Satori::CardState::EPHEMERAL == -1);
-                        const size_t unsetValue = region->Generation() == 2 ? 0 : -1;
+                        const size_t unsetValue = region->Generation() >= 2 ? 0 : -1;
 
                         int8_t* cards = page->CardsForGroup(i);
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
@@ -2409,7 +2412,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                         page->CardGroupScanTicket(i) = currentScanTicket;
 
                         SatoriRegion* region = page->RegionForCardGroup(i);
-                        _ASSERTE(region->Generation() == 2);
+                        _ASSERTE(region->Generation() >= 2);
 
                         _ASSERTE(groupTicket == 0 || currentScanTicket - groupTicket <= 2);
                         int8_t* cards = page->CardsForGroup(i);
@@ -2835,7 +2838,7 @@ bool SatoriRecycler::IsRelocatable(SatoriRegion* region)
 {
     if (region->Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2 || // too full
         region->HasPinnedObjects() ||           // pinned cannot be evacuated
-        region->IsAttachedToContext()           // nursery regions do not participate in relocations
+        region->IsAttachedToAllocatingOwner()           // nursery regions do not participate in relocations
         )
     {
         return false;
@@ -2953,7 +2956,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
             _ASSERTE(curRegion->Generation() <= m_condemnedGeneration);
 
             // nursery regions do not participate in relocations
-            if (curRegion->IsAttachedToContext())
+            if (curRegion->IsAttachedToAllocatingOwner())
             {
                 m_stayingRegions->Push(curRegion);
                 continue;
@@ -3428,7 +3431,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
             }
 
             // recycler owns nursery regions only temporarily, we should not keep them.
-            if (curRegion->IsAttachedToContext())
+            if (curRegion->IsAttachedToAllocatingOwner())
             {
                 // when promoting, all nursery regions should be detached
                 _ASSERTE(!m_promoteAllRegions);
@@ -3439,7 +3442,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
 
                 if (curRegion->Occupancy() == 0)
                 {
-                    curRegion->DetachFromContextRelease();
+                    curRegion->DetachFromAlocatingOwnerRelease();
                     curRegion->MakeBlank();
                     m_heap->Allocator()->ReturnRegion(curRegion);
                 }
@@ -3536,7 +3539,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
     //
 
     RecordOccupancy(curRegion->Generation(), curRegion->Occupancy());
-    if (curRegion->Generation() == 2)
+    if (curRegion->Generation() >= 2)
     {
         PushToTenuredQueues(curRegion);
     }
