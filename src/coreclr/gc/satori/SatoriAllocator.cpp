@@ -51,7 +51,10 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
         m_queues[i] = new SatoriRegionQueue(QueueKind::Allocator);
     }
 
-    m_WorkChunks = new SatoriWorkList();
+    m_workChunks = new SatoriWorkList();
+
+    m_immortalRegion = nullptr;
+    m_immortalAlocLock.Initialize();
 }
 
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
@@ -162,9 +165,17 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 
     SatoriObject* result;
 
-    if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
+    if (flags & GC_ALLOC_IMMORTAL)
+    {
+        return AllocImmortal(context, size, flags);
+    }
+    else if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
     {
         result = AllocLarge(context, size, flags);
+        if (result != nullptr)
+        {
+            result->SetUnmovable();
+        }
     }
     else if (context->alloc_ptr + size <= context->alloc_limit)
     {
@@ -180,17 +191,12 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
         result = AllocLarge(context, size, flags);
     }
 
-    if (flags & GC_ALLOC_FINALIZE)
+    if (result != nullptr && flags & GC_ALLOC_FINALIZE)
     {
         if (!result->ContainingRegion()->RegisterForFinalization(result))
         {
             return nullptr;
         }
-    }
-
-    if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
-    {
-        result->SetUnmovable();
     }
 
     return result;
@@ -201,7 +207,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
     m_heap->Recycler()->HelpOnce();
     SatoriRegion* region = context->RegularRegion();
 
-    _ASSERTE(region == nullptr || region->IsAttachedToContext());
+    _ASSERTE(region == nullptr || region->IsAttachedToAllocatingOwner());
 
     while (true)
     {
@@ -280,7 +286,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             }
 
             context->alloc_ptr = context->alloc_limit = nullptr;
-            region->DetachFromContextRelease();
+            region->DetachFromAlocatingOwnerRelease();
             m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
@@ -299,7 +305,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
         // <objects allocated>
         // 4) (optional: clear escape tag) Detach       
 
-        region->AttachToContext(&context->RegularRegion());
+        region->AttachToAllocatingOwner(&context->RegularRegion());
         if (SatoriUtil::IsThreadLocalGCEnabled())
         {
             switch (region->ReusableFor())
@@ -434,7 +440,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
                 continue;
             }
 
-            region->DetachFromContextRelease();
+            region->DetachFromAlocatingOwnerRelease();
             m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
@@ -460,7 +466,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
             _ASSERTE(region->NothingMarked());
         }
 
-        region->AttachToContext(&context->LargeRegion());
+        region->AttachToAllocatingOwner(&context->LargeRegion());
         region->SetGenerationRelease(1);
         region->ResetReusableForRelease();
     }
@@ -507,6 +513,84 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     return result;
 }
 
+SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, size_t size, uint32_t flags)
+{
+    // immortal allocs should be way less than region size.
+    _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY / 2);
+
+    SatoriLockHolder<SatoriLock> holder(&m_immortalAlocLock);
+    SatoriRegion* region = m_immortalRegion;
+
+    while (true)
+    {
+        if (region)
+        {
+            size_t allocRemaining = region->GetAllocRemaining();
+            if (allocRemaining >= size)
+            {
+                // we ensure that region is zero-inited
+                // so we do not need to clear here for typically small objects
+                SatoriObject* result = (SatoriObject*)region->Allocate(size, /*zeroInitialize*/ false);
+                if (result)
+                {
+                    context->alloc_bytes_uoh += size;
+                    region->SetIndicesForObject(result, result->Start() + size);
+                }
+                else
+                {
+                    // OOM
+                }
+
+                return result;
+            }
+
+            if (region->IsAllocating())
+            {
+                region->StopAllocating(/* allocPtr */ 0);
+            }
+            else
+            {
+                size_t desiredFreeSpace = size + Satori::MIN_FREE_SIZE;
+                if (region->StartAllocating(desiredFreeSpace))
+                {
+                    // we have enough free space in the region to continue
+                    continue;
+                }
+            }
+        }
+
+        // get a new regular region.
+        region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
+        if (!region)
+        {
+            //OOM
+            return nullptr;
+        }
+
+        _ASSERTE(region->NothingMarked());
+        // Ensure the region is zeroed, to not clear for each allocated (and typically small) object.
+        // And, while at that, link the previous one in case we have a reason to iterate old regions.
+        region->ZeroInitAndLink(m_immortalRegion);
+        if (m_immortalRegion)
+        {
+            m_immortalRegion->DetachFromAlocatingOwnerRelease();
+        }
+
+        region->AttachToAllocatingOwner(&m_immortalRegion);
+        region->SetGenerationRelease(3);
+    }
+
+    return nullptr;
+}
+
+void SatoriAllocator::DeactivateImmortalRegion()
+{
+    if (m_immortalRegion && m_immortalRegion->IsAllocating())
+    {
+        m_immortalRegion->StopAllocating(/* allocPtr */ 0);
+    }
+}
+
 SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
 {
 #if _DEBUG
@@ -518,11 +602,11 @@ SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
         return nullptr;
     }
 #endif
-    SatoriWorkChunk* chunk = m_WorkChunks->TryPop();
+    SatoriWorkChunk* chunk = m_workChunks->TryPop();
 
     while (!chunk && AddMoreWorkChunks())
     {
-        chunk = m_WorkChunks->TryPop();
+        chunk = m_workChunks->TryPop();
     }
 
     _ASSERTE(chunk->Count() == 0);
@@ -532,10 +616,10 @@ SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
 // returns NULL only in OOM case
 SatoriWorkChunk* SatoriAllocator::GetWorkChunk()
 {
-    SatoriWorkChunk* chunk = m_WorkChunks->TryPop();
+    SatoriWorkChunk* chunk = m_workChunks->TryPop();
     while (!chunk && AddMoreWorkChunks())
     {
-        chunk = m_WorkChunks->TryPop();
+        chunk = m_workChunks->TryPop();
     }
 
     _ASSERTE(chunk->Count() == 0);
@@ -559,7 +643,7 @@ bool SatoriAllocator::AddMoreWorkChunks()
         }
 
         SatoriWorkChunk* chunk = SatoriWorkChunk::InitializeAt(mem);
-        m_WorkChunks->Push(chunk);
+        m_workChunks->Push(chunk);
     }
 
     return true;
@@ -568,5 +652,5 @@ bool SatoriAllocator::AddMoreWorkChunks()
 void SatoriAllocator::ReturnWorkChunk(SatoriWorkChunk* chunk)
 {
     _ASSERTE(chunk->Count() == 0);
-    m_WorkChunks->Push(chunk);
+    m_workChunks->Push(chunk);
 }

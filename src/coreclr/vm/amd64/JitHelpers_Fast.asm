@@ -391,9 +391,9 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
     ; TUNING: nonconcurrent and concurrent barriers could be separate pieces of code, but to switch 
     ;         need to suspend EE, not sure if skipping concurrent check would worth that much.
 
-    ; if src is in gen2 and the barrier is not concurrent we do not need to mark cards
+    ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [r8 + 16], 2
-        jne     MarkCards
+        jl      MarkCards
 
     CheckConcurrent:
         cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h

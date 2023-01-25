@@ -57,8 +57,6 @@ OBJECTREF AllocateObject(MethodTable *pMT
 #ifdef FEATURE_COMINTEROP
                          , bool fHandleCom = true
 #endif
-    // TODO: VS this may be unused after immortal objects are implemented.
-                         , bool fUnmovable = false
     );
 
 inline OBJECTREF AllocateObject(MethodTable *pMT
@@ -73,6 +71,8 @@ inline OBJECTREF AllocateObject(MethodTable *pMT
 #endif
         );
 }
+
+Object* AllocateImmortalObject(MethodTable* pMT, size_t objectSize);
 
 extern int StompWriteBarrierEphemeral(bool isRuntimeSuspended);
 extern int StompWriteBarrierResize(bool isRuntimeSuspended, bool bReqUpperBoundsCheck);

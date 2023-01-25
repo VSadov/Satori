@@ -300,9 +300,9 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
 
         jz      CheckConcurrent         // same region, just check if barrier is not concurrent
 
-    // if src is in gen2 and the barrier is not concurrent we do not need to mark cards
+    // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [rdx + 16], 2
-        jne     MarkCards
+        jl     MarkCards
 
     CheckConcurrent:
         cmp     byte ptr [r11], 0

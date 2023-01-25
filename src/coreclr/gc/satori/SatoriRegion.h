@@ -64,6 +64,8 @@ public:
     bool CanCoalesceWithNext();
     bool TryCoalesceWithNext();
 
+    void ZeroInitAndLink(SatoriRegion* prev);
+
     static size_t RegionSizeForAlloc(size_t allocSize);
 
     size_t GetAllocStart();
@@ -87,10 +89,10 @@ public:
     bool MaybeEscapeTrackingAcquire();
     bool IsEscapeTrackedByCurrentThread();
 
-    void AttachToContext(SatoriRegion** attachementPoint);
-    void DetachFromContextRelease();
-    bool IsAttachedToContext();
-    bool MaybeAttachedToContextAcquire();
+    void AttachToAllocatingOwner(SatoriRegion** attachementPoint);
+    void DetachFromAlocatingOwnerRelease();
+    bool IsAttachedToAllocatingOwner();
+    bool MaybeAttachedToAllocatingOwnerAcquire();
 
     void ResetReusableForRelease();
 
@@ -215,7 +217,7 @@ private:
             void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
             int m_generation;
             ReuseLevel m_reusableFor;
-            SatoriRegion** m_allocationContextAttachmentPoint;
+            SatoriRegion** m_allocatingOwnerAttachmentPoint;
 
             size_t m_end;
             size_t m_committed;
