@@ -537,7 +537,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         lsr     x12, x12, #21
         cbz     x12, LOCAL_LABEL(CheckConcurrent) // same region, just check if barrier is not concurrent
 
-    // if src is in gen2 and the barrier is not concurrent we do not need to mark cards
+    // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         and     x2,  x15, #0xFFFFFFFFFFE00000     // source region
         ldr     w12, [x2, 16]
         tbz     x12, #1, LOCAL_LABEL(MarkCards)
