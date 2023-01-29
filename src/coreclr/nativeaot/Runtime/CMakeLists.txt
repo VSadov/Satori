@@ -42,8 +42,9 @@ set(COMMON_RUNTIME_SOURCES
     ${GC_DIR}/gcconfig.cpp
     ${GC_DIR}/gchandletable.cpp
     ${GC_DIR}/gccommon.cpp
-    ${GC_DIR}/gceewks.cpp
-    ${GC_DIR}/gcwks.cpp
+# TODO: VS Satori
+#    ${GC_DIR}/gceewks.cpp
+#    ${GC_DIR}/gcwks.cpp
     ${GC_DIR}/gcscan.cpp
     ${GC_DIR}/handletable.cpp
     ${GC_DIR}/handletablecache.cpp
@@ -54,8 +55,9 @@ set(COMMON_RUNTIME_SOURCES
 )
 
 set(SERVER_GC_SOURCES
-    ${GC_DIR}/gceesvr.cpp
-    ${GC_DIR}/gcsvr.cpp
+# TODO: VS Satori
+#    ${GC_DIR}/gceesvr.cpp
+#    ${GC_DIR}/gcsvr.cpp
 )
 
 set(FULL_RUNTIME_SOURCES
