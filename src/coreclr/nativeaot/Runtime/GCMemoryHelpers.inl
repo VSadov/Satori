@@ -154,6 +154,7 @@ extern "C" {
 }
 static const uint32_t INVALIDGCVALUE = 0xcccccccd;
 
+#if !FEATURE_SATORI_GC
 FORCEINLINE void InlineWriteBarrier(void * dst, void * ref)
 {
     if (((uint8_t*)ref >= g_ephemeral_low) && ((uint8_t*)ref < g_ephemeral_high))
@@ -165,6 +166,7 @@ FORCEINLINE void InlineWriteBarrier(void * dst, void * ref)
             *pCardByte = 0xFF;
     }
 }
+#endif  //!FEATURE_SATORI_GC
 
 #ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
 extern "C" uint32_t* g_card_bundle_table;
@@ -198,6 +200,7 @@ inline static void SoftwareWriteWatchSetDirtyRegion(void* address, size_t length
 }
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 
+#if !FEATURE_SATORI_GC
 FORCEINLINE void InlineCheckedWriteBarrier(void * dst, void * ref)
 {
     // if the dst is outside of the heap (unboxed value classes) then we
@@ -207,6 +210,7 @@ FORCEINLINE void InlineCheckedWriteBarrier(void * dst, void * ref)
 
     InlineWriteBarrier(dst, ref);
 }
+#endif  //!FEATURE_SATORI_GC
 
 FORCEINLINE void InlinedBulkWriteBarrier(void* pMemStart, size_t cbMemSize)
 {

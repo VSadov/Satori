@@ -7,6 +7,7 @@
 
 #include "common.h"
 #include "gcenv.h"
+#include "gcheaputilities.h"
 #include "PalRedhawkCommon.h"
 #include "CommonMacros.inl"
 
@@ -56,6 +57,7 @@ COOP_PINVOKE_CDECL_HELPER(void *, RhpInitMultibyte, (void * mem, int c, size_t s
 //             unaligned, then you must use RhpCopyMultibyteNoGCRefs.
 COOP_PINVOKE_CDECL_HELPER(void *, memcpyGCRefs, (void * dest, const void *src, size_t len))
 {
+    ASSERT(!"unreachable?");
     // null pointers are not allowed (they are checked by RhpCopyMultibyte)
     ASSERT(dest != nullptr);
     ASSERT(src != nullptr);
@@ -78,6 +80,7 @@ COOP_PINVOKE_CDECL_HELPER(void *, memcpyGCRefs, (void * dest, const void *src, s
 //             unaligned, then you must use RhpCopyMultibyteNoGCRefs.
 COOP_PINVOKE_CDECL_HELPER(void *, memcpyGCRefsWithWriteBarrier, (void * dest, const void *src, size_t len))
 {
+    ASSERT(!"unreachable?");
     // null pointers are not allowed (they are checked by RhpCopyMultibyteWithWriteBarrier)
     ASSERT(dest != nullptr);
     ASSERT(src != nullptr);
@@ -93,6 +96,7 @@ COOP_PINVOKE_CDECL_HELPER(void *, memcpyGCRefsWithWriteBarrier, (void * dest, co
 // and if so dispatches to memcpyGCRefsWithWriteBarrier and if not uses traditional memcpy
 COOP_PINVOKE_CDECL_HELPER(void *, memcpyAnyWithWriteBarrier, (void * dest, const void *src, size_t len))
 {
+    ASSERT(!"unreachable?");
     // null pointers are not allowed (they are checked by RhpCopyMultibyteWithWriteBarrier)
     ASSERT(dest != nullptr);
     ASSERT(src != nullptr);
@@ -106,26 +110,64 @@ COOP_PINVOKE_CDECL_HELPER(void *, memcpyAnyWithWriteBarrier, (void * dest, const
     return memcpy(dest, src, len);
 }
 
+#if defined(TARGET_X86) || defined(TARGET_AMD64)
+//
+// Strong memory model. No memory barrier necessary before writing object references into GC heap.
+//
+#define GCHeapMemoryBarrier()
+#else
+//
+// The weak memory model forces us to raise memory barriers before writing object references into GC heap. This is required
+// for both security and to make most managed code written against strong memory model work. Under normal circumstances, this memory
+// barrier is part of GC write barrier. However, there are a few places in the VM that set cards manually without going through
+// regular GC write barrier. These places need to this macro. This macro is usually used before memcpy-like operation followed
+// by SetCardsAfterBulkCopy.
+//
+#define GCHeapMemoryBarrier() MemoryBarrier()
+#endif
+
 // Move memory, in a way that is compatible with a move onto the heap, but
 // does not require the destination pointer to be on the heap.
 
 COOP_PINVOKE_HELPER(void, RhBulkMoveWithWriteBarrier, (uint8_t* pDest, uint8_t* pSrc, size_t cbDest))
 {
+#if    FEATURE_SATORI_GC
+    bool localAssignment = false;
+    if (cbDest >= sizeof(size_t))
+    {
+        // TODO: VS should be defined as heap API
+        //       perhaps the whole BulkMoveWithWriteBarrier deal.
+        // localAssignment =  GCHeapUtilities::GetGCHeap()->CheckEscapeRange((size_t)pDest, (size_t)pSrc, cbDest);
+    }
+
+    if (!localAssignment)
+    {
+        GCHeapMemoryBarrier();
+    }
+#endif
+
     if (pDest <= pSrc || pSrc + cbDest <= pDest)
         InlineForwardGCSafeCopy(pDest, pSrc, cbDest);
     else
         InlineBackwardGCSafeCopy(pDest, pSrc, cbDest);
 
+#if    FEATURE_SATORI_GC
+    // TODO: VS should be defined as heap API
+    // GCHeapUtilities::GetGCHeap()->BulkWriteBarrier(pDest, cbDest);
+#else
     InlinedBulkWriteBarrier(pDest, cbDest);
+#endif
 }
 
 void GCSafeCopyMemoryWithWriteBarrier(void * dest, const void *src, size_t len)
 {
+    ASSERT(!"unreachable?");
     InlineForwardGCSafeCopy(dest, src, len);
     InlinedBulkWriteBarrier(dest, len);
 }
 
 void REDHAWK_CALLCONV RhpBulkWriteBarrier(void* pMemStart, uint32_t cbMemSize)
 {
+    ASSERT(!"unreachable?");
     InlinedBulkWriteBarrier(pMemStart, cbMemSize);
 }

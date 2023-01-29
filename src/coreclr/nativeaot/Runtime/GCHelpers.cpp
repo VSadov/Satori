@@ -277,6 +277,9 @@ COOP_PINVOKE_HELPER(void, RhGetMemoryInfo, (RH_GH_MEMORY_INFO* pData, int kind))
 
 COOP_PINVOKE_HELPER(int64_t, RhGetTotalAllocatedBytes, ())
 {
+#if FEATURE_SATORI_GC
+    return GCHeapUtilities::GetGCHeap()->GetTotalAllocatedBytes();
+#else
     uint64_t allocated_bytes = GCHeapUtilities::GetGCHeap()->GetTotalAllocatedBytes() - RedhawkGCInterface::GetDeadThreadsNonAllocBytes();
 
     // highest reported allocated_bytes. We do not want to report a value less than that even if unused_bytes has increased.
@@ -293,6 +296,7 @@ COOP_PINVOKE_HELPER(int64_t, RhGetTotalAllocatedBytes, ())
     }
 
     return current_high;
+#endif
 }
 
 using EnumerateConfigurationValuesCallback = void (*)(void* context, void* name, void* publicKey, GCConfigurationType type, int64_t data);
@@ -303,6 +307,8 @@ EXTERN_C NATIVEAOT_API void __cdecl RhEnumerateConfigurationValues(void* configu
     pHeap->EnumerateConfigurationValues(configurationContext, callback);
 }
 
+
+// TODO: VS in Satori just call nonprecise helper after gen1 gc.
 EXTERN_C NATIVEAOT_API int64_t __cdecl RhGetTotalAllocatedBytesPrecise()
 {
     int64_t allocated;
