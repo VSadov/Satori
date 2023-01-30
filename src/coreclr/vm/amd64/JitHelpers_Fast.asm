@@ -49,7 +49,6 @@ endif
 
 extern JIT_InternalThrow:proc
 
-; TODO: VS Check
 ifndef FEATURE_SATORI_GC
 
 ; Mark start of the code region that we patch at runtime
