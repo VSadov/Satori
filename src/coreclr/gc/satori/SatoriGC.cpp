@@ -673,3 +673,135 @@ void SatoriGC::EnumerateConfigurationValues(void* context, ConfigurationValueFun
 void SatoriGC::UpdateFrozenSegment(segment_handle seg, uint8_t* allocated, uint8_t* committed)
 {
 }
+
+bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
+{
+    SatoriRegion* curRegion = (SatoriRegion*)GCToEEInterface::GetAllocContext()->gc_reserved_1;
+    if (!curRegion || !curRegion->IsEscapeTracking())
+    {
+        // not tracking escapes, not a local assignment.
+        return false;
+    }
+
+    _ASSERTE(curRegion->IsEscapeTrackedByCurrentThread());
+
+    // if dst is within the curRegion and is not exposed, we are done
+    if (((dst ^ curRegion->Start()) >> 21) == 0)
+    {
+        if (!curRegion->AnyExposed(dst, len))
+        {
+            // thread-local assignment
+            return true;
+        }
+    }
+
+    if (!m_heap->PageForAddressChecked(dst))
+    {
+        // dest not in heap, must be stack, so, local
+        return true;
+    }
+
+    if (((src ^ curRegion->Start()) >> 21) == 0)
+    {
+        // if src is in current region, the elements could be escaping
+        if (!curRegion->AnyExposed(src, len))
+        {
+            // one-element array copy is embarrasingly common. specialcase that.
+            if (len == sizeof(size_t))
+            {
+                SatoriObject* obj = *(SatoriObject**)src;
+                if (obj->ContainingRegion() == curRegion)
+                {
+                    curRegion->EscapeRecursively(obj);
+                }
+            }
+            else
+            {
+                SatoriObject* containingSrcObj = curRegion->FindObject(src);
+                containingSrcObj->ForEachObjectRef(
+                    [&](SatoriObject** ref)
+                    {
+                        SatoriObject* child = *ref;
+                        if (child->ContainingRegion() == curRegion)
+                        {
+                            curRegion->EscapeRecursively(child);
+                        }
+                    },
+                    src,
+                    src + len
+                );
+            }
+        }
+
+        return false;
+    }
+
+    if (m_heap->PageForAddressChecked(src))
+    {
+        // src is not in current region but in heap,
+        // it can't escape anything that belong to current thread, but it is not local.
+        return false;
+    }
+
+    // This is a very rare case where we are copying refs out of non-heap area like stack or native heap.
+    // We do not have a containing type and that is somewhat inconvenient.
+    // 
+    // There are not many scenarios that lead here. In particular, boxing uses a newly
+    // allocated and not yet escaped target, so it does not end up here.
+    // One possible way to get here is a copy-back after a reflection call with a boxed nullable
+    // argument that happen to escape.
+    // 
+    // We could handle this is by concervatively escaping any value that matches an unescaped pointer in curRegion.
+    // However, considering how uncommon this is, we will just give up tracking.
+    curRegion->StopEscapeTracking();
+    return false;
+}
+
+void SatoriGC::SetCardsAfterBulkCopy(size_t dst, size_t src, size_t len)
+{
+    SatoriPage* page = m_heap->PageForAddressChecked(dst);
+    if (page)
+    {
+        SatoriRecycler* recycler = m_heap->Recycler();
+        if (!recycler->IsBarrierConcurrent())
+        {
+            page->SetCardsForRange(dst, dst + len);
+        }
+
+        if (recycler->IsBarrierConcurrent())
+        {
+            page->DirtyCardsForRangeUnordered(dst, dst + len);
+        }
+    }
+}
+
+void SatoriGC::BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteCount)
+{
+    if (dst == src || byteCount == 0)
+        return;
+
+    // Make sure everything is pointer aligned
+    _ASSERTE(((size_t)dst & (sizeof(size_t) - 1)) == 0);
+    _ASSERTE(((size_t)src & (sizeof(size_t) - 1)) == 0);
+    _ASSERTE(((size_t)byteCount & (sizeof(size_t) - 1)) == 0);
+
+    bool localAssignment = false;
+    if (byteCount >= sizeof(size_t))
+    {
+        localAssignment = CheckEscapeSatoriRange((size_t)dst, (size_t)src, byteCount);
+    }
+
+    if (!localAssignment)
+    {
+#if !defined(TARGET_X86) && !defined(TARGET_AMD64)
+        MemoryBarrier();
+#endif
+    }
+
+    // NOTE! memmove needs to copy with size_t granularity
+    // I do not see how it would not, since everything is aligned.
+    // If we need to handle unaligned moves, we may need to write our own memmove
+    memmove(dst, src, byteCount);
+
+    SetCardsAfterBulkCopy((size_t)dst, (size_t)src, byteCount);
+}

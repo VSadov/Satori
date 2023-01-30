@@ -456,8 +456,8 @@ bool SatoriRecycler::HelpOnceCore()
     if (!m_isBarrierConcurrent)
     {
         // toggling is a PW fence.
-        ToggleWriteBarrier(true, /* eeSuspended */ false);
         m_isBarrierConcurrent = true;
+        ToggleWriteBarrier(true, /* eeSuspended */ false);
     }
 
     if (MarkOwnStackAndDrainQueues(deadline))

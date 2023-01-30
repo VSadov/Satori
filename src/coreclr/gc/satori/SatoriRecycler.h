@@ -82,6 +82,11 @@ public:
     void ScheduleMarkAsChildRanges(SatoriObject* o);
     bool ScheduleUpdateAsChildRanges(SatoriObject* o);
 
+    inline bool IsBarrierConcurrent()
+    {
+        return m_isBarrierConcurrent;
+    }
+
 private:
     SatoriHeap* m_heap;
 
@@ -140,7 +145,7 @@ private:
     bool m_isLowLatencyMode;
     bool m_promoteAllRegions;  
     bool m_allowPromotingRelocations;
-    bool m_isBarrierConcurrent;
+    volatile bool m_isBarrierConcurrent;
 
     int m_prevCondemnedGeneration;
 

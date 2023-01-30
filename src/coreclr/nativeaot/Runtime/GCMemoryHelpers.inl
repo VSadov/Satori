@@ -214,6 +214,10 @@ FORCEINLINE void InlineCheckedWriteBarrier(void * dst, void * ref)
 
 FORCEINLINE void InlinedBulkWriteBarrier(void* pMemStart, size_t cbMemSize)
 {
+#if FEATURE_SATORI_GC
+    ASSERT(!"InlinedBulkWriteBarrier, should use GC helper instead.");
+#endif
+
     // Check whether the writes were even into the heap. If not there's no card update required.
     // Also if the size is smaller than a pointer, no write barrier is required.
     // This case can occur with universal shared generic code where the size
