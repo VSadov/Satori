@@ -156,7 +156,7 @@ public:
     virtual void UpdateFrozenSegment(segment_handle seg, uint8_t* allocated, uint8_t* committed) override;
 
     // Inherited via IGCHeapInternal
-    virtual void BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteCount);
+    virtual void BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteCount) override;
 };
 
 #endif
