@@ -669,7 +669,16 @@ namespace System
 
         public static long GetTotalAllocatedBytes(bool precise = false)
         {
+#if FEATURE_SATORI_GC
+            if (precise)
+            {
+                GC.Collect(1, GCCollectionMode.Forced, blocking: true);
+            }
+
+            return RuntimeImports.RhGetTotalAllocatedBytes();
+#else
             return precise ? RuntimeImports.RhGetTotalAllocatedBytesPrecise() : RuntimeImports.RhGetTotalAllocatedBytes();
+#endif
         }
 
         /// <summary>Gets garbage collection memory information.</summary>

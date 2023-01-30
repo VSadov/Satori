@@ -308,7 +308,6 @@ EXTERN_C NATIVEAOT_API void __cdecl RhEnumerateConfigurationValues(void* configu
 }
 
 
-// TODO: VS in Satori just call nonprecise helper after gen1 gc.
 EXTERN_C NATIVEAOT_API int64_t __cdecl RhGetTotalAllocatedBytesPrecise()
 {
     int64_t allocated;

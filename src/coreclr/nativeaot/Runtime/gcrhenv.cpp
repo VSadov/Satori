@@ -322,8 +322,9 @@ void RedhawkGCInterface::InitAllocContext(gc_alloc_context * pAllocContext)
 // static
 void RedhawkGCInterface::ReleaseAllocContext(gc_alloc_context * pAllocContext)
 {
-    // TODO: VS no need to record this in Satori . GC tracks this.
+#if FEATURE_SATORI_GC
     s_DeadThreadsNonAllocBytes += pAllocContext->alloc_limit - pAllocContext->alloc_ptr;
+#endif
     GCHeapUtilities::GetGCHeap()->FixAllocContext(pAllocContext, NULL, NULL);
 }
 
