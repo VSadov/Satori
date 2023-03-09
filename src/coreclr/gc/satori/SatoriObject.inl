@@ -63,9 +63,29 @@ FORCEINLINE SatoriObject* SatoriObject::Next()
     return (SatoriObject*)End();
 }
 
+inline bool SatoriObject::IsExternal()
+{
+#if FEATURE_SATORI_EXTERNAL_OBJECTS
+    return !SatoriHeap::IsInHeap(this->Start());
+#else
+    _ASSERTE(SatoriHeap::IsInHeap(this->Start()));
+    return false;
+#endif
+}
+
 inline SatoriRegion* SatoriObject::ContainingRegion()
 {
+#if FEATURE_SATORI_EXTERNAL_OBJECTS
+    _ASSERTE(!IsExternal() || this == nullptr);
+#endif
+
     return (SatoriRegion*)((size_t)this & ~(Satori::REGION_SIZE_GRANULARITY - 1));
+}
+
+
+inline bool SatoriObject::SameRegion(SatoriRegion* otherRegion)
+{
+    return (((size_t)this ^ (size_t)otherRegion) >> Satori::REGION_BITS) == 0;
 }
 
 inline bool SatoriObject::IsFree()

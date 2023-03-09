@@ -710,7 +710,7 @@ bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
             if (len == sizeof(size_t))
             {
                 SatoriObject* obj = *(SatoriObject**)src;
-                if (obj->ContainingRegion() == curRegion)
+                if (obj->SameRegion(curRegion))
                 {
                     curRegion->EscapeRecursively(obj);
                 }
@@ -722,7 +722,7 @@ bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
                     [&](SatoriObject** ref)
                     {
                         SatoriObject* child = *ref;
-                        if (child->ContainingRegion() == curRegion)
+                        if (child->SameRegion(curRegion))
                         {
                             curRegion->EscapeRecursively(child);
                         }
