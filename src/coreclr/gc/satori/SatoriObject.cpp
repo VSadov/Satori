@@ -44,6 +44,11 @@ void SatoriObject::Initialize()
 
 void SatoriObject::EscapeCheckOnHandleCreation()
 {
+    if (IsExternal())
+    {
+        return;
+    }
+
     SatoriRegion* region = ContainingRegion();
     if (region->IsEscapeTrackedByCurrentThread())
     {

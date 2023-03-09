@@ -25,12 +25,12 @@ Object* FrozenObjectHeapManager::TryAllocateObject(PTR_MethodTable type, size_t 
         THROWS;
         MODE_COOPERATIVE;
     }
-    CONTRACTL_END
+        CONTRACTL_END
 
 
 #ifndef FEATURE_BASICFREEZE
-    // GC is required to support frozen segments
-    return nullptr;
+        // GC is required to support frozen segments
+        return nullptr;
 #else // FEATURE_BASICFREEZE
 
     _ASSERT(type != nullptr);
@@ -50,7 +50,7 @@ Object* FrozenObjectHeapManager::TryAllocateObject(PTR_MethodTable type, size_t 
         return nullptr;
     }
 
-#if FEATURE_SATORI_GC
+#if defined (FEATURE_SATORI_GC) && !defined(FEATURE_SATORI_EXTERNAL_OBJECTS)
     return AllocateImmortalObject(type, objectSize);
 #endif
 

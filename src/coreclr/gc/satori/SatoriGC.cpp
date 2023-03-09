@@ -186,6 +186,12 @@ int SatoriGC::WaitForFullGCComplete(int millisecondsTimeout)
 unsigned SatoriGC::WhichGeneration(Object* obj)
 {
     SatoriObject* so = (SatoriObject*)obj;
+    if (so->IsExternal())
+    {
+        // never collected -> 3
+        return 3;
+    }
+
     return (unsigned)so->ContainingRegion()->Generation();
 }
 
@@ -267,14 +273,27 @@ bool SatoriGC::RegisterForFinalization(int gen, Object* obj)
     SatoriObject* so = (SatoriObject*)obj;
     _ASSERTE(so->RawGetMethodTable()->HasFinalizer());
 
+    if (so->IsExternal())
+    {
+        // noop
+        return true;
+    }
+
     if (so->IsFinalizationSuppressed())
     {
         so->UnSuppressFinalization();
         return true;
     }
     else
-    {        
-        return so->ContainingRegion()->RegisterForFinalization(so);
+    {
+        SatoriRegion* region = so->ContainingRegion();
+        if (region->Generation() == 3)
+        {
+            // no need to register immortal objects
+            return true;
+        }
+
+        return region->RegisterForFinalization(so);
     }
 }
 
@@ -316,12 +335,12 @@ HRESULT SatoriGC::Initialize()
 // actually checks if object is considered reachable as a result of a marking phase.
 bool SatoriGC::IsPromoted(Object* object)
 {
-    _ASSERTE(object == nullptr || SatoriHeap::IsInHeap((size_t)object));
     SatoriObject* o = (SatoriObject*)object;
 
     // objects outside of the collected generation (including null) are considered marked.
     // (existing behavior)
     return o == nullptr ||
+        o->IsExternal() ||
         o->IsMarkedOrOlderThan(m_heap->Recycler()->GetCondemnedGeneration());
 }
 
@@ -572,7 +591,12 @@ bool SatoriGC::StressHeap(gc_alloc_context* acontext)
 segment_handle SatoriGC::RegisterFrozenSegment(segment_info* pseginfo)
 {
     // N/A
+    // non-null means success;
+#if FEATURE_SATORI_EXTERNAL_OBJECTS
+    return (segment_handle)1;
+#else
     return NULL;
+#endif
 }
 
 void SatoriGC::UnregisterFrozenSegment(segment_handle seg)
@@ -580,9 +604,21 @@ void SatoriGC::UnregisterFrozenSegment(segment_handle seg)
     // N/A
 }
 
+void SatoriGC::UpdateFrozenSegment(segment_handle seg, uint8_t* allocated, uint8_t* committed)
+{
+    // N/A
+}
+
 bool SatoriGC::IsInFrozenSegment(Object* object)
 {
-    return ((SatoriObject*)object)->ContainingRegion()->Generation() == 3;
+    // is never collected (immortal)
+    SatoriObject* so = (SatoriObject*)object;
+    if (so->IsExternal())
+    {
+        return true;
+    }
+
+    return (unsigned)so->ContainingRegion()->Generation() == 3;
 }
 
 void SatoriGC::ControlEvents(GCEventKeyword keyword, GCEventLevel level)
@@ -668,10 +704,6 @@ int64_t SatoriGC::GetTotalPauseDuration()
 void SatoriGC::EnumerateConfigurationValues(void* context, ConfigurationValueFunc configurationValueFunc)
 {
     GCConfig::EnumerateConfigurationValues(context, configurationValueFunc);
-}
-
-void SatoriGC::UpdateFrozenSegment(segment_handle seg, uint8_t* allocated, uint8_t* committed)
-{
 }
 
 bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)

@@ -1181,6 +1181,11 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     MarkContext* context = (MarkContext*)sc->_unused1;
     SatoriObject* o = (SatoriObject*)location;
 
+    if (o->IsExternal())
+    {
+        return;
+    }
+
     if (flags & GC_CALL_INTERIOR)
     {
         // byrefs may point to stack, use checked here
@@ -1275,6 +1280,11 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     SatoriRegion* containingRegion;
     MarkContext* context = (MarkContext*)sc->_unused1;
     SatoriObject* o = (SatoriObject*)location;
+
+    if (o->IsExternal())
+    {
+        return;
+    }
 
     if (flags & GC_CALL_INTERIOR)
     {
@@ -1557,7 +1567,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
     auto markChildFn = [&](SatoriObject** ref)
     {
         SatoriObject* child = VolatileLoadWithoutBarrier(ref);
-        if (child)
+        if (child && !child->IsExternal())
         {
             objectCount++;
             SatoriRegion* childRegion = child->ContainingRegion();
@@ -1741,7 +1751,9 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
     auto markChildFn = [&](SatoriObject** ref)
     {
         SatoriObject* child = *ref;
-        if (child && !child->IsMarkedOrOlderThan(m_condemnedGeneration))
+        if (child &&
+            !child->IsExternal() &&
+            !child->IsMarkedOrOlderThan(m_condemnedGeneration))
         {
             child->SetMarkedAtomic();
             // put more work, if found, into dstChunk
@@ -1916,7 +1928,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                                     [&](SatoriObject** ref)
                                     {
                                         SatoriObject* child = VolatileLoadWithoutBarrier(ref);
-                                        if (child)
+                                        if (child && !child->IsExternal())
                                         {
                                             SatoriRegion* childRegion = child->ContainingRegion();
                                             if (!childRegion->MaybeEscapeTrackingAcquire())
@@ -2063,7 +2075,7 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                                         [&](SatoriObject** ref)
                                         {
                                             SatoriObject* child = VolatileLoadWithoutBarrier(ref);
-                                            if (child)
+                                            if (child && !child->IsExternal())
                                             {
                                                 SatoriRegion* childRegion = child->ContainingRegion();
                                                 // cannot mark stuff in thread local regions. just mark as dirty to visit later.
@@ -2219,7 +2231,9 @@ void SatoriRecycler::MarkThroughCards()
                                     [&](SatoriObject** ref)
                                     {
                                         SatoriObject* child = VolatileLoadWithoutBarrier(ref);
-                                        if (child && !child->IsMarkedOrOlderThan(1))
+                                        if (child &&
+                                            !child->IsExternal() &&
+                                            !child->IsMarkedOrOlderThan(1))
                                         {
                                             child->SetMarkedAtomic();
                                             if (!dstChunk || !dstChunk->TryPush(child))
@@ -2343,7 +2357,9 @@ void SatoriRecycler::CleanCards()
                                         [&](SatoriObject** ref)
                                         {
                                             SatoriObject* child = *ref;
-                                            if (child && !child->IsMarkedOrOlderThan(m_condemnedGeneration))
+                                            if (child &&
+                                                !child->IsExternal() &&
+                                                !child->IsMarkedOrOlderThan(m_condemnedGeneration))
                                             {
                                                 child->SetMarkedAtomic();
                                                 if (!dstChunk || !dstChunk->TryPush(child))
@@ -2451,7 +2467,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                     {
                                         // prevent re-reading o, someone else could be doing the same update.
                                         SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
-                                        if (child)
+                                        if (child && !child->IsExternal())
                                         {
                                             ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
                                             if (ptr < 0)

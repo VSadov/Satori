@@ -1370,10 +1370,12 @@ bool IsInHeapSatori(void* ptr)
 void CheckEscapeSatori(Object** dst, Object* ref)
 {
     SatoriObject* obj = (SatoriObject*)ref;
-    SatoriRegion* region = obj->ContainingRegion();
+    if (!obj || obj->IsExternal())
+        return;
 
     // we should be the owner of the region to care about escapes
-    if (region && region->IsEscapeTrackedByCurrentThread())
+    SatoriRegion* region = obj->ContainingRegion();
+    if (region->IsEscapeTrackedByCurrentThread())
     {
         if ((((size_t)dst ^ (size_t)ref) >> 21) == 0 &&
             !(region->IsExposed((SatoriObject**)dst)))
@@ -1400,7 +1402,7 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
 #if FEATURE_SATORI_GC
 
     SatoriObject* obj = (SatoriObject*)OBJECTREFToObject(ref);
-    if (!obj)
+    if (!obj || obj->IsExternal())
         return;
 
     // check for obj in the same region or in gen2

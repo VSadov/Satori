@@ -625,7 +625,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
             {
                 // prevent re-reading o, UpdatePointersThroughCards could be doing the same update.
                 SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
-                if (child)
+                if (child && !child->IsExternal())
                 {
                     ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
                     if (ptr < 0)
