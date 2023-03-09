@@ -356,9 +356,20 @@ LEAF_ENTRY RhpAssignRef, _TEXT
     align 16
     ; check for escaping assignment
     ; 1) check if we own the source region
+ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+        mov     rax, rdx
+        shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
+        add     rax, [g_card_bundle_table] ; fetch the page byte map
+        cmp     byte ptr [rax], 0
+        je      JustAssign              ; src not in heap
+endif
+
         mov     r8, rdx
         and     r8, 0FFFFFFFFFFE00000h  ; source region
-        jz      JustAssign              ; assigning null   
+ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
+        jz      JustAssign              ; assigning null
+endif
+
         mov     rax,  gs:[30h]          ; thread tag, TEB on NT
         cmp     qword ptr [r8], rax     
         jne     AssignAndMarkCards      ; not local to this thread

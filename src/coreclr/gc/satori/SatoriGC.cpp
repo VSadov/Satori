@@ -316,7 +316,7 @@ HRESULT SatoriGC::Initialize()
 // actually checks if object is considered reachable as a result of a marking phase.
 bool SatoriGC::IsPromoted(Object* object)
 {
-    _ASSERTE(object == nullptr || m_heap->IsHeapAddress((size_t)object));
+    _ASSERTE(object == nullptr || SatoriHeap::IsInHeap((size_t)object));
     SatoriObject* o = (SatoriObject*)object;
 
     // objects outside of the collected generation (including null) are considered marked.
@@ -328,7 +328,7 @@ bool SatoriGC::IsPromoted(Object* object)
 bool SatoriGC::IsHeapPointer(void* object, bool small_heap_only)
 {
     //small_heap_only is unused - there is no special heap for large objects.
-    return m_heap->IsHeapAddress((size_t)object);
+    return SatoriHeap::IsInHeap((size_t)object);
 }
 
 unsigned SatoriGC::GetCondemnedGeneration()
@@ -695,7 +695,7 @@ bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
         }
     }
 
-    if (!m_heap->PageForAddressChecked(dst))
+    if (!SatoriHeap::IsInHeap(dst))
     {
         // dest not in heap, must be stack, so, local
         return true;
@@ -736,7 +736,7 @@ bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
         return false;
     }
 
-    if (m_heap->PageForAddressChecked(src))
+    if (SatoriHeap::IsInHeap(src))
     {
         // src is not in current region but in heap,
         // it can't escape anything that belong to current thread, but it is not local.

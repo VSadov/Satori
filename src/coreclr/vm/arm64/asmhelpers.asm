@@ -536,13 +536,9 @@ Exit
 ;   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 ;
     WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
-        ldr  x12,  wbs_highest_address
-        cmp  x14, x12
-        bhi  NotInHeap
-    
-        ldr     x12, wbs_card_table
-        lsr     x17, x14, #30
-        ldr     x12, [x12, x17, lsl #3]
+        ldr     x12, wbs_card_bundle_table
+        add     x12, x12, x14, lsr #30
+        ldrb    w12, [x12]
         cbnz    x12, JIT_WriteBarrier
 
 NotInHeap
@@ -564,7 +560,16 @@ NotInHeap
     WRITE_BARRIER_ENTRY JIT_WriteBarrier
     ; check for escaping assignment
     ; 1) check if we own the source region
-        cbz     x15, JustAssign                 ; assigning null   
+#ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+        ldr     x12, wbs_card_bundle_table
+        add     x12, x12, x15, lsr #30
+        ldrb    w12, [x12]
+        cbz     x12, JustAssign
+#endif
+
+#ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
+        cbz     x15, JustAssign                 ; assigning null
+#endif
         and     x12,  x15, #0xFFFFFFFFFFE00000  ; source region
         ldr     x12, [x12]                      ; region tag
         cmp     x12, x18                        ; x18 - TEB

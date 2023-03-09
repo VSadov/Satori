@@ -211,6 +211,7 @@ convert_to_absolute_path(ARCH_SOURCES_DIR ${ARCH_SOURCES_DIR})
 include_directories(${ARCH_SOURCES_DIR})
 
 add_definitions(-DFEATURE_SATORI_GC)
+add_definitions(-DFEATURE_SATORI_EXTERNAL_OBJECTS)
 add_definitions(-DFEATURE_BASICFREEZE)
 add_definitions(-DFEATURE_CONSERVATIVE_GC)
 add_definitions(-DFEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP)

@@ -470,13 +470,9 @@ WRITE_BARRIER_END JIT_WriteBarrier
 //   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 //
 WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
-    ldr  x12,  LOCAL_LABEL(wbs_highest_address)
-    cmp  x14, x12
-    bhi  LOCAL_LABEL(NotInHeap)
-    
-    ldr     x12, LOCAL_LABEL(wbs_card_table)
-    lsr     x17, x14, #30
-    ldr     x12, [x12, x17, lsl #3]
+    ldr     x12, LOCAL_LABEL(wbs_card_bundle_table)
+    add     x12, x12, x14, lsr #30
+    ldrb    w12, [x12]
     cbnz    x12, C_FUNC(JIT_WriteBarrier)
 
 LOCAL_LABEL(NotInHeap):
@@ -498,7 +494,16 @@ WRITE_BARRIER_END JIT_CheckedWriteBarrier
 WRITE_BARRIER_ENTRY JIT_WriteBarrier
     // check for escaping assignment
     // 1) check if we own the source region
-        cbz     x15, LOCAL_LABEL(JustAssign)    // assigning null   
+#ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+        ldr     x12, LOCAL_LABEL(wbs_card_bundle_table)
+        add     x12, x12, x15, lsr #30
+        ldrb    w12, [x12]
+        cbz     x12, LOCAL_LABEL(JustAssign)
+#endif
+
+#ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
+        cbz     x15, LOCAL_LABEL(JustAssign)    // assigning null
+#endif
         and     x12,  x15, #0xFFFFFFFFFFE00000  // source region
         ldr     x12, [x12]                      // region tag
 #ifdef TARGET_OSX
