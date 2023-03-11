@@ -115,11 +115,13 @@ Object* SatoriGC::GetNextFinalizable()
         // transient failure to enqueue finalizables in ephemeral GC is unobservable since objects
         // could be promoted nondeterministicaly and stay alive anyways.
         // with gen2 we need to see a clean collection before we can claim there is nothing pending.
-        if (queue->OverflowedGen() == 2)
-        {
-            m_heap->Recycler()->Collect(2, true, true);
-            f = queue->TryGetNextItem();
-        }
+
+        // TODO: VS fix. perhaps move to WPF?
+        //if (queue->OverflowedGen() == 2)
+        //{
+        //    m_heap->Recycler()->Collect(2, true, true);
+        //    f = queue->TryGetNextItem();
+        //}
     }
 
     return f;
