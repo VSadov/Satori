@@ -468,7 +468,6 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         jb      AssignAndMarkCards            ; source is already escaped.
 
         ; save rcx, rdx, r8 and have enough stack for the callee
-        push rax
         push rcx
         push rdx
         push r8
@@ -489,15 +488,12 @@ LEAF_END RhpAssignRef, _TEXT
 ;   rdx - object
 ;
 LEAF_ENTRY RhpCheckedAssignRef, _TEXT
-    ; See if this is in GCHeap
-    cmp     rcx, [g_highest_address]
-    ja      NotInHeap
-
-    mov     r9 , [g_card_table]     ; fetch the page map
-    mov     rax, rcx
-    shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
-    cmp     qword ptr [r9 + rax * 8], 0
-    jne     RhpAssignRef
+        ; See if this is in GCHeap
+        mov     rax, rcx
+        shr     rax, 30                    ; round to page size ( >> PAGE_BITS )
+        add     rax, [g_card_bundle_table] ; fetch the page byte map
+        cmp     byte ptr [rax], 0
+        jne     RhpAssignRef
 
 NotInHeap:
 ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
@@ -523,13 +519,10 @@ LEAF_ENTRY RhpByRefAssignRef, _TEXT
         add     rsi, 8h
 
         ; See if assignment is into heap
-        cmp     rcx, [g_highest_address]
-        ja      NotInHeap               ; not in heap
-
-        mov     r9 , [g_card_table]     ; fetch the page map
         mov     rax, rcx
-        shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
-        cmp     qword ptr [r9 + rax * 8], 0
+        shr     rax, 30                    ; round to page size ( >> PAGE_BITS )
+        add     rax, [g_card_bundle_table] ; fetch the page byte map
+        cmp     byte ptr [rax], 0
         jne     RhpAssignRef
 
     align 16
@@ -543,11 +536,30 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
     ;; afterwards and we can leave rdx unaltered ready for the GC write barrier below.
     mov             rax, r8
 
+    ; check if dst is in heap
+        mov     r8, rcx
+        shr     r8, 30                    ; round to page size ( >> PAGE_BITS )
+        add     r8, [g_card_bundle_table] ; fetch the page byte map
+        cmp     byte ptr [r8], 0
+        je      JustAssign              ; dst not in heap
+
     ; check for escaping assignment
     ; 1) check if we own the source region
+ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+        mov     r8, rdx
+        shr     r8, 30                  ; round to page size ( >> PAGE_BITS )
+        add     r8, [g_card_bundle_table] ; fetch the page byte map
+        cmp     byte ptr [r8], 0
+        je      JustAssign              ; src not in heap
+endif
+
         mov     r8, rdx
         and     r8, 0FFFFFFFFFFE00000h  ; source region
-        jz      JustAssign              ; assigning null   
+
+ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
+        jz      JustAssign              ; assigning null
+endif
+
         mov     r11,  gs:[30h]          ; thread tag, TEB on NT
         cmp     qword ptr [r8], r11     
         jne     AssignAndMarkCards      ; not local to this thread
@@ -669,11 +681,29 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
     ;; afterwards and we can leave rdx unaltered ready for the GC write barrier below.
     mov             rax, rdx
 
+        ; check if dst is in heap
+        mov     r8, rcx
+        shr     r8, 30                    ; round to page size ( >> PAGE_BITS )
+        add     r8, [g_card_bundle_table] ; fetch the page byte map
+        cmp     byte ptr [r8], 0
+        je      JustAssign              ; dst not in heap
+
     ; check for escaping assignment
     ; 1) check if we own the source region
+ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+        mov     r8, rdx
+        shr     r8, 30                 ; round to page size ( >> PAGE_BITS )
+        add     r8, [g_card_bundle_table] ; fetch the page byte map
+        cmp     byte ptr [r8], 0
+        je      JustAssign              ; src not in heap
+endif
+
         mov     r8, rdx
         and     r8, 0FFFFFFFFFFE00000h  ; source region
-        jz      JustAssign              ; assigning null   
+
+ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
+        jz      JustAssign              ; assigning null
+endif
         mov     r11,  gs:[30h]          ; thread tag, TEB on NT
         cmp     qword ptr [r8], r11     
         jne     AssignAndMarkCards      ; not local to this thread

@@ -41,7 +41,8 @@ static Thread* g_RuntimeInitializingThread;
 
 PInvokeTransitionFrame* Thread::GetTransitionFrame()
 {
-    if (ThreadStore::GetSuspendingThread() == this)
+    if (ThreadStore::GetSuspendingThread() == this ||
+        ThreadStore::GetCurrentThread() == this)
     {
         // This thread is in cooperative mode, so we grab the deferred frame
         // which is the frame from the most

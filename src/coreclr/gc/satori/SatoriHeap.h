@@ -80,7 +80,12 @@ public:
     static bool IsInHeap(size_t address)
     {
         size_t mapIndex = address >> Satori::PAGE_BITS;
-        return s_pageByteMap[mapIndex];
+        if (s_pageByteMap[mapIndex] == 0)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     SatoriRegion* RegionForAddressChecked(size_t address);

@@ -408,7 +408,7 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
 
 bool IsHelperThread()
 {
-    return GCToEEInterface::GetThread() == nullptr;
+    return GCToEEInterface::WasCurrentThreadCreatedByGC();
 }
 
 int64_t SatoriRecycler::HelpQuantum()
@@ -653,7 +653,7 @@ int SatoriRecycler::MaxHelpers()
 {
     if (IsBlockingPhase())
     {
-        return GCToOSInterface::GetTotalProcessorCount() - 1;
+        return 0; // GCToOSInterface::GetTotalProcessorCount() - 1;
     }
 
     int helperCount = SatoriUtil::MaxHelpersCount();
@@ -749,31 +749,31 @@ bool SatoriRecycler::IsBlockingPhase()
 
 void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 {
-    int generation = 0;
+    //int generation = 0;
 
-    if (m_gen1AddedSinceLastCollection > m_gen1Budget)
-    {
-        generation = 1;
-    }
+    //if (m_gen1AddedSinceLastCollection > m_gen1Budget)
+    //{
+    //    generation = 1;
+    //}
 
-    size_t currentAddedEstimate = m_gen2AddedSinceLastCollection +
-        m_gen1AddedSinceLastCollection / EPH_SURV_TARGET;
+    //size_t currentAddedEstimate = m_gen2AddedSinceLastCollection +
+    //    m_gen1AddedSinceLastCollection / EPH_SURV_TARGET;
 
-    if (currentAddedEstimate > m_totalBudget)
-    {
-        generation = 2;
-    }
+    //if (currentAddedEstimate > m_totalBudget)
+    //{
+    //    generation = 2;
+    //}
 
-    // just make sure gen2 happens eventually. 
-    if (m_gcCount[1] - m_gen1CountAtLastGen2 > 64)
-    {
-        generation = 2;
-    }
+    //// just make sure gen2 happens eventually. 
+    //if (m_gcCount[1] - m_gen1CountAtLastGen2 > 64)
+    //{
+    //    generation = 2;
+    //}
 
-    if (generation != 0)
-    {
-        TryStartGC(generation, reason);
-    }
+    //if (generation != 0)
+    //{
+    //    TryStartGC(generation, reason);
+    //}
 
     HelpOnce();
 }
@@ -1181,11 +1181,6 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     MarkContext* context = (MarkContext*)sc->_unused1;
     SatoriObject* o = (SatoriObject*)location;
 
-    if (o->IsExternal())
-    {
-        return;
-    }
-
     if (flags & GC_CALL_INTERIOR)
     {
         // byrefs may point to stack, use checked here
@@ -1201,6 +1196,10 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
         {
             return;
         }
+    }
+    else if (o->IsExternal())
+    {
+        return;
     }
 
     if (o->ContainingRegion()->Generation() <= context->m_condemnedGeneration)
@@ -1281,11 +1280,6 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     MarkContext* context = (MarkContext*)sc->_unused1;
     SatoriObject* o = (SatoriObject*)location;
 
-    if (o->IsExternal())
-    {
-        return;
-    }
-
     if (flags & GC_CALL_INTERIOR)
     {
         // byrefs may point to stack, use checked here
@@ -1322,6 +1316,11 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     }
     else
     {
+        if (o->IsExternal())
+        {
+            return;
+        }
+
         containingRegion = o->ContainingRegion();
         // can't mark in regions which are tracking escapes, bitmap is in use
         if (containingRegion->MaybeEscapeTrackingAcquire())
@@ -1352,20 +1351,20 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
     gc_alloc_context* aContext = GCToEEInterface::GetAllocContext();
 
     // NB: helper threads do not have contexts, so we must check
-    if (aContext)
-    {
-        int threadScanTicket = VolatileLoadWithoutBarrier(&aContext->alloc_count);
-        int currentScanTicket = GetRootScanTicket();
-        if (threadScanTicket != currentScanTicket)
-        {
-            // claim our own stack for scanning
-            if (Interlocked::CompareExchange(&aContext->alloc_count, currentScanTicket, threadScanTicket) == threadScanTicket)
-            {
-                MaybeAskForHelp();
-                MarkOwnStack(aContext, &c);
-            }
-        }
-    }
+    //if (aContext)
+    //{
+    //    int threadScanTicket = VolatileLoadWithoutBarrier(&aContext->alloc_count);
+    //    int currentScanTicket = GetRootScanTicket();
+    //    if (threadScanTicket != currentScanTicket)
+    //    {
+    //        // claim our own stack for scanning
+    //        if (Interlocked::CompareExchange(&aContext->alloc_count, currentScanTicket, threadScanTicket) == threadScanTicket)
+    //        {
+    //            MaybeAskForHelp();
+    //            MarkOwnStack(aContext, &c);
+    //        }
+    //    }
+    //}
 
     // in blocking case we go through demoted together with marking all stacks
     // in concurrent case we do it here, since going through demoted does not need EE stopped.

@@ -234,19 +234,17 @@ inline void SatoriObject::ForEachObjectRef(F lambda, bool includeCollectibleAllo
     CGCDescSeries* cur = map->GetHighestSeries();
 
     // GetNumSeries is actually signed.
-    // Negative value means the pattern repeats -numSeries times such as in a case of arrays
+    // Negative value means the pattern repeats componentNum times (struct arrays)
     ptrdiff_t numSeries = (ptrdiff_t)map->GetNumSeries();
     if (numSeries >= 0)
     {
         CGCDescSeries* last = map->GetLowestSeries();
 
-        // series size is offset by the object size
+        // series size is offset by the object size, so need to compensate for that.
         size_t size = mt->GetBaseSize();
-
-        // object arrays are handled here too, so need to compensate for that.
         if (mt->HasComponentSize())
         {
-            size += (size_t)((ArrayBase*)this)->GetNumComponents() * sizeof(size_t);
+            size += (size_t)((ArrayBase*)this)->GetNumComponents() * mt->RawGetComponentSize();
         }
 
         do
@@ -309,19 +307,17 @@ inline void SatoriObject::ForEachObjectRef(F lambda, size_t start, size_t end)
     CGCDescSeries* cur = map->GetHighestSeries();
 
     // GetNumSeries is actually signed.
-    // Negative value means the pattern repeats -numSeries times such as in a case of arrays
+    // Negative value means the pattern repeats componentNum times (struct arrays)
     ptrdiff_t cnt = (ptrdiff_t)map->GetNumSeries();
     if (cnt >= 0)
     {
         CGCDescSeries* last = map->GetLowestSeries();
 
-        // series size is offset by the object size
+        // series size is offset by the object size, so need to compensate for that.
         size_t size = mt->GetBaseSize();
-
-        // object arrays are handled here too, so need to compensate for that.
         if (mt->HasComponentSize())
         {
-            size += (size_t)((ArrayBase*)this)->GetNumComponents() * sizeof(size_t);
+            size += (size_t)((ArrayBase*)this)->GetNumComponents() * mt->RawGetComponentSize();
         }
 
         do
