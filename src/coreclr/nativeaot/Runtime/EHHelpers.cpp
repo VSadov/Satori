@@ -281,8 +281,10 @@ EXTERN_C void* RhpRethrow2   = NULL;
 #endif
 
 EXTERN_C void * RhpAssignRefAVLocation;
+EXTERN_C void * RhpAssignRefAVLocationNotHeap;
 EXTERN_C void * RhpCheckedAssignRefAVLocation;
 EXTERN_C void * RhpCheckedLockCmpXchgAVLocation;
+EXTERN_C void * RhpCheckedLockCmpXchgAVLocationNotHeap;
 EXTERN_C void * RhpCheckedXchgAVLocation;
 EXTERN_C void * RhpLockCmpXchg32AVLocation;
 EXTERN_C void * RhpLockCmpXchg64AVLocation;
@@ -301,8 +303,10 @@ static bool InWriteBarrierHelper(uintptr_t faultingIP)
     static uintptr_t writeBarrierAVLocations[] =
     {
         (uintptr_t)&RhpAssignRefAVLocation,
+        (uintptr_t)&RhpAssignRefAVLocationNotHeap,
         (uintptr_t)&RhpCheckedAssignRefAVLocation,
         (uintptr_t)&RhpCheckedLockCmpXchgAVLocation,
+        (uintptr_t)&RhpCheckedLockCmpXchgAVLocationNotHeap,
         (uintptr_t)&RhpCheckedXchgAVLocation,
         (uintptr_t)&RhpLockCmpXchg32AVLocation,
         (uintptr_t)&RhpLockCmpXchg64AVLocation,

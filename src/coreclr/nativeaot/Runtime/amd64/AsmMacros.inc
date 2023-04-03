@@ -419,5 +419,8 @@ endif
 
 ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 EXTERN g_write_watch_table  : QWORD
+EXTERN g_sw_ww_enabled_for_gc_heap  : BYTE
 endif
+
+REPRET      TEXTEQU <DB 0F3h, 0C3h>
 

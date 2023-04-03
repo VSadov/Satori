@@ -40,7 +40,8 @@ static Thread* g_RuntimeInitializingThread;
 
 PInvokeTransitionFrame* Thread::GetTransitionFrame()
 {
-    if (ThreadStore::GetSuspendingThread() == this)
+    if (ThreadStore::GetSuspendingThread() == this ||
+        ThreadStore::GetCurrentThread() == this)
     {
         // This thread is in cooperative mode, so we grab the deferred frame
         // which is the frame from the most
@@ -358,7 +359,8 @@ void Thread::Destroy()
                 RhHandleFree(m_pThreadLocalModuleStatics[i]);
             }
         }
-        delete[] m_pThreadLocalModuleStatics;
+
+        PalVirtualFree(m_pThreadLocalModuleStatics, 0, MEM_RELEASE);
     }
 
 #ifdef STRESS_LOG
@@ -935,6 +937,12 @@ bool Thread::IsHijacked()
     return m_pvHijackedReturnAddress != NULL;
 }
 
+void* Thread::GetHijackedReturnAddress()
+{
+    ASSERT(ThreadStore::GetCurrentThread() == this);
+    return m_pvHijackedReturnAddress;
+}
+
 void Thread::SetState(ThreadStateFlags flags)
 {
     PalInterlockedOr(&m_ThreadStateFlags, flags);
@@ -1296,7 +1304,7 @@ bool Thread::SetThreadStaticStorageForModule(Object * pStorage, uint32_t moduleI
             return false;
         }
 
-        PTR_PTR_VOID pThreadLocalModuleStatics = new (nothrow) PTR_VOID[newSize];
+        PTR_PTR_VOID pThreadLocalModuleStatics =(PTR_PTR_VOID)PalVirtualAlloc(NULL, newSize * sizeof(size_t), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         if (pThreadLocalModuleStatics == NULL)
         {
             return false;
@@ -1307,7 +1315,7 @@ bool Thread::SetThreadStaticStorageForModule(Object * pStorage, uint32_t moduleI
         if (m_pThreadLocalModuleStatics != NULL)
         {
             memcpy(pThreadLocalModuleStatics, m_pThreadLocalModuleStatics, sizeof(PTR_VOID) * m_numThreadLocalModuleStatics);
-            delete[] m_pThreadLocalModuleStatics;
+            PalVirtualFree(m_pThreadLocalModuleStatics, 0, MEM_RELEASE);
         }
 
         m_pThreadLocalModuleStatics = pThreadLocalModuleStatics;

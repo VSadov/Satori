@@ -79,35 +79,35 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_perfCounterFrequencyMHz = GCToOSInterface::QueryPerformanceFrequency() / 1000;
 
     m_heap = heap;
-    m_trimmer = new SatoriTrimmer(heap);
+    m_trimmer = new (nothrow) SatoriTrimmer(heap);
 
-    m_ephemeralRegions = new SatoriRegionQueue(QueueKind::RecyclerEphemeral);
-    m_ephemeralFinalizationTrackingRegions = new SatoriRegionQueue(QueueKind::RecyclerEphemeralFinalizationTracking);
-    m_tenuredRegions = new SatoriRegionQueue(QueueKind::RecyclerTenured);
-    m_tenuredFinalizationTrackingRegions = new SatoriRegionQueue(QueueKind::RecyclerTenuredFinalizationTracking);
+    m_ephemeralRegions = new (nothrow) SatoriRegionQueue(QueueKind::RecyclerEphemeral);
+    m_ephemeralFinalizationTrackingRegions = new (nothrow) SatoriRegionQueue(QueueKind::RecyclerEphemeralFinalizationTracking);
+    m_tenuredRegions = new (nothrow) SatoriRegionQueue(QueueKind::RecyclerTenured);
+    m_tenuredFinalizationTrackingRegions = new (nothrow) SatoriRegionQueue(QueueKind::RecyclerTenuredFinalizationTracking);
 
-    m_finalizationPendingRegions = new SatoriRegionQueue(QueueKind::RecyclerFinalizationPending);
+    m_finalizationPendingRegions = new (nothrow) SatoriRegionQueue(QueueKind::RecyclerFinalizationPending);
 
-    m_stayingRegions = new SatoriRegionQueue(QueueKind::RecyclerStaying);
-    m_relocatingRegions = new SatoriRegionQueue(QueueKind::RecyclerRelocating);
-    m_relocatedRegions = new SatoriRegionQueue(QueueKind::RecyclerRelocated);
-    m_relocatedToHigherGenRegions = new SatoriRegionQueue(QueueKind::RecyclerRelocatedToHigherGen);
+    m_stayingRegions = new (nothrow) SatoriRegionQueue(QueueKind::RecyclerStaying);
+    m_relocatingRegions = new (nothrow) SatoriRegionQueue(QueueKind::RecyclerRelocating);
+    m_relocatedRegions = new (nothrow) SatoriRegionQueue(QueueKind::RecyclerRelocated);
+    m_relocatedToHigherGenRegions = new (nothrow) SatoriRegionQueue(QueueKind::RecyclerRelocatedToHigherGen);
 
     for (int i = 0; i < Satori::FREELIST_COUNT; i++)
     {
-        m_relocationTargets[i] = new SatoriRegionQueue(QueueKind::RecyclerRelocationTarget);
+        m_relocationTargets[i] = new (nothrow) SatoriRegionQueue(QueueKind::RecyclerRelocationTarget);
     }
 
-    m_deferredSweepRegions = new SatoriRegionQueue(QueueKind::RecyclerDeferredSweep);
+    m_deferredSweepRegions = new (nothrow) SatoriRegionQueue(QueueKind::RecyclerDeferredSweep);
     m_deferredSweepCount = 0;
     m_gen1AddedSinceLastCollection = 0;
     m_gen2AddedSinceLastCollection = 0;
 
-    m_reusableRegions = new SatoriRegionQueue(QueueKind::RecyclerReusable);
-    m_reusableRegionsAlternate = new SatoriRegionQueue(QueueKind::RecyclerReusable);
-    m_demotedRegions = new SatoriRegionQueue(QueueKind::RecyclerDemoted);
+    m_reusableRegions = new (nothrow) SatoriRegionQueue(QueueKind::RecyclerReusable);
+    m_reusableRegionsAlternate = new (nothrow) SatoriRegionQueue(QueueKind::RecyclerReusable);
+    m_demotedRegions = new (nothrow) SatoriRegionQueue(QueueKind::RecyclerDemoted);
 
-    m_workList = new SatoriWorkList();
+    m_workList = new (nothrow) SatoriWorkList();
     m_gcState = GC_STATE_NONE;
     m_isBarrierConcurrent = false;
 
@@ -408,7 +408,7 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
 
 bool IsHelperThread()
 {
-    return GCToEEInterface::GetThread() == nullptr;
+    return GCToEEInterface::WasCurrentThreadCreatedByGC();
 }
 
 int64_t SatoriRecycler::HelpQuantum()
@@ -456,8 +456,8 @@ bool SatoriRecycler::HelpOnceCore()
     if (!m_isBarrierConcurrent)
     {
         // toggling is a PW fence.
-        ToggleWriteBarrier(true, /* eeSuspended */ false);
         m_isBarrierConcurrent = true;
+        ToggleWriteBarrier(true, /* eeSuspended */ false);
     }
 
     if (MarkOwnStackAndDrainQueues(deadline))
@@ -551,14 +551,14 @@ void SatoriRecycler::ConcurrentPhasePrepFn(gc_alloc_context* gcContext, void* pa
 
         if (region->IsDemoted())
         {
-            recycler->MarkDemoted(region, *markContext);
+            recycler->MarkDemoted(region, markContext);
         }
     }
 
     region = context->LargeRegion();
     if (region && region->IsDemoted())
     {
-        recycler->MarkDemoted(region, *markContext);
+        recycler->MarkDemoted(region, markContext);
     }
 }
 
@@ -686,7 +686,11 @@ void SatoriRecycler::AskForHelp()
         totalHelpers < MaxHelpers() &&
         Interlocked::CompareExchange(&m_totalHelpers, totalHelpers + 1, totalHelpers) == totalHelpers)
     {
-        GCToEEInterface::CreateThread(HelperThreadFn, this, false, "Satori GC Helper Thread");
+        if (!GCToEEInterface::CreateThread(HelperThreadFn, this, false, "Satori GC Helper Thread"))
+        {
+            Interlocked::Decrement(&m_totalHelpers);
+            return;
+        }
     }
 
     if (!m_gateSignaled && Interlocked::CompareExchange(&m_gateSignaled, 1, 0) == 0)
@@ -1178,13 +1182,13 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
         return;
     }
 
-    MarkContext* context = (MarkContext*)sc->_unused1;
+    MarkContext* markContext = (MarkContext*)sc->_unused1;
     SatoriObject* o = (SatoriObject*)location;
 
     if (flags & GC_CALL_INTERIOR)
     {
         // byrefs may point to stack, use checked here
-        SatoriRegion* containingRegion = context->m_heap->RegionForAddressChecked(location);
+        SatoriRegion* containingRegion = markContext->m_heap->RegionForAddressChecked(location);
         if (!containingRegion ||
             (isConservative && (containingRegion->Generation() < 0)))
         {
@@ -1197,13 +1201,17 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
             return;
         }
     }
+    else if (o->IsExternal())
+    {
+        return;
+    }
 
-    if (o->ContainingRegion()->Generation() <= context->m_condemnedGeneration)
+    if (o->ContainingRegion()->Generation() <= markContext->m_condemnedGeneration)
     {
         if (!o->IsMarked())
         {
             o->SetMarkedAtomic();
-            context->PushToMarkQueues(o);
+            markContext->PushToMarkQueues(o);
         }
 
         if (flags & GC_CALL_PINNED)
@@ -1226,9 +1234,9 @@ void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t
     SatoriObject* o = (SatoriObject*)location;
     if (flags & GC_CALL_INTERIOR)
     {
-        MarkContext* context = (MarkContext*)sc->_unused1;
+        MarkContext* markContext = (MarkContext*)sc->_unused1;
         // byrefs may point to stack, use checked here
-        SatoriRegion* containingRegion = context->m_heap->RegionForAddressChecked(location);
+        SatoriRegion* containingRegion = markContext->m_heap->RegionForAddressChecked(location);
         if (!containingRegion ||
             (isConservative && (containingRegion->Generation() < 0)))
         {
@@ -1273,13 +1281,13 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
 #endif //DEBUG_DestroyedHandleValue
 
     SatoriRegion* containingRegion;
-    MarkContext* context = (MarkContext*)sc->_unused1;
+    MarkContext* markContext = (MarkContext*)sc->_unused1;
     SatoriObject* o = (SatoriObject*)location;
 
     if (flags & GC_CALL_INTERIOR)
     {
         // byrefs may point to stack, use checked here
-        containingRegion = context->m_heap->RegionForAddressChecked(location);
+        containingRegion = markContext->m_heap->RegionForAddressChecked(location);
         if (!containingRegion)
         {
             return;
@@ -1312,6 +1320,11 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     }
     else
     {
+        if (o->IsExternal())
+        {
+            return;
+        }
+
         containingRegion = o->ContainingRegion();
         // can't mark in regions which are tracking escapes, bitmap is in use
         if (containingRegion->MaybeEscapeTrackingAcquire())
@@ -1321,12 +1334,12 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     }
 
     // no need for fences here. a published obj cannot become gen2 concurrently. 
-    if (containingRegion->Generation() <= context->m_condemnedGeneration)
+    if (containingRegion->Generation() <= markContext->m_condemnedGeneration)
     {
         if (!o->IsMarked())
         {
             o->SetMarkedAtomic();
-            context->PushToMarkQueues(o);
+            markContext->PushToMarkQueues(o);
         }
 
         if (flags & GC_CALL_PINNED)
@@ -1338,12 +1351,11 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
 
 bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
 {
-    MarkContext c = MarkContext(this);
-    gc_alloc_context* aContext = GCToEEInterface::GetAllocContext();
+    MarkContext markContext = MarkContext(this);
 
-    // NB: helper threads do not have contexts, so we must check
-    if (aContext)
+    if (!IsHelperThread())
     {
+        gc_alloc_context* aContext = GCToEEInterface::GetAllocContext();
         int threadScanTicket = VolatileLoadWithoutBarrier(&aContext->alloc_count);
         int currentScanTicket = GetRootScanTicket();
         if (threadScanTicket != currentScanTicket)
@@ -1352,7 +1364,7 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
             if (Interlocked::CompareExchange(&aContext->alloc_count, currentScanTicket, threadScanTicket) == threadScanTicket)
             {
                 MaybeAskForHelp();
-                MarkOwnStack(aContext, &c);
+                MarkOwnStack(aContext, &markContext);
             }
         }
     }
@@ -1368,14 +1380,14 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
             MaybeAskForHelp();
             do
             {
-                MarkDemoted(curRegion, c);
+                MarkDemoted(curRegion, &markContext);
                 PushToEphemeralQueuesIgnoringDemoted(curRegion);
 
                 if (deadline && ((GCToOSInterface::QueryPerformanceCounter() - deadline) > 0))
                 {
-                    if (c.m_WorkChunk != nullptr)
+                    if (markContext.m_WorkChunk != nullptr)
                     {
-                        m_workList->Push(c.m_WorkChunk);
+                        m_workList->Push(markContext.m_WorkChunk);
                     }
 
                     return true;
@@ -1387,17 +1399,17 @@ bool SatoriRecycler::MarkOwnStackAndDrainQueues(int64_t deadline)
     bool revisit = false;
     if (isBlockingPhase)
     {
-        DrainMarkQueues(c.m_WorkChunk);
+        DrainMarkQueues(markContext.m_WorkChunk);
     }
     else
     {
-        revisit = DrainMarkQueuesConcurrent(c.m_WorkChunk, deadline);
+        revisit = DrainMarkQueuesConcurrent(markContext.m_WorkChunk, deadline);
     }
 
     return revisit;
 }
 
-void SatoriRecycler::MarkOwnStack(gc_alloc_context* aContext, MarkContext* mc)
+void SatoriRecycler::MarkOwnStack(gc_alloc_context* aContext, MarkContext* markContext)
 {
     bool isBlockingPhase = IsBlockingPhase();
     if (!isBlockingPhase)
@@ -1411,7 +1423,7 @@ void SatoriRecycler::MarkOwnStack(gc_alloc_context* aContext, MarkContext* mc)
 
     ScanContext sc;
     sc.promotion = TRUE;
-    sc._unused1 = mc;
+    sc._unused1 = markContext;
 
     if (SatoriUtil::IsConservativeMode())
         GCToEEInterface::GcScanCurrentStackRoots(isBlockingPhase ? MarkFn<true> : MarkFnConcurrent<true>, &sc);
@@ -1419,7 +1431,7 @@ void SatoriRecycler::MarkOwnStack(gc_alloc_context* aContext, MarkContext* mc)
         GCToEEInterface::GcScanCurrentStackRoots(isBlockingPhase ? MarkFn<false> : MarkFnConcurrent<false>, &sc);
 }
 
-void SatoriRecycler::MarkDemoted(SatoriRegion* curRegion, MarkContext& c)
+void SatoriRecycler::MarkDemoted(SatoriRegion* curRegion, MarkContext* markContext)
 {
     _ASSERTE(curRegion->Generation() == 1);
 
@@ -1435,7 +1447,7 @@ void SatoriRecycler::MarkDemoted(SatoriRegion* curRegion, MarkContext& c)
             {
                 SatoriObject* o = gen2Objects->Item(i);
                 o->SetMarkedAtomic();
-                c.PushToMarkQueues(o);
+                markContext->PushToMarkQueues(o);
             }
 
             gen2Objects = gen2Objects->Next();
@@ -1452,8 +1464,8 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
     // mark roots for all stacks
     ScanContext sc;
     sc.promotion = TRUE;
-    MarkContext c = MarkContext(this);
-    sc._unused1 = &c;
+    MarkContext markContext = MarkContext(this);
+    sc._unused1 = &markContext;
 
     bool isBlockingPhase = IsBlockingPhase();
 
@@ -1481,7 +1493,7 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
                 if (!o->IsMarkedOrOlderThan(m_condemnedGeneration))
                 {
                     o->SetMarkedAtomic();
-                    c.PushToMarkQueues(o);
+                    markContext.PushToMarkQueues(o);
                 }
             }
         );
@@ -1497,7 +1509,7 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
             MaybeAskForHelp();
             do
             {
-                MarkDemoted(curRegion, c);
+                MarkDemoted(curRegion, &markContext);
                 PushToEphemeralQueuesIgnoringDemoted(curRegion);
             } while ((curRegion = m_demotedRegions->TryPop()));
         }
@@ -1516,7 +1528,7 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
             {
                 if (curRegion->IsDemoted() && curRegion->ReusableFor() != SatoriRegion::ReuseLevel::Gen0)
                 {
-                    MarkDemoted(curRegion, c);
+                    MarkDemoted(curRegion, &markContext);
                 }
 
                 if (curRegion->HasFreeSpaceInTopBucket())
@@ -1531,9 +1543,9 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
         }
     }
 
-    if (c.m_WorkChunk != nullptr)
+    if (markContext.m_WorkChunk != nullptr)
     {
-        m_workList->Push(c.m_WorkChunk);
+        m_workList->Push(markContext.m_WorkChunk);
     }
 }
 
@@ -1557,7 +1569,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
     auto markChildFn = [&](SatoriObject** ref)
     {
         SatoriObject* child = VolatileLoadWithoutBarrier(ref);
-        if (child)
+        if (child && !child->IsExternal())
         {
             objectCount++;
             SatoriRegion* childRegion = child->ContainingRegion();
@@ -1741,7 +1753,9 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
     auto markChildFn = [&](SatoriObject** ref)
     {
         SatoriObject* child = *ref;
-        if (child && !child->IsMarkedOrOlderThan(m_condemnedGeneration))
+        if (child &&
+            !child->IsExternal() &&
+            !child->IsMarkedOrOlderThan(m_condemnedGeneration))
         {
             child->SetMarkedAtomic();
             // put more work, if found, into dstChunk
@@ -1916,7 +1930,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                                     [&](SatoriObject** ref)
                                     {
                                         SatoriObject* child = VolatileLoadWithoutBarrier(ref);
-                                        if (child)
+                                        if (child && !child->IsExternal())
                                         {
                                             SatoriRegion* childRegion = child->ContainingRegion();
                                             if (!childRegion->MaybeEscapeTrackingAcquire())
@@ -2063,7 +2077,7 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                                         [&](SatoriObject** ref)
                                         {
                                             SatoriObject* child = VolatileLoadWithoutBarrier(ref);
-                                            if (child)
+                                            if (child && !child->IsExternal())
                                             {
                                                 SatoriRegion* childRegion = child->ContainingRegion();
                                                 // cannot mark stuff in thread local regions. just mark as dirty to visit later.
@@ -2219,7 +2233,9 @@ void SatoriRecycler::MarkThroughCards()
                                     [&](SatoriObject** ref)
                                     {
                                         SatoriObject* child = VolatileLoadWithoutBarrier(ref);
-                                        if (child && !child->IsMarkedOrOlderThan(1))
+                                        if (child &&
+                                            !child->IsExternal() &&
+                                            !child->IsMarkedOrOlderThan(1))
                                         {
                                             child->SetMarkedAtomic();
                                             if (!dstChunk || !dstChunk->TryPush(child))
@@ -2343,7 +2359,9 @@ void SatoriRecycler::CleanCards()
                                         [&](SatoriObject** ref)
                                         {
                                             SatoriObject* child = *ref;
-                                            if (child && !child->IsMarkedOrOlderThan(m_condemnedGeneration))
+                                            if (child &&
+                                                !child->IsExternal() &&
+                                                !child->IsMarkedOrOlderThan(m_condemnedGeneration))
                                             {
                                                 child->SetMarkedAtomic();
                                                 if (!dstChunk || !dstChunk->TryPush(child))
@@ -2451,7 +2469,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                     {
                                         // prevent re-reading o, someone else could be doing the same update.
                                         SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
-                                        if (child)
+                                        if (child && !child->IsExternal())
                                         {
                                             ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
                                             if (ptr < 0)
@@ -2497,6 +2515,7 @@ bool SatoriRecycler::MarkHandles(int64_t deadline)
         {
             // there is work for us, so maybe there is more
             MaybeAskForHelp();
+            _ASSERTE(m_condemnedGeneration > 0);
 
             sc.thread_number = p;
             GCScan::GcScanHandles(
@@ -2589,7 +2608,7 @@ void SatoriRecycler::ScanAllFinalizableRegionsWorker()
     }
 }
 
-void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContext* c)
+void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContext* markContext)
 {
     SatoriRegion* region = queue->TryPop();
     if (region)
@@ -2640,7 +2659,7 @@ void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContex
                             else
                             {
                                 finalizable->SetMarkedAtomic();
-                                c->PushToMarkQueues(finalizable);
+                                markContext->PushToMarkQueues(finalizable);
 
                                 if (m_heap->FinalizationQueue()->TryScheduleForFinalization(finalizable))
                                 {
@@ -2790,7 +2809,7 @@ void SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker()
     {
         ScanContext sc;
         sc.promotion = TRUE;
-        // no need for context. we do not create more work here.
+        // no need for scan context. we do not create more work here.
         sc._unused1 = nullptr;
 
         SatoriHandlePartitioner::ForEachUnscannedPartition(

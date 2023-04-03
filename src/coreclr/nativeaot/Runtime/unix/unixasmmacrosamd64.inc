@@ -3,6 +3,11 @@
 
 #define C_VAR(Name) rip + C_FUNC(Name)
 
+.macro REPRET
+        .byte 0xf3
+        .byte 0xc3
+.endm
+
 .macro NESTED_ENTRY Name, Section, Handler
         LEAF_ENTRY \Name, \Section
         .ifnc \Handler, NoHandler

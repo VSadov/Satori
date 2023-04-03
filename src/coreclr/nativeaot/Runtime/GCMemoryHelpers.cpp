@@ -7,6 +7,7 @@
 
 #include "common.h"
 #include "gcenv.h"
+#include "gcheaputilities.h"
 #include "PalRedhawkCommon.h"
 #include "CommonMacros.inl"
 
@@ -56,6 +57,7 @@ COOP_PINVOKE_CDECL_HELPER(void *, RhpInitMultibyte, (void * mem, int c, size_t s
 //             unaligned, then you must use RhpCopyMultibyteNoGCRefs.
 COOP_PINVOKE_CDECL_HELPER(void *, memcpyGCRefs, (void * dest, const void *src, size_t len))
 {
+    ASSERT(!"unreachable?");
     // null pointers are not allowed (they are checked by RhpCopyMultibyte)
     ASSERT(dest != nullptr);
     ASSERT(src != nullptr);
@@ -78,6 +80,7 @@ COOP_PINVOKE_CDECL_HELPER(void *, memcpyGCRefs, (void * dest, const void *src, s
 //             unaligned, then you must use RhpCopyMultibyteNoGCRefs.
 COOP_PINVOKE_CDECL_HELPER(void *, memcpyGCRefsWithWriteBarrier, (void * dest, const void *src, size_t len))
 {
+    ASSERT(!"unreachable?");
     // null pointers are not allowed (they are checked by RhpCopyMultibyteWithWriteBarrier)
     ASSERT(dest != nullptr);
     ASSERT(src != nullptr);
@@ -93,6 +96,7 @@ COOP_PINVOKE_CDECL_HELPER(void *, memcpyGCRefsWithWriteBarrier, (void * dest, co
 // and if so dispatches to memcpyGCRefsWithWriteBarrier and if not uses traditional memcpy
 COOP_PINVOKE_CDECL_HELPER(void *, memcpyAnyWithWriteBarrier, (void * dest, const void *src, size_t len))
 {
+    ASSERT(!"unreachable?");
     // null pointers are not allowed (they are checked by RhpCopyMultibyteWithWriteBarrier)
     ASSERT(dest != nullptr);
     ASSERT(src != nullptr);
@@ -106,26 +110,33 @@ COOP_PINVOKE_CDECL_HELPER(void *, memcpyAnyWithWriteBarrier, (void * dest, const
     return memcpy(dest, src, len);
 }
 
+
 // Move memory, in a way that is compatible with a move onto the heap, but
 // does not require the destination pointer to be on the heap.
 
 COOP_PINVOKE_HELPER(void, RhBulkMoveWithWriteBarrier, (uint8_t* pDest, uint8_t* pSrc, size_t cbDest))
 {
+#ifdef FEATURE_SATORI_GC
+    GCHeapUtilities::GetGCHeap()->BulkMoveWithWriteBarrier(pDest, pSrc, cbDest);
+#else
     if (pDest <= pSrc || pSrc + cbDest <= pDest)
         InlineForwardGCSafeCopy(pDest, pSrc, cbDest);
     else
         InlineBackwardGCSafeCopy(pDest, pSrc, cbDest);
 
     InlinedBulkWriteBarrier(pDest, cbDest);
+#endif //FEATURE_SATORI_GC
 }
 
 void GCSafeCopyMemoryWithWriteBarrier(void * dest, const void *src, size_t len)
 {
+    ASSERT(!"unreachable?");
     InlineForwardGCSafeCopy(dest, src, len);
     InlinedBulkWriteBarrier(dest, len);
 }
 
 void REDHAWK_CALLCONV RhpBulkWriteBarrier(void* pMemStart, uint32_t cbMemSize)
 {
+    ASSERT(!"unreachable?");
     InlinedBulkWriteBarrier(pMemStart, cbMemSize);
 }

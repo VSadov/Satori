@@ -92,15 +92,6 @@ namespace System.Runtime
         }
 
         //
-        // internalcalls for System.Runtime.__Finalizer.
-        //
-
-        // Fetch next object which needs finalization or return null if we've reached the end of the list.
-        [RuntimeImport(Redhawk.BaseName, "RhpGetNextFinalizableObject")]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        internal static extern object RhpGetNextFinalizableObject();
-
-        //
         // internalcalls for System.Runtime.InteropServices.GCHandle.
         //
 
@@ -305,6 +296,10 @@ namespace System.Runtime
         [DllImport(Redhawk.BaseName)]
         [UnmanagedCallConv(CallConvs = new Type[] { typeof(CallConvCdecl) })]
         internal static extern void RhpSignalFinalizationComplete();
+
+        [DllImport(Redhawk.BaseName)]
+        [UnmanagedCallConv(CallConvs = new Type[] { typeof(CallConvCdecl) })]
+        internal static extern unsafe void RhpGetNextFinalizableObject(void* pResult);
 
         [DllImport(Redhawk.BaseName)]
         [UnmanagedCallConv(CallConvs = new Type[] { typeof(CallConvCdecl) })]
