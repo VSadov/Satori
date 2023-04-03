@@ -382,6 +382,7 @@ public:
     // Methods expected by the GC
     uint32_t GetBaseSize() { return get_BaseSize(); }
     uint32_t ContainsPointers() { return HasReferenceFields(); }
+    bool Collectible() { return false; }
     uint32_t ContainsPointersOrCollectible() { return HasReferenceFields(); }
     bool IsValueType() { return get_IsValueType(); }
     UInt32_BOOL SanityCheck() { return Validate(); }

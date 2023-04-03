@@ -324,6 +324,9 @@ public:
     virtual void Shutdown();
 
     static void ReportGenerationBounds();
+
+    // Inherited via IGCHeapInternal
+    virtual void BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteCount);
 };
 
 #endif  // GCIMPL_H_

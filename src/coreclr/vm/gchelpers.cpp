@@ -1377,10 +1377,13 @@ bool IsInHeapSatori(void* ptr)
 void CheckEscapeSatori(Object** dst, Object* ref)
 {
     SatoriObject* obj = (SatoriObject*)ref;
-    SatoriRegion* region = obj->ContainingRegion();
+    // TODO: no nullcheck when external
+    if (!obj || obj->IsExternal())
+        return;
 
     // we should be the owner of the region to care about escapes
-    if (region && region->IsEscapeTrackedByCurrentThread())
+    SatoriRegion* region = obj->ContainingRegion();
+    if (region->IsEscapeTrackedByCurrentThread())
     {
         if ((((size_t)dst ^ (size_t)ref) >> 21) == 0 &&
             !(region->IsExposed((SatoriObject**)dst)))
@@ -1394,88 +1397,6 @@ void CheckEscapeSatori(Object** dst, Object* ref)
     }
 }
 
-bool CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
-{
-    SatoriRegion* curRegion = (SatoriRegion*)GCToEEInterface::GetAllocContext()->gc_reserved_1;
-    if (!curRegion || !curRegion->IsEscapeTracking())
-    {
-        // not tracking escapes, not a local assignment.
-        return false;
-    }
-
-    _ASSERTE(curRegion->IsEscapeTrackedByCurrentThread());
-
-    // if dst is within the curRegion and is not exposed, we are done
-    if (((dst ^ curRegion->Start()) >> 21) == 0)
-    {
-        if (!curRegion->AnyExposed(dst, len))
-        {
-            // thread-local assignment
-            return true;
-        }
-    }
-
-    if (!PageForAddressCheckedSatori((void*)dst))
-    {
-        // dest not in heap, must be stack, so, local
-        return true;
-    }
-
-    if (((src ^ curRegion->Start()) >> 21) == 0)
-    {
-        // if src is in current region, the elements could be escaping
-        if (!curRegion->AnyExposed(src, len))
-        {
-            // one-element array copy is embarrasingly common. specialcase that.
-            if (len == sizeof(size_t))
-            {
-                SatoriObject* obj = *(SatoriObject**)src;
-                if (obj->ContainingRegion() == curRegion)
-                {
-                    curRegion->EscapeRecursively(obj);
-                }
-            }
-            else
-            {
-                SatoriObject* containingSrcObj = curRegion->FindObject(src);
-                containingSrcObj->ForEachObjectRef(
-                    [&](SatoriObject** ref)
-                    {
-                        SatoriObject* child = *ref;
-                        if (child->ContainingRegion() == curRegion)
-                        {
-                            curRegion->EscapeRecursively(child);
-                        }
-                    },
-                    src,
-                    src + len
-                );
-            }
-        }
-
-        return false;
-    }
-
-    if (PageForAddressCheckedSatori((void*)src))
-    {
-        // src is not in current region but in heap,
-        // it can't escape anything that belong to current thread, but it is not local.
-        return false;
-    }
-
-    // This is a very rare case where we are copying refs out of non-heap area like stack or native heap.
-    // We do not have a containing type and that is somewhat inconvenient.
-    // 
-    // There are not many scenarios that lead here. In particular, boxing uses a newly
-    // allocated and not yet escaped target, so it does not end up here.
-    // One possible way to get here is a copy-back after a reflection call with a boxed nullable
-    // argument that happen to escape.
-    // 
-    // We could handle this is by concervatively escaping any value that matches an unescaped pointer in curRegion.
-    // However, considering how uncommon this is, we will just give up tracking.
-    curRegion->StopEscapeTracking();
-    return false;
-}
 #endif
 
 // This function sets the card table with the granularity of 1 byte, to avoid ghost updates
@@ -1489,7 +1410,7 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
 #if FEATURE_SATORI_GC
 
     SatoriObject* obj = (SatoriObject*)OBJECTREFToObject(ref);
-    if (!obj)
+    if (!obj || obj->IsExternal())
         return;
 
     // check for obj in the same region or in gen2
@@ -1616,32 +1537,17 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref)
 #pragma optimize("y", on)        // Small critical routines, don't put in EBP frame
 #endif //_MSC_VER && TARGET_X86
 
+#if !FEATURE_SATORI_GC
 void
 SetCardsAfterBulkCopy(Object** dst, Object **src, size_t len)
 {
     // If the size is smaller than a pointer, no write barrier is required.
     if (len >= sizeof(uintptr_t))
     {
-#if FEATURE_SATORI_GC
-        SatoriPage* page = PageForAddressCheckedSatori(dst);
-        if (page)
-        {
-            if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
-            {
-                page->SetCardsForRange((size_t)dst, (size_t)dst + len);
-            }
-
-            if (GCHeapUtilities::SoftwareWriteWatchIsEnabled())
-            {
-                page->DirtyCardsForRangeUnordered((size_t)dst, (size_t)dst + len);
-            }
-        }
-
-#else
         InlinedSetCardsAfterBulkCopyHelper(dst, len);
-#endif
     }
 }
+#endif //!FEATURE_SATORI_GC
 
 #if defined(_MSC_VER) && defined(TARGET_X86)
 #pragma optimize("", on)        // Go back to command line default optimizations
