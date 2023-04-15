@@ -39,7 +39,7 @@ public:
     static void Initialize()
     {
         s_partitionCount = SatoriUtil::HandlePartitionsCount();
-        s_scanTickets = new uint8_t[s_partitionCount]{};
+        s_scanTickets = new (nothrow) uint8_t[s_partitionCount]{};
     }
 
     static void StartNextScan()

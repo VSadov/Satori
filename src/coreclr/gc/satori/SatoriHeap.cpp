@@ -37,12 +37,15 @@
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
 
-void InitWriteBarrier(void* pageMap, size_t highest_address)
+int8_t* SatoriHeap::s_pageByteMap;
+
+static void InitWriteBarrier(void* pageMap, void* pageByteMap, size_t highest_address)
 {
     WriteBarrierParameters args = {};
     args.operation = WriteBarrierOp::Initialize;
     args.is_runtime_suspended = true;
     args.card_table = (uint32_t*)pageMap;
+    args.card_bundle_table = (uint32_t*)pageByteMap;
     args.highest_address = (uint8_t*)highest_address;
 
     // dummy values to make asserts happy, we will not use this
@@ -53,27 +56,26 @@ void InitWriteBarrier(void* pageMap, size_t highest_address)
     GCToEEInterface::StompWriteBarrier(&args);
 }
 
-void UpdateWriteBarrier(void* pageMap, size_t highest_address)
+static void UpdateWriteBarrier(void* pageMap, void* pageByteMap, size_t highest_address)
 {
     WriteBarrierParameters args = {};
     args.operation = WriteBarrierOp::StompResize;
     args.is_runtime_suspended = false;
     args.card_table = (uint32_t*)pageMap;
+    args.card_bundle_table = (uint32_t*)pageByteMap;
     args.highest_address = (uint8_t*)highest_address;
 
     // dummy values to make asserts happy, we will not use this
     args.lowest_address = (uint8_t*)1;
     args.ephemeral_low = (uint8_t*)-1;
     args.ephemeral_high = (uint8_t*)-1;
-    args.card_bundle_table = (uint32_t*)-1;
 
     GCToEEInterface::StompWriteBarrier(&args);
 }
 
 SatoriHeap* SatoriHeap::Create()
 {
-    // we need to cover the whole possible address space (48bit, 52 on rare ARM64).
-    // Half-byte per 4Gb
+    // we need to cover the whole possible address space (48bit, 52 may be supported as needed).
     const int availableAddressSpaceBits = 48;
     const int pageCountBits = availableAddressSpaceBits - Satori::PAGE_BITS;
     const int mapSize = (1 << pageCountBits) * sizeof(SatoriPage*);
@@ -88,10 +90,16 @@ SatoriHeap* SatoriHeap::Create()
         return nullptr;
     }
 
+    SatoriHeap::s_pageByteMap = new (nothrow) int8_t[1 << pageCountBits]{};
+    if (!SatoriHeap::s_pageByteMap)
+    {
+        return nullptr;
+    }
+
     SatoriHeap* heap = (SatoriHeap*)reserved;
     heap->m_reservedMapSize = mapSize;
     heap->m_committedMapSize = commitSize - sizeof(SatoriHeap) + sizeof(SatoriPage*);
-    InitWriteBarrier(heap->m_pageMap, heap->CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
+    InitWriteBarrier(heap->m_pageMap, s_pageByteMap, heap->CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
     heap->m_mapLock.Initialize();
     heap->m_nextPageIndex = 1;
     heap->m_usedMapLength = 1;
@@ -115,7 +123,7 @@ bool SatoriHeap::CommitMoreMap(size_t currentCommittedMapSize)
         {
             // we did the commit
             m_committedMapSize = min(currentCommittedMapSize + commitSize, m_reservedMapSize);
-            UpdateWriteBarrier(m_pageMap, CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
+            UpdateWriteBarrier(m_pageMap, s_pageByteMap, CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
         }
     }
 
@@ -150,6 +158,7 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
                 // Also the object must be published before other thread could see it, and publishing is a release.
                 // Thus an ordinary write is ok even for weak memory cases.
                 m_pageMap[i] = newPage;
+                s_pageByteMap[i] = 1;
 
                 // ensure the next is advanced to at least i + 1
                 while ((nextPageIndex = m_nextPageIndex) < i + 1 &&
@@ -210,6 +219,7 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
                 for (size_t j = 0; j < mapMarkCount; j++)
                 {
                     m_pageMap[i + j] = newPage;
+                    s_pageByteMap[i + j] = 1;
                 }
 
                 size_t usedMapLength;

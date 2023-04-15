@@ -740,7 +740,7 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
 
 inline void SatoriRegion::PushToMarkStackIfHasPointers(SatoriObject* obj)
 {
-    _ASSERTE(obj->ContainingRegion() == this);
+    _ASSERTE(obj->SameRegion(this));
     _ASSERTE(!obj->GetNextInLocalMarkStack());
 
     if (obj->RawGetMethodTable()->ContainsPointersOrCollectible())
@@ -769,8 +769,8 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
     _ASSERTE(length % 8 == 0);
 
     size_t last = first + length - sizeof(size_t);
-    _ASSERTE(((SatoriObject*)first)->ContainingRegion() == this);
-    _ASSERTE(((SatoriObject*)last)->ContainingRegion() == this);
+    _ASSERTE(((SatoriObject*)first)->SameRegion(this));
+    _ASSERTE(((SatoriObject*)last)->SameRegion(this));
 
     size_t bitmapIndexF;
     size_t maskF = (size_t)-1 << ((SatoriObject*)first)->GetMarkBitAndWord(&bitmapIndexF);
@@ -802,7 +802,7 @@ bool SatoriRegion::AnyExposed(size_t first, size_t length)
 void SatoriRegion::EscapeRecursively(SatoriObject* o)
 {
     _ASSERTE(this->IsEscapeTrackedByCurrentThread());
-    _ASSERTE(o->ContainingRegion() == this);
+    _ASSERTE(o->SameRegion(this));
 
     if (IsEscaped(o))
     {
@@ -828,7 +828,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
 
                 // recursively escape all currently reachable objects
                 SatoriObject* child = *ref;
-                if (child->ContainingRegion() == this && !IsEscaped(child))
+                if (child->SameRegion(this) && !IsEscaped(child))
                 {
                     SetEscaped(child);
                     m_escapedSize += child->Size();
@@ -857,7 +857,7 @@ void SatoriRegion::EscsapeAll()
 // used when escaping all objects in the region anyways
 void SatoriRegion::EscapeShallow(SatoriObject* o)
 {
-    _ASSERTE(o->ContainingRegion() == this);
+    _ASSERTE(o->SameRegion(this));
     _ASSERTE(!IsEscaped(o));
     _ASSERTE(!IsPinned(o));
 
@@ -1000,7 +1000,7 @@ void SatoriRegion::ThreadLocalMark()
             [this](SatoriObject** ref)
             {
                 SatoriObject* child = *ref;
-                if (child->ContainingRegion() == this && !IsMarked(child))
+                if (child->SameRegion(this) && !IsMarked(child))
                 {
                     SetMarked(child);
                     PushToMarkStackIfHasPointers(child);
@@ -1239,7 +1239,7 @@ void SatoriRegion::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     if (reloc)
     {
         *ppObject = (Object*)(((size_t)*ppObject) - reloc);
-        _ASSERTE(((SatoriObject*)(*ppObject))->ContainingRegion() == region);
+        _ASSERTE(((SatoriObject*)(*ppObject))->SameRegion(region));
     }
 };
 
@@ -1281,13 +1281,13 @@ void SatoriRegion::ThreadLocalUpdatePointers()
                         SatoriObject* child = *ppObject;
                         // ignore objects otside of the current region, we are not relocating those.
                         // (this also rejects nulls)
-                        if (child->ContainingRegion() == this)
+                        if (child->SameRegion(this))
                         {
                             size_t reloc = child->GetLocalReloc();
                             if (reloc)
                             {
                                 *ppObject = (SatoriObject*)((size_t)*ppObject - reloc);
-                                _ASSERTE((*ppObject)->ContainingRegion() == this);
+                                _ASSERTE((*ppObject)->SameRegion(this));
                             }
                         }
                     }
@@ -1319,7 +1319,7 @@ void SatoriRegion::ThreadLocalUpdatePointers()
                 if (reloc)
                 {
                     finalizable = (SatoriObject*)((size_t)finalizable - reloc);
-                    _ASSERTE(finalizable->ContainingRegion() == this);
+                    _ASSERTE(finalizable->SameRegion(this));
                 }
 
                 (size_t&)finalizable |= finalizePending;
@@ -1529,7 +1529,7 @@ tryAgain:
 
 bool SatoriRegion::RegisterForFinalization(SatoriObject* finalizable)
 {
-    _ASSERTE(finalizable->ContainingRegion() == this);
+    _ASSERTE(finalizable->SameRegion(this));
     _ASSERTE(this->m_hasFinalizables || this->IsAttachedToAllocatingOwner());
 
     LockFinalizableTrackers();
@@ -1723,12 +1723,12 @@ void SatoriRegion::UpdateFinalizableTrackers()
         ForEachFinalizable(
             [&](SatoriObject* finalizable)
             {
-                if (finalizable->ContainingRegion() != this)
+                if (!finalizable->SameRegion(this))
                 {
                     ptrdiff_t ptr = ((ptrdiff_t*)finalizable)[-1];
                     _ASSERTE(finalizable->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
                     finalizable = (SatoriObject*)-ptr;
-                    _ASSERTE(finalizable->ContainingRegion() == this);
+                    _ASSERTE(finalizable->SameRegion(this));
                 }
 
                 return finalizable;

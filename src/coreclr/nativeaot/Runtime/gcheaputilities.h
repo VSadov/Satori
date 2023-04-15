@@ -82,7 +82,9 @@ public:
 
 #ifdef FEATURE_SVR_GC
         _ASSERTE(g_heap_type != GC_HEAP_INVALID);
-        return (g_heap_type == GC_HEAP_SVR);
+
+        // TODO: Satori is closer to SVR than WKS, since there is threading. Need a better API though.
+        return g_heap_type > GC_HEAP_WKS;
 #else
         return false;
 #endif // FEATURE_SVR_GC

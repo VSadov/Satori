@@ -7,6 +7,7 @@
 
 #include "common.h"
 #include "gcenv.h"
+#include "gcheaputilities.h"
 #include "PalRedhawkCommon.h"
 #include "CommonMacros.inl"
 
@@ -44,6 +45,9 @@ COOP_PINVOKE_CDECL_HELPER(void *, RhpGcSafeZeroMemory, (void * mem, size_t size)
 
 COOP_PINVOKE_HELPER(void, RhBulkMoveWithWriteBarrier, (uint8_t* pDest, uint8_t* pSrc, size_t cbDest))
 {
+#ifdef FEATURE_SATORI_GC
+    GCHeapUtilities::GetGCHeap()->BulkMoveWithWriteBarrier(pDest, pSrc, cbDest);
+#else
     // It is possible that the bulk write is publishing object references accessible so far only
     // by the current thread to shared memory.
     // The memory model requires that writes performed by current thread are observable no later
@@ -56,4 +60,5 @@ COOP_PINVOKE_HELPER(void, RhBulkMoveWithWriteBarrier, (uint8_t* pDest, uint8_t* 
         InlineBackwardGCSafeCopy(pDest, pSrc, cbDest);
 
     InlinedBulkWriteBarrier(pDest, cbDest);
+#endif //FEATURE_SATORI_GC
 }
