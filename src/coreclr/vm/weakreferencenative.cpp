@@ -27,7 +27,7 @@ void FinalizeWeakReference(Object* obj)
     // after marking strongly reachable and prior to marking dependent and long weak handles.
     // Managed code should not be running.
 
-    // TODO: VS threadlocal GC is also ok
+    // threadlocal GC is also ok
     //_ASSERTE(GCHeapUtilities::IsGCInProgress());
 
     // the lowermost 2 bits are reserved for storing additional info about the handle

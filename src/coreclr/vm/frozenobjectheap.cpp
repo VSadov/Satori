@@ -47,9 +47,15 @@ Object* FrozenObjectHeapManager::TryAllocateObject(PTR_MethodTable type, size_t 
             return nullptr;
         }
 
-#if FEATURE_SATORI_GC
-        return AllocateImmortalObject(type, objectSize);
+#if defined (FEATURE_SATORI_GC)
+#if defined(_DEBUG) && defined(FEATURE_SATORI_EXTERNAL_OBJECTS)
+        // in debug use external objects once in a while - for coverage
+        if (objectSize % 16 != 0)
 #endif
+        {
+            return AllocateImmortalObject(type, objectSize);
+        }
+#endif // FEATURE_SATORI_GC
 
 #ifdef FEATURE_64BIT_ALIGNMENT
         if (type->RequiresAlign8())

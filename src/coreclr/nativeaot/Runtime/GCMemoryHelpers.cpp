@@ -7,6 +7,7 @@
 
 #include "common.h"
 #include "gcenv.h"
+#include "gcheaputilities.h"
 #include "PalRedhawkCommon.h"
 #include "CommonMacros.inl"
 
@@ -36,15 +37,20 @@ COOP_PINVOKE_CDECL_HELPER(void *, RhpGcSafeZeroMemory, (void * mem, size_t size)
 
 COOP_PINVOKE_HELPER(void, RhBulkMoveWithWriteBarrier, (uint8_t* pDest, uint8_t* pSrc, size_t cbDest))
 {
+#ifdef FEATURE_SATORI_GC
+    GCHeapUtilities::GetGCHeap()->BulkMoveWithWriteBarrier(pDest, pSrc, cbDest);
+#else
     if (pDest <= pSrc || pSrc + cbDest <= pDest)
         InlineForwardGCSafeCopy(pDest, pSrc, cbDest);
     else
         InlineBackwardGCSafeCopy(pDest, pSrc, cbDest);
 
     InlinedBulkWriteBarrier(pDest, cbDest);
+#endif //FEATURE_SATORI_GC
 }
 
 void REDHAWK_CALLCONV RhpBulkWriteBarrier(void* pMemStart, uint32_t cbMemSize)
 {
+    ASSERT(!"unreachable?");
     InlinedBulkWriteBarrier(pMemStart, cbMemSize);
 }

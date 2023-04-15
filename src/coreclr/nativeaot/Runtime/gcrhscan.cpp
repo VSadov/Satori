@@ -31,7 +31,50 @@ void GcEnumObjectsConservatively(PTR_PTR_Object ppLowerBound, PTR_PTR_Object ppU
 void GcEnumObject(PTR_PTR_Object ppObj, uint32_t flags, EnumGcRefCallbackFunc* fnGcEnumRef, EnumGcRefScanContext* pSc);
 
 /*
- * Scan all stack and statics roots
+ * Scan current stack
+ */
+
+void GCToEEInterface::GcPoll()
+{
+    if (ThreadStore::IsTrapThreadsRequested())
+    {
+        Thread* pThread = ThreadStore::GetCurrentThread();
+        assert(!pThread->IsGCSpecial());
+        assert(pThread->IsCurrentThreadInCooperativeMode());
+        assert(pThread != ThreadStore::GetSuspendingThread());
+
+        pThread->EnablePreemptiveMode();
+        pThread->DisablePreemptiveMode();
+    }
+}
+
+void GCToEEInterface::GcScanCurrentStackRoots(EnumGcRefCallbackFunc* fn, EnumGcRefScanContext* sc)
+{
+    Thread* pThread = ThreadStore::GetCurrentThread();
+    if (pThread->IsGCSpecial())
+        return;
+
+    STRESS_LOG1(LF_GC | LF_GCROOTS, LL_INFO100, "{ Scanning Thread's %p thread statics root. \n", pThread);
+    GcEnumObject(pThread->GetThreadStaticStorage(), 0 /*flags*/, fn, sc);
+
+    STRESS_LOG1(LF_GC | LF_GCROOTS, LL_INFO100, "{ Starting scan of Thread %p\n", pThread);
+    sc->thread_under_crawl = pThread;
+#if defined(FEATURE_EVENT_TRACE) && !defined(DACCESS_COMPILE)
+    sc->dwEtwRootKind = kEtwGCRootKindStack;
+#endif
+
+    pThread->GcScanRoots(reinterpret_cast<void*>(fn), sc);
+
+#if defined(FEATURE_EVENT_TRACE) && !defined(DACCESS_COMPILE)
+    sc->dwEtwRootKind = kEtwGCRootKindOther;
+#endif
+    STRESS_LOG1(LF_GC | LF_GCROOTS, LL_INFO100, "Ending scan of Thread %p }\n", pThread);
+
+    sc->thread_under_crawl = NULL;
+}
+
+/*
+ * Scan all stack roots
  */
 
 void GCToEEInterface::GcScanRoots(EnumGcRefCallbackFunc * fn,  int condemned, int max_gen, EnumGcRefScanContext * sc)
