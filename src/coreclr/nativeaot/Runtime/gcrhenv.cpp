@@ -173,6 +173,9 @@ bool RedhawkGCInterface::InitializeSubsystems()
     g_heap_type = GC_HEAP_WKS;
 #endif
 
+    //TODO: Satori
+    g_heap_type = GC_HEAP_SATORI;
+
     if (g_pRhConfig->GetgcConservative())
     {
         GetRuntimeInstance()->EnableConservativeStackReporting();
@@ -345,7 +348,9 @@ void RedhawkGCInterface::InitAllocContext(gc_alloc_context * pAllocContext)
 // static
 void RedhawkGCInterface::ReleaseAllocContext(gc_alloc_context * pAllocContext)
 {
+#if FEATURE_SATORI_GC
     s_DeadThreadsNonAllocBytes += pAllocContext->alloc_limit - pAllocContext->alloc_ptr;
+#endif
     GCHeapUtilities::GetGCHeap()->FixAllocContext(pAllocContext, NULL, NULL);
 }
 
@@ -1170,6 +1175,27 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         assert(!"should never be called without FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP");
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
         return;
+
+#if FEATURE_SATORI_GC
+    case WriteBarrierOp::StartConcurrentMarkingSatori:
+        g_write_watch_table = (uint8_t*)1;
+        g_sw_ww_enabled_for_gc_heap = true;
+        if (!is_runtime_suspended)
+        {
+            // If runtime is not suspended, force all threads to see the changed state before
+            // observing future allocations.
+            FlushProcessWriteBuffers();
+        }
+
+        return;
+
+    case WriteBarrierOp::StopConcurrentMarkingSatori:
+        assert(args->is_runtime_suspended && "the runtime must be suspended here!");
+        g_write_watch_table = (uint8_t*)0;
+        g_sw_ww_enabled_for_gc_heap = false;
+        return;
+#endif
+
     default:
         assert(!"Unknokwn WriteBarrierOp enum");
         return;
@@ -1205,7 +1231,7 @@ bool GCToEEInterface::EagerFinalized(Object* obj)
     // after marking strongly reachable and prior to marking dependent and long weak handles.
     // Managed code should not be running.
 
-    // TODO: VS threadlocal GC is also ok
+    // threadlocal GC is also ok
     // ASSERT(GCHeapUtilities::GetGCHeap()->IsGCInProgressHelper());
 
     // the lowermost 1 bit is reserved for storing additional info about the handle
@@ -1236,19 +1262,51 @@ struct ThreadStubArguments
 {
     void (*m_pRealStartRoutine)(void*);
     void* m_pRealContext;
-    bool m_isSuspendable;
     CLREventStatic m_ThreadStartedEvent;
 };
+
+static bool CreateUnsuspendableThread(void (*threadStart)(void*), void* arg, const char* name)
+{
+    UNREFERENCED_PARAMETER(name);
+
+    ThreadStubArguments* threadStubArgs = new (nothrow) ThreadStubArguments();
+    if (!threadStubArgs)
+        return false;
+
+    threadStubArgs->m_pRealStartRoutine = threadStart;
+    threadStubArgs->m_pRealContext = arg;
+
+    // Helper used to wrap the start routine of background GC threads so we can do things like initialize the
+    // Redhawk thread state which requires running in the new thread's context.
+    auto threadStub = [](void* argument) -> DWORD
+    {
+        ThreadStore::RawGetCurrentThread()->SetGCSpecial();
+
+        ThreadStubArguments* pStartContext = (ThreadStubArguments*)argument;
+        auto realStartRoutine = pStartContext->m_pRealStartRoutine;
+        void* realContext = pStartContext->m_pRealContext;
+        delete pStartContext;
+
+        STRESS_LOG_RESERVE_MEM(GC_STRESSLOG_MULTIPLY);
+
+        realStartRoutine(realContext);
+
+        return 0;
+    };
+
+    return PalStartBackgroundGCThread(threadStub, threadStubArgs);
+}
 
 bool GCToEEInterface::CreateThread(void (*threadStart)(void*), void* arg, bool is_suspendable, const char* name)
 {
     UNREFERENCED_PARAMETER(name);
 
-    ThreadStubArguments threadStubArgs;
+    if (!is_suspendable)
+        return CreateUnsuspendableThread(threadStart, arg, name);
 
+    ThreadStubArguments threadStubArgs;
     threadStubArgs.m_pRealStartRoutine = threadStart;
     threadStubArgs.m_pRealContext = arg;
-    threadStubArgs.m_isSuspendable = is_suspendable;
 
     if (!threadStubArgs.m_ThreadStartedEvent.CreateAutoEventNoThrow(false))
     {
@@ -1261,15 +1319,11 @@ bool GCToEEInterface::CreateThread(void (*threadStart)(void*), void* arg, bool i
     {
         ThreadStubArguments* pStartContext = (ThreadStubArguments*)argument;
 
-        if (pStartContext->m_isSuspendable)
-        {
-            // Initialize the Thread for this thread. The false being passed indicates that the thread store lock
-            // should not be acquired as part of this operation. This is necessary because this thread is created in
-            // the context of a garbage collection and the lock is already held by the GC.
-            ASSERT(GCHeapUtilities::IsGCInProgress());
-
-            ThreadStore::AttachCurrentThread(false);
-        }
+        // Initialize the Thread for this thread. The false being passed indicates that the thread store lock
+        // should not be acquired as part of this operation. This is necessary because this thread is created in
+        // the context of a garbage collection and the lock is already held by the GC.
+        ASSERT(GCHeapUtilities::IsGCInProgress());
+        ThreadStore::AttachCurrentThread(false);
 
         ThreadStore::RawGetCurrentThread()->SetGCSpecial();
 
