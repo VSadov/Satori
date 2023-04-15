@@ -44,6 +44,11 @@ void SatoriObject::Initialize()
 
 void SatoriObject::EscapeCheckOnHandleCreation()
 {
+    if (IsExternal())
+    {
+        return;
+    }
+
     SatoriRegion* region = ContainingRegion();
     if (region->IsEscapeTrackedByCurrentThread())
     {
@@ -108,7 +113,7 @@ void SatoriObject::Validate()
                 {
                     _ASSERTE(ContainingRegion()->IsExposed(ref));
                     SatoriObject* child = VolatileLoad(ref);
-                    if (child->ContainingRegion() == ContainingRegion())
+                    if (child->SameRegion(ContainingRegion()))
                     {
                         _ASSERTE(child->IsEscaped());
                     }

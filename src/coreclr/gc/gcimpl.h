@@ -330,6 +330,9 @@ public:
     static void ReportGenerationBounds();
 
     virtual int RefreshMemoryLimit();
+
+    // Inherited via IGCHeapInternal
+    virtual void BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteCount);
 };
 
 #endif  // GCIMPL_H_
