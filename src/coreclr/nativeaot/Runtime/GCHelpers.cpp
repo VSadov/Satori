@@ -415,6 +415,9 @@ MethodTable* GetLastAllocEEType()
 
 FCIMPL0(int64_t, RhGetTotalAllocatedBytes)
 {
+#if FEATURE_SATORI_GC
+    return GCHeapUtilities::GetGCHeap()->GetTotalAllocatedBytes();
+#else
     uint64_t allocated_bytes = GCHeapUtilities::GetGCHeap()->GetTotalAllocatedBytes() - Thread::GetDeadThreadsNonAllocBytes();
 
     // highest reported allocated_bytes. We do not want to report a value less than that even if unused_bytes has increased.
@@ -431,6 +434,7 @@ FCIMPL0(int64_t, RhGetTotalAllocatedBytes)
     }
 
     return current_high;
+#endif
 }
 FCIMPLEND
 
@@ -466,6 +470,16 @@ EXTERN_C void QCALLTYPE RhEnableNoGCRegionCallback(NoGCRegionCallbackFinalizerWo
 
 EXTERN_C int64_t QCALLTYPE RhGetTotalAllocatedBytesPrecise()
 {
+#if FEATURE_SATORI_GC
+    Thread* pThread = ThreadStore::GetCurrentThread();
+    pThread->DeferTransitionFrame();
+    pThread->DisablePreemptiveMode();
+
+    GCHeapUtilities::GetGCHeap()->GarbageCollect(1);
+
+    pThread->EnablePreemptiveMode();
+    return GCHeapUtilities::GetGCHeap()->GetTotalAllocatedBytes();
+#else
     int64_t allocated;
 
     // We need to suspend/restart the EE to get each thread's
@@ -485,6 +499,7 @@ EXTERN_C int64_t QCALLTYPE RhGetTotalAllocatedBytesPrecise()
     GCToEEInterface::RestartEE(true);
 
     return allocated;
+#endif
 }
 
 void FireAllocationSampled(GC_ALLOC_FLAGS flags, size_t size, size_t samplingBudgetOffset, Object* orObject)
