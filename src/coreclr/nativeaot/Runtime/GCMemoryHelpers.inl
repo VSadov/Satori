@@ -170,6 +170,7 @@ extern "C" {
 }
 static const uint32_t INVALIDGCVALUE = 0xcccccccd;
 
+#if !FEATURE_SATORI_GC
 FORCEINLINE void InlineWriteBarrier(void * dst, void * ref)
 {
     ASSERT(((uint8_t*)dst >= g_lowest_address) && ((uint8_t*)dst < g_highest_address))
@@ -183,6 +184,7 @@ FORCEINLINE void InlineWriteBarrier(void * dst, void * ref)
             *pCardByte = 0xFF;
     }
 }
+#endif  //!FEATURE_SATORI_GC
 
 #ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
 extern "C" uint32_t* g_card_bundle_table;
@@ -216,6 +218,7 @@ inline static void SoftwareWriteWatchSetDirtyRegion(void* address, size_t length
 }
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 
+#if !FEATURE_SATORI_GC
 FORCEINLINE void InlineCheckedWriteBarrier(void * dst, void * ref)
 {
     // if the dst is outside of the heap (unboxed value classes) then we
@@ -225,9 +228,14 @@ FORCEINLINE void InlineCheckedWriteBarrier(void * dst, void * ref)
 
     InlineWriteBarrier(dst, ref);
 }
+#endif  //!FEATURE_SATORI_GC
 
 FORCEINLINE void InlinedBulkWriteBarrier(void* pMemStart, size_t cbMemSize)
 {
+#if FEATURE_SATORI_GC
+    ASSERT(!"InlinedBulkWriteBarrier, should use GC helper instead.");
+#endif
+
     // Caller is expected to check whether the writes were even into the heap
     ASSERT(cbMemSize >= sizeof(uintptr_t));
     ASSERT((pMemStart >= g_lowest_address) && (pMemStart < g_highest_address));

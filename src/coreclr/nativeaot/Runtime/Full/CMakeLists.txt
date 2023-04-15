@@ -26,7 +26,8 @@ if (CLR_CMAKE_TARGET_WIN32)
   endif()
 endif (CLR_CMAKE_TARGET_WIN32)
 
-add_library(Runtime.WorkstationGC STATIC ${COMMON_RUNTIME_SOURCES} ${FULL_RUNTIME_SOURCES} ${RUNTIME_SOURCES_ARCH_ASM} ${RUNTIME_ARCH_ASM_OBJECTS})
+# TODO: Satori WKS does not really exist, do the same as SVR
+add_library(Runtime.WorkstationGC STATIC ${COMMON_RUNTIME_SOURCES} ${FULL_RUNTIME_SOURCES} ${RUNTIME_SOURCES_ARCH_ASM} ${SERVER_GC_SOURCES} ${RUNTIME_ARCH_ASM_OBJECTS})
 add_dependencies(Runtime.WorkstationGC aot_eventing_headers)
 
 add_library(Runtime.ServerGC STATIC ${COMMON_RUNTIME_SOURCES} ${FULL_RUNTIME_SOURCES} ${RUNTIME_SOURCES_ARCH_ASM} ${SERVER_GC_SOURCES} ${RUNTIME_ARCH_ASM_OBJECTS})
@@ -47,6 +48,7 @@ if (CLR_CMAKE_TARGET_ARCH_AMD64)
 endif (CLR_CMAKE_TARGET_ARCH_AMD64)
 
 target_compile_definitions(Runtime.ServerGC PRIVATE -DFEATURE_SVR_GC)
+target_compile_definitions(Runtime.WorkstationGC PRIVATE -DFEATURE_SVR_GC)
 
 if (CLR_CMAKE_TARGET_WIN32)
   add_library(standalonegc-disabled.GuardCF STATIC ${STANDALONEGC_DISABLED_SOURCES})
