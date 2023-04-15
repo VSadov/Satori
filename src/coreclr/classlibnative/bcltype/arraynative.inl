@@ -294,6 +294,9 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
     }
     CONTRACTL_END;
 
+#if FEATURE_SATORI_GC
+    GCHeapUtilities::GetGCHeap()->BulkMoveWithWriteBarrier(dest, src, len);
+#else
     _ASSERTE(dest != nullptr);
     _ASSERTE(src != nullptr);
     _ASSERTE(dest != src);
@@ -307,16 +310,7 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
     _ASSERTE(CheckPointer(dest));
     _ASSERTE(CheckPointer(src));
 
-    bool localAssignment = false;
-    if (len >= sizeof(size_t))
-    {
-        localAssignment = CheckEscapeSatoriRange((size_t)dest, (size_t)src, len);
-    }
-
-    if (!localAssignment)
-    {
-        GCHeapMemoryBarrier();
-    }
+    GCHeapMemoryBarrier();
 
     // To be able to copy forwards, the destination buffer cannot start inside the source buffer
     if ((size_t)dest - (size_t)src >= len)
@@ -328,7 +322,8 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
         InlinedBackwardGCSafeCopyHelper(dest, src, len);
     }
 
-    SetCardsAfterBulkCopy((Object**)dest, (Object**)src, len);
+    InlinedSetCardsAfterBulkCopyHelper((Object**)dest, len);
+#endif // FEATURE_SATORI_GC
 }
 
 #endif // !_ARRAYNATIVE_INL_

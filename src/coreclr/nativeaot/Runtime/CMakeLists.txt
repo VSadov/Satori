@@ -40,8 +40,9 @@ set(COMMON_RUNTIME_SOURCES
     ${GC_DIR}/gcconfig.cpp
     ${GC_DIR}/gchandletable.cpp
     ${GC_DIR}/gccommon.cpp
-    ${GC_DIR}/gceewks.cpp
-    ${GC_DIR}/gcwks.cpp
+# TODO: VS Satori
+#    ${GC_DIR}/gceewks.cpp
+#    ${GC_DIR}/gcwks.cpp
     ${GC_DIR}/gcscan.cpp
     ${GC_DIR}/handletable.cpp
     ${GC_DIR}/handletablecache.cpp
@@ -52,11 +53,26 @@ set(COMMON_RUNTIME_SOURCES
 
     ${CLR_SRC_NATIVE_DIR}/minipal/cpufeatures.c
     ${CLR_SRC_NATIVE_DIR}/minipal/time.c
+    ${GC_DIR}/satori/SatoriGC.cpp
+    ${GC_DIR}/satori/SatoriHandlePartitioner.cpp
+    ${GC_DIR}/satori/SatoriHeap.cpp
+    ${GC_DIR}/satori/SatoriPage.cpp
+    ${GC_DIR}/satori/SatoriObject.cpp
+    ${GC_DIR}/satori/SatoriRegion.cpp
+    ${GC_DIR}/satori/SatoriRegionQueue.cpp
+    ${GC_DIR}/satori/SatoriAllocator.cpp
+    ${GC_DIR}/satori/SatoriRecycler.cpp
+    ${GC_DIR}/satori/SatoriTrimmer.cpp
+    ${GC_DIR}/satori/SatoriFinalizationQueue.cpp
+    ${GC_DIR}/satori/SatoriAllocationContext.cpp
+    ${GC_DIR}/satori/SatoriUtil.cpp
+    ${GC_DIR}/satori/SatoriLock.cpp
 )
 
 set(SERVER_GC_SOURCES
-    ${GC_DIR}/gceesvr.cpp
-    ${GC_DIR}/gcsvr.cpp
+# TODO: VS Satori
+#    ${GC_DIR}/gceesvr.cpp
+#    ${GC_DIR}/gcsvr.cpp
 )
 
 set(STANDALONEGC_DISABLED_SOURCES
@@ -114,7 +130,26 @@ if (WIN32)
     ${GC_DIR}/handletable.inl
     ${GC_DIR}/handletablepriv.h
     ${GC_DIR}/objecthandle.h
-    ${GC_DIR}/softwarewritewatch.h)
+    ${GC_DIR}/softwarewritewatch.h
+    ${GC_DIR}/satori/SatoriGC.h
+    ${GC_DIR}/satori/SatoriHeap.h
+    ${GC_DIR}/satori/SatoriPage.h
+    ${GC_DIR}/satori/SatoriRegion.h
+    ${GC_DIR}/satori/SatoriRegion.inl
+    ${GC_DIR}/satori/SatoriObject.h
+    ${GC_DIR}/satori/SatoriObject.inl
+    ${GC_DIR}/satori/SatoriQueue.h
+    ${GC_DIR}/satori/SatoriRegionQueue.h
+    ${GC_DIR}/satori/SatoriAllocator.h
+    ${GC_DIR}/satori/SatoriRecycler.h
+    ${GC_DIR}/satori/SatoriTrimmer.h
+    ${GC_DIR}/satori/SatoriFinalizationQueue.h
+    ${GC_DIR}/satori/SatoriWorkChunk.h
+    ${GC_DIR}/satori/SatoriWorkList.h
+    ${GC_DIR}/satori/SatoriAllocationContext.h
+    ${GC_DIR}/satori/SatoriUtil.h
+    ${GC_DIR}/satori/SatoriLock.h
+)
 
   include_directories(windows)
 
@@ -236,6 +271,8 @@ if (NOT CLR_CMAKE_TARGET_ARCH_WASM)
   add_definitions(-DFEATURE_HIJACK)
 endif()
 
+add_definitions(-DFEATURE_SATORI_GC)
+add_definitions(-DFEATURE_SATORI_EXTERNAL_OBJECTS)
 add_definitions(-DFEATURE_BASICFREEZE)
 add_definitions(-DFEATURE_CONSERVATIVE_GC)
 if(CLR_CMAKE_TARGET_ARCH_AMD64 OR CLR_CMAKE_TARGET_ARCH_ARM64)

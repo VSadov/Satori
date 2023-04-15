@@ -93,7 +93,6 @@ void ErectWriteBarrier(OBJECTREF* dst, OBJECTREF ref);
 #if FEATURE_SATORI_GC
 bool IsInHeapSatori(void* ptr);
 void CheckEscapeSatori(Object** dst, Object* ref);
-bool CheckEscapeSatoriRange(size_t dst, size_t src, size_t len);
 #endif
 
 void PublishFrozenObject(Object*& orObject);
