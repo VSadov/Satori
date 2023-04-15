@@ -425,7 +425,7 @@ inline SatoriWorkChunk* &SatoriRegion::DemotedObjects()
 
 inline void SatoriRegion::SetMarked(SatoriObject* o)
 {
-    _ASSERTE(o->ContainingRegion() == this);
+    _ASSERTE(o->SameRegion(this));
 
     size_t word = o->Start();
     size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
@@ -436,7 +436,7 @@ inline void SatoriRegion::SetMarked(SatoriObject* o)
 
 inline void SatoriRegion::SetMarkedAtomic(SatoriObject* o)
 {
-    _ASSERTE(o->ContainingRegion() == this);
+    _ASSERTE(o->SameRegion(this));
     _ASSERTE(!o->IsFree());
 
     size_t word = o->Start();
@@ -459,7 +459,7 @@ inline void SatoriRegion::SetMarkedAtomic(SatoriObject* o)
 
 inline void SatoriRegion::ClearMarked(SatoriObject* o)
 {
-    _ASSERTE(o->ContainingRegion() == this);
+    _ASSERTE(o->SameRegion(this));
 
     size_t word = o->Start();
     size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
@@ -470,7 +470,7 @@ inline void SatoriRegion::ClearMarked(SatoriObject* o)
 
 inline bool SatoriRegion::IsMarked(SatoriObject* o)
 {
-    _ASSERTE(o->ContainingRegion() == this);
+    _ASSERTE(o->SameRegion(this));
 
     size_t word = o->Start();
     size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
@@ -481,7 +481,7 @@ inline bool SatoriRegion::IsMarked(SatoriObject* o)
 
 inline bool SatoriRegion::CheckAndClearMarked(SatoriObject* o)
 {
-    _ASSERTE(o->ContainingRegion() == this);
+    _ASSERTE(o->SameRegion(this));
 
     size_t word = o->Start();
     size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
@@ -625,7 +625,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
             {
                 // prevent re-reading o, UpdatePointersThroughCards could be doing the same update.
                 SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
-                if (child)
+                if (child && !child->IsExternal())
                 {
                     ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
                     if (ptr < 0)

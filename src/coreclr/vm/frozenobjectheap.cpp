@@ -45,13 +45,19 @@ Object* FrozenObjectHeapManager::TryAllocateObject(PTR_MethodTable type, size_t 
       return nullptr;
     }
 
-    obj = AllocateImmortalObject(type, objectSize);
-    if (initFunc != nullptr)
+#if defined(_DEBUG) && defined(FEATURE_SATORI_EXTERNAL_OBJECTS)
+    // in debug use external objects once in a while - for coverage
+    if (objectSize % 16 != 0)
+#endif
     {
-      initFunc(obj, pParam);
-    }
+      obj = AllocateImmortalObject(type, objectSize);
+      if (initFunc != nullptr)
+      {
+        initFunc(obj, pParam);
+      }
 
-    return obj;
+      return obj;
+    }
 #endif
 
 

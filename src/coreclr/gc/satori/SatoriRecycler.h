@@ -82,6 +82,11 @@ public:
     void ScheduleMarkAsChildRanges(SatoriObject* o);
     bool ScheduleUpdateAsChildRanges(SatoriObject* o);
 
+    inline bool IsBarrierConcurrent()
+    {
+        return m_isBarrierConcurrent;
+    }
+
 private:
     SatoriHeap* m_heap;
 
@@ -140,7 +145,7 @@ private:
     bool m_isLowLatencyMode;
     bool m_promoteAllRegions;  
     bool m_allowPromotingRelocations;
-    bool m_isBarrierConcurrent;
+    volatile bool m_isBarrierConcurrent;
 
     int m_prevCondemnedGeneration;
 
@@ -215,10 +220,10 @@ private:
     void IncrementCardScanTicket();
     uint8_t GetCardScanTicket();
 
-    void MarkOwnStack(gc_alloc_context* aContext, MarkContext* mc);
+    void MarkOwnStack(gc_alloc_context* aContext, MarkContext* markContext);
     void MarkThroughCards();
     bool MarkThroughCardsConcurrent(int64_t deadline);
-    void MarkDemoted(SatoriRegion* curRegion, MarkContext& c);
+    void MarkDemoted(SatoriRegion* curRegion, MarkContext* markContext);
     void MarkAllStacksFinalizationAndDemotedRoots();
 
     void PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o);
@@ -236,7 +241,7 @@ private:
     void LongWeakPtrScanWorker();
 
     void ScanFinalizables();
-    void ScanFinalizableRegions(SatoriRegionQueue* regions, MarkContext* c);
+    void ScanFinalizableRegions(SatoriRegionQueue* regions, MarkContext* markContext);
     void ScanAllFinalizableRegionsWorker();
     void QueueCriticalFinalizablesWorker();
 
