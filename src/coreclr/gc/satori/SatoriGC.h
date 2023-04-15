@@ -53,6 +53,9 @@ private:
 
     GCEvent* m_waitForGCEvent;
 
+    bool CheckEscapeSatoriRange(size_t dst, size_t src, size_t len);
+    void SetCardsAfterBulkCopy(size_t dst, size_t src, size_t len);
+
 public:
     // Inherited via IGCHeap
     virtual bool IsValidSegmentSize(size_t size) override;
@@ -151,6 +154,9 @@ public:
 
     // Inherited via IGCHeapInternal
     virtual void UpdateFrozenSegment(segment_handle seg, uint8_t* allocated, uint8_t* committed) override;
+
+    // Inherited via IGCHeapInternal
+    virtual void BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteCount) override;
 };
 
 #endif

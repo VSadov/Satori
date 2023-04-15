@@ -7,6 +7,8 @@
 
 #include "common.h"
 #include "gcenv.h"
+#include "gcheaputilities.h"
+#include "PalRedhawkCommon.h"
 #include "PalLimitedContext.h"
 #include "CommonMacros.inl"
 #include "GCMemoryHelpers.inl"
@@ -44,6 +46,9 @@ FCIMPLEND
 
 FCIMPL3(void, RhBulkMoveWithWriteBarrier, uint8_t* pDest, uint8_t* pSrc, size_t cbDest)
 {
+#ifdef FEATURE_SATORI_GC
+    GCHeapUtilities::GetGCHeap()->BulkMoveWithWriteBarrier(pDest, pSrc, cbDest);
+#else
     if (cbDest == 0 || pDest == pSrc)
         return;
 
@@ -67,5 +72,5 @@ FCIMPL3(void, RhBulkMoveWithWriteBarrier, uint8_t* pDest, uint8_t* pSrc, size_t 
     {
         InlinedBulkWriteBarrier(pDest, cbDest);
     }
+#endif //FEATURE_SATORI_GC
 }
-FCIMPLEND

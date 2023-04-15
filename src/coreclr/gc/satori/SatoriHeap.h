@@ -77,9 +77,17 @@ public:
         return nullptr;
     }
 
-    bool IsHeapAddress(size_t address)
+    static bool IsInHeap(size_t address)
     {
-        return PageForAddressChecked(address) != nullptr;
+        _ASSERTE((address & (sizeof(size_t) - 1)) == 0);
+
+        size_t mapIndex = address >> Satori::PAGE_BITS;
+        if (s_pageByteMap[mapIndex] == 0)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     SatoriRegion* RegionForAddressChecked(size_t address);
@@ -126,6 +134,8 @@ private:
     size_t m_nextPageIndex;
     SatoriSpinLock m_mapLock;
     SatoriPage* m_pageMap[1];
+
+    static int8_t* s_pageByteMap;
 
     bool CommitMoreMap(size_t currentlyCommitted);
 

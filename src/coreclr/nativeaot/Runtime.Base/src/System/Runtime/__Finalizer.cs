@@ -52,9 +52,10 @@ namespace System.Runtime
         {
             uint finalizerCount = 0;
             // Drain the queue of finalizable objects.
+            object? target = null;
             while (true)
             {
-                object target = InternalCalls.RhpGetNextFinalizableObject();
+                InternalCalls.RhpGetNextFinalizableObject(Unsafe.AsPointer(ref target));
                 if (target == null)
                     return finalizerCount;
 

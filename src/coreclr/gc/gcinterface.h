@@ -836,6 +836,8 @@ public:
 
     virtual size_t GetLastGCGenerationSize(int gen) PURE_VIRTUAL
 
+    virtual void BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteCount) PURE_VIRTUAL
+
     /*
     ===========================================================================
     Miscellaneous routines used by the VM.

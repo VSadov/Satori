@@ -521,6 +521,10 @@ void GCHeap::UpdateFrozenSegment(segment_handle seg, uint8_t* allocated, uint8_t
 #endif // FEATURE_BASICFREEZE
 }
 
+void GCHeap::BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteCount)
+{
+}
+
 bool GCHeap::RuntimeStructuresValid()
 {
     return GCScan::GetGcRuntimeStructuresValid();

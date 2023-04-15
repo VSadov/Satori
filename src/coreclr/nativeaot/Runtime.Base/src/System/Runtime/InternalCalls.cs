@@ -63,15 +63,6 @@ namespace System.Runtime
         internal static extern void RhCollect(int generation, InternalGCCollectionMode mode, Interop.BOOL lowMemoryP = Interop.BOOL.FALSE);
 
         //
-        // internalcalls for System.Runtime.__Finalizer.
-        //
-
-        // Fetch next object which needs finalization or return null if we've reached the end of the list.
-        [RuntimeImport(RuntimeLibrary, "RhpGetNextFinalizableObject")]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        internal static extern object RhpGetNextFinalizableObject();
-
-        //
         // internalcalls for System.Runtime.InteropServices.GCHandle.
         //
 
@@ -253,5 +244,8 @@ namespace System.Runtime
         // Indicate that the current round of finalizations is complete.
         [DllImport(RuntimeLibrary)]
         internal static extern void RhpSignalFinalizationComplete(uint fCount, int observedFullGcCount);
+
+        [DllImport(Redhawk.BaseName)]
+        internal static extern object RhpGetNextFinalizableObject();
     }
 }

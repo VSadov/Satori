@@ -41,7 +41,7 @@ SatoriTrimmer::SatoriTrimmer(SatoriHeap* heap)
 {
     m_lastGen2Count = 0;
     m_heap  = heap;
-    m_state = TRIMMER_STATE_RUNNING;
+    m_state = TRIMMER_STATE_STOPPED;
 
     m_gate = new (nothrow) GCEvent;
     m_gate->CreateAutoEventNoThrow(false);

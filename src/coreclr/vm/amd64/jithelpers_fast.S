@@ -213,7 +213,7 @@ LOCAL_LABEL(CheckCardTableByte_ByRefWriteBarrier):
 LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
 
 
-#else  //FEATURE_SATORI_GC
+#else  //FEATURE_SATORI_GC      ##############################################################################
 
 // Mark start of the code region that we patch at runtime
 LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
@@ -225,15 +225,11 @@ LEAF_END JIT_PatchedCodeStart, _TEXT
 LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
 
         // See if this is in GCHeap
-        PREPARE_EXTERNAL_VAR g_highest_address, rax
-        cmp     rdi, [rax]
-        ja      NotInHeap
-
-        PREPARE_EXTERNAL_VAR g_card_table, r8
-        mov     r8,  [r8]               // fetch the page map
         mov     rax, rdi
         shr     rax, 30                 // round to page size ( >> PAGE_BITS )
-        cmp     qword ptr [r8 + rax * 8], 0
+        PREPARE_EXTERNAL_VAR g_card_bundle_table, r8
+        add     rax, [r8]               // fetch the page byte map
+        cmp     byte ptr [rax], 0
         jne     C_FUNC(JIT_WriteBarrier)
 
     NotInHeap:
@@ -249,11 +245,21 @@ LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
 //
 .balign 16
 LEAF_ENTRY JIT_WriteBarrier, _TEXT
+#ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+        mov     rax, rsi
+        shr     rax, 30                 // round to page size ( >> PAGE_BITS )
+        PREPARE_EXTERNAL_VAR g_card_bundle_table, r8
+        add     rax, [r8]               // fetch the page byte map
+        cmp     byte ptr [rax], 0
+        je      JustAssign              // src not in heap
+#endif
     // check for escaping assignment
     // 1) check if we own the source region
         mov     rdx, rsi
         and     rdx, 0xFFFFFFFFFFE00000  // source region
+#ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
         jz      JustAssign              // assigning null
+#endif
 #ifdef TARGET_OSX
         mov     rax,  gs:[0]            // thread tag
 #else
@@ -276,7 +282,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         jb      RecordEscape            // target is exposed. record an escape.
 
     JustAssign:
-        mov     [rdi], rsi              // threadlocal assignment of unescaped object
+        mov     [rdi], rsi              // no card marking, src is not a heap object
 
         // set rdi, rsi per contract with JIT_ByRefWriteBarrier
         add     rdi, 8
@@ -307,7 +313,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
     CheckConcurrent:
         cmp     byte ptr [r11], 0
         jne     MarkCards
-        REPRET
+        ret
 
     MarkCards:
     // fetch card location for rax  (saved rdi)
@@ -343,7 +349,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
      // check if concurrent marking is still not in progress
         cmp     byte ptr [r11], 0
         jne     DirtyCard
-        REPRET
+        ret
 
      // DIRTYING CARD
      DirtyCard:

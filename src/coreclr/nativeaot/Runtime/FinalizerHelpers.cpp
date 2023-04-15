@@ -241,25 +241,32 @@ EXTERN_C UInt32_BOOL QCALLTYPE RhpWaitForFinalizerRequest()
 // Fetch next object which needs finalization or return null if we've reached the end of the list.
 FCIMPL0(OBJECTREF, RhpGetNextFinalizableObject)
 {
+    Thread* pThread = ThreadStore::GetCurrentThread();
+    pThread->DeferTransitionFrame();
+    pThread->DisablePreemptiveMode();
+
+    OBJECTREF refNext = NULL;
     while (true)
     {
         // Get the next finalizable object. If we get back NULL we've reached the end of the list.
-        OBJECTREF refNext = GCHeapUtilities::GetGCHeap()->GetNextFinalizable();
-        if (refNext == NULL)
-            return NULL;
-
-        // The queue may contain objects which have been marked as finalized already (via GC.SuppressFinalize()
-        // for instance). Skip finalization for these but reset the flag so that the object can be put back on
-        // the list with RegisterForFinalization().
-        if (refNext->GetHeader()->GetBits() & BIT_SBLK_FINALIZER_RUN)
+        refNext = GCHeapUtilities::GetGCHeap()->GetNextFinalizable();
+        if (refNext != NULL)
         {
-            refNext->GetHeader()->ClrBit(BIT_SBLK_FINALIZER_RUN);
-            continue;
+            // The queue may contain objects which have been marked as finalized already (via GC.SuppressFinalize()
+            // for instance). Skip finalization for these but reset the flag so that the object can be put back on
+            // the list with RegisterForFinalization().
+            if (refNext->GetHeader()->GetBits() & BIT_SBLK_FINALIZER_RUN)
+            {
+                refNext->GetHeader()->ClrBit(BIT_SBLK_FINALIZER_RUN);
+                continue;
+            }
         }
 
-        // We've found the first finalizable object, return it to the caller.
-        return refNext;
+        break;
     }
+
+    pThread->EnablePreemptiveMode();
+    return refNext;
 }
 FCIMPLEND
 

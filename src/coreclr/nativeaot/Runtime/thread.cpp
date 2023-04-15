@@ -46,7 +46,8 @@ thread_local ee_alloc_context::PerThreadRandom ee_alloc_context::t_random = PerT
 
 PInvokeTransitionFrame* Thread::GetTransitionFrame()
 {
-    if (ThreadStore::GetSuspendingThread() == this)
+    if (ThreadStore::GetSuspendingThread() == this ||
+        ThreadStore::GetCurrentThread() == this)
     {
         // This thread is in cooperative mode, so we grab the deferred frame
         // which is the frame from the most

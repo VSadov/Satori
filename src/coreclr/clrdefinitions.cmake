@@ -172,6 +172,7 @@ if (NOT CLR_CMAKE_HOST_ANDROID)
   set(FEATURE_SVR_GC 1)
   add_definitions(-DFEATURE_SVR_GC)
   add_definitions(-DFEATURE_SATORI_GC)
+  add_definitions(-DFEATURE_SATORI_EXTERNAL_OBJECTS)
 endif(NOT CLR_CMAKE_HOST_ANDROID)
 add_definitions(-DFEATURE_SYMDIFF)
 

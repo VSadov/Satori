@@ -48,10 +48,10 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
 
     for (int i = 0; i < Satori::ALLOCATOR_BUCKET_COUNT; i++)
     {
-        m_queues[i] = new SatoriRegionQueue(QueueKind::Allocator);
+        m_queues[i] = new (nothrow) SatoriRegionQueue(QueueKind::Allocator);
     }
 
-    m_workChunks = new SatoriWorkList();
+    m_workChunks = new (nothrow) SatoriWorkList();
 
     m_immortalRegion = nullptr;
     m_immortalAlocLock.Initialize();

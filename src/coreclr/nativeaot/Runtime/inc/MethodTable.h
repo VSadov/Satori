@@ -343,6 +343,7 @@ public:
     // Methods expected by the GC
     uint32_t ContainsGCPointers() { return HasReferenceFields(); }
     uint32_t ContainsGCPointersOrCollectible() { return HasReferenceFields(); }
+    bool Collectible() { return false; }
     UInt32_BOOL SanityCheck() { return Validate(); }
 };
 
