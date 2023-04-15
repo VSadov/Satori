@@ -54,7 +54,9 @@ public:
     SatoriObject* Next();
 
     size_t Size();
+    bool SameRegion(SatoriRegion* otherRegion);
     bool IsFree();
+    bool IsExternal();
 
     bool IsEscaped();
     bool IsMarked();
