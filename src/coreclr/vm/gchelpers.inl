@@ -32,6 +32,7 @@ static const int card_byte_shift = 10;
 const static int REGION_BITS = 21;
 const static size_t REGION_SIZE_GRANULARITY = 1 << REGION_BITS;
 
+#if !FEATURE_SATORI_GC
 FORCEINLINE void InlinedSetCardsAfterBulkCopyHelper(Object** start, size_t len)
 {
     // Check whether the writes were even into the heap. If not there's no card update required.
@@ -107,5 +108,6 @@ FORCEINLINE void InlinedSetCardsAfterBulkCopyHelper(Object** start, size_t len)
     while (bundleByteCount != 0);
 #endif
 }
+#endif // !FEATURE_SATORI_GC
 
 #endif // !_GCHELPERS_INL_

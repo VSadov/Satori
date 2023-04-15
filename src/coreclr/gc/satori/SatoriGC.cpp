@@ -186,6 +186,12 @@ int SatoriGC::WaitForFullGCComplete(int millisecondsTimeout)
 unsigned SatoriGC::WhichGeneration(Object* obj)
 {
     SatoriObject* so = (SatoriObject*)obj;
+    if (so->IsExternal())
+    {
+        // never collected -> 3
+        return 3;
+    }
+
     return (unsigned)so->ContainingRegion()->Generation();
 }
 
@@ -267,14 +273,27 @@ bool SatoriGC::RegisterForFinalization(int gen, Object* obj)
     SatoriObject* so = (SatoriObject*)obj;
     _ASSERTE(so->RawGetMethodTable()->HasFinalizer());
 
+    if (so->IsExternal())
+    {
+        // noop
+        return true;
+    }
+
     if (so->IsFinalizationSuppressed())
     {
         so->UnSuppressFinalization();
         return true;
     }
     else
-    {        
-        return so->ContainingRegion()->RegisterForFinalization(so);
+    {
+        SatoriRegion* region = so->ContainingRegion();
+        if (region->Generation() == 3)
+        {
+            // no need to register immortal objects
+            return true;
+        }
+
+        return region->RegisterForFinalization(so);
     }
 }
 
@@ -316,19 +335,19 @@ HRESULT SatoriGC::Initialize()
 // actually checks if object is considered reachable as a result of a marking phase.
 bool SatoriGC::IsPromoted(Object* object)
 {
-    _ASSERTE(object == nullptr || m_heap->IsHeapAddress((size_t)object));
     SatoriObject* o = (SatoriObject*)object;
 
     // objects outside of the collected generation (including null) are considered marked.
     // (existing behavior)
     return o == nullptr ||
+        o->IsExternal() ||
         o->IsMarkedOrOlderThan(m_heap->Recycler()->GetCondemnedGeneration());
 }
 
 bool SatoriGC::IsHeapPointer(void* object, bool small_heap_only)
 {
     //small_heap_only is unused - there is no special heap for large objects.
-    return m_heap->IsHeapAddress((size_t)object);
+    return SatoriHeap::IsInHeap((size_t)object);
 }
 
 unsigned SatoriGC::GetCondemnedGeneration()
@@ -572,7 +591,12 @@ bool SatoriGC::StressHeap(gc_alloc_context* acontext)
 segment_handle SatoriGC::RegisterFrozenSegment(segment_info* pseginfo)
 {
     // N/A
+    // non-null means success;
+#if FEATURE_SATORI_EXTERNAL_OBJECTS
+    return (segment_handle)1;
+#else
     return NULL;
+#endif
 }
 
 void SatoriGC::UnregisterFrozenSegment(segment_handle seg)
@@ -580,9 +604,21 @@ void SatoriGC::UnregisterFrozenSegment(segment_handle seg)
     // N/A
 }
 
+void SatoriGC::UpdateFrozenSegment(segment_handle seg, uint8_t* allocated, uint8_t* committed)
+{
+    // N/A
+}
+
 bool SatoriGC::IsInFrozenSegment(Object* object)
 {
-    return ((SatoriObject*)object)->ContainingRegion()->Generation() == 3;
+    // is never collected (immortal)
+    SatoriObject* so = (SatoriObject*)object;
+    if (so->IsExternal())
+    {
+        return true;
+    }
+
+    return (unsigned)so->ContainingRegion()->Generation() == 3;
 }
 
 void SatoriGC::ControlEvents(GCEventKeyword keyword, GCEventLevel level)
@@ -670,6 +706,138 @@ void SatoriGC::EnumerateConfigurationValues(void* context, ConfigurationValueFun
     GCConfig::EnumerateConfigurationValues(context, configurationValueFunc);
 }
 
-void SatoriGC::UpdateFrozenSegment(segment_handle seg, uint8_t* allocated, uint8_t* committed)
+bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
 {
+    SatoriRegion* curRegion = (SatoriRegion*)GCToEEInterface::GetAllocContext()->gc_reserved_1;
+    if (!curRegion || !curRegion->IsEscapeTracking())
+    {
+        // not tracking escapes, not a local assignment.
+        return false;
+    }
+
+    _ASSERTE(curRegion->IsEscapeTrackedByCurrentThread());
+
+    // if dst is within the curRegion and is not exposed, we are done
+    if (((dst ^ curRegion->Start()) >> 21) == 0)
+    {
+        if (!curRegion->AnyExposed(dst, len))
+        {
+            // thread-local assignment
+            return true;
+        }
+    }
+
+    if (!SatoriHeap::IsInHeap(dst))
+    {
+        // dest not in heap, must be stack, so, local
+        return true;
+    }
+
+    if (((src ^ curRegion->Start()) >> 21) == 0)
+    {
+        // if src is in current region, the elements could be escaping
+        if (!curRegion->AnyExposed(src, len))
+        {
+            // one-element array copy is embarrasingly common. specialcase that.
+            if (len == sizeof(size_t))
+            {
+                SatoriObject* obj = *(SatoriObject**)src;
+                if (obj->SameRegion(curRegion))
+                {
+                    curRegion->EscapeRecursively(obj);
+                }
+            }
+            else
+            {
+                SatoriObject* containingSrcObj = curRegion->FindObject(src);
+                containingSrcObj->ForEachObjectRef(
+                    [&](SatoriObject** ref)
+                    {
+                        SatoriObject* child = *ref;
+                        if (child->SameRegion(curRegion))
+                        {
+                            curRegion->EscapeRecursively(child);
+                        }
+                    },
+                    src,
+                    src + len
+                );
+            }
+        }
+
+        return false;
+    }
+
+    if (SatoriHeap::IsInHeap(src))
+    {
+        // src is not in current region but in heap,
+        // it can't escape anything that belongs to the current thread, but it is not a local assignment.
+        return false;
+    }
+
+    // This is a very rare case where we are copying refs out of non-heap area like stack or native heap.
+    // We do not have a containing type and that is somewhat inconvenient.
+    // 
+    // There are not many scenarios that lead here. In particular, boxing uses a newly
+    // allocated and not yet escaped target, so it does not end up here.
+    // One possible way to get here is a copy-back after a reflection call with a boxed nullable
+    // argument that happen to escape.
+    // 
+    // We could handle this is by conservatively escaping any value that matches an unescaped pointer in curRegion.
+    // However, considering how uncommon this is, we will just give up tracking.
+    curRegion->StopEscapeTracking();
+    return false;
+}
+
+void SatoriGC::SetCardsAfterBulkCopy(size_t dst, size_t src, size_t len)
+{
+    SatoriPage* page = m_heap->PageForAddressChecked(dst);
+    if (page)
+    {
+        SatoriRecycler* recycler = m_heap->Recycler();
+        if (!recycler->IsBarrierConcurrent())
+        {
+            page->SetCardsForRange(dst, dst + len);
+        }
+
+        if (recycler->IsBarrierConcurrent())
+        {
+            page->DirtyCardsForRangeUnordered(dst, dst + len);
+        }
+    }
+}
+
+void SatoriGC::BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteCount)
+{
+    if (dst == src || byteCount == 0)
+        return;
+
+    // Make sure everything is pointer aligned
+    _ASSERTE(((size_t)dst & (sizeof(size_t) - 1)) == 0);
+    _ASSERTE(((size_t)src & (sizeof(size_t) - 1)) == 0);
+    _ASSERTE(((size_t)byteCount & (sizeof(size_t) - 1)) == 0);
+
+    bool localAssignment = false;
+    if (byteCount >= sizeof(size_t))
+    {
+        localAssignment = CheckEscapeSatoriRange((size_t)dst, (size_t)src, byteCount);
+    }
+
+    if (!localAssignment)
+    {
+#if !defined(TARGET_X86) && !defined(TARGET_AMD64)
+        MemoryBarrier();
+#endif
+    }
+
+    // NOTE! memmove needs to copy with size_t granularity
+    // I do not see how it would not, since everything is aligned.
+    // If we need to handle unaligned moves, we may need to write our own memmove
+    memmove(dst, src, byteCount);
+
+    if (byteCount >= sizeof(size_t) &&
+       (!localAssignment || m_heap->Recycler()->IsBarrierConcurrent()))
+    {
+        SetCardsAfterBulkCopy((size_t)dst, (size_t)src, byteCount);
+    }
 }
