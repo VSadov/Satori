@@ -830,7 +830,7 @@ TryAgain_Xchg
 
 AssignAndMarkCards_Xchg
         mov    x14, x0                        ;; x14 = dst
-        mov    x15, x1                        ;; x15 = val    ;; TODO: VS not needed, can use x1
+        mov    x15, x1                        ;; x15 = val
 TryAgain1_Xchg
     ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         ldaxr   x17, [x0]

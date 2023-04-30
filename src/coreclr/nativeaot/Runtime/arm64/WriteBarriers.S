@@ -860,7 +860,7 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocationNotHeap
 
     LOCAL_LABEL(AssignAndMarkCards_Xchg):
         mov    x14, x0                        // x14 = dst
-        mov    x15, x1                        // x15 = val    // TODO: VS not needed, can use x1
+        mov    x15, x1                        // x15 = val
 #ifdef TARGET_OSX
 ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         swpal  x1, x0, [x0]                   // exchange
