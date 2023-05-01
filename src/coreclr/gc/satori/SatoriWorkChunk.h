@@ -91,6 +91,11 @@ public:
         return m_data[m_top - 1];
     }
 
+    SatoriObject* Peek(int distance)
+    {
+        return m_data[m_top - distance];
+    }
+
     bool TryPush(SatoriObject* obj)
     {
         if (HasSpace())

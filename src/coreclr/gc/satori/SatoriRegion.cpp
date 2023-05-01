@@ -1737,7 +1737,28 @@ void SatoriRegion::UpdateFinalizableTrackers()
     }
 }
 
-void SatoriRegion::UpdatePointersInObject(SatoriObject* o)
+void SatoriRegion::DrainUpdateBuffer(SatoriObject*** pBuffer)
+{
+    for (int i = 0; i < Satori::PREFETCH_DISTANCE; i++)
+    {
+        SatoriObject** ppObject = pBuffer[i];
+        if (ppObject)
+        {
+            SatoriObject* child = *ppObject;
+            if (child)
+            {
+                ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                if (ptr < 0)
+                {
+                    _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
+                    *ppObject = (SatoriObject*)-ptr;
+                }
+            }
+        }
+    }
+}
+
+void SatoriRegion::UpdatePointersInObject(SatoriObject* o, SatoriObject*** pBuffer, int& bufPos)
 {
     // if the containing region is large, do not engage with the entire object,
     // schedule update of separate ranges.
@@ -1745,16 +1766,27 @@ void SatoriRegion::UpdatePointersInObject(SatoriObject* o)
         !Recycler()->ScheduleUpdateAsChildRanges(o))
     {
         o->ForEachObjectRef(
-            [](SatoriObject** ppObject)
+            [&](SatoriObject** ppObject)
             {
-                SatoriObject* child = *ppObject;
-                if (child)
+                SatoriUtil::Prefetch(ppObject);
+
+                // work with earlier prefetched location
+                SatoriObject** tmp = pBuffer[bufPos];
+                pBuffer[bufPos] = ppObject;
+                ppObject = tmp;
+                bufPos = (bufPos + 1) & (Satori::PREFETCH_DISTANCE - 1);
+
+                if (ppObject)
                 {
-                    ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
-                    if (ptr < 0)
+                    SatoriObject* child = *ppObject;
+                    if (child)
                     {
-                        _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
-                        *ppObject = (SatoriObject*)-ptr;
+                        ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                        if (ptr < 0)
+                        {
+                            _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
+                            *ppObject = (SatoriObject*)-ptr;
+                        }
                     }
                 }
             }
@@ -1766,13 +1798,18 @@ void SatoriRegion::UpdatePointers()
 {
     _ASSERTE(!HasMarksSet());
 
+    int prefetchIndex = 0;
+    SatoriObject** buffer[Satori::PREFETCH_DISTANCE] = {};
+
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     SatoriObject* o = FirstObject();
     do
     {
-        UpdatePointersInObject(o);
+        UpdatePointersInObject(o, buffer, prefetchIndex);
         o = o->Next();
     } while (o->Start() < objLimit);
+
+    DrainUpdateBuffer(buffer);
 }
 
 void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)

@@ -124,7 +124,7 @@ public:
     void TakeFinalizerInfoFrom(SatoriRegion* other);
     void UpdateFinalizableTrackers();
     void UpdatePointers();
-    void UpdatePointersInObject(SatoriObject* o);
+    void UpdatePointersInObject(SatoriObject* o, SatoriObject*** pBuffer, int& bufPos);
 
     template <bool promotingAllRegions>
     void UpdatePointersInPromotedObjects();
@@ -294,6 +294,7 @@ private:
     SatoriObject* PopFromMarkStack();
     SatoriObject* ObjectForMarkBit(size_t bitmapIndex, int offset);
     void CompactFinalizableTrackers();
+    static void DrainUpdateBuffer(SatoriObject*** pBuffer);
 
     enum MarkOffset: int
     {

@@ -1616,9 +1616,12 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
             // drain srcChunk to dst chunk
             while (srcChunk->Count() > 0)
             {
-                o = srcChunk->Pop();
-                SatoriUtil::Prefetch(srcChunk->Peek());
+                if (srcChunk->Count() > Satori::PREFETCH_DISTANCE)
+                {
+                    SatoriUtil::Prefetch(srcChunk->Peek(Satori::PREFETCH_DISTANCE));
+                }
 
+                o = srcChunk->Pop();
                 _ASSERTE(o->IsMarked());
                 if (o->IsUnmovable())
                 {
@@ -1782,9 +1785,12 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
             // mark objects in the chunk
             while (srcChunk->Count() > 0)
             {
-                SatoriObject* o = srcChunk->Pop();
-                SatoriUtil::Prefetch(srcChunk->Peek());
+                if (srcChunk->Count() > Satori::PREFETCH_DISTANCE)
+                {
+                    SatoriUtil::Prefetch(srcChunk->Peek(Satori::PREFETCH_DISTANCE));
+                }
 
+                SatoriObject* o = srcChunk->Pop();
                 _ASSERTE(o->IsMarked());
                 if (o->IsUnmovable())
                 {

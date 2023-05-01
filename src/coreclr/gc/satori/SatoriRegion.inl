@@ -246,6 +246,9 @@ bool SatoriRegion::Sweep()
         ClearFreeLists();
     }
 
+    int prefetchIndex = 0;
+    SatoriObject** buffer[Satori::PREFETCH_DISTANCE] = {};
+
     m_escapedSize = 0;
     bool cannotRecycle = this->IsAttachedToAllocatingOwner();
     bool isEscapeTracking = this->IsEscapeTracking();
@@ -281,7 +284,7 @@ bool SatoriRegion::Sweep()
 
         if (updatePointers)
         {
-            UpdatePointersInObject(o);
+            UpdatePointersInObject(o, buffer, prefetchIndex);
         }
 
         if (!hasFinalizables && o->RawGetMethodTable()->HasFinalizer())
@@ -294,6 +297,11 @@ bool SatoriRegion::Sweep()
         occupancy += size;
         o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);
+
+    if (updatePointers)
+    {
+        DrainUpdateBuffer(buffer);
+    }
 
     _ASSERTE(o->Start() == objLimit || End() > objLimit);
     _ASSERTE(hasFinalizables || !m_finalizableTrackers);

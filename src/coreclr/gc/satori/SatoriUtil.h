@@ -94,6 +94,12 @@ namespace Satori
     // we will limit number of demoted objects to not use too many chunks
     // it will softly limit the occupancy as well.
     const static size_t MAX_DEMOTED_OBJECTS_IN_REGION = 2048;
+
+    // when accessing random locations, if possible, prefetch this many in advance
+    // this must be a ^2 number (since we mask the index)
+    // we cannot know an ideal number, but it is ok to underestimate,
+    // if we are catching up with prefetches, we will natuarally slow down to let them fill.
+    static const int PREFETCH_DISTANCE = 8;
 }
 
 class SatoriUtil
