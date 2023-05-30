@@ -416,6 +416,8 @@ NoBarrierXchg:
 //
 LEAF_ENTRY RhpByRefAssignRefArm64, _TEXT
 
+    ALTERNATE_ENTRY RhpByRefAssignRefAVLocation1
+    ALTERNATE_ENTRY RhpByRefAssignRefAVLocation2
         ldr     x15, [x13], 8
         b       C_FUNC(RhpCheckedAssignRefArm64)
 
