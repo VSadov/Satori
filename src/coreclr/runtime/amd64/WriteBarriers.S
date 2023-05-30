@@ -530,6 +530,7 @@ LEAF_END RhpAssignRef, _TEXT
 //
 LEAF_ENTRY RhpByRefAssignRef, _TEXT
         lea     r10, [rsi + 8]
+ALTERNATE_ENTRY RhpByRefAssignRefAVLocation1
         mov     rsi, [rsi]
 
         // See if assignment is into heap
@@ -541,6 +542,7 @@ LEAF_ENTRY RhpByRefAssignRef, _TEXT
 
     .balign 16
     NotInHeap_RhpByRefAssignRef:
+ALTERNATE_ENTRY RhpByRefAssignRefAVLocation2
         mov     [rdi], rsi
         add     rdi, 8
         mov     rsi, r10
