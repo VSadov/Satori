@@ -217,6 +217,7 @@ INVALIDGCVALUE  EQU 0xCCCCCCCD
     LEAF_ENTRY RhpByRefAssignRefArm64, _TEXT
 
     ALTERNATE_ENTRY RhpByRefAssignRefAVLocation1
+    ALTERNATE_ENTRY RhpByRefAssignRefAVLocation2
         ldr     x15, [x13], 8
         b       RhpCheckedAssignRefArm64
 
@@ -413,6 +414,7 @@ NoBarrierXchg
 ;;
     LEAF_ENTRY RhpByRefAssignRefArm64, _TEXT
 
+   RhpByRefAssignRefAVLocation1
         ldr     x15, [x13], 8
         b       RhpCheckedAssignRefArm64
 
