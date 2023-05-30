@@ -157,6 +157,11 @@ public:
 
     // Inherited via IGCHeapInternal
     virtual void BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteCount) override;
+
+    // Inherited via IGCHeapInternal
+    virtual int RefreshMemoryLimit() override;
+    virtual enable_no_gc_region_callback_status EnableNoGCRegionCallback(NoGCRegionCallbackFinalizerWorkItem* callback, uint64_t callback_threshold) override;
+    virtual FinalizerWorkItem* GetExtraWorkForFinalization() override;
 };
 
 #endif

@@ -516,22 +516,24 @@ LEAF_END RhpAssignRef, _TEXT
 ;;      rcx, r8, r9, r11: trashed
 ;;
 LEAF_ENTRY RhpByRefAssignRef, _TEXT
-        mov     rcx, rdi
-        mov     rdx, [rsi]
-        add     rdi, 8h
-        add     rsi, 8h
+    mov     rcx, rdi
+ALTERNATE_ENTRY RhpByRefAssignRefAVLocation1
+    mov     rdx, [rsi]
+    add     rdi, 8h
+    add     rsi, 8h
 
-        ; See if assignment is into heap
-        mov     rax, rcx
-        shr     rax, 30                    ; round to page size ( >> PAGE_BITS )
-        add     rax, [g_card_bundle_table] ; fetch the page byte map
-        cmp     byte ptr [rax], 0
-        jne     RhpAssignRef
+    ; See if assignment is into heap
+    mov     rax, rcx
+    shr     rax, 30                    ; round to page size ( >> PAGE_BITS )
+    add     rax, [g_card_bundle_table] ; fetch the page byte map
+    cmp     byte ptr [rax], 0
+    jne     RhpAssignRef
 
     align 16
     NotInHeap:
-        mov     [rcx], rdx
-        ret
+ALTERNATE_ENTRY RhpByRefAssignRefAVLocation2
+    mov     [rcx], rdx
+    ret
 LEAF_END RhpByRefAssignRef, _TEXT
 
 LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
