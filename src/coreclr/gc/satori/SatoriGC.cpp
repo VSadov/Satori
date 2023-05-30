@@ -189,7 +189,7 @@ unsigned SatoriGC::WhichGeneration(Object* obj)
     if (so->IsExternal())
     {
         // never collected -> 3
-        return 3;
+        return 2147483647;
     }
 
     return (unsigned)so->ContainingRegion()->Generation();
@@ -840,4 +840,19 @@ void SatoriGC::BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteC
     {
         SetCardsAfterBulkCopy((size_t)dst, (size_t)src, byteCount);
     }
+}
+
+int SatoriGC::RefreshMemoryLimit()
+{
+    return 0;
+}
+
+enable_no_gc_region_callback_status SatoriGC::EnableNoGCRegionCallback(NoGCRegionCallbackFinalizerWorkItem* callback, uint64_t callback_threshold)
+{
+    return enable_no_gc_region_callback_status();
+}
+
+FinalizerWorkItem* SatoriGC::GetExtraWorkForFinalization()
+{
+    return nullptr;
 }
