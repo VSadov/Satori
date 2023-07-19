@@ -968,11 +968,13 @@ void TraceVariableHandles(HANDLESCANPROC pfnTrace, ScanContext *sc, uintptr_t lp
             if (walk->pBuckets[i] != NULL)
             {
                 int uCPUindex = getSlotNumber(sc);
+                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                 int uCPUlimit = getNumberOfSlots();
                 assert(uCPUlimit > 0);
                 int uCPUstep = getThreadCount(sc);
-                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
                 for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                 {
                     HHANDLETABLE hTable = pTable[uCPUindex];
                     if (hTable)
@@ -1040,11 +1042,13 @@ void Ref_TracePinningRoots(uint32_t condemned, uint32_t maxgen, ScanContext* sc,
             if (walk->pBuckets[i] != NULL)
             {
                 int uCPUindex = getSlotNumber(sc);
+                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                 int uCPUlimit = getNumberOfSlots();
                 assert(uCPUlimit > 0);
                 int uCPUstep = getThreadCount(sc);
-                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                 {
                     HHANDLETABLE hTable = pTable[uCPUindex];
                     if (hTable)
@@ -1085,11 +1089,13 @@ void Ref_TraceNormalRoots(uint32_t condemned, uint32_t maxgen, ScanContext* sc, 
             if (walk->pBuckets[i] != NULL)
             {
                 int uCPUindex = getSlotNumber(sc);
+                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                 int uCPUlimit = getNumberOfSlots();
                 assert(uCPUlimit > 0);
                 int uCPUstep = getThreadCount(sc);
-                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                 {
                     HHANDLETABLE hTable = pTable[uCPUindex];
                     if (hTable)
@@ -1118,11 +1124,13 @@ void Ref_TraceNormalRoots(uint32_t condemned, uint32_t maxgen, ScanContext* sc, 
                 if (walk->pBuckets[i] != NULL)
                 {
                     int uCPUindex = getSlotNumber(sc);
+                    HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                     int uCPUlimit = getNumberOfSlots();
                     assert(uCPUlimit > 0);
                     int uCPUstep = getThreadCount(sc);
-                    HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                    for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                    for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                     {
                         HHANDLETABLE hTable = pTable[uCPUindex];
                         if (hTable)
@@ -1194,11 +1202,13 @@ void Ref_CheckReachable(uint32_t condemned, uint32_t maxgen, ScanContext *sc)
             if (walk->pBuckets[i] != NULL)
             {
                 int uCPUindex = getSlotNumber(sc);
+                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                 int uCPUlimit = getNumberOfSlots();
                 assert(uCPUlimit > 0);
                 int uCPUstep = getThreadCount(sc);
-                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                 {
                     HHANDLETABLE hTable = pTable[uCPUindex];
                     if (hTable)
@@ -1284,11 +1294,11 @@ bool Ref_ScanDependentHandlesForPromotion(DhContext *pDhContext)
                 if (walk->pBuckets[i] != NULL)
                 {
                     int uCPUindex = getSlotNumber(pDhContext->m_pScanContext);
-                    int uCPUlimit = getNumberOfSlots();
-                    assert(uCPUlimit > 0);
+                    // int uCPUlimit = getNumberOfSlots();
+                    // assert(uCPUlimit > 0);
                     int uCPUstep = getThreadCount(pDhContext->m_pScanContext);
                     HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                    for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                    // for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
                     {
                         HHANDLETABLE hTable = pTable[uCPUindex];
                         if (hTable)
@@ -1333,11 +1343,13 @@ void Ref_ScanDependentHandlesForClearing(uint32_t condemned, uint32_t maxgen, Sc
             if (walk->pBuckets[i] != NULL)
             {
                 int uCPUindex = getSlotNumber(sc);
+                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                 int uCPUlimit = getNumberOfSlots();
                 assert(uCPUlimit > 0);
                 int uCPUstep = getThreadCount(sc);
-                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                 {
                     HHANDLETABLE hTable = pTable[uCPUindex];
                     if (hTable)
@@ -1367,11 +1379,13 @@ void Ref_ScanDependentHandlesForRelocation(uint32_t condemned, uint32_t maxgen, 
             if (walk->pBuckets[i] != NULL)
             {
                 int uCPUindex = getSlotNumber(sc);
+                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                 int uCPUlimit = getNumberOfSlots();
                 assert(uCPUlimit > 0);
                 int uCPUstep = getThreadCount(sc);
-                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                 {
                     HHANDLETABLE hTable = pTable[uCPUindex];
                     if (hTable)
@@ -1428,11 +1442,13 @@ void ScanSizedRefByCPU(uint32_t maxgen, HANDLESCANPROC scanProc, ScanContext* sc
         	if (walk->pBuckets[i] != NULL)
 	        {
                 int uCPUindex = getSlotNumber(sc);
+                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                 int uCPUlimit = getNumberOfSlots();
                 assert(uCPUlimit > 0);
                 int uCPUstep = getThreadCount(sc);
-                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                 {
                     HHANDLETABLE hTable = pTable[uCPUindex];
                     if (hTable)
@@ -1480,11 +1496,13 @@ void Ref_CheckAlive(uint32_t condemned, uint32_t maxgen, ScanContext *sc)
             if (walk->pBuckets[i] != NULL)
             {
                 int uCPUindex = getSlotNumber(sc);
+                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                 int uCPUlimit = getNumberOfSlots();
                 assert(uCPUlimit > 0);
                 int uCPUstep = getThreadCount(sc);
-                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                 {
                     HHANDLETABLE hTable = pTable[uCPUindex];
                     if (hTable)
@@ -1547,11 +1565,13 @@ void Ref_UpdatePointers(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Re
             if (walk->pBuckets[i] != NULL)
             {
                 int uCPUindex = getSlotNumber(sc);
+                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                 int uCPUlimit = getNumberOfSlots();
                 assert(uCPUlimit > 0);
                 int uCPUstep = getThreadCount(sc);
-                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                 {
                     HHANDLETABLE hTable = pTable[uCPUindex];
                     if (hTable)
@@ -1712,11 +1732,13 @@ void Ref_UpdatePinnedPointers(uint32_t condemned, uint32_t maxgen, ScanContext* 
             if (walk->pBuckets[i] != NULL)
             {
                 int uCPUindex = getSlotNumber(sc);
+                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                 int uCPUlimit = getNumberOfSlots();
                 assert(uCPUlimit > 0);
                 int uCPUstep = getThreadCount(sc);
-                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                 {
                     HHANDLETABLE hTable = pTable[uCPUindex];
                     if (hTable)
@@ -1769,11 +1791,13 @@ void Ref_AgeHandles(uint32_t condemned, uint32_t maxgen, ScanContext* sc)
             if (walk->pBuckets[i] != NULL)
             {
                 int uCPUindex = getSlotNumber(sc);
+                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                 int uCPUlimit = getNumberOfSlots();
                 assert(uCPUlimit > 0);
                 int uCPUstep = getThreadCount(sc);
-                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                 {
                     HHANDLETABLE hTable = pTable[uCPUindex];
                     if (hTable)
@@ -1825,11 +1849,13 @@ void Ref_RejuvenateHandles(uint32_t condemned, uint32_t maxgen, ScanContext* sc)
             if (walk->pBuckets[i] != NULL)
             {
                 int uCPUindex = getSlotNumber(sc);
+                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                 int uCPUlimit = getNumberOfSlots();
                 assert(uCPUlimit > 0);
                 int uCPUstep = getThreadCount(sc);
-                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                 {
                     HHANDLETABLE hTable = pTable[uCPUindex];
                     if (hTable)
@@ -1879,11 +1905,13 @@ void Ref_VerifyHandleTable(uint32_t condemned, uint32_t maxgen, ScanContext* sc)
             if (walk->pBuckets[i] != NULL)
             {
                 int uCPUindex = getSlotNumber(sc);
+                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                 int uCPUlimit = getNumberOfSlots();
                 assert(uCPUlimit > 0);
                 int uCPUstep = getThreadCount(sc);
-                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                 {
                     HHANDLETABLE hTable = pTable[uCPUindex];
                     if (hTable)

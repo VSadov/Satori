@@ -140,7 +140,6 @@ public:
     STRING_CONFIG(GCName,                    "GCName",                    "System.GC.Name",                                        "Specifies the path of the standalone GC implementation.")                                \
     INT_CONFIG   (GCSpinCountUnit,           "GCSpinCountUnit",           0,                                   0,                  "Specifies the spin count unit used by the GC.")                                          \
     INT_CONFIG   (GCDynamicAdaptationMode,   "GCDynamicAdaptationMode",   "System.GC.DynamicAdaptationMode",   0,                  "Enable the GC to dynamically adapt to application sizes.")                               \
-    INT_CONFIG   (GCSpinCountUnit,           "GCSpinCountUnit",           0,                                   0,                  "Specifies the spin count unit used by the GC.")                                          \
 /* FEATURE_SATORI_GC */                                                                                                                                                                                                      \
     BOOL_CONFIG  (RelocatingInGen1,          "gcRelocatingGen1",          NULL,                                true,               "Specifies whether GC can relocate objects in Gen1 GC")                                   \
     BOOL_CONFIG  (RelocatingInGen2,          "gcRelocatingGen2",          NULL,                                true,               "Specifies whether GC can relocate objects in Gen2 GC")                                   \
