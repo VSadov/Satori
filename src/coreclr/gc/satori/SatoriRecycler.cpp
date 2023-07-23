@@ -136,6 +136,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_activeHelperFn = nullptr;
     m_rootScanTicket = 0;
     m_cardScanTicket = 0;
+    m_concurrentCardsDone = false;
+    m_concurrentHandlesDone = false;
 
     m_isLowLatencyMode = SatoriUtil::IsLowLatencyMode();
 }
@@ -181,6 +183,9 @@ void SatoriRecycler::IncrementRootScanTicket()
     {
         m_rootScanTicket++;
     }
+
+    m_concurrentCardsDone = false;
+    m_concurrentHandlesDone = false;
 }
 
 void SatoriRecycler::IncrementCardScanTicket()
@@ -413,8 +418,7 @@ bool IsHelperThread()
 
 int64_t SatoriRecycler::HelpQuantum()
 {
-    // TUNING: 1/8 msec for now
-    return m_perfCounterFrequencyMHz / 8;
+    return m_perfCounterFrequencyMHz / 8;  // 1/8 msec
 }
 
 bool SatoriRecycler::HelpOnceCore()
@@ -440,7 +444,7 @@ bool SatoriRecycler::HelpOnceCore()
     }
 
     int64_t timeStamp = GCToOSInterface::QueryPerformanceCounter();
-    int64_t deadline = timeStamp + HelpQuantum(); // 1/8 msec.
+    int64_t deadline = timeStamp + HelpQuantum();
 
     // this should be done before scanning stacks or cards
     // since the regions must be swept before we can use FindObject
@@ -455,9 +459,9 @@ bool SatoriRecycler::HelpOnceCore()
     // make sure the barrier is toggled to concurrent before marking
     if (!m_isBarrierConcurrent)
     {
-        // toggling is a PW fence.
-        m_isBarrierConcurrent = true;
+        // toggling is a ProcessWide fence.
         ToggleWriteBarrier(true, /* eeSuspended */ false);
+        m_isBarrierConcurrent = true;
     }
 
     if (MarkOwnStackAndDrainQueues(deadline))
@@ -471,25 +475,47 @@ bool SatoriRecycler::HelpOnceCore()
         BlockingMarkForConcurrent();
     }
 
-    if (MarkHandles(deadline))
+    if (m_ccStackMarkState == CC_MARK_STATE_SUSPENDING_EE && !IsHelperThread())
     {
+        // leave and suspend.
         return true;
     }
 
-    if (m_condemnedGeneration == 1 ?
+    if (!m_concurrentHandlesDone)
+    {
+        if (MarkHandles(deadline))
+        {
+            return true;
+        }
+        else
+        {
+            m_concurrentHandlesDone = true;
+        }
+    }
+
+    if (!m_concurrentCardsDone)
+    {
+        if (m_condemnedGeneration == 1 ?
             MarkThroughCardsConcurrent(deadline) :
             ScanDirtyCardsConcurrent(deadline))
-    {
-        return true;
+        {
+            return true;
+        }
+        else
+        {
+            m_concurrentCardsDone = true;
+        }
     }
 
-    if (m_ccStackMarkState != CC_MARK_STATE_DONE)
+    if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
     {
+        _ASSERT(IsHelperThread());
+        // come back and help with stack marking
         return true;
     }
 
     // if queues are empty we see no more work
-    return !m_workList->IsEmpty();
+    return DrainMarkQueuesConcurrent(nullptr, deadline);
 }
 
 class MarkContext
@@ -606,7 +632,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
 
 void SatoriRecycler::HelpOnce()
 {
-    _ASSERTE(GCToEEInterface::GetThread() != nullptr);
+    _ASSERTE(!IsHelperThread());
 
     if (m_gcState != GC_STATE_NONE)
     {
@@ -646,6 +672,7 @@ void SatoriRecycler::HelpOnce()
 
 void SatoriRecycler::ConcurrentHelp()
 {
+    // helpers have deadline too, just to come here and check the stage.
     while ((m_gcState == GC_STATE_CONCURRENT) && HelpOnceCore());
 }
 
@@ -1833,10 +1860,37 @@ size_t ThreadSpecificNumber()
     return result;
 }
 
+int64_t SatoriRecycler::GlobalGcIndex()
+{
+    return m_gcCount[1];
+}
+
+struct ConcurrentCardsRestart
+{
+    int64_t gcIndex;
+    SatoriPage* page;
+    size_t ii;
+    size_t offset;
+};
+
+thread_local
+ConcurrentCardsRestart t_concurrentCardState;
+
 bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
 {
     SatoriWorkChunk* dstChunk = nullptr;
     bool revisit = false;
+
+    int64_t gcIndex = GlobalGcIndex();
+    ConcurrentCardsRestart* pRestart = &t_concurrentCardState;
+    if (pRestart->gcIndex != gcIndex)
+    {
+        pRestart->gcIndex = gcIndex;
+        pRestart->page = nullptr;
+        pRestart->ii = 0;
+        // TODO: VS hash in the gcIndex?
+        pRestart->offset = ThreadSpecificNumber();
+    }
 
     m_heap->ForEachPageUntil(
         [&](SatoriPage* page)
@@ -1855,11 +1909,22 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                 MaybeAskForHelp();
 
                 size_t groupCount = page->CardGroupCount();
-                // add thread specific offset, to separate somewhat what threads read
-                size_t offset = ThreadSpecificNumber();
-                for (size_t ii = 0; ii < groupCount; ii++)
+
+                // if restarting with the same page, continue with the last ii and offset
+                size_t offset = pRestart->offset;
+                size_t ii = pRestart->ii;
+                if (pRestart->page != page)
                 {
-                    size_t i = (offset + ii) % groupCount;
+                    // it is a new page
+                    pRestart->page = page;
+                    ii = 0;
+                }
+
+                while (ii < groupCount)
+                {
+                    size_t i = (ii + offset) % groupCount;
+                    ii ++;
+
                     int8_t groupState = page->CardGroupState(i);
                     if (groupState >= Satori::CardState::REMEMBERED)
                     {
@@ -1869,8 +1934,17 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                             continue;
                         }
 
-                        // claim the group as complete, now we have to finish
+                        // claim the group as complete
                         page->CardGroupScanTicket(i) = currentScanTicket;
+
+                        //TODO: VS we may not need this, since collisions are rare (but worth measuring?)
+                        //if (Interlocked::CompareExchange(&page->CardGroupScanTicket(i), currentScanTicket, groupTicket) == currentScanTicket)
+                        //{
+                        //    //printf("#");
+                        //    continue;
+                        //}
+
+                        // now we have to finish, since we have clamed the group
 
                         //NB: It is safe to get a region even if region map may be changing because
                         //    a region with remembered/dirty marks must be there and cannot be destroyed.
@@ -1966,6 +2040,8 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                         if (deadline && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
                         {
                             // timed out, there could be more work
+                            // save where we would restart if we see this page again
+                            pRestart->ii = ii;
                             revisit = true;
                             return true;
                         }
@@ -1997,6 +2073,17 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
     SatoriWorkChunk* dstChunk = nullptr;
     bool revisit = false;
 
+    int64_t gcIndex = GlobalGcIndex();
+    ConcurrentCardsRestart* pRestart = &t_concurrentCardState;
+    if (pRestart->gcIndex != gcIndex)
+    {
+        pRestart->gcIndex = gcIndex;
+        pRestart->page = nullptr;
+        pRestart->ii = 0;
+        // TODO: VS hash in the gcIndex?
+        pRestart->offset = ThreadSpecificNumber();
+    }
+
     m_heap->ForEachPageUntil(
         [&](SatoriPage* page)
         {
@@ -2014,11 +2101,22 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                 MaybeAskForHelp();
 
                 size_t groupCount = page->CardGroupCount();
-                // add thread specific offset, to separate somewhat what threads read
-                size_t offset = ThreadSpecificNumber();
-                for (size_t ii = 0; ii < groupCount; ii++)
+
+                // if restarting with the same page, continue with the last ii and offset
+                size_t offset = pRestart->offset;
+                size_t ii = pRestart->ii;
+                if (pRestart->page != page)
                 {
-                    size_t i = (offset + ii) % groupCount;
+                    // it is a new page
+                    pRestart->page = page;
+                    ii = 0;
+                }
+
+                while (ii < groupCount)
+                {
+                    size_t i = (ii + offset) % groupCount;
+                    ii++;
+
                     int8_t groupState = page->CardGroupState(i);
                     if (groupState == Satori::CardState::DIRTY)
                     {

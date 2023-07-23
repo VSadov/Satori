@@ -79,6 +79,8 @@ public:
     size_t GetOccupancy(int i);
     size_t GetGcStartMillis(int generation);
 
+    int64_t GlobalGcIndex();
+
     void ScheduleMarkAsChildRanges(SatoriObject* o);
     bool ScheduleUpdateAsChildRanges(SatoriObject* o);
 
@@ -141,6 +143,10 @@ private:
     void(SatoriRecycler::* m_activeHelperFn)();
 
     int m_condemnedGeneration;
+
+    bool m_concurrentCardsDone;
+    bool m_concurrentHandlesDone;
+
     bool m_isRelocating;
     bool m_isLowLatencyMode;
     bool m_promoteAllRegions;  
