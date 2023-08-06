@@ -1166,8 +1166,8 @@ void SatoriRecycler::DeactivateAllStacks()
     GCToEEInterface::GcEnumAllocContexts(DeactivateFn, m_heap->Recycler());
     m_totalAllocBytes = m_currentAllocBytesLiveThreads + m_currentAllocBytesDeadThreads;
 
-    // make immortal region parseable, in case we have byrefs pointing to it.
-    m_heap->Allocator()->DeactivateImmortalRegion();
+    // make shared regions parseable, in case we have byrefs pointing to them.
+    m_heap->Allocator()->DeactivateSharedRegions(m_promoteAllRegions);
 }
 
 void SatoriRecycler::PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o)
