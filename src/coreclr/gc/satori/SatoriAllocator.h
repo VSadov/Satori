@@ -54,7 +54,7 @@ public:
     SatoriWorkChunk* GetWorkChunk();
     void ReturnWorkChunk(SatoriWorkChunk* chunk);
 
-    void DeactivateImmortalRegion();
+    void DeactivateSharedRegions(bool promoteAllRegions);
 
 private:
     SatoriHeap* m_heap;
@@ -64,9 +64,13 @@ private:
     SatoriRegion* m_immortalRegion;
     SatoriLock m_immortalAlocLock;
 
+    SatoriRegion* m_pinnedRegion;
+    SatoriLock m_pinnedAlocLock;
+
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocHuge(SatoriAllocationContext* context, size_t size, uint32_t flags);
+    SatoriObject* AllocPinned(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocImmortal(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     void TryGetRegularRegion(SatoriRegion*& region);
