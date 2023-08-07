@@ -156,6 +156,27 @@ inline void SatoriRegion::StopEscapeTracking()
     }
 }
 
+inline void SatoriRegion::SetCardsForObject(SatoriObject* o)
+{
+    _ASSERTE(this->Size() == Satori::REGION_SIZE_GRANULARITY);
+
+    o->ForEachObjectRef(
+        [&](SatoriObject** ppObject)
+        {
+            SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
+            if (child &&
+                !child->IsExternal() &&
+                child->ContainingRegion()->Generation() < 2)
+           {
+                // This does not happen concurrently with cleaning, so does not need to be ordered.
+                // If this does not run concurrently with mutator, we could do SetCardForAddress,
+                // but this should be relatively rare, so we will just dirty for simplicity.
+                ContainingPage()->DirtyCardForAddressUnordered((size_t)ppObject);
+            }
+        }
+    );
+}
+
 template <typename F>
 void SatoriRegion::ForEachFinalizable(F lambda)
 {
@@ -213,12 +234,14 @@ void SatoriRegion::ForEachFinalizableThreadLocal(F lambda)
     UnlockFinalizableTrackers();
 }
 
-template <bool updatePointers>
+template <bool updatePointers, bool individuallyPromoted, bool isEscapeTracking>
 bool SatoriRegion::Sweep()
 {
     // we should only sweep when we have marks
     _ASSERTE(HasMarksSet());
     _ASSERTE(!DoNotSweep());
+
+    m_sweepsSinceLastAllocation++;
 
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
 
@@ -248,7 +271,6 @@ bool SatoriRegion::Sweep()
 
     m_escapedSize = 0;
     bool cannotRecycle = this->IsAttachedToAllocatingOwner();
-    bool isEscapeTracking = this->IsEscapeTracking();
     size_t occupancy = 0;
     size_t objCount = 0;
     bool hasFinalizables = false;
@@ -284,6 +306,11 @@ bool SatoriRegion::Sweep()
             UpdatePointersInObject(o);
         }
 
+        if (individuallyPromoted)
+        {
+            SetCardsForObject(o);
+        }
+
         if (!hasFinalizables && o->RawGetMethodTable()->HasFinalizer())
         {
             hasFinalizables = true;
@@ -304,9 +331,23 @@ bool SatoriRegion::Sweep()
     this->m_hasFinalizables = hasFinalizables;
     this->DoNotSweep() = true;
     this->HasPinnedObjects() = false;
+    this->m_individuallyPromoted = false;
 
     SetOccupancy(occupancy, objCount);
     return cannotRecycle;
+}
+
+template <bool updatePointers>
+bool SatoriRegion::Sweep()
+{
+    return
+        this->m_individuallyPromoted ?
+            this->IsEscapeTracking() ?
+                Sweep<updatePointers, true, true>() :
+                Sweep<updatePointers, true, false>() :
+            this->IsEscapeTracking() ?
+                Sweep<updatePointers, false, true>() :
+                Sweep<updatePointers, false, false>();
 }
 
 inline bool SatoriRegion::HasFinalizables()
@@ -356,6 +397,16 @@ inline bool& SatoriRegion::DoNotSweep()
 inline bool& SatoriRegion::AcceptedPromotedObjects()
 {
     return m_acceptedPromotedObjects;
+}
+
+inline bool& SatoriRegion::IndividuallyPromoted()
+{
+    return m_individuallyPromoted;
+}
+
+inline size_t SatoriRegion::SweepsSinceLastAllocation()
+{
+    return m_sweepsSinceLastAllocation;
 }
 
 inline bool SatoriRegion::IsReusable()

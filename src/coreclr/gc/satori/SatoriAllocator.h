@@ -54,6 +54,7 @@ public:
     SatoriWorkChunk* GetWorkChunk();
     void ReturnWorkChunk(SatoriWorkChunk* chunk);
 
+    void DeactivateSharedRegion(SatoriRegion* region, bool promoteAllRegions);
     void DeactivateSharedRegions(bool promoteAllRegions);
 
 private:
@@ -65,7 +66,13 @@ private:
     SatoriLock m_immortalAlocLock;
 
     SatoriRegion* m_pinnedRegion;
-    SatoriLock m_pinnedAlocLock;
+    SatoriSpinLock m_pinnedAlocLock;
+
+    SatoriRegion* m_largeRegion;
+    SatoriSpinLock m_largeAlocLock;
+
+    SatoriRegion* m_regularRegion;
+    SatoriSpinLock m_regularAlocLock;
 
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags);
