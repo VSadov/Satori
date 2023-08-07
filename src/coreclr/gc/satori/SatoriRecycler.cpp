@@ -318,6 +318,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
     _ASSERTE(region->Generation() == 0 || region->Generation() == 1);
     _ASSERTE(!region->HasMarksSet());
     _ASSERTE(!region->DoNotSweep());
+    _ASSERTE(!region->IsAttachedToAllocatingOwner() || IsBlockingPhase());
 
     PushToEphemeralQueues(region);
     size_t allocatedBytes = region->Occupancy() - region->OccupancyAtReuse();
@@ -334,12 +335,6 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
     // When concurrent marking is allowed we may have marks already.
     // Demoted regions could be pre-marked
     region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrent());
-
-    if (region->IsAttachedToAllocatingOwner())
-    {
-        _ASSERTE(IsBlockingPhase());
-        m_condemnedNurseryRegionsCount++;
-    }
 }
 
 void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
@@ -961,7 +956,6 @@ void SatoriRecycler::BlockingCollect()
     }
 #endif
 
-    m_condemnedNurseryRegionsCount = 0;
     DeactivateAllStacks();
 
     m_condemnedRegionsCount = m_condemnedGeneration == 2 ?
@@ -2933,6 +2927,11 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
             _ASSERTE(!curRegion->HasPinnedObjects());
             curRegion->ClearMarks();
 
+            if (curRegion->IsAttachedToAllocatingOwner())
+            {
+                curRegion->DetachFromAlocatingOwnerRelease();
+            }
+
             if (SatoriUtil::IsConcurrent())
             {
 #if _DEBUG
@@ -2954,8 +2953,7 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
 bool SatoriRecycler::IsRelocatable(SatoriRegion* region)
 {
     if (region->Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2 || // too full
-        region->HasPinnedObjects() ||           // pinned cannot be evacuated
-        region->IsAttachedToAllocatingOwner()           // nursery regions do not participate in relocations
+        region->HasPinnedObjects()                                   // pinned cannot be evacuated
         )
     {
         return false;
@@ -2999,9 +2997,7 @@ void SatoriRecycler::Plan()
 
     // TUNING: 
     // If we can reduce condemned generation by 12-25% regions, then do relocations.
-    // We do not consider nursery regions in the benefit/cost ratio here.
-    // They are not relocatable and generally have very few live objects too.
-    size_t desiredRelocating = (m_condemnedRegionsCount - m_condemnedNurseryRegionsCount) / 4;
+    size_t desiredRelocating = m_condemnedRegionsCount / 4;
 
     if (m_isRelocating == false ||
         relocatableEstimate <= desiredRelocating)
@@ -3071,13 +3067,6 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         do
         {
             _ASSERTE(curRegion->Generation() <= m_condemnedGeneration);
-
-            // nursery regions do not participate in relocations
-            if (curRegion->IsAttachedToAllocatingOwner())
-            {
-                m_stayingRegions->Push(curRegion);
-                continue;
-            }
 
             // select evacuation candidates and relocation targets according to sizes.
             if (IsRelocatable(curRegion))
@@ -3528,6 +3517,11 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                 {
                     if (!curRegion->Sweep</*updatePointers*/ true>())
                     {
+                        if (curRegion->IsAttachedToAllocatingOwner())
+                        {
+                            curRegion->DetachFromAlocatingOwnerRelease();
+                        }
+
                         // the region is empty and will be returned,
                         // but there is still some cleaning work to defer.
                         if (SatoriUtil::IsConcurrent())

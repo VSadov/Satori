@@ -162,7 +162,6 @@ private:
     size_t m_totalBudget;
     size_t m_totalLimit;
     size_t m_condemnedRegionsCount;
-    size_t m_condemnedNurseryRegionsCount;
     size_t m_deferredSweepCount;
     size_t m_gen1AddedSinceLastCollection;
     size_t m_gen2AddedSinceLastCollection;

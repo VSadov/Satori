@@ -158,6 +158,7 @@ void SatoriAllocator::AddRegion(SatoriRegion* region)
 // this is for recently used regions
 void SatoriAllocator::ReturnRegion(SatoriRegion* region)
 {
+    _ASSERTE(region->IsAttachedToAllocatingOwner() == false);
     _ASSERTE(region->Generation() == -1);
     m_queues[SizeToBucket(region->Size())]->Push(region);
 }
