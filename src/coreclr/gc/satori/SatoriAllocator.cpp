@@ -175,6 +175,7 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
     }
     else if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
     {
+        // TODO: VS trylock
         // result = AllocLarge(context, size, flags);
         result = AllocPinned(context, size, flags);
         if (result != nullptr)
