@@ -2927,12 +2927,16 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
             _ASSERTE(!curRegion->HasPinnedObjects());
             curRegion->ClearMarks();
 
-            if (curRegion->IsAttachedToAllocatingOwner())
+            bool isNurseryRegion = curRegion->IsAttachedToAllocatingOwner();
+            if (isNurseryRegion)
             {
                 curRegion->DetachFromAlocatingOwnerRelease();
             }
 
-            if (SatoriUtil::IsConcurrent())
+            // return nursery regions eagerly
+            // there should be a modest number of those, but we may need them soon
+            // defer blanking of others
+            if (SatoriUtil::IsConcurrent() && !isNurseryRegion)
             {
 #if _DEBUG
                 curRegion->HasMarksSet() = false;
@@ -3517,14 +3521,16 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                 {
                     if (!curRegion->Sweep</*updatePointers*/ true>())
                     {
-                        if (curRegion->IsAttachedToAllocatingOwner())
+                        bool isNurseryRegion = curRegion->IsAttachedToAllocatingOwner();
+                        if (isNurseryRegion)
                         {
                             curRegion->DetachFromAlocatingOwnerRelease();
                         }
 
-                        // the region is empty and will be returned,
-                        // but there is still some cleaning work to defer.
-                        if (SatoriUtil::IsConcurrent())
+                        // return nursery regions eagerly
+                        // there should be a modest number of those, but we may need them soon
+                        // defer blanking of others
+                        if (SatoriUtil::IsConcurrent() && !isNurseryRegion)
                         {
                             m_deferredSweepRegions->Enqueue(curRegion);
                         }
