@@ -119,6 +119,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_relocatableEphemeralEstimate = 0;
     m_relocatableTenuredEstimate = 0;
+    m_promotionEstimate = 0;
 
     m_occupancy[0] = 0;
     m_occupancy[1] = 0;
@@ -286,6 +287,11 @@ void SatoriRecycler::PushToEphemeralQueue(SatoriRegion* region)
     if (IsRelocatable(region))
     {
         Interlocked::Increment(&m_relocatableEphemeralEstimate);
+    }
+
+    if (IsPromotionCandidate(region))
+    {
+        Interlocked::Increment(&m_promotionEstimate);
     }
 
     m_ephemeralRegions->Push(region);
@@ -767,7 +773,7 @@ bool SatoriRecycler::IsBlockingPhase()
 // we target 1/EPH_SURV_TARGET ephemeral survival rate
 #define EPH_SURV_TARGET 4
 
-// we target 1/10 of total heap to be ephemeral. If more, we promote.
+// when we do not know, we estimate 1/10 of total heap to be ephemeral.
 #define EPH_RATIO 10
 
 // do gen2 when total doubles
@@ -858,7 +864,10 @@ void SatoriRecycler::AdjustHeuristics()
     }
 
     // now figure if we will promote
-    m_promoteAllRegions = m_allowPromotingRelocations = false;
+    m_promoteAllRegions = false;
+    size_t promotionEstimate = m_promotionEstimate;
+    m_promotionEstimate = 0;
+
     if (m_condemnedGeneration == 2)
     {
         m_promoteAllRegions = true;
@@ -866,13 +875,7 @@ void SatoriRecycler::AdjustHeuristics()
     }
     else
     {
-        // TODO: VS we can promote individually, but is there any use for that?
-        //if (ephemeralOccupancy * 20 > occupancy)
-        //{
-        //    m_allowPromotingRelocations = true;
-        //}
-
-        if (ephemeralOccupancy * EPH_RATIO > occupancy)
+        if (promotionEstimate > Gen1RegionCount() / 2)
         {
             m_promoteAllRegions = true;
         }
@@ -952,7 +955,7 @@ void SatoriRecycler::BlockingCollect()
 #ifdef TIMED
     if (m_condemnedGeneration == 2)
     {
-        printf("GenStarting%i , allow promoting relocations: %d \n", m_condemnedGeneration, m_allowPromotingRelocations);
+        printf("GenStarting%i \n", m_condemnedGeneration);
     }
 #endif
 
@@ -3006,7 +3009,7 @@ void SatoriRecycler::Plan()
     if (m_isRelocating == false ||
         relocatableEstimate <= desiredRelocating)
     {
-        DenyRelocation();    
+        DenyRelocation();
         return;
     }
 
@@ -3030,17 +3033,17 @@ void SatoriRecycler::DenyRelocation()
     m_isRelocating = false;
 
     // put all affected regions into staying queue
-    m_stayingRegions->AppendUnsafe(m_ephemeralRegions);
-    if (m_condemnedGeneration == 2)
-    {
-        m_stayingRegions->AppendUnsafe(m_tenuredRegions);
-    }
-    else if (m_promoteAllRegions)
+    if (m_promoteAllRegions)
     {
         m_occupancyAcc[2] = 0;
         m_relocatableTenuredEstimate = 0;
+        m_stayingRegions->AppendUnsafe(m_ephemeralRegions);
         m_stayingRegions->AppendUnsafe(m_tenuredRegions);
         m_stayingRegions->AppendUnsafe(m_tenuredFinalizationTrackingRegions);
+    }
+    else
+    {
+        m_stayingRegions->AppendUnsafe(m_ephemeralRegions);
     }
 }
 
@@ -3202,8 +3205,7 @@ void SatoriRecycler::RelocateWorker()
 {
     _ASSERTE(m_isRelocating);
 
-    if (m_condemnedGeneration != 2 &&
-        (m_promoteAllRegions || m_allowPromotingRelocations))
+    if (m_condemnedGeneration != 2 && m_promoteAllRegions)
     {
         m_occupancyAcc[2] = 0;
         m_relocatableTenuredEstimate = 0;
@@ -3499,10 +3501,16 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         MaybeAskForHelp();
         do
         {
-            if (curRegion->Generation() > m_condemnedGeneration)
+            if (!m_promoteAllRegions && IsPromotionCandidate(curRegion))
+            {
+                curRegion->IndividuallyPromote();
+            }
+
+            if (curRegion->Generation() > m_condemnedGeneration &&
+                !curRegion->IndividuallyPromoted())
             {
                 // this can only happen when promoting in gen1
-                _ASSERTE(m_allowPromotingRelocations || m_promoteAllRegions);
+                _ASSERTE(m_promoteAllRegions);
                 curRegion->DoNotSweep() = true;
                 if (curRegion->AcceptedPromotedObjects())
                 {
@@ -3606,6 +3614,20 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
     }
 }
 
+bool SatoriRecycler::IsReuseCandidate(SatoriRegion* region)
+{
+    return region->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 2 &&
+        region->HasFreeSpaceInTopNBuckets(IsLowLatencyMode() ? 6 : 2);
+}
+
+bool SatoriRecycler::IsPromotionCandidate(SatoriRegion* region)
+{
+    // TODO: VS 4 or 10?
+    // if this is not an allocation target for 4 cycles, perhaps shoud tenure it
+    // TODO: VS any issues with promoting demoted ?
+    return region->Generation() == 1 && region->SweepsSinceLastAllocation() > 4;
+}
+
 void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
 {
     _ASSERTE(curRegion->Occupancy() > 0);
@@ -3619,8 +3641,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
 
     // we will try reusing half-empty regions, unless they are too fragmented
     curRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
-    if (curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 2 &&
-        curRegion->HasFreeSpaceInTopNBuckets(IsLowLatencyMode() ? 6 : 2))
+    if (IsReuseCandidate(curRegion))
     {
         _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
 

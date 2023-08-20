@@ -275,6 +275,7 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
             SetOccupancy(m_occupancy + m_allocEnd - m_allocStart, ObjCount());
             ClearIndicesForAllocRange();
             _ASSERTE(GetAllocRemaining() >= minAllocSize);
+            m_sweepsSinceLastAllocation = 0;
             return m_allocStart;
         }
     }
@@ -1792,6 +1793,19 @@ void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
         m_finalizableTrackers = otherFinalizables;
         other->m_finalizableTrackers = nullptr;
     }
+}
+
+void SatoriRegion::IndividuallyPromote()
+{
+    _ASSERTE(m_generation == 1);
+    if(IsAttachedToAllocatingOwner())
+    {
+        DetachFromAlocatingOwnerRelease();
+    }
+
+    m_generation = 2;
+    m_individuallyPromoted = true;
+    RearmCardsForTenured();
 }
 
 bool SatoriRegion::TryDemote()

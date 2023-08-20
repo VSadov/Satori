@@ -122,9 +122,11 @@ public:
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
 
     void TakeFinalizerInfoFrom(SatoriRegion* other);
+    void IndividuallyPromote();
     void UpdateFinalizableTrackers();
     void UpdatePointers();
     void UpdatePointersInObject(SatoriObject* o);
+    void SetCardsForObject(SatoriObject* o);
 
     template <bool promotingAllRegions>
     void UpdatePointersInPromotedObjects();
@@ -160,6 +162,9 @@ public:
     bool& HasPinnedObjects();
     bool& DoNotSweep();
     bool& AcceptedPromotedObjects();
+    bool& IndividuallyPromoted();
+
+    size_t SweepsSinceLastAllocation();
 
     enum class ReuseLevel : uint8_t
     {
@@ -247,6 +252,7 @@ private:
             size_t m_objCount;
             size_t m_occupancy;
             size_t m_occupancyAtReuse;
+            size_t m_sweepsSinceLastAllocation;
 
             bool m_hasPinnedObjects;
             bool m_hasMarksSet;
@@ -254,6 +260,7 @@ private:
             bool m_hasFinalizables;
             bool m_hasPendingFinalizables;
             bool m_acceptedPromotedObjects;
+            bool m_individuallyPromoted;
 
             // when demoted, we remember our gen2 objects here
             SatoriWorkChunk* m_gen2Objects;
