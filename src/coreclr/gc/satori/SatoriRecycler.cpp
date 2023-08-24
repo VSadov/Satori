@@ -3622,10 +3622,11 @@ bool SatoriRecycler::IsReuseCandidate(SatoriRegion* region)
 
 bool SatoriRecycler::IsPromotionCandidate(SatoriRegion* region)
 {
-    // TODO: VS 4 or 10?
-    // if this is not an allocation target for 4 cycles, perhaps shoud tenure it
-    // TODO: VS any issues with promoting demoted ?
-    return region->Generation() == 1 && region->SweepsSinceLastAllocation() > 4;
+    // TUNING: individual promoting heuristic
+    // if the region has not seen an allocation for 4 cycles, perhaps shoud tenure it
+    return region->Generation() == 1 &&
+        region->SweepsSinceLastAllocation() > 4 &&
+        !IsReuseCandidate(region);
 }
 
 void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)

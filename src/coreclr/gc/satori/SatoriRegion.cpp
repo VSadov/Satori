@@ -157,6 +157,7 @@ void SatoriRegion::MakeBlank()
     m_allocEnd = End();
     m_occupancy = m_allocEnd - m_allocStart;
     m_occupancyAtReuse = 0;
+    m_sweepsSinceLastAllocation = 0;
     m_markStack = 0;
     m_escapedSize = 0;
     m_objCount = 0;
@@ -1798,6 +1799,8 @@ void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
 void SatoriRegion::IndividuallyPromote()
 {
     _ASSERTE(m_generation == 1);
+    _ASSERTE(!m_doNotSweep);
+
     if(IsAttachedToAllocatingOwner())
     {
         DetachFromAlocatingOwnerRelease();

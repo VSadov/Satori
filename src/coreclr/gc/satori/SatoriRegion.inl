@@ -234,7 +234,7 @@ void SatoriRegion::ForEachFinalizableThreadLocal(F lambda)
     UnlockFinalizableTrackers();
 }
 
-template <bool updatePointers>
+template <bool updatePointers, bool individuallyPromoted, bool isEscapeTracking>
 bool SatoriRegion::Sweep()
 {
     // we should only sweep when we have marks
@@ -271,7 +271,6 @@ bool SatoriRegion::Sweep()
 
     m_escapedSize = 0;
     bool cannotRecycle = this->IsAttachedToAllocatingOwner();
-    bool isEscapeTracking = this->IsEscapeTracking();
     size_t occupancy = 0;
     size_t objCount = 0;
     bool hasFinalizables = false;
@@ -307,8 +306,7 @@ bool SatoriRegion::Sweep()
             UpdatePointersInObject(o);
         }
 
-        // TODO: VS template param instead?
-        if (this->m_individuallyPromoted)
+        if (individuallyPromoted)
         {
             SetCardsForObject(o);
         }
@@ -337,6 +335,19 @@ bool SatoriRegion::Sweep()
 
     SetOccupancy(occupancy, objCount);
     return cannotRecycle;
+}
+
+template <bool updatePointers>
+bool SatoriRegion::Sweep()
+{
+    return
+        this->m_individuallyPromoted ?
+            this->IsEscapeTracking() ?
+                Sweep<updatePointers, true, true>() :
+                Sweep<updatePointers, true, false>() :
+            this->IsEscapeTracking() ?
+                Sweep<updatePointers, false, true>() :
+                Sweep<updatePointers, false, false>();
 }
 
 inline bool SatoriRegion::HasFinalizables()

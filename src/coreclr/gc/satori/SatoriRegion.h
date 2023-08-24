@@ -327,6 +327,8 @@ private:
     bool ValidateIndexEmpty();
     void Coalesce(SatoriRegion* next);
 
+    template <bool updatePointers, bool individuallyPromoted, bool isEscapeTracking>
+    bool Sweep();
 };
 
 #endif
