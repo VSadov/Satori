@@ -85,7 +85,12 @@ typedef void (*GcScanRootFunction)(void**, void*);
 
 typedef void * GcSegmentHandle;
 
+#if !defined(FEATURE_SATORI_GC)
 #define RH_LARGE_OBJECT_SIZE 85000
+#else
+#define RH_LARGE_OBJECT_SIZE (32 * 1024)
+#endif
+
 
 // A 'clump' is defined as the size of memory covered by 1 byte in the card table.  These constants are
 // verified against gcpriv.h in gcrhee.cpp.

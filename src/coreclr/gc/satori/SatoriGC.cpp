@@ -486,6 +486,10 @@ void SatoriGC::PublishObject(uint8_t* obj)
             region->ContainingPage()->DirtyCardForAddressUnordered(so->Start());
         }
     }
+    else
+    {
+        m_heap->Allocator()->UnlockRegionIfShared(region);
+    }
 }
 
 void SatoriGC::SetWaitForGCEvent()

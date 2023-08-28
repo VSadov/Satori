@@ -57,6 +57,8 @@ public:
     void DeactivateSharedRegion(SatoriRegion* region, bool promoteAllRegions);
     void DeactivateSharedRegions(bool promoteAllRegions);
 
+    void UnlockRegionIfShared(SatoriRegion* region);
+
 private:
     SatoriHeap* m_heap;
     SatoriRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];

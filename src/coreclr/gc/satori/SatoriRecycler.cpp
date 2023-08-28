@@ -53,7 +53,7 @@
 
 //#define TIMED
 
-static const int MIN_GEN1_BUDGET = 10 * Satori::REGION_SIZE_GRANULARITY;
+static const int MIN_GEN1_BUDGET = 2 * Satori::REGION_SIZE_GRANULARITY;
 
 void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
 {
@@ -340,7 +340,8 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 
     // When concurrent marking is allowed we may have marks already.
     // Demoted regions could be pre-marked
-    region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrent());
+    // TODO: VS reenable (shared regions may contain unfinished objects), this is unwalkable.
+    // region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrent());
 }
 
 void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
