@@ -93,6 +93,7 @@ public:
     void DetachFromAlocatingOwnerRelease();
     bool IsAttachedToAllocatingOwner();
     bool MaybeAttachedToAllocatingOwnerAcquire();
+    void SetHasFinalizables();
 
     void ResetReusableForRelease();
 
@@ -116,6 +117,9 @@ public:
     void SetIndicesForObject(SatoriObject* o, size_t end);
     void SetIndicesForObjectCore(size_t start, size_t end);
     void ClearIndicesForAllocRange();
+
+    void IncrementUnparsable();
+    void DecrementUnparsable();
 
     SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarkedAndClear(SatoriObject* from);
@@ -253,6 +257,8 @@ private:
             size_t m_occupancy;
             size_t m_occupancyAtReuse;
             size_t m_sweepsSinceLastAllocation;
+
+            size_t m_unparsable;
 
             bool m_hasPinnedObjects;
             bool m_hasMarksSet;
