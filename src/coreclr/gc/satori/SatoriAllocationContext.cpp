@@ -31,8 +31,25 @@
 #include "SatoriAllocationContext.h"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
+#include "SatoriObject.h"
+#include "SatoriObject.inl"
 
 class SatoriRecycler;
+
+SatoriObject* SatoriAllocationContext::FormatUnusedPortion()
+{
+    size_t unusedStart = (size_t)alloc_ptr;
+    size_t unused = (size_t)alloc_limit + Satori::MIN_FREE_SIZE - unusedStart;
+    SatoriObject* freeObj = SatoriObject::FormatAsFree(unusedStart, unused);
+    SatoriRegion* containingRegion = freeObj->ContainingRegion();
+    // this portion is now parsable
+    freeObj->ContainingRegion()->DecrementUnparsable();
+    // unclaim unused.
+    alloc_bytes -= alloc_limit - alloc_ptr;
+    alloc_ptr = alloc_limit = nullptr;
+
+    return freeObj;
+}
 
 void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
 {
@@ -59,6 +76,11 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
     }
     else
     {
+        if (alloc_ptr != 0)
+        {
+            FormatUnusedPortion();
+        }
+
         _ASSERTE(this->alloc_limit == nullptr);
         _ASSERTE(this->alloc_ptr == nullptr);
     }

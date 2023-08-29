@@ -158,6 +158,7 @@ void SatoriRegion::MakeBlank()
     m_occupancy = m_allocEnd - m_allocStart;
     m_occupancyAtReuse = 0;
     m_sweepsSinceLastAllocation = 0;
+    m_unparsable = 0;
     m_markStack = 0;
     m_escapedSize = 0;
     m_objCount = 0;
@@ -646,7 +647,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
 //
 // Typical usees:
 //  - precise root marking.
-//         not in allocating mode (not attached to allocation context)
+//         not in allocating mode (not attached to allocation context, parsable)
 //         always provides real refs into real objects.
 //  - conservative root marking
 //         not in allocating mode
@@ -660,6 +661,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
 SatoriObject* SatoriRegion::FindObject(size_t location)
 {
     _ASSERTE(m_generation >= 0 && location >= Start() && location < End());
+    _ASSERTE(m_unparsable == 0);
 
     location = min(location, Start() + Satori::REGION_SIZE_GRANULARITY);
 
