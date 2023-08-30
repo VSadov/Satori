@@ -158,7 +158,7 @@ void SatoriRegion::MakeBlank()
     m_occupancy = m_allocEnd - m_allocStart;
     m_occupancyAtReuse = 0;
     m_sweepsSinceLastAllocation = 0;
-    m_unparsable = 0;
+    m_unfinishedAllocationCount = 0;
     m_markStack = 0;
     m_escapedSize = 0;
     m_objCount = 0;
@@ -661,7 +661,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
 SatoriObject* SatoriRegion::FindObject(size_t location)
 {
     _ASSERTE(m_generation >= 0 && location >= Start() && location < End());
-    _ASSERTE(m_unparsable == 0);
+    _ASSERTE(m_unfinishedAllocationCount == 0);
 
     location = min(location, Start() + Satori::REGION_SIZE_GRANULARITY);
 

@@ -340,8 +340,12 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 
     // When concurrent marking is allowed we may have marks already.
     // Demoted regions could be pre-marked
-    // TODO: VS reenable (shared regions may contain unfinished objects), this is unwalkable.
-    // region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrent());
+#ifdef DEBUG
+    if (!region->MaybeAllocatingAcquire())
+    {
+        region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrent());
+    }
+#endif
 }
 
 void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
@@ -1332,7 +1336,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         // Concurrent FindObject is unsafe in active regions. While ref may be in a real obj,
         // the path to it from the first obj or prev indexed may cross unparsable ranges.
         // The check must acquire to be sure we check before actually doing FindObject.
-        if (containingRegion->MaybeAttachedToAllocatingOwnerAcquire())
+        if (containingRegion->MaybeAllocatingAcquire())
         {
             return;
         }
@@ -2134,7 +2138,7 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                         _ASSERTE(!region->HasMarksSet());
 
                         // allocating region is not parseable.
-                        if (region->MaybeAttachedToAllocatingOwnerAcquire())
+                        if (region->MaybeAllocatingAcquire())
                         {
                             continue;
                         }

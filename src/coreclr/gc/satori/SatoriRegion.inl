@@ -457,12 +457,11 @@ inline bool SatoriRegion::IsAttachedToAllocatingOwner()
     return m_allocatingOwnerAttachmentPoint;
 }
 
-// TODO: VS rename
-inline bool SatoriRegion::MaybeAttachedToAllocatingOwnerAcquire()
+inline bool SatoriRegion::MaybeAllocatingAcquire()
 {
     // must check reusable level before the attach point, before doing whatever follows
     return VolatileLoad((uint8_t*)&m_reusableFor) ||
-        VolatileLoad(&m_allocatingOwnerAttachmentPoint) || m_unparsable;
+        VolatileLoad(&m_allocatingOwnerAttachmentPoint) || m_unfinishedAllocationCount;
 }
 
 inline void SatoriRegion::ResetReusableForRelease()
@@ -708,15 +707,15 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
     } while (o->Start() < objLimit);
 }
 
-inline void SatoriRegion::IncrementUnparsable()
+inline void SatoriRegion::IncrementUnfinishedAlloc()
 {
-    Interlocked::Increment(&m_unparsable);
+    Interlocked::Increment(&m_unfinishedAllocationCount);
 }
 
-inline void SatoriRegion::DecrementUnparsable()
+inline void SatoriRegion::DecrementUnfinishedAlloc()
 {
-    Interlocked::Decrement(&m_unparsable);
-    _ASSERTE(m_unparsable >= 0);
+    Interlocked::Decrement(&m_unfinishedAllocationCount);
+    _ASSERTE(m_unfinishedAllocationCount >= 0);
 }
 
 #endif

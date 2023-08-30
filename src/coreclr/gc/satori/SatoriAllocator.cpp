@@ -226,18 +226,21 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
         }
 
+        SatoriObject* freeObj = nullptr;
         if (context->alloc_ptr != 0)
         {
-            SatoriObject* freeObj = context->FormatUnusedPortion();
-            // TODO: VS return?
-            //if (freeObj->ContainingRegion() == m_regularRegion)
-            //{
-            //    m_regularRegion->AddFreeSpace(freeObj);
-            //}
+            freeObj = context->FinishAllocFromShared();
         }
 
         if (m_regularAlocLock.TryEnter())
         {
+            // TODO: VS is the following AddFreeSpace worth the trouble? Perhaps add size check in FinishAllocFromShared?
+            if (freeObj && freeObj->ContainingRegion() == m_regularRegion)
+            {
+                m_regularRegion->SetOccupancy(m_regularRegion->Occupancy() - freeObj->Size(), m_regularRegion->ObjCount());
+                m_regularRegion->AddFreeSpace(freeObj);
+            }
+
             return AllocRegularShared(context, size, flags);
         }
     }
@@ -406,7 +409,7 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
                     region->StopAllocating((size_t)context->alloc_ptr + moreSpace);
 
                     // region stays unparsable until "moreSpace" is consumed.
-                    region->IncrementUnparsable();
+                    region->IncrementUnfinishedAlloc();
                     // conservatively assume the region may get finalizable objects.
                     // this is for initial placement into queues, which may happen before
                     // all objects in the buffer are allocated.
