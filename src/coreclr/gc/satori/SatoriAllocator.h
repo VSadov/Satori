@@ -57,8 +57,6 @@ public:
     void DeactivateSharedRegion(SatoriRegion* region, bool promoteAllRegions);
     void DeactivateSharedRegions(bool promoteAllRegions);
 
-    void UnlockRegionIfShared(SatoriRegion* region);
-
 private:
     SatoriHeap* m_heap;
     SatoriRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
@@ -76,9 +74,12 @@ private:
     SatoriRegion* m_regularRegion;
     SatoriSpinLock m_regularAlocLock;
 
+    volatile int32_t m_singePageAdders;
+
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocRegularShared(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags);
+    SatoriObject* AllocLargeShared(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocHuge(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocPinned(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocImmortal(SatoriAllocationContext* context, size_t size, uint32_t flags);

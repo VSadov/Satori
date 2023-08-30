@@ -61,6 +61,7 @@ public:
     SatoriRegion* TrySplit(size_t regionSize);
     bool CanDecommit();
     bool TryDecommit();
+    void TryCommit();
     bool CanCoalesceWithNext();
     bool TryCoalesceWithNext();
 
@@ -76,6 +77,7 @@ public:
 
     size_t StartAllocating(size_t minSize);
     void StopAllocating(size_t allocPtr);
+    void StopAllocating();
     bool IsAllocating();
 
     void AddFreeSpace(SatoriObject* freeObj);
@@ -92,7 +94,7 @@ public:
     void AttachToAllocatingOwner(SatoriRegion** attachementPoint);
     void DetachFromAlocatingOwnerRelease();
     bool IsAttachedToAllocatingOwner();
-    bool MaybeAttachedToAllocatingOwnerAcquire();
+    bool MaybeAllocatingAcquire();
     void SetHasFinalizables();
 
     void ResetReusableForRelease();
@@ -118,8 +120,8 @@ public:
     void SetIndicesForObjectCore(size_t start, size_t end);
     void ClearIndicesForAllocRange();
 
-    void IncrementUnparsable();
-    void DecrementUnparsable();
+    int IncrementUnfinishedAlloc();
+    void DecrementUnfinishedAlloc();
 
     SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarkedAndClear(SatoriObject* from);
@@ -159,6 +161,7 @@ public:
     bool& HasPendingFinalizables();
 
     void SetOccupancy(size_t occupancy, size_t objCount);
+    void SetOccupancy(size_t occupancy);
     size_t Occupancy();
     size_t& OccupancyAtReuse();
     size_t ObjCount();
@@ -258,7 +261,7 @@ private:
             size_t m_occupancyAtReuse;
             size_t m_sweepsSinceLastAllocation;
 
-            size_t m_unparsable;
+            size_t m_unfinishedAllocationCount;
 
             bool m_hasPinnedObjects;
             bool m_hasMarksSet;
@@ -331,7 +334,7 @@ private:
     void SetExposed(SatoriObject** location);
 
     bool ValidateIndexEmpty();
-    void Coalesce(SatoriRegion* next);
+    bool Coalesce(SatoriRegion* next);
 
     template <bool updatePointers, bool individuallyPromoted, bool isEscapeTracking>
     bool Sweep();

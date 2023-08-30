@@ -49,7 +49,7 @@ public:
 
     // stop allocating on all associated regions and optionally detach from the context.
     void Deactivate(SatoriRecycler* recycler, bool detach);
-    SatoriObject* FormatUnusedPortion();
+    SatoriObject* FinishAllocFromShared();
 
 private:
 

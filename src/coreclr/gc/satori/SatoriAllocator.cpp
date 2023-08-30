@@ -64,11 +64,15 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
 
     m_regularRegion = nullptr;
     m_regularAlocLock.Initialize();
+
+    m_singePageAdders = 0;
 }
 
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
+    int64_t newPageDeadline = 0;
+    int newPageSpin = 0;
 
 tryAgain:
     SatoriRegion* putBack = nullptr;
@@ -96,6 +100,18 @@ tryAgain:
         {
             if (putBack)
             {
+                // we took a bite out of a relatively large region
+                // and noone could use it while we were taking our piece.
+                // split the remaining portion in two so that two threads could take a piece next time.
+                if (putBack->Size() > region->Size() * 2)
+                {
+                    SatoriRegion* half = putBack->TrySplit(ALIGN_DOWN((putBack->Size() / 2), Satori::REGION_SIZE_GRANULARITY));
+                    if (half)
+                    {
+                        AddRegion(half);
+                    }
+                }
+
                 AddRegion(putBack);
             }
 
@@ -109,6 +125,35 @@ tryAgain:
     // page, if needed.
     if (regionSize < Satori::PAGE_SIZE_GRANULARITY / 2)
     {
+        // Reserving a regular-sized Page.
+        // We will often come here on multiple threads and we do not want all threads to reserve a page.
+        // If someone alse is reserving, we will allow 1 msec of retrying before reserving a page eagerly.
+        if (newPageDeadline == 0)
+        {
+            newPageDeadline = GCToOSInterface::QueryPerformanceCounter() + GCToOSInterface::QueryPerformanceFrequency() / 1000;
+        }
+
+        if (m_singePageAdders != 0 ||
+            Interlocked::CompareExchange(&m_singePageAdders, 1, 0) != 0)
+        {
+            // someone is adding.
+            if (GCToOSInterface::QueryPerformanceCounter() - newPageDeadline > 0)
+            {
+                // timed out
+                Interlocked::Increment(&m_singePageAdders);
+            }
+            else
+            {
+                newPageSpin = newPageSpin * 2 + 1;
+                for (int i = 0; i < newPageSpin; i++)
+                {
+                    YieldProcessor();
+                }
+
+                goto tryAgain;
+            }
+        }
+
         SatoriPage* page = nullptr;
         if (m_heap->TryAddRegularPage(page))
         {
@@ -117,10 +162,12 @@ tryAgain:
                 putBack = page->MakeInitialRegion();
                 region = putBack->TrySplit(regionSize);
                 AddRegion(putBack);
+                Interlocked::Decrement(&m_singePageAdders);
                 return region;
             }
 
             // Someone added a page, but not us. There could be more regions.
+            Interlocked::Decrement(&m_singePageAdders);
             goto tryAgain;
         }
     }
@@ -219,6 +266,8 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
     m_heap->Recycler()->HelpOnce();
+
+// tryAgain:
     if (!context->RegularRegion())
     {
         if ((context->alloc_bytes ^ (context->alloc_bytes + SatoriUtil::MinZeroInitSize())) >> Satori::REGION_BITS)
@@ -226,18 +275,17 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
         }
 
-        if (context->alloc_ptr != 0)
-        {
-            SatoriObject* freeObj = context->FormatUnusedPortion();
-            // TODO: VS return?
-            //if (freeObj->ContainingRegion() == m_regularRegion)
-            //{
-            //    m_regularRegion->AddFreeSpace(freeObj);
-            //}
-        }
+        SatoriObject* freeObj = context->alloc_ptr != 0 ? context->FinishAllocFromShared() : nullptr;
 
+        //m_regularAlocLock.Enter();
         if (m_regularAlocLock.TryEnter())
         {
+            if (freeObj && freeObj->ContainingRegion() == m_regularRegion)
+            {
+                m_regularRegion->SetOccupancy(m_regularRegion->Occupancy() - freeObj->Size());
+                m_regularRegion->AddFreeSpace(freeObj);
+            }
+
             return AllocRegularShared(context, size, flags);
         }
     }
@@ -252,7 +300,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             _ASSERTE((size_t)context->alloc_limit == region->GetAllocStart());
             size_t moreSpace = context->alloc_ptr + size - context->alloc_limit;
 
-            // try allocate more to form a contiguous chunk to fit size 
+            // try allocate more to form a contiguous chunk to fit size
             size_t allocRemaining = region->GetAllocRemaining();
             if (moreSpace <= allocRemaining)
             {
@@ -264,10 +312,16 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
                 if (region->Allocate(moreSpace, zeroInitialize))
                 {
-                    context->alloc_bytes += moreSpace;
                     context->alloc_limit += moreSpace;
+                    context->alloc_bytes += moreSpace;
 
                     SatoriObject* result = (SatoriObject*)(size_t)context->alloc_ptr;
+                    if ((flags & GC_ALLOC_FINALIZE) &&
+                        !region->RegisterForFinalization(result))
+                    {
+                        return nullptr;
+                    }
+
                     context->alloc_ptr += size;
                     result->CleanSyncBlock();
                     region->SetIndicesForObject(result, result->Start() + size);
@@ -278,12 +332,6 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                         /*heap_number*/ 0,
                         (void*)result,
                         0);
-
-                    if ((flags & GC_ALLOC_FINALIZE) &&
-                        !region->RegisterForFinalization(result))
-                    {
-                        return nullptr;
-                    }
 
                     return result;
                 }
@@ -330,6 +378,10 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             context->alloc_ptr = context->alloc_limit = nullptr;
             region->DetachFromAlocatingOwnerRelease();
             m_heap->Recycler()->AddEphemeralRegion(region);
+
+            // if we got this far with region not detached, get another one
+            // TUNING: we could force trying to allocate from shared based on some heuristic
+            //  goto tryAgain;
         }
 
         m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
@@ -378,8 +430,6 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
 SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
-    SatoriLockHolder<SatoriSpinLock> lockHolder(&m_regularAlocLock, /*isLocked*/ true);
-
     SatoriRegion* region = m_regularRegion;
     _ASSERTE(region == nullptr || region->IsAttachedToAllocatingOwner());
 
@@ -387,64 +437,82 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
     {
         if (region != nullptr)
         {
-            _ASSERTE(!region->IsAllocating());
-            // try get from the free list
             size_t moreSpace = size + Satori::MIN_FREE_SIZE;
-            if (region->StartAllocating(moreSpace))
+            size_t allocRemaining = region->GetAllocRemaining();
+            if (allocRemaining >= moreSpace)
             {
                 // we have enough free space in the region to continue
-                context->alloc_ptr = context->alloc_limit = (uint8_t*)region->GetAllocStart();
-                size_t allocRemaining = region->GetAllocRemaining();
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
                 if (zeroInitialize && moreSpace < SatoriUtil::MinZeroInitSize())
                 {
                     moreSpace = min(allocRemaining, SatoriUtil::MinZeroInitSize());
                 }
 
-                if (region->Allocate(moreSpace, zeroInitialize))
+                // do not zero-initialize just yet, we will do that after leaving the lock.
+                SatoriObject* result = (SatoriObject*)region->Allocate(moreSpace, /*zeroInitialize*/ false);
+                if (!result)
                 {
-                    region->StopAllocating((size_t)context->alloc_ptr + moreSpace);
-
-                    // region stays unparsable until "moreSpace" is consumed.
-                    region->IncrementUnparsable();
-                    // conservatively assume the region may get finalizable objects.
-                    // this is for initial placement into queues, which may happen before
-                    // all objects in the buffer are allocated.
-                    region->SetHasFinalizables();
-
-                    // leave some space at the end for the free object
-                    moreSpace -= Satori::MIN_FREE_SIZE;
-                    context->alloc_bytes += moreSpace;
-                    context->alloc_limit += moreSpace;
-
-                    SatoriObject* result = (SatoriObject*)(size_t)context->alloc_ptr;
-                    context->alloc_ptr += size;
-                    result->CleanSyncBlock();
-                    region->SetIndicesForObject(result, result->Start() + size);
-
-                    FIRE_EVENT(GCAllocationTick_V4,
-                        size,
-                        /*gen_number*/ 1,
-                        /*heap_number*/ 0,
-                        (void*)result,
-                        0);
-
-                    if ((flags & GC_ALLOC_FINALIZE) &&
-                        !region->RegisterForFinalization(result))
-                    {
-                        return nullptr;
-                    }
-
-                    _ASSERTE(region->HasFinalizables());
-                    return result;
-                }
-                else
-                {
-                    //OOM
-                    region->StopAllocating(0);
+                    //OOM, nothing to undo.
+                    m_regularAlocLock.Leave();
                     return nullptr;
                 }
 
+                if (flags & GC_ALLOC_FINALIZE)
+                {
+                    if (!region->RegisterForFinalization(result))
+                    {
+                        // OOM, undo the allocation
+                        region->StopAllocating(result->Start());
+                        m_regularAlocLock.Leave();
+                        return nullptr;
+                    }
+                }
+
+                // Conservatively assume the region may get finalizable objects.
+                // This is for initial placement into queues, which may happen before
+                // all objects in the buffer are allocated.
+                // It is ok to be conservative, also this will self-correct after sweeping.
+                region->SetHasFinalizables();
+
+                // region stays unparsable until "moreSpace" is consumed.
+                region->IncrementUnfinishedAlloc();
+
+                // done with region modifications.
+                m_regularAlocLock.Leave();
+
+                context->alloc_ptr = (uint8_t*)result + size;
+                context->alloc_bytes += moreSpace;
+                // leave some space at the end for the free object
+                moreSpace -= Satori::MIN_FREE_SIZE;
+                context->alloc_limit = (uint8_t*)result + moreSpace;
+
+                result->CleanSyncBlock();
+                if (zeroInitialize)
+                {
+                    memset((uint8_t*)result + sizeof(size_t), 0, moreSpace - 2 * sizeof(size_t));
+                }
+
+                FIRE_EVENT(GCAllocationTick_V4,
+                    size,
+                    /*gen_number*/ 1,
+                    /*heap_number*/ 0,
+                    (void*)result,
+                    0);
+
+                return result;
+            }
+
+            if (region->IsAllocating())
+            {
+                region->StopAllocating();
+            }
+
+            // try get from the free list
+            size_t desiredFreeSpace = size + Satori::MIN_FREE_SIZE;
+            if (region->StartAllocating(desiredFreeSpace))
+            {
+                // we have enough free space in the region to continue
+                continue;
             }
 
             region->DetachFromAlocatingOwnerRelease();
@@ -458,13 +526,11 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
             return nullptr;
         }
 
+        region->TryCommit();
+
         region->AttachToAllocatingOwner(&m_regularRegion);
         region->SetGenerationRelease(1);
         region->ResetReusableForRelease();
-        if (region->IsAllocating())
-        {
-            region->StopAllocating(0);
-        }
     }
 }
 
@@ -523,22 +589,25 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
         return AllocHuge(context, size, flags);
     }
 
-    if ((context->alloc_bytes_uoh ^ (context->alloc_bytes_uoh + size)) >> Satori::REGION_BITS)
+    m_heap->Recycler()->HelpOnce();
+
+tryAgain:
+    if (!context->LargeRegion() &&
+        size < Satori::REGION_SIZE_GRANULARITY / 2)
     {
-        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_loh);
-    }
-    else
-    {
-        m_heap->Recycler()->HelpOnce();
+        if ((context->alloc_bytes_uoh ^ (context->alloc_bytes_uoh + size)) >> Satori::REGION_BITS)
+        {
+            m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_loh);
+        }
+
+        //m_largeAlocLock.Enter();
+        if (m_largeAlocLock.TryEnter())
+        {
+            return AllocLargeShared(context, size, flags);
+        }
     }
 
-    // NOTE: we are not leaving the lock in this method since the allocation is not complete.
-    //       we will leave in PublishObject
-    SatoriRegion** allocatingOwner = (context->LargeRegion() != nullptr || !m_largeAlocLock.TryEnter()) ?
-        allocatingOwner = &context->LargeRegion() :
-        allocatingOwner = &m_largeRegion;
-
-    SatoriRegion* region = *allocatingOwner;
+    SatoriRegion* region = context->LargeRegion();
     while (true)
     {
         if (region)
@@ -548,29 +617,35 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
             {
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
                 SatoriObject* result = (SatoriObject*)region->Allocate(size, zeroInitialize);
-                if (result)
+                if (!result)
                 {
-                    result->CleanSyncBlock();
-                    context->alloc_bytes_uoh += size;
-                    region->SetIndicesForObject(result, result->Start() + size);
-
-                    FIRE_EVENT(GCAllocationTick_V4,
-                        size,
-                        /*gen_number*/ 1,
-                        /*heap_number*/ 0,
-                        (void*)result,
-                        0);
-                }
-                else
-                {
-                    // OOM
-                }
-
-                if ((flags & GC_ALLOC_FINALIZE) &&
-                    !region->RegisterForFinalization(result))
-                {
+                    // OOM, nothing to undo
                     return nullptr;
                 }
+
+                if (flags & GC_ALLOC_FINALIZE)
+                {
+                    if (!region->RegisterForFinalization(result))
+                    {
+                        // OOM, undo allocation
+                        region->StopAllocating(result->Start());
+                        return nullptr;
+                    }
+
+                    region->SetHasFinalizables();
+                }
+
+                // success
+                context->alloc_bytes_uoh += size;
+                result->CleanSyncBlock();
+                region->SetIndicesForObject(result, result->Start() + size);
+
+                FIRE_EVENT(GCAllocationTick_V4,
+                    size,
+                    /*gen_number*/ 1,
+                    /*heap_number*/ 0,
+                    (void*)result,
+                    0);
 
                 return result;
             }
@@ -581,12 +656,11 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
         {
             if (region->IsAllocating())
             {
-                region->StopAllocating(/* allocPtr */ 0);
+                region->StopAllocating();
             }
 
             // try get from the free list
-            size_t desiredFreeSpace = size + Satori::MIN_FREE_SIZE;
-            if (region->StartAllocating(desiredFreeSpace))
+            if (region->StartAllocating(size))
             {
                 // we have enough free space in the region to continue
                 continue;
@@ -594,6 +668,9 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
 
             region->DetachFromAlocatingOwnerRelease();
             m_heap->Recycler()->AddEphemeralRegion(region);
+
+            // retry
+            goto tryAgain;
         }
 
         // get a new regular region.
@@ -617,21 +694,114 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
             _ASSERTE(region->NothingMarked());
         }
 
-        region->AttachToAllocatingOwner(allocatingOwner);
+        region->AttachToAllocatingOwner(&context->LargeRegion());
         region->SetGenerationRelease(1);
         region->ResetReusableForRelease();
     }
 }
 
-void SatoriAllocator::UnlockRegionIfShared(SatoriRegion* region)
+SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
-    if (region == m_largeRegion)
+    _ASSERTE(flags & (GC_ALLOC_LARGE_OBJECT_HEAP | GC_ALLOC_PINNED_OBJECT_HEAP));
+
+    SatoriRegion* region = m_largeRegion;
+    _ASSERTE(region == nullptr || region->IsAttachedToAllocatingOwner());
+
+    while (true)
     {
-        m_largeAlocLock.Leave();
-    }
-    else if (region == m_pinnedRegion)
-    {
-        m_pinnedAlocLock.Leave();
+        if (region != nullptr)
+        {
+            if (region->GetAllocRemaining() >= size)
+            {
+                // do not zero-initialize just yet, we will do that after leaving the lock.
+                SatoriObject* result = (SatoriObject*)region->Allocate(size, /*zeroInitialize*/ false);
+                if (!result)
+                {
+                    //OOM, nothing to undo
+                    m_largeAlocLock.Leave();
+                    return nullptr;
+                }
+
+                if (flags & GC_ALLOC_FINALIZE)
+                {
+                    if (!region->RegisterForFinalization(result))
+                    {
+                        // OOM, undo the allocation
+                        region->StopAllocating(result->Start());
+                        m_largeAlocLock.Leave();
+                        return nullptr;
+                    }
+
+                    region->SetHasFinalizables();
+                }
+
+                // region stays unparsable until allocation is complete.
+                region->IncrementUnfinishedAlloc();
+                // done with region modifications.
+                m_largeAlocLock.Leave();
+
+                context->alloc_bytes_uoh += size;
+                result->CleanSyncBlock();
+                result->SetUnfinished();
+                if (!(flags & GC_ALLOC_ZEROING_OPTIONAL))
+                {
+                    memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));
+                }
+
+                FIRE_EVENT(GCAllocationTick_V4,
+                    size,
+                    /*gen_number*/ 1,
+                    /*heap_number*/ 0,
+                    (void*)result,
+                    0);
+
+                return result;
+            }
+
+            if (region->IsAllocating())
+            {
+                region->StopAllocating();
+            }
+
+            // try get from the free list
+            if (region->StartAllocating(size))
+            {
+                // we have enough free space in the region to continue
+                continue;
+            }
+
+            region->DetachFromAlocatingOwnerRelease();
+            m_heap->Recycler()->AddEphemeralRegion(region);
+        }
+
+        // get a new regular region.
+        _ASSERTE(SatoriRegion::RegionSizeForAlloc(size) == Satori::REGION_SIZE_GRANULARITY);
+
+        region = nullptr;
+        if (size < Satori::REGION_SIZE_GRANULARITY / 2)
+        {
+            region = m_heap->Recycler()->TryGetReusableForLarge();
+            _ASSERTE(region == nullptr || !region->IsAllocating());
+        }
+
+        if (!region)
+        {
+            region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
+            if (!region)
+            {
+                //OOM
+                m_largeAlocLock.Leave();
+                return nullptr;
+            }
+
+            _ASSERTE(region->NothingMarked());
+        }
+
+        region->TryCommit();
+
+        region->AttachToAllocatingOwner(&m_largeRegion);
+        region->SetGenerationRelease(1);
+        region->ResetReusableForRelease();
     }
 }
 
@@ -659,12 +829,19 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     }
 
     result->CleanSyncBlock();
-    context->alloc_bytes_uoh += size;
 
     // huge regions are not attached to contexts and in gen0+ would appear parseable,
     // but this one is not parseable yet since the new object has no MethodTable
     // we will keep the region in gen -1 for now and make it gen1 or gen2 in PublishObject.
-    hugeRegion->StopAllocating(/* allocPtr */ 0);
+    hugeRegion->StopAllocating();
+
+    if ((flags & GC_ALLOC_FINALIZE) &&
+        !hugeRegion->RegisterForFinalization(result))
+    {
+        hugeRegion->MakeBlank();
+        ReturnRegion(hugeRegion);
+        return nullptr;
+    }
 
     FIRE_EVENT(GCAllocationTick_V4,
         size,
@@ -673,19 +850,14 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
         (void*)result,
         0);
 
-    if ((flags & GC_ALLOC_FINALIZE) &&
-        !hugeRegion->RegisterForFinalization(result))
-    {
-        hugeRegion->SetGenerationRelease(1);
-        m_heap->Recycler()->AddEphemeralRegion(hugeRegion);
-        return nullptr;
-    }
-
+    context->alloc_bytes_uoh += size;
     return result;
 }
 
 SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
+    _ASSERTE(flags & GC_ALLOC_PINNED_OBJECT_HEAP);
+
     if (size > SatoriRegion::MAX_LARGE_OBJ_SIZE)
     {
         return AllocHuge(context, size, flags);
@@ -697,8 +869,6 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
     }
 
     // if can't get a lock, let AllocLarge handle this.
-    // NOTE: we can only leave the lock after the allocation is complete.
-    //       That will happen in PublishObject.
     if (!m_pinnedAlocLock.TryEnter())
     {
         return AllocLarge(context, size, flags);
@@ -707,52 +877,62 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
     SatoriRegion* region = m_pinnedRegion;
     while (true)
     {
-        if (region)
+        if (region != nullptr)
         {
-            size_t allocRemaining = region->GetAllocRemaining();
-            if (allocRemaining >= size)
+            if (region->GetAllocRemaining() >= size)
             {
-                bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
-                SatoriObject* result = (SatoriObject*)region->Allocate(size, zeroInitialize);
-                if (result)
+                // do not zero-initialize just yet, we will do that after leaving the lock.
+                SatoriObject* result = (SatoriObject*)region->Allocate(size, /*zeroInitialize*/ false);
+                if (!result)
                 {
-                    result->CleanSyncBlock();
-                    context->alloc_bytes_uoh += size;
-                    region->SetIndicesForObject(result, result->Start() + size);
-
-                    FIRE_EVENT(GCAllocationTick_V4,
-                        size,
-                        /*gen_number*/ 1,
-                        /*heap_number*/ 0,
-                        (void*)result,
-                        0);
-                }
-                else
-                {
-                    // OOM
-                }
-
-                if ((flags & GC_ALLOC_FINALIZE) &&
-                    !region->RegisterForFinalization(result))
-                {
+                    //OOM, nothing to undo
+                    m_pinnedAlocLock.Leave();
                     return nullptr;
                 }
 
+                if (flags & GC_ALLOC_FINALIZE)
+                {
+                    if (!region->RegisterForFinalization(result))
+                    {
+                        // OOM, undo the allocation
+                        region->StopAllocating(result->Start());
+                        m_pinnedAlocLock.Leave();
+                        return nullptr;
+                    }
+
+                    region->SetHasFinalizables();
+                }
+
+                // region stays unparsable until allocation is complete.
+                region->IncrementUnfinishedAlloc();
+                // done with region modifications.
+                m_pinnedAlocLock.Leave();
+
+                context->alloc_bytes_uoh += size;
+                result->CleanSyncBlock();
+                result->SetUnfinished();
+                if (!(flags & GC_ALLOC_ZEROING_OPTIONAL))
+                {
+                    memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));
+                }
+
+                FIRE_EVENT(GCAllocationTick_V4,
+                    size,
+                    /*gen_number*/ 1,
+                    /*heap_number*/ 0,
+                    (void*)result,
+                    0);
+
                 return result;
             }
-        }
 
-        // check if existing region has space or drop it into recycler
-        if (region)
-        {
             if (region->IsAllocating())
             {
-                region->StopAllocating(/* allocPtr */ 0);
+                region->StopAllocating();
             }
 
             // try get from the free list
-            size_t desiredFreeSpace = size + Satori::MIN_FREE_SIZE;
-            if (region->StartAllocating(desiredFreeSpace))
+            if (region->StartAllocating(size))
             {
                 // we have enough free space in the region to continue
                 continue;
@@ -769,6 +949,7 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
         if (size < Satori::REGION_SIZE_GRANULARITY / 2)
         {
             region = m_heap->Recycler()->TryGetReusableForLarge();
+            _ASSERTE(region == nullptr || !region->IsAllocating());
         }
 
         if (!region)
@@ -777,11 +958,14 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
             if (!region)
             {
                 //OOM
+                m_pinnedAlocLock.Leave();
                 return nullptr;
             }
 
             _ASSERTE(region->NothingMarked());
         }
+
+        region->TryCommit();
 
         region->AttachToAllocatingOwner(&m_pinnedRegion);
         region->SetGenerationRelease(1);
@@ -804,9 +988,8 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
             size_t allocRemaining = region->GetAllocRemaining();
             if (allocRemaining >= size)
             {
-                // we ensure that region is zero-inited
-                // so we do not need to clear here for typically small objects
-                SatoriObject* result = (SatoriObject*)region->Allocate(size, /*zeroInitialize*/ false);
+                bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
+                SatoriObject* result = (SatoriObject*)region->Allocate(size, zeroInitialize);
                 if (result)
                 {
                     context->alloc_bytes_uoh += size;
@@ -822,12 +1005,11 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
 
             if (region->IsAllocating())
             {
-                region->StopAllocating(/* allocPtr */ 0);
+                region->StopAllocating();
             }
             else
             {
-                size_t desiredFreeSpace = size + Satori::MIN_FREE_SIZE;
-                if (region->StartAllocating(desiredFreeSpace))
+                if (region->StartAllocating(size))
                 {
                     // we have enough free space in the region to continue
                     continue;
@@ -844,7 +1026,7 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
         }
 
         _ASSERTE(region->NothingMarked());
-        // Ensure the region is zeroed, to not clear for each allocated (and typically small) object.
+        // Clear the dirty part of the region eagerly to not clear for each allocated (and typically small) object.
         // And, while at that, link the previous one in case we have a reason to iterate old regions.
         region->ZeroInitAndLink(m_immortalRegion);
         if (m_immortalRegion)
@@ -865,7 +1047,7 @@ void SatoriAllocator::DeactivateSharedRegion(SatoriRegion* region, bool promoteA
     {
         if (region->IsAllocating())
         {
-            region->StopAllocating(/* allocPtr */ 0);
+            region->StopAllocating();
         }
 
         if (promoteAllRegions)
@@ -882,7 +1064,7 @@ void SatoriAllocator::DeactivateSharedRegions(bool promoteAllRegions)
     SatoriRegion* immortalRegion = m_immortalRegion;
     if (immortalRegion && immortalRegion->IsAllocating())
     {
-        immortalRegion->StopAllocating(/* allocPtr */ 0);
+        immortalRegion->StopAllocating();
     }
 
     DeactivateSharedRegion(m_pinnedRegion, promoteAllRegions);
