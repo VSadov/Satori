@@ -118,7 +118,7 @@ public:
     void SetIndicesForObjectCore(size_t start, size_t end);
     void ClearIndicesForAllocRange();
 
-    void IncrementUnfinishedAlloc();
+    int IncrementUnfinishedAlloc();
     void DecrementUnfinishedAlloc();
 
     SatoriObject* SkipUnmarked(SatoriObject* from);

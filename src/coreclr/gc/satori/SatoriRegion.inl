@@ -707,9 +707,9 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
     } while (o->Start() < objLimit);
 }
 
-inline void SatoriRegion::IncrementUnfinishedAlloc()
+inline int SatoriRegion::IncrementUnfinishedAlloc()
 {
-    Interlocked::Increment(&m_unfinishedAllocationCount);
+    return (int)Interlocked::Increment(&m_unfinishedAllocationCount);
 }
 
 inline void SatoriRegion::DecrementUnfinishedAlloc()
