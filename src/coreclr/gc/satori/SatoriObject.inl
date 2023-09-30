@@ -270,7 +270,7 @@ inline void SatoriObject::ForEachObjectRef(F lambda, bool includeCollectibleAllo
         {
             for (ptrdiff_t i = 0; i > numSeries; i--)
             {
-                val_serie_item item = cur->val_serie[i];
+                val_serie_item item = *(cur->val_serie + i);
                 size_t refPtrStop = refPtr + item.nptrs * sizeof(size_t);
                 do
                 {
@@ -360,7 +360,7 @@ inline void SatoriObject::ForEachObjectRef(F lambda, size_t start, size_t end)
         {
             for (ptrdiff_t i = 0; i > cnt; i--)
             {
-                val_serie_item item = cur->val_serie[i];
+                val_serie_item item = *(cur->val_serie + i);
                 size_t refPtrStop = refPtr + item.nptrs * sizeof(size_t);
 
                 if (refPtrStop <= start)
