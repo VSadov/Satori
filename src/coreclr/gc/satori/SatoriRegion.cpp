@@ -274,7 +274,7 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
             m_freeLists[bucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
             m_allocStart = freeObj->Start();
             m_allocEnd = freeObj->End();
-            SetOccupancy(m_occupancy + m_allocEnd - m_allocStart, ObjCount());
+            SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
             ClearIndicesForAllocRange();
             _ASSERTE(GetAllocRemaining() >= minAllocSize);
             m_sweepsSinceLastAllocation = 0;
@@ -301,7 +301,7 @@ void SatoriRegion::StopAllocating(size_t allocPtr)
         m_used = max(m_used, m_allocStart + Satori::MIN_FREE_SIZE);
         size_t unused = m_allocEnd - m_allocStart;
         _ASSERTE(m_occupancy >= unused);
-        SetOccupancy(m_occupancy - unused, ObjCount());
+        SetOccupancy(m_occupancy - unused);
         SatoriObject* freeObj = SatoriObject::FormatAsFree(m_allocStart, unused);
         AddFreeSpace(freeObj);
     }
@@ -891,6 +891,13 @@ void SatoriRegion::SetOccupancy(size_t occupancy, size_t objCount)
     _ASSERTE(occupancy <= (Size() - offsetof(SatoriRegion, m_firstObject)));
     m_occupancy = occupancy;
     m_objCount = objCount;
+}
+
+void SatoriRegion::SetOccupancy(size_t occupancy)
+{
+    _ASSERTE(m_objCount == 0 || occupancy != 0);
+    _ASSERTE(occupancy <= (Size() - offsetof(SatoriRegion, m_firstObject)));
+    m_occupancy = occupancy;
 }
 
 // NB: dst is unused, it is just to avoid argument shuffle in x64 barriers

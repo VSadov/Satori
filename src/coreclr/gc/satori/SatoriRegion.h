@@ -159,6 +159,7 @@ public:
     bool& HasPendingFinalizables();
 
     void SetOccupancy(size_t occupancy, size_t objCount);
+    void SetOccupancy(size_t occupancy);
     size_t Occupancy();
     size_t& OccupancyAtReuse();
     size_t ObjCount();

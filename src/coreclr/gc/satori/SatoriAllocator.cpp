@@ -235,8 +235,7 @@ tryAgain:
         {
             if (freeObj && freeObj->ContainingRegion() == m_regularRegion)
             {
-                // TODO: VS make SetOccupancy that does not take ObjCount
-                m_regularRegion->SetOccupancy(m_regularRegion->Occupancy() - freeObj->Size(), m_regularRegion->ObjCount());
+                m_regularRegion->SetOccupancy(m_regularRegion->Occupancy() - freeObj->Size());
                 m_regularRegion->AddFreeSpace(freeObj);
             }
 
