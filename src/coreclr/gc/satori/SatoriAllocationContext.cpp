@@ -71,6 +71,12 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
         {
             region->DetachFromAlocatingOwnerRelease();
         }
+        // TUNING: force try sharing heuristic
+        else if (region->SweepsSinceLastAllocation() > 3)
+        {
+            // allocation rate seems low, perhaps should use the shared region.
+            region->DetachFromAlocatingOwnerRelease();
+        }
 
         recycler->AddEphemeralRegion(region);
     }
@@ -96,6 +102,12 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
         if (detach ||
             (region->SweepsSinceLastAllocation() > 2 && recycler->IsReuseCandidate(region)))
         {
+            region->DetachFromAlocatingOwnerRelease();
+        }
+        // TUNING: force try sharing heuristic
+        else if (region->SweepsSinceLastAllocation() > 3)
+        {
+            // allocation rate seems low, perhaps should use the shared region.
             region->DetachFromAlocatingOwnerRelease();
         }
 

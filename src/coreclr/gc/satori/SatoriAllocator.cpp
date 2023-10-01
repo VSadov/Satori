@@ -219,8 +219,6 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
     m_heap->Recycler()->HelpOnce();
-tryAgain:
-
     if (!context->RegularRegion())
     {
         if ((context->alloc_bytes ^ (context->alloc_bytes + SatoriUtil::MinZeroInitSize())) >> Satori::REGION_BITS)
@@ -332,7 +330,7 @@ tryAgain:
             region->DetachFromAlocatingOwnerRelease();
             m_heap->Recycler()->AddEphemeralRegion(region);
 
-            goto tryAgain;
+            // if we got this far with region not detached, get another one
         }
 
         m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
