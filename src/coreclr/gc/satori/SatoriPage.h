@@ -57,11 +57,55 @@ public:
     uint8_t* RegionMap();
     SatoriHeap* Heap();
 
-    void SetCardForAddress(size_t address);
+    inline void SetCardForAddress(size_t address)
+    {
+        size_t offset = address - (size_t)this;
+        size_t cardByteOffset = offset / Satori::BYTES_PER_CARD_BYTE;
+
+        _ASSERTE(cardByteOffset >= m_cardTableStart);
+        _ASSERTE(cardByteOffset < m_cardTableSize);
+
+        if (!m_cardTable[cardByteOffset])
+        {
+            m_cardTable[cardByteOffset] = Satori::CardState::REMEMBERED;
+
+            size_t cardGroup = offset / Satori::REGION_SIZE_GRANULARITY;
+            if (!m_cardGroups[cardGroup * 2])
+            {
+                m_cardGroups[cardGroup * 2] = Satori::CardState::REMEMBERED;
+                if (!m_cardState)
+                {
+                    m_cardState = Satori::CardState::REMEMBERED;
+                }
+            }
+        }
+    }
+
+    inline void DirtyCardForAddressUnordered(size_t address)
+    {
+        size_t offset = address - (size_t)this;
+        size_t cardByteOffset = offset / Satori::BYTES_PER_CARD_BYTE;
+
+        _ASSERTE(cardByteOffset >= m_cardTableStart);
+        _ASSERTE(cardByteOffset < m_cardTableSize);
+
+        if (m_cardTable[cardByteOffset] != Satori::CardState::DIRTY)
+        {
+            m_cardTable[cardByteOffset] = Satori::CardState::DIRTY;
+            size_t cardGroup = offset / Satori::REGION_SIZE_GRANULARITY;
+            if (m_cardGroups[cardGroup * 2] != Satori::CardState::DIRTY)
+            {
+                m_cardGroups[cardGroup * 2] = Satori::CardState::DIRTY;
+                if (m_cardState != Satori::CardState::DIRTY)
+                {
+                    m_cardState = Satori::CardState::DIRTY;
+                }
+            }
+        }
+    }
+
     void SetCardForAddressOnly(size_t address);
     void DirtyCardForAddress(size_t address);
-    void DirtyCardForAddressUnordered(size_t address);
-
     void SetCardsForRange(size_t start, size_t end);
     void DirtyCardsForRange(size_t start, size_t length);
     void DirtyCardsForRangeUnordered(size_t start, size_t end);

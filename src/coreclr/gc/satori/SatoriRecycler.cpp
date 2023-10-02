@@ -2416,8 +2416,10 @@ void SatoriRecycler::CleanCards()
 
                         bool considerAllMarked = region->Generation() > m_condemnedGeneration;
 
-                        _ASSERTE(Satori::CardState::EPHEMERAL == -1);
-                        const size_t unsetValue = region->Generation() >= 2 ? 0 : -1;
+                        _ASSERTE(Satori::CardState::EPHEMERAL == (int8_t)0x80);
+                        const size_t unsetValue = region->Generation() >= 2 ?
+                            Satori::CardState::BLANK :
+                            0x8080808080808080;
 
                         int8_t* cards = page->CardsForGroup(i);
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)

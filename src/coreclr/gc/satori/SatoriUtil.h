@@ -75,11 +75,11 @@ namespace Satori
 
     namespace CardState
     {
-        static const int8_t EPHEMERAL = -1;
+        static const int8_t EPHEMERAL = -128; // 0b10000000
         static const int8_t BLANK = 0;
         static const int8_t REMEMBERED = 1;
         static const int8_t PROCESSING = 2;
-        static const int8_t DIRTY = 3;
+        static const int8_t DIRTY = 4;
     }
 
     // TUNING: this is just a threshold for cases when region has too much escaped content.

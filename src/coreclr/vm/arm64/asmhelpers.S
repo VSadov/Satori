@@ -576,19 +576,17 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     LOCAL_LABEL(SetCard):
         ldrb    w3, [x17, x2]
         cbnz    w3, LOCAL_LABEL(CardSet)
-        mov     w3, #1
-        strb    w3, [x17, x2]
+        mov     w16, #1
+        strb    w16, [x17, x2]
     LOCAL_LABEL(SetGroup):
         add     x12, x17, #0x80
         ldrb    w3, [x12, x15]
         cbnz    w3, LOCAL_LABEL(CardSet)
-        mov     w3, #1
-        strb    w3, [x12, x15]
+        strb    w16, [x12, x15]
     LOCAL_LABEL(SetPage):
         ldrb    w3, [x17]
         cbnz    w3, LOCAL_LABEL(CardSet)
-        mov     w3, #1
-        strb    w3, [x17]
+        strb    w16, [x17]
 
     LOCAL_LABEL(CardSet):
     // check if concurrent marking is still not in progress
@@ -598,13 +596,19 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 
     // DIRTYING CARD FOR X14
     LOCAL_LABEL(DirtyCard):
-        mov     w3, #3
-        strb    w3, [x17, x2]
+        ldrb    w3, [x17, x2]
+        tbnz    w3, #2, LOCAL_LABEL(Exit)
+        mov     w16, #4
+        strb    w16, [x17, x2]
     LOCAL_LABEL(DirtyGroup):
         add     x12, x17, #0x80
-        strb    w3, [x12, x15]
+        ldrb    w3, [x12, x15]
+        tbnz    w3, #2, LOCAL_LABEL(Exit)
+        strb    w16, [x12, x15]
     LOCAL_LABEL(DirtyPage):
-        strb    w3, [x17]
+        ldrb    w3, [x17]
+        tbnz    w3, #2, LOCAL_LABEL(Exit)
+        strb    w16, [x17]
         b       LOCAL_LABEL(Exit)
 
     // this is expected to be rare.
@@ -616,7 +620,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         ubfx        x17, x15, #9,#12               // word index = (dst >> 9) & 0x1FFFFF
         ldr         x17, [x12, x17, lsl #3]        // mark word = [region + index * 8]
         lsr         x12, x15, #3                   // bit = (dst >> 3) [& 63]
-        sub         x15, x15, #8     // undo MT + 1
+        sub         x15, x15, #8     // undo MT + 1 // TODO: VS use x16
         lsr         x17, x17, x12
         tbnz        x17, #0, LOCAL_LABEL(AssignAndMarkCards)        // source is already escaped.
 
@@ -632,7 +636,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         stp     x10,x11, [sp, 16 * 6]
         stp     x12,x13, [sp, 16 * 7]
         stp     x14,x15, [sp, 16 * 8]
-        stp     x16,x17, [sp, 16 * 9]
+        stp     x16,x17, [sp, 16 * 9]   // TODO: VS no need to save
 #ifndef TARGET_OSX
         str     x18,     [sp, -16]!
 #endif
