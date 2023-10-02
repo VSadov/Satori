@@ -515,7 +515,7 @@ bool SatoriRecycler::HelpOnceCore()
 
     if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
     {
-        _ASSERT(IsHelperThread());
+        _ASSERTE(IsHelperThread());
         // come back and help with stack marking
         return true;
     }
