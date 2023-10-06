@@ -802,7 +802,7 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
     }
 
     // just make sure gen2 happens eventually. 
-    if (m_gcCount[1] - m_gen1CountAtLastGen2 > 64)
+    if (m_gcCount[1] - m_gen1CountAtLastGen2 > 16)
     {
         generation = 2;
     }
@@ -3624,13 +3624,13 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
 bool SatoriRecycler::IsReuseCandidate(SatoriRegion* region)
 {
     return region->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 2 &&
-        region->HasFreeSpaceInTopNBuckets(IsLowLatencyMode() ? 6 : 2);
+        region->HasFreeSpaceInTopNBuckets(6);
 }
 
 bool SatoriRecycler::IsPromotionCandidate(SatoriRegion* region)
 {
     // TUNING: individual promoting heuristic
-    // if the region has not seen an allocation for 4 cycles, perhaps shoud tenure it
+    // if the region has not seen an allocation for 4 cycles, perhaps should tenure it
     return region->Generation() == 1 &&
         region->SweepsSinceLastAllocation() > 4 &&
         !IsReuseCandidate(region);

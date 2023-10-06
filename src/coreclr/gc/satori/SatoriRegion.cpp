@@ -522,6 +522,17 @@ bool SatoriRegion::TryDecommit()
     return false;
 }
 
+void SatoriRegion::TryCommit()
+{
+    if (m_committed < m_end)
+    {
+        if (GCToOSInterface::VirtualCommit((void*)m_committed, m_end - m_committed))
+        {
+            m_committed = m_end;
+        }
+    }
+}
+
 void SatoriRegion::ZeroInitAndLink(SatoriRegion* prev)
 {
     if (m_used > (size_t)&m_syncBlock)

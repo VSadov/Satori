@@ -61,6 +61,7 @@ public:
     SatoriRegion* TrySplit(size_t regionSize);
     bool CanDecommit();
     bool TryDecommit();
+    void TryCommit();
     bool CanCoalesceWithNext();
     bool TryCoalesceWithNext();
 
