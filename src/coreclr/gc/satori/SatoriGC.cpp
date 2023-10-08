@@ -486,9 +486,8 @@ void SatoriGC::PublishObject(uint8_t* obj)
             region->ContainingPage()->DirtyCardForAddressUnordered(so->Start());
         }
     }
-    else // if (so->IsUnfinished())
+    else if (so->IsUnfinished())
     {
-        _ASSERTE(so->IsUnfinished());
         region->DecrementUnfinishedAlloc();
         so->UnsetUnfinished();
     }

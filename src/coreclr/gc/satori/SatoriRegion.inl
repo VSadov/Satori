@@ -708,14 +708,12 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
 
 inline int SatoriRegion::IncrementUnfinishedAlloc()
 {
-    // printf("+: %d \n" , (int)m_unfinishedAllocationCount);
     return (int)Interlocked::Increment(&m_unfinishedAllocationCount);
 }
 
 inline void SatoriRegion::DecrementUnfinishedAlloc()
 {
     Interlocked::Decrement(&m_unfinishedAllocationCount);
-    // printf("-: %d \n", (int)m_unfinishedAllocationCount);
     _ASSERTE((int)m_unfinishedAllocationCount >= 0);
 }
 
