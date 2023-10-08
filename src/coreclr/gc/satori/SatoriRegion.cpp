@@ -570,7 +570,7 @@ size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
 
         if (zeroInitialize)
         {
-            size_t zeroUpTo = min(m_used, chunkEnd - sizeof(size_t));
+            size_t zeroUpTo = min(m_used, chunkEnd);
             ptrdiff_t zeroInitCount = zeroUpTo - chunkStart;
             if (zeroInitCount > 0)
             {

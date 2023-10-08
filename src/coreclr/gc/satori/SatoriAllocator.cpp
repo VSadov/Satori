@@ -284,10 +284,15 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                     moreSpace = min(allocRemaining, SatoriUtil::MinZeroInitSize());
                 }
 
-                if (region->Allocate(moreSpace, zeroInitialize))
+                if (region->Allocate(moreSpace, /*zeroInitialize*/false))
                 {
-                    context->alloc_bytes += moreSpace;
+                    if (zeroInitialize)
+                    {
+                        memset(context->alloc_limit - sizeof(size_t), 0, moreSpace);
+                    }
+
                     context->alloc_limit += moreSpace;
+                    context->alloc_bytes += moreSpace;
 
                     SatoriObject* result = (SatoriObject*)(size_t)context->alloc_ptr;
                     if ((flags & GC_ALLOC_FINALIZE) &&
@@ -589,7 +594,7 @@ tryAgain:
             if (allocRemaining >= size)
             {
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
-                SatoriObject* result = (SatoriObject*)region->Allocate(size, zeroInitialize);
+                SatoriObject* result = (SatoriObject*)region->Allocate(size, /*zeroInitialize*/ false);
                 if (!result)
                 {
                     // OOM, nothing to undo
@@ -611,6 +616,10 @@ tryAgain:
                 // success
                 context->alloc_bytes_uoh += size;
                 result->CleanSyncBlock();
+                if (!(flags & GC_ALLOC_ZEROING_OPTIONAL))
+                {
+                    memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));
+                }
                 region->SetIndicesForObject(result, result->Start() + size);
 
                 FIRE_EVENT(GCAllocationTick_V4,
