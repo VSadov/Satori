@@ -212,6 +212,25 @@ inline bool SatoriObject::IsUnmovable()
     return ((DWORD*)this)[-1] & BIT_SBLK_GC_RESERVE;
 }
 
+// #define BIT_SBLK_UNUSED                     0x80000000
+#define BIT_SBLK_UNFINISHED                     0x80000000
+
+// used by shared allocations
+inline void SatoriObject::SetUnfinished()
+{
+    ((DWORD*)this)[-1] |= BIT_SBLK_UNFINISHED;
+}
+
+inline bool SatoriObject::IsUnfinished()
+{
+    return ((DWORD*)this)[-1] & BIT_SBLK_UNFINISHED;
+}
+
+inline void SatoriObject::UnsetUnfinished()
+{
+    ((DWORD*)this)[-1] &= ~BIT_SBLK_UNFINISHED;
+}
+
 template <typename F>
 inline void SatoriObject::ForEachObjectRef(F lambda, bool includeCollectibleAllocator)
 {

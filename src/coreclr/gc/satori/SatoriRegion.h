@@ -260,6 +260,7 @@ private:
             size_t m_occupancyAtReuse;
             size_t m_sweepsSinceLastAllocation;
 
+            // TODO: VS could be int32?
             size_t m_unfinishedAllocationCount;
 
             bool m_hasPinnedObjects;
