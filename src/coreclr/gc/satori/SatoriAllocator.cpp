@@ -459,11 +459,11 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
                 // done with region modifications.
                 m_regularAlocLock.Leave();
 
-                context->alloc_ptr = (uint8_t*)result->Start() + size;
+                context->alloc_ptr = (uint8_t*)result + size;
+                context->alloc_bytes += moreSpace;
                 // leave some space at the end for the free object
                 moreSpace -= Satori::MIN_FREE_SIZE;
-                context->alloc_limit = (uint8_t*)result->Start() + moreSpace;
-                context->alloc_bytes += moreSpace;
+                context->alloc_limit = (uint8_t*)result + moreSpace;
 
                 result->CleanSyncBlock();
                 if (zeroInitialize)
@@ -487,7 +487,8 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
             }
 
             // try get from the free list
-            if (region->StartAllocating(size))
+            size_t desiredFreeSpace = size + Satori::MIN_FREE_SIZE;
+            if (region->StartAllocating(desiredFreeSpace))
             {
                 // we have enough free space in the region to continue
                 continue;
@@ -992,6 +993,7 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
             }
             else
             {
+                // TODO: VS why " + Satori::MIN_FREE_SIZE "?
                 size_t desiredFreeSpace = size + Satori::MIN_FREE_SIZE;
                 if (region->StartAllocating(desiredFreeSpace))
                 {

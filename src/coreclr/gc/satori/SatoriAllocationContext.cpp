@@ -38,8 +38,9 @@ class SatoriRecycler;
 
 SatoriObject* SatoriAllocationContext::FinishAllocFromShared()
 {
+    _ASSERTE(alloc_limit >= alloc_ptr);
     size_t unusedStart = (size_t)alloc_ptr;
-    size_t unused = (size_t)alloc_limit + Satori::MIN_FREE_SIZE - unusedStart;
+    size_t unused = (size_t)alloc_limit - unusedStart + Satori::MIN_FREE_SIZE;
     SatoriObject* freeObj = SatoriObject::FormatAsFree(unusedStart, unused);
     SatoriRegion* containingRegion = freeObj->ContainingRegion();
     // this portion is now parsable
