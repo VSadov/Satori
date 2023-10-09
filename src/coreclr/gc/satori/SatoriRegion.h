@@ -77,6 +77,7 @@ public:
 
     size_t StartAllocating(size_t minSize);
     void StopAllocating(size_t allocPtr);
+    void StopAllocating();
     bool IsAllocating();
 
     void AddFreeSpace(SatoriObject* freeObj);

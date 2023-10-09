@@ -97,7 +97,7 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
     {
         if (region->IsAllocating())
         {
-            region->StopAllocating(/* allocPtr */ 0);
+            region->StopAllocating();
         }
 
         if (detach ||

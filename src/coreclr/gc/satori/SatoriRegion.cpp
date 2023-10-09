@@ -288,25 +288,25 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
 void SatoriRegion::StopAllocating(size_t allocPtr)
 {
     _ASSERTE(IsAllocating());
-
-    if (allocPtr)
-    {
-        _ASSERTE(allocPtr <= m_allocStart);
-        m_allocStart = allocPtr;
-    }
+    _ASSERTE(allocPtr != 0);
 
     // make unused allocation span parseable
-    if (m_allocStart != m_allocEnd)
+    if (allocPtr != m_allocEnd)
     {
-        m_used = max(m_used, m_allocStart + Satori::MIN_FREE_SIZE);
-        size_t unused = m_allocEnd - m_allocStart;
+        m_used = max(m_used, allocPtr + Satori::MIN_FREE_SIZE);
+        size_t unused = m_allocEnd - allocPtr;
         _ASSERTE(m_occupancy >= unused);
         SetOccupancy(m_occupancy - unused);
-        SatoriObject* freeObj = SatoriObject::FormatAsFree(m_allocStart, unused);
+        SatoriObject* freeObj = SatoriObject::FormatAsFree(allocPtr, unused);
         AddFreeSpace(freeObj);
     }
 
     m_allocStart = m_allocEnd = 0;
+}
+
+void SatoriRegion::StopAllocating()
+{
+    StopAllocating(m_allocStart);
 }
 
 void SatoriRegion::AddFreeSpace(SatoriObject* freeObj)
