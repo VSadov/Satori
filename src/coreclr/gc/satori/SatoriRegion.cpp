@@ -498,7 +498,7 @@ bool SatoriRegion::CanDecommit()
     }
 
     size_t decommitSize = m_committed - decommitStart;
-    return (decommitSize > Satori::REGION_SIZE_GRANULARITY / 8);
+    return decommitSize > 0;
 }
 
 bool SatoriRegion::TryDecommit()
@@ -511,7 +511,7 @@ bool SatoriRegion::TryDecommit()
     }
 
     size_t decommitSize = m_committed - decommitStart;
-    if (decommitSize > Satori::REGION_SIZE_GRANULARITY / 8)
+    if (decommitSize > 0)
     {
         GCToOSInterface::VirtualDecommit((void*)decommitStart, decommitSize);
         m_committed = decommitStart;

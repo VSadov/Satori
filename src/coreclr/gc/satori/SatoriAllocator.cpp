@@ -98,6 +98,18 @@ tryAgain:
         {
             if (putBack)
             {
+                // we took a bite out of relatively large region
+                // and noone could use it while we were taking our piece.
+                // split the remaining portion in two so that two threads could take a piece next time.
+                if (putBack->Size() > region->Size() * 2)
+                {
+                    SatoriRegion* half = putBack->TrySplit(ALIGN_DOWN((putBack->Size() / 2), Satori::REGION_SIZE_GRANULARITY));
+                    if (half)
+                    {
+                        AddRegion(half);
+                    }
+                }
+
                 AddRegion(putBack);
             }
 
