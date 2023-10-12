@@ -71,6 +71,8 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
+    int64_t newPageDeadline = 0;
+    int newPageSpin = 0;
 
 tryAgain:
     SatoriRegion* putBack = nullptr;
@@ -98,7 +100,7 @@ tryAgain:
         {
             if (putBack)
             {
-                // we took a bite out of relatively large region
+                // we took a bite out of a relatively large region
                 // and noone could use it while we were taking our piece.
                 // split the remaining portion in two so that two threads could take a piece next time.
                 if (putBack->Size() > region->Size() * 2)
@@ -123,22 +125,33 @@ tryAgain:
     // page, if needed.
     if (regionSize < Satori::PAGE_SIZE_GRANULARITY / 2)
     {
+        // Reserving a regular-sized Page.
+        // We will often come here on multiple threads and we do not want all threads to reserve a page.
+        // If someone alse is reserving, we will allow 1 msec of retrying before reserving a page eagerly.
+        if (newPageDeadline == 0)
+        {
+            newPageDeadline = GCToOSInterface::QueryPerformanceCounter() + GCToOSInterface::QueryPerformanceFrequency() / 1000;
+        }
+
         if (m_singePageAdders != 0 ||
             Interlocked::CompareExchange(&m_singePageAdders, 1, 0) != 0)
         {
             // someone is adding.
-            // TODO: VS expo backoff with timeout
-            // if (!timedOut)
+            if (GCToOSInterface::QueryPerformanceCounter() - newPageDeadline > 0)
             {
-                //inc time;
-                // 
-                //Spin();
+                // timed out
+                Interlocked::Increment(&m_singePageAdders);
+            }
+            else
+            {
+                newPageSpin = newPageSpin * 2 + 1;
+                for (int i = 0; i < newPageSpin; i++)
+                {
+                    YieldProcessor();
+                }
+
                 goto tryAgain;
             }
-            //else
-            //{
-            //    Interlocked::Increment(&singePageAdders);
-            //}
         }
 
         SatoriPage* page = nullptr;
