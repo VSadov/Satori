@@ -1856,9 +1856,10 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
 
 // Just a number that is likely be different for different threads
 // making the same call.
-size_t ThreadSpecificNumber()
+// mix in the GC index to not get stuck with the same combination, in case it is not good.
+size_t ThreadSpecificNumber(int64_t gcIndex)
 {
-    size_t result = ((size_t)&result * 11400714819323198485llu) >> 32;
+    size_t result = (((size_t)&result ^ (size_t)gcIndex) * 11400714819323198485llu) >> 32;
     return result;
 }
 
@@ -1890,8 +1891,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
         pRestart->gcIndex = gcIndex;
         pRestart->page = nullptr;
         pRestart->ii = 0;
-        // TODO: VS hash in the gcIndex?
-        pRestart->offset = ThreadSpecificNumber();
+        pRestart->offset = ThreadSpecificNumber(GlobalGcIndex());
     }
 
     m_heap->ForEachPageUntil(
@@ -1939,14 +1939,11 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                         // claim the group as complete
                         page->CardGroupScanTicket(i) = currentScanTicket;
 
-                        //TODO: VS we may not need this, since collisions are rare (but worth measuring?)
-                        //if (Interlocked::CompareExchange(&page->CardGroupScanTicket(i), currentScanTicket, groupTicket) == currentScanTicket)
-                        //{
-                        //    //printf("#");
-                        //    continue;
-                        //}
-
                         // now we have to finish, since we have clamed the group
+                        // NB: two threads may claim the same group and do overlapping work
+                        //     that is correct, but redundant. We could claim using interlocked operation
+                        //     and avoid that, but such collisions appear to be too rare to worry about.
+                        //     It may be worth watching this in the future though.
 
                         //NB: It is safe to get a region even if region map may be changing because
                         //    a region with remembered/dirty marks must be there and cannot be destroyed.
@@ -2082,8 +2079,7 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
         pRestart->gcIndex = gcIndex;
         pRestart->page = nullptr;
         pRestart->ii = 0;
-        // TODO: VS hash in the gcIndex?
-        pRestart->offset = ThreadSpecificNumber();
+        pRestart->offset = ThreadSpecificNumber(GlobalGcIndex());
     }
 
     m_heap->ForEachPageUntil(
@@ -2248,7 +2244,7 @@ void SatoriRecycler::MarkThroughCards()
 
                 size_t groupCount = page->CardGroupCount();
                 // add thread specific offset, to separate somewhat what threads read
-                size_t offset = ThreadSpecificNumber();
+                size_t offset = ThreadSpecificNumber(GlobalGcIndex());
                 for (size_t ii = 0; ii < groupCount; ii++)
                 {
                     size_t i = (offset + ii) % groupCount;
@@ -2396,7 +2392,7 @@ void SatoriRecycler::CleanCards()
 
                 size_t groupCount = page->CardGroupCount();
                 // add thread specific offset, to separate somewhat what threads read
-                size_t offset = ThreadSpecificNumber();
+                size_t offset = ThreadSpecificNumber(GlobalGcIndex());
 
                 for (size_t ii = 0; ii < groupCount; ii++)
                 {
@@ -2514,7 +2510,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
 
                 size_t groupCount = page->CardGroupCount();
                 // add thread specific offset, to separate somewhat what threads read
-                size_t offset = ThreadSpecificNumber();
+                size_t offset = ThreadSpecificNumber(GlobalGcIndex());
                 for (size_t ii = 0; ii < groupCount; ii++)
                 {
                     size_t i = (offset + ii) % groupCount;
