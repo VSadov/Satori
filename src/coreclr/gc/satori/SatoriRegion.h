@@ -334,7 +334,7 @@ private:
     void SetExposed(SatoriObject** location);
 
     bool ValidateIndexEmpty();
-    void Coalesce(SatoriRegion* next);
+    bool Coalesce(SatoriRegion* next);
 
     template <bool updatePointers, bool individuallyPromoted, bool isEscapeTracking>
     bool Sweep();

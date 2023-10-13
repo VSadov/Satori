@@ -162,14 +162,19 @@ public:
 
     static size_t CommitGranularity()
     {
-        // TODO: VS make configurable and consider OS page size.
         // we can support sizes that are > OS page and binary fractions of REGION_SIZE_GRANULARITY.
         // we can also support PAGE_SIZE_GRANULARITY
-        return 4096 * 4;
+        size_t result = 1024 * 32;
 
-        //return Satori::REGION_SIZE_GRANULARITY;
+        // result = Satori::REGION_SIZE_GRANULARITY;
 
-        // return Satori::PAGE_SIZE_GRANULARITY;
+        // result = Satori::PAGE_SIZE_GRANULARITY;
+
+#if defined(TARGET_LINUX) && defined(TARGET_ARM64)
+        result = max(result, GCToOSInterface::GetPageSize());
+#endif
+
+        return result;
     }
 
     // TUNING: Needs tuning?

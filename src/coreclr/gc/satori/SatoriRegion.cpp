@@ -441,26 +441,7 @@ bool SatoriRegion::CanCoalesceWithNext()
     return false;
 }
 
-bool SatoriRegion::TryCoalesceWithNext()
-{
-    SatoriRegion* next = NextInPage();
-    if (next)
-    {
-        auto queue = VolatileLoadWithoutBarrier(&next->m_containingQueue);
-        if (queue && queue->Kind() == QueueKind::Allocator)
-        {
-            if (queue->TryRemove(next))
-            {
-                Coalesce(next);
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-void SatoriRegion::Coalesce(SatoriRegion* next)
+bool SatoriRegion::Coalesce(SatoriRegion* next)
 {
     _ASSERTE(next->m_containingQueue == nullptr);
     _ASSERTE(next->m_containingPage == m_containingPage);
@@ -469,8 +450,8 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
     _ASSERTE(ValidateBlank());
     _ASSERTE(next->ValidateBlank());
 
-    m_end = next->m_end;
-    m_allocEnd = next->m_allocEnd;
+    size_t next_end = next->m_end;
+    size_t next_allocEnd = next->m_allocEnd;
 
     if (m_committed == next->Start())
     {
@@ -482,10 +463,41 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
         _ASSERTE(next->m_committed > next->Start());
         size_t toDecommit = next->m_committed - next->Start();
         _ASSERTE(toDecommit % SatoriUtil::CommitGranularity() == 0);
-        GCToOSInterface::VirtualDecommit(next, toDecommit);
+        if (!GCToOSInterface::VirtualDecommit(next, toDecommit))
+        {
+            return false;
+        }
     }
 
+    m_end = next_end;
+    m_allocEnd = next_allocEnd;
     m_containingPage->OnRegionInitialized(this);
+
+    return true;
+}
+
+bool SatoriRegion::TryCoalesceWithNext()
+{
+    SatoriRegion* next = NextInPage();
+    if (next)
+    {
+        auto queue = VolatileLoadWithoutBarrier(&next->m_containingQueue);
+        if (queue && queue->Kind() == QueueKind::Allocator)
+        {
+            if (queue->TryRemove(next))
+            {
+                if(Coalesce(next))
+                {
+                    return true;
+                }
+
+                // could not coalesce, put the next back.
+                queue->Enqueue(next);
+            }
+        }
+    }
+
+    return false;
 }
 
 bool SatoriRegion::CanDecommit()
@@ -513,10 +525,12 @@ bool SatoriRegion::TryDecommit()
     size_t decommitSize = m_committed - decommitStart;
     if (decommitSize > 0)
     {
-        GCToOSInterface::VirtualDecommit((void*)decommitStart, decommitSize);
-        m_committed = decommitStart;
-        m_used = min(m_used, decommitStart);
-        return true;
+        if (GCToOSInterface::VirtualDecommit((void*)decommitStart, decommitSize))
+        {
+            m_committed = decommitStart;
+            m_used = min(m_used, decommitStart);
+            return true;
+        }
     }
 
     return false;
