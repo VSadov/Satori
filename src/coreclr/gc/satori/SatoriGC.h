@@ -162,6 +162,9 @@ public:
     virtual int RefreshMemoryLimit() override;
     virtual enable_no_gc_region_callback_status EnableNoGCRegionCallback(NoGCRegionCallbackFinalizerWorkItem* callback, uint64_t callback_threshold) override;
     virtual FinalizerWorkItem* GetExtraWorkForFinalization() override;
+
+    // Inherited via IGCHeapInternal
+    uint64_t GetGenerationBudget(int generation) override;
 };
 
 #endif
