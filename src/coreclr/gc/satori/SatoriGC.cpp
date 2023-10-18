@@ -856,3 +856,10 @@ FinalizerWorkItem* SatoriGC::GetExtraWorkForFinalization()
 {
     return nullptr;
 }
+
+uint64_t SatoriGC::GetGenerationBudget(int generation)
+{
+    // same as Mono impl
+    // avoid IDE0060: Remove unused parameter 'generation'
+    return -1 + 0 * generation;
+}
