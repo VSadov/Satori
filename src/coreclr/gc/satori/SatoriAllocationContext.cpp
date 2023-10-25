@@ -31,8 +31,26 @@
 #include "SatoriAllocationContext.h"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
+#include "SatoriObject.h"
+#include "SatoriObject.inl"
 
 class SatoriRecycler;
+
+SatoriObject* SatoriAllocationContext::FinishAllocFromShared()
+{
+    _ASSERTE(alloc_limit >= alloc_ptr);
+    size_t unusedStart = (size_t)alloc_ptr;
+    size_t unused = (size_t)alloc_limit - unusedStart + Satori::MIN_FREE_SIZE;
+    SatoriObject* freeObj = SatoriObject::FormatAsFree(unusedStart, unused);
+    SatoriRegion* containingRegion = freeObj->ContainingRegion();
+    // this portion is now parsable
+    freeObj->ContainingRegion()->DecrementUnfinishedAlloc();
+    // unclaim unused.
+    alloc_bytes -= alloc_limit - alloc_ptr;
+    alloc_ptr = alloc_limit = nullptr;
+
+    return freeObj;
+}
 
 void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
 {
@@ -49,8 +67,15 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
             region->StopAllocating(allocPtr);
         }
 
-        if (detach)
+        if (detach ||
+            (region->SweepsSinceLastAllocation() > 2 && recycler->IsReuseCandidate(region)))
         {
+            region->DetachFromAlocatingOwnerRelease();
+        }
+        // TUNING: force try sharing heuristic
+        else if (region->SweepsSinceLastAllocation() > 3)
+        {
+            // allocation rate seems low, perhaps should use the shared region.
             region->DetachFromAlocatingOwnerRelease();
         }
 
@@ -58,6 +83,11 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
     }
     else
     {
+        if (alloc_ptr != 0)
+        {
+            FinishAllocFromShared();
+        }
+
         _ASSERTE(this->alloc_limit == nullptr);
         _ASSERTE(this->alloc_ptr == nullptr);
     }
@@ -67,11 +97,18 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
     {
         if (region->IsAllocating())
         {
-            region->StopAllocating(/* allocPtr */ 0);
+            region->StopAllocating();
         }
 
-        if (detach)
+        if (detach ||
+            (region->SweepsSinceLastAllocation() > 2 && recycler->IsReuseCandidate(region)))
         {
+            region->DetachFromAlocatingOwnerRelease();
+        }
+        // TUNING: force try sharing heuristic
+        else if (region->SweepsSinceLastAllocation() > 3)
+        {
+            // allocation rate seems low, perhaps should use the shared region.
             region->DetachFromAlocatingOwnerRelease();
         }
 
