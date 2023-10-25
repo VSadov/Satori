@@ -469,9 +469,9 @@ void SatoriGC::PublishObject(uint8_t* obj)
     // but the region is not parseable until the object has a MethodTable,
     // so we delay taking the region out of generation -1 and passing to recycler
     // until we get here.
-    if (!region->IsAttachedToAllocatingOwner() && region->Generation() < 2)
+    if (region->Size() > Satori::REGION_SIZE_GRANULARITY)
     {
-        _ASSERTE(region->Size() > Satori::REGION_SIZE_GRANULARITY);
+        _ASSERTE(!region->IsAttachedToAllocatingOwner() && region->Generation() < 2);
         region->SetGenerationRelease(1);
         region->SetOccupancy(so->Size(), 1);
 
@@ -485,6 +485,11 @@ void SatoriGC::PublishObject(uint8_t* obj)
         {
             region->ContainingPage()->DirtyCardForAddressUnordered(so->Start());
         }
+    }
+    else if (so->IsUnfinished())
+    {
+        region->DecrementUnfinishedAlloc();
+        so->UnsetUnfinished();
     }
 }
 

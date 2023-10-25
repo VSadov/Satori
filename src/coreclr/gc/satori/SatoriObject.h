@@ -69,6 +69,10 @@ public:
     void SetUnmovable();
     bool IsUnmovable();
 
+    void SetUnfinished();
+    bool IsUnfinished();
+    void UnsetUnfinished();
+
     void DirtyCardsForContent();
 
     void EscapeCheckOnHandleCreation();
