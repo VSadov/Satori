@@ -578,19 +578,17 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     LOCAL_LABEL(SetCard):
         ldrb    w3, [x17, x2]
         cbnz    w3, LOCAL_LABEL(CardSet)
-        mov     w3, #1
-        strb    w3, [x17, x2]
+        mov     w16, #1
+        strb    w16, [x17, x2]
     LOCAL_LABEL(SetGroup):
         add     x12, x17, #0x80
         ldrb    w3, [x12, x15]
         cbnz    w3, LOCAL_LABEL(CardSet)
-        mov     w3, #1
-        strb    w3, [x12, x15]
+        strb    w16, [x12, x15]
     LOCAL_LABEL(SetPage):
         ldrb    w3, [x17]
         cbnz    w3, LOCAL_LABEL(CardSet)
-        mov     w3, #1
-        strb    w3, [x17]
+        strb    w16, [x17]
 
     LOCAL_LABEL(CardSet):
     // check if concurrent marking is still not in progress
@@ -600,13 +598,19 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 
     // DIRTYING CARD FOR X14
     LOCAL_LABEL(DirtyCard):
-        mov     w3, #3
-        strb    w3, [x17, x2]
+        ldrb    w3, [x17, x2]
+        tbnz    w3, #2, LOCAL_LABEL(Exit)
+        mov     w16, #4
+        strb    w16, [x17, x2]
     LOCAL_LABEL(DirtyGroup):
         add     x12, x17, #0x80
-        strb    w3, [x12, x15]
+        ldrb    w3, [x12, x15]
+        tbnz    w3, #2, LOCAL_LABEL(Exit)
+        strb    w16, [x12, x15]
     LOCAL_LABEL(DirtyPage):
-        strb    w3, [x17]
+        ldrb    w3, [x17]
+        tbnz    w3, #2, LOCAL_LABEL(Exit)
+        strb    w16, [x17]
         b       LOCAL_LABEL(Exit)
 
     // this is expected to be rare.
@@ -614,18 +618,17 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 
     // 4) check if the source is escaped
         and         x12, x15, #0xFFFFFFFFFFE00000  // source region
-        add         x15, x15, #8                   // escape bit is MT + 1
-        ubfx        x17, x15, #9,#12               // word index = (dst >> 9) & 0x1FFFFF
+        add         x16, x15, #8                   // escape bit is MT + 1
+        ubfx        x17, x16, #9,#12               // word index = (dst >> 9) & 0x1FFFFF
         ldr         x17, [x12, x17, lsl #3]        // mark word = [region + index * 8]
-        lsr         x12, x15, #3                   // bit = (dst >> 3) [& 63]
-        sub         x15, x15, #8     // undo MT + 1
+        lsr         x12, x16, #3                   // bit = (dst >> 3) [& 63]
         lsr         x17, x17, x12
         tbnz        x17, #0, LOCAL_LABEL(AssignAndMarkCards)        // source is already escaped.
 
         // because of the barrier call convention
-        // we need to preserve caller-saved x0 through x18 and x29/x30
+        // we need to preserve caller-saved x0 through x15 and x29/x30
 
-        stp     x29,x30, [sp, -16 * 10]!
+        stp     x29,x30, [sp, -16 * 9]!
         stp     x0, x1,  [sp, 16 * 1]
         stp     x2, x3,  [sp, 16 * 2]
         stp     x4, x5,  [sp, 16 * 3]
@@ -634,7 +637,6 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         stp     x10,x11, [sp, 16 * 6]
         stp     x12,x13, [sp, 16 * 7]
         stp     x14,x15, [sp, 16 * 8]
-        stp     x16,x17, [sp, 16 * 9]
 #ifndef TARGET_OSX
         str     x18,     [sp, -16]!
 #endif
@@ -656,8 +658,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         ldp     x10,x11, [sp, 16 * 6]
         ldp     x12,x13, [sp, 16 * 7]
         ldp     x14,x15, [sp, 16 * 8]
-        ldp     x16,x17, [sp, 16 * 9]
-        ldp     x29,x30, [sp], 16 * 10
+        ldp     x29,x30, [sp], 16 * 9
 
         b       LOCAL_LABEL(AssignAndMarkCards)
 WRITE_BARRIER_END JIT_WriteBarrier

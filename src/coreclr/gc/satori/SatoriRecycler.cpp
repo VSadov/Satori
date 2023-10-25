@@ -53,7 +53,7 @@
 
 //#define TIMED
 
-static const int MIN_GEN1_BUDGET = 10 * Satori::REGION_SIZE_GRANULARITY;
+static const int MIN_GEN1_BUDGET = 2 * Satori::REGION_SIZE_GRANULARITY;
 
 void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
 {
@@ -119,6 +119,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_relocatableEphemeralEstimate = 0;
     m_relocatableTenuredEstimate = 0;
+    m_promotionEstimate = 0;
 
     m_occupancy[0] = 0;
     m_occupancy[1] = 0;
@@ -136,6 +137,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_activeHelperFn = nullptr;
     m_rootScanTicket = 0;
     m_cardScanTicket = 0;
+    m_concurrentCardsDone = false;
+    m_concurrentHandlesDone = false;
 
     m_isLowLatencyMode = SatoriUtil::IsLowLatencyMode();
 }
@@ -181,6 +184,9 @@ void SatoriRecycler::IncrementRootScanTicket()
     {
         m_rootScanTicket++;
     }
+
+    m_concurrentCardsDone = false;
+    m_concurrentHandlesDone = false;
 }
 
 void SatoriRecycler::IncrementCardScanTicket()
@@ -283,6 +289,11 @@ void SatoriRecycler::PushToEphemeralQueue(SatoriRegion* region)
         Interlocked::Increment(&m_relocatableEphemeralEstimate);
     }
 
+    if (IsPromotionCandidate(region))
+    {
+        Interlocked::Increment(&m_promotionEstimate);
+    }
+
     m_ephemeralRegions->Push(region);
 }
 
@@ -313,6 +324,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
     _ASSERTE(region->Generation() == 0 || region->Generation() == 1);
     _ASSERTE(!region->HasMarksSet());
     _ASSERTE(!region->DoNotSweep());
+    _ASSERTE(!region->IsAttachedToAllocatingOwner() || IsBlockingPhase());
 
     PushToEphemeralQueues(region);
     size_t allocatedBytes = region->Occupancy() - region->OccupancyAtReuse();
@@ -328,13 +340,12 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 
     // When concurrent marking is allowed we may have marks already.
     // Demoted regions could be pre-marked
-    region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrent());
-
-    if (region->IsAttachedToAllocatingOwner())
+#ifdef DEBUG
+    if (!region->MaybeAllocatingAcquire())
     {
-        _ASSERTE(IsBlockingPhase());
-        m_condemnedNurseryRegionsCount++;
+        region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrent());
     }
+#endif
 }
 
 void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
@@ -413,8 +424,7 @@ bool IsHelperThread()
 
 int64_t SatoriRecycler::HelpQuantum()
 {
-    // TUNING: 1/8 msec for now
-    return m_perfCounterFrequencyMHz / 8;
+    return m_perfCounterFrequencyMHz / 8;  // 1/8 msec
 }
 
 bool SatoriRecycler::HelpOnceCore()
@@ -440,7 +450,7 @@ bool SatoriRecycler::HelpOnceCore()
     }
 
     int64_t timeStamp = GCToOSInterface::QueryPerformanceCounter();
-    int64_t deadline = timeStamp + HelpQuantum(); // 1/8 msec.
+    int64_t deadline = timeStamp + HelpQuantum();
 
     // this should be done before scanning stacks or cards
     // since the regions must be swept before we can use FindObject
@@ -455,9 +465,9 @@ bool SatoriRecycler::HelpOnceCore()
     // make sure the barrier is toggled to concurrent before marking
     if (!m_isBarrierConcurrent)
     {
-        // toggling is a PW fence.
-        m_isBarrierConcurrent = true;
+        // toggling is a ProcessWide fence.
         ToggleWriteBarrier(true, /* eeSuspended */ false);
+        m_isBarrierConcurrent = true;
     }
 
     if (MarkOwnStackAndDrainQueues(deadline))
@@ -471,25 +481,47 @@ bool SatoriRecycler::HelpOnceCore()
         BlockingMarkForConcurrent();
     }
 
-    if (MarkHandles(deadline))
+    if (m_ccStackMarkState == CC_MARK_STATE_SUSPENDING_EE && !IsHelperThread())
     {
+        // leave and suspend.
         return true;
     }
 
-    if (m_condemnedGeneration == 1 ?
+    if (!m_concurrentHandlesDone)
+    {
+        if (MarkHandles(deadline))
+        {
+            return true;
+        }
+        else
+        {
+            m_concurrentHandlesDone = true;
+        }
+    }
+
+    if (!m_concurrentCardsDone)
+    {
+        if (m_condemnedGeneration == 1 ?
             MarkThroughCardsConcurrent(deadline) :
             ScanDirtyCardsConcurrent(deadline))
-    {
-        return true;
+        {
+            return true;
+        }
+        else
+        {
+            m_concurrentCardsDone = true;
+        }
     }
 
-    if (m_ccStackMarkState != CC_MARK_STATE_DONE)
+    if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
     {
+        _ASSERTE(IsHelperThread());
+        // come back and help with stack marking
         return true;
     }
 
     // if queues are empty we see no more work
-    return !m_workList->IsEmpty();
+    return DrainMarkQueuesConcurrent(nullptr, deadline);
 }
 
 class MarkContext
@@ -606,7 +638,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
 
 void SatoriRecycler::HelpOnce()
 {
-    _ASSERTE(GCToEEInterface::GetThread() != nullptr);
+    _ASSERTE(!IsHelperThread());
 
     if (m_gcState != GC_STATE_NONE)
     {
@@ -646,6 +678,7 @@ void SatoriRecycler::HelpOnce()
 
 void SatoriRecycler::ConcurrentHelp()
 {
+    // helpers have deadline too, just to come here and check the stage.
     while ((m_gcState == GC_STATE_CONCURRENT) && HelpOnceCore());
 }
 
@@ -745,7 +778,7 @@ bool SatoriRecycler::IsBlockingPhase()
 // we target 1/EPH_SURV_TARGET ephemeral survival rate
 #define EPH_SURV_TARGET 4
 
-// we target 1/10 of total heap to be ephemeral. If more, we promote.
+// when we do not know, we estimate 1/10 of total heap to be ephemeral.
 #define EPH_RATIO 10
 
 // do gen2 when total doubles
@@ -769,7 +802,7 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
     }
 
     // just make sure gen2 happens eventually. 
-    if (m_gcCount[1] - m_gen1CountAtLastGen2 > 64)
+    if (m_gcCount[1] - m_gen1CountAtLastGen2 > 16)
     {
         generation = 2;
     }
@@ -836,7 +869,10 @@ void SatoriRecycler::AdjustHeuristics()
     }
 
     // now figure if we will promote
-    m_promoteAllRegions = m_allowPromotingRelocations = false;
+    m_promoteAllRegions = false;
+    size_t promotionEstimate = m_promotionEstimate;
+    m_promotionEstimate = 0;
+
     if (m_condemnedGeneration == 2)
     {
         m_promoteAllRegions = true;
@@ -844,13 +880,7 @@ void SatoriRecycler::AdjustHeuristics()
     }
     else
     {
-        // TODO: VS we can promote individually, but is there any use for that?
-        //if (ephemeralOccupancy * 20 > occupancy)
-        //{
-        //    m_allowPromotingRelocations = true;
-        //}
-
-        if (ephemeralOccupancy * EPH_RATIO > occupancy)
+        if (promotionEstimate > Gen1RegionCount() / 2)
         {
             m_promoteAllRegions = true;
         }
@@ -930,11 +960,10 @@ void SatoriRecycler::BlockingCollect()
 #ifdef TIMED
     if (m_condemnedGeneration == 2)
     {
-        printf("GenStarting%i , allow promoting relocations: %d \n", m_condemnedGeneration, m_allowPromotingRelocations);
+        printf("GenStarting%i \n", m_condemnedGeneration);
     }
 #endif
 
-    m_condemnedNurseryRegionsCount = 0;
     DeactivateAllStacks();
 
     m_condemnedRegionsCount = m_condemnedGeneration == 2 ?
@@ -1139,8 +1168,8 @@ void SatoriRecycler::DeactivateAllStacks()
     GCToEEInterface::GcEnumAllocContexts(DeactivateFn, m_heap->Recycler());
     m_totalAllocBytes = m_currentAllocBytesLiveThreads + m_currentAllocBytesDeadThreads;
 
-    // make immortal region parseable, in case we have byrefs pointing to it.
-    m_heap->Allocator()->DeactivateImmortalRegion();
+    // make shared regions parseable, in case we have byrefs pointing to them.
+    m_heap->Allocator()->DeactivateSharedRegions(m_promoteAllRegions);
 }
 
 void SatoriRecycler::PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o)
@@ -1307,7 +1336,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         // Concurrent FindObject is unsafe in active regions. While ref may be in a real obj,
         // the path to it from the first obj or prev indexed may cross unparsable ranges.
         // The check must acquire to be sure we check before actually doing FindObject.
-        if (containingRegion->MaybeAttachedToAllocatingOwnerAcquire())
+        if (containingRegion->MaybeAllocatingAcquire())
         {
             return;
         }
@@ -1827,16 +1856,43 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
 
 // Just a number that is likely be different for different threads
 // making the same call.
-size_t ThreadSpecificNumber()
+// mix in the GC index to not get stuck with the same combination, in case it is not good.
+size_t ThreadSpecificNumber(int64_t gcIndex)
 {
-    size_t result = ((size_t)&result * 11400714819323198485llu) >> 32;
+    size_t result = (((size_t)&result ^ (size_t)gcIndex) * 11400714819323198485llu) >> 32;
     return result;
 }
+
+int64_t SatoriRecycler::GlobalGcIndex()
+{
+    return m_gcCount[1];
+}
+
+struct ConcurrentCardsRestart
+{
+    int64_t gcIndex;
+    SatoriPage* page;
+    size_t ii;
+    size_t offset;
+};
+
+thread_local
+ConcurrentCardsRestart t_concurrentCardState;
 
 bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
 {
     SatoriWorkChunk* dstChunk = nullptr;
     bool revisit = false;
+
+    int64_t gcIndex = GlobalGcIndex();
+    ConcurrentCardsRestart* pRestart = &t_concurrentCardState;
+    if (pRestart->gcIndex != gcIndex)
+    {
+        pRestart->gcIndex = gcIndex;
+        pRestart->page = nullptr;
+        pRestart->ii = 0;
+        pRestart->offset = ThreadSpecificNumber(GlobalGcIndex());
+    }
 
     m_heap->ForEachPageUntil(
         [&](SatoriPage* page)
@@ -1855,11 +1911,22 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                 MaybeAskForHelp();
 
                 size_t groupCount = page->CardGroupCount();
-                // add thread specific offset, to separate somewhat what threads read
-                size_t offset = ThreadSpecificNumber();
-                for (size_t ii = 0; ii < groupCount; ii++)
+
+                // if restarting with the same page, continue with the last ii and offset
+                size_t offset = pRestart->offset;
+                size_t ii = pRestart->ii;
+                if (pRestart->page != page)
                 {
-                    size_t i = (offset + ii) % groupCount;
+                    // it is a new page
+                    pRestart->page = page;
+                    ii = 0;
+                }
+
+                while (ii < groupCount)
+                {
+                    size_t i = (ii + offset) % groupCount;
+                    ii ++;
+
                     int8_t groupState = page->CardGroupState(i);
                     if (groupState >= Satori::CardState::REMEMBERED)
                     {
@@ -1869,8 +1936,14 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                             continue;
                         }
 
-                        // claim the group as complete, now we have to finish
+                        // claim the group as complete
                         page->CardGroupScanTicket(i) = currentScanTicket;
+
+                        // now we have to finish, since we have clamed the group
+                        // NB: two threads may claim the same group and do overlapping work
+                        //     that is correct, but redundant. We could claim using interlocked operation
+                        //     and avoid that, but such collisions appear to be too rare to worry about.
+                        //     It may be worth watching this in the future though.
 
                         //NB: It is safe to get a region even if region map may be changing because
                         //    a region with remembered/dirty marks must be there and cannot be destroyed.
@@ -1966,6 +2039,8 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                         if (deadline && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
                         {
                             // timed out, there could be more work
+                            // save where we would restart if we see this page again
+                            pRestart->ii = ii;
                             revisit = true;
                             return true;
                         }
@@ -1997,6 +2072,16 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
     SatoriWorkChunk* dstChunk = nullptr;
     bool revisit = false;
 
+    int64_t gcIndex = GlobalGcIndex();
+    ConcurrentCardsRestart* pRestart = &t_concurrentCardState;
+    if (pRestart->gcIndex != gcIndex)
+    {
+        pRestart->gcIndex = gcIndex;
+        pRestart->page = nullptr;
+        pRestart->ii = 0;
+        pRestart->offset = ThreadSpecificNumber(GlobalGcIndex());
+    }
+
     m_heap->ForEachPageUntil(
         [&](SatoriPage* page)
         {
@@ -2014,11 +2099,22 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                 MaybeAskForHelp();
 
                 size_t groupCount = page->CardGroupCount();
-                // add thread specific offset, to separate somewhat what threads read
-                size_t offset = ThreadSpecificNumber();
-                for (size_t ii = 0; ii < groupCount; ii++)
+
+                // if restarting with the same page, continue with the last ii and offset
+                size_t offset = pRestart->offset;
+                size_t ii = pRestart->ii;
+                if (pRestart->page != page)
                 {
-                    size_t i = (offset + ii) % groupCount;
+                    // it is a new page
+                    pRestart->page = page;
+                    ii = 0;
+                }
+
+                while (ii < groupCount)
+                {
+                    size_t i = (ii + offset) % groupCount;
+                    ii++;
+
                     int8_t groupState = page->CardGroupState(i);
                     if (groupState == Satori::CardState::DIRTY)
                     {
@@ -2038,7 +2134,7 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                         _ASSERTE(!region->HasMarksSet());
 
                         // allocating region is not parseable.
-                        if (region->MaybeAttachedToAllocatingOwnerAcquire())
+                        if (region->MaybeAllocatingAcquire())
                         {
                             continue;
                         }
@@ -2148,7 +2244,7 @@ void SatoriRecycler::MarkThroughCards()
 
                 size_t groupCount = page->CardGroupCount();
                 // add thread specific offset, to separate somewhat what threads read
-                size_t offset = ThreadSpecificNumber();
+                size_t offset = ThreadSpecificNumber(GlobalGcIndex());
                 for (size_t ii = 0; ii < groupCount; ii++)
                 {
                     size_t i = (offset + ii) % groupCount;
@@ -2296,7 +2392,7 @@ void SatoriRecycler::CleanCards()
 
                 size_t groupCount = page->CardGroupCount();
                 // add thread specific offset, to separate somewhat what threads read
-                size_t offset = ThreadSpecificNumber();
+                size_t offset = ThreadSpecificNumber(GlobalGcIndex());
 
                 for (size_t ii = 0; ii < groupCount; ii++)
                 {
@@ -2316,8 +2412,10 @@ void SatoriRecycler::CleanCards()
 
                         bool considerAllMarked = region->Generation() > m_condemnedGeneration;
 
-                        _ASSERTE(Satori::CardState::EPHEMERAL == -1);
-                        const size_t unsetValue = region->Generation() >= 2 ? 0 : -1;
+                        _ASSERTE(Satori::CardState::EPHEMERAL == (int8_t)0x80);
+                        const size_t unsetValue = region->Generation() >= 2 ?
+                            Satori::CardState::BLANK :
+                            0x8080808080808080;
 
                         int8_t* cards = page->CardsForGroup(i);
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
@@ -2412,7 +2510,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
 
                 size_t groupCount = page->CardGroupCount();
                 // add thread specific offset, to separate somewhat what threads read
-                size_t offset = ThreadSpecificNumber();
+                size_t offset = ThreadSpecificNumber(GlobalGcIndex());
                 for (size_t ii = 0; ii < groupCount; ii++)
                 {
                     size_t i = (offset + ii) % groupCount;
@@ -2835,7 +2933,16 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
             _ASSERTE(!curRegion->HasPinnedObjects());
             curRegion->ClearMarks();
 
-            if (SatoriUtil::IsConcurrent())
+            bool isNurseryRegion = curRegion->IsAttachedToAllocatingOwner();
+            if (isNurseryRegion)
+            {
+                curRegion->DetachFromAlocatingOwnerRelease();
+            }
+
+            // return nursery regions eagerly
+            // there should be a modest number of those, but we may need them soon
+            // defer blanking of others
+            if (SatoriUtil::IsConcurrent() && !isNurseryRegion)
             {
 #if _DEBUG
                 curRegion->HasMarksSet() = false;
@@ -2856,8 +2963,7 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
 bool SatoriRecycler::IsRelocatable(SatoriRegion* region)
 {
     if (region->Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2 || // too full
-        region->HasPinnedObjects() ||           // pinned cannot be evacuated
-        region->IsAttachedToAllocatingOwner()           // nursery regions do not participate in relocations
+        region->HasPinnedObjects()                                   // pinned cannot be evacuated
         )
     {
         return false;
@@ -2901,14 +3007,12 @@ void SatoriRecycler::Plan()
 
     // TUNING: 
     // If we can reduce condemned generation by 12-25% regions, then do relocations.
-    // We do not consider nursery regions in the benefit/cost ratio here.
-    // They are not relocatable and generally have very few live objects too.
-    size_t desiredRelocating = (m_condemnedRegionsCount - m_condemnedNurseryRegionsCount) / 4;
+    size_t desiredRelocating = m_condemnedRegionsCount / 4;
 
     if (m_isRelocating == false ||
         relocatableEstimate <= desiredRelocating)
     {
-        DenyRelocation();    
+        DenyRelocation();
         return;
     }
 
@@ -2932,17 +3036,17 @@ void SatoriRecycler::DenyRelocation()
     m_isRelocating = false;
 
     // put all affected regions into staying queue
-    m_stayingRegions->AppendUnsafe(m_ephemeralRegions);
-    if (m_condemnedGeneration == 2)
-    {
-        m_stayingRegions->AppendUnsafe(m_tenuredRegions);
-    }
-    else if (m_promoteAllRegions)
+    if (m_promoteAllRegions)
     {
         m_occupancyAcc[2] = 0;
         m_relocatableTenuredEstimate = 0;
+        m_stayingRegions->AppendUnsafe(m_ephemeralRegions);
         m_stayingRegions->AppendUnsafe(m_tenuredRegions);
         m_stayingRegions->AppendUnsafe(m_tenuredFinalizationTrackingRegions);
+    }
+    else
+    {
+        m_stayingRegions->AppendUnsafe(m_ephemeralRegions);
     }
 }
 
@@ -2973,13 +3077,6 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         do
         {
             _ASSERTE(curRegion->Generation() <= m_condemnedGeneration);
-
-            // nursery regions do not participate in relocations
-            if (curRegion->IsAttachedToAllocatingOwner())
-            {
-                m_stayingRegions->Push(curRegion);
-                continue;
-            }
 
             // select evacuation candidates and relocation targets according to sizes.
             if (IsRelocatable(curRegion))
@@ -3111,8 +3208,7 @@ void SatoriRecycler::RelocateWorker()
 {
     _ASSERTE(m_isRelocating);
 
-    if (m_condemnedGeneration != 2 &&
-        (m_promoteAllRegions || m_allowPromotingRelocations))
+    if (m_condemnedGeneration != 2 && m_promoteAllRegions)
     {
         m_occupancyAcc[2] = 0;
         m_relocatableTenuredEstimate = 0;
@@ -3408,10 +3504,16 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         MaybeAskForHelp();
         do
         {
-            if (curRegion->Generation() > m_condemnedGeneration)
+            if (!m_promoteAllRegions && IsPromotionCandidate(curRegion))
+            {
+                curRegion->IndividuallyPromote();
+            }
+
+            if (curRegion->Generation() > m_condemnedGeneration &&
+                !curRegion->IndividuallyPromoted())
             {
                 // this can only happen when promoting in gen1
-                _ASSERTE(m_allowPromotingRelocations || m_promoteAllRegions);
+                _ASSERTE(m_promoteAllRegions);
                 curRegion->DoNotSweep() = true;
                 if (curRegion->AcceptedPromotedObjects())
                 {
@@ -3430,9 +3532,16 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                 {
                     if (!curRegion->Sweep</*updatePointers*/ true>())
                     {
-                        // the region is empty and will be returned,
-                        // but there is still some cleaning work to defer.
-                        if (SatoriUtil::IsConcurrent())
+                        bool isNurseryRegion = curRegion->IsAttachedToAllocatingOwner();
+                        if (isNurseryRegion)
+                        {
+                            curRegion->DetachFromAlocatingOwnerRelease();
+                        }
+
+                        // return nursery regions eagerly
+                        // there should be a modest number of those, but we may need them soon
+                        // defer blanking of others
+                        if (SatoriUtil::IsConcurrent() && !isNurseryRegion)
                         {
                             m_deferredSweepRegions->Enqueue(curRegion);
                         }
@@ -3508,6 +3617,21 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
     }
 }
 
+bool SatoriRecycler::IsReuseCandidate(SatoriRegion* region)
+{
+    return region->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 2 &&
+        region->HasFreeSpaceInTopNBuckets(6);
+}
+
+bool SatoriRecycler::IsPromotionCandidate(SatoriRegion* region)
+{
+    // TUNING: individual promoting heuristic
+    // if the region has not seen an allocation for 4 cycles, perhaps should tenure it
+    return region->Generation() == 1 &&
+        region->SweepsSinceLastAllocation() > 4 &&
+        !IsReuseCandidate(region);
+}
+
 void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
 {
     _ASSERTE(curRegion->Occupancy() > 0);
@@ -3521,8 +3645,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
 
     // we will try reusing half-empty regions, unless they are too fragmented
     curRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
-    if (curRegion->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 2 &&
-        curRegion->HasFreeSpaceInTopNBuckets(IsLowLatencyMode() ? 6 : 2))
+    if (IsReuseCandidate(curRegion))
     {
         _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
 

@@ -93,16 +93,21 @@ void SatoriTrimmer::Loop()
                             {
                                 if (queue->TryRemove(region))
                                 {
-                                    region->TryCoalesceWithNext();
+                                    bool didSomeWork = region->TryCoalesceWithNext();
                                     if (region->TryDecommit())
                                     {
                                         m_heap->Allocator()->AddRegion(region);
-                                        // limit the decommit rate to 1 region/msec.
-                                        GCToOSInterface::Sleep(1);
+                                        didSomeWork = true;
                                     }
                                     else
                                     {
                                         m_heap->Allocator()->ReturnRegion(region);
+                                    }
+
+                                    if (didSomeWork)
+                                    {
+                                        // limit the decommit/coalesce rate to 1 region/msec.
+                                        GCToOSInterface::Sleep(1);
                                     }
                                 }
                             }
