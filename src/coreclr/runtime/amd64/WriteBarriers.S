@@ -482,11 +482,17 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
 
     // DIRTYING CARD
      DirtyCard:
-        mov     byte ptr [rax + rdx], 3
+        cmp     byte ptr [rax + rdx], 4
+        je      Exit
+        mov     byte ptr [rax + rdx], 4
      DirtyGroup:
-        mov     byte ptr [rax + r8 * 2 + 0x80], 3
+        cmp     byte ptr [rax + r8 * 2 + 0x80], 4
+        je      Exit
+        mov     byte ptr [rax + r8 * 2 + 0x80], 4
      DirtyPage:
-        mov     byte ptr [rax], 3
+        cmp     byte ptr [rax], 4
+        je      Exit
+        mov     byte ptr [rax], 4
 
     Exit:
         ret
@@ -662,11 +668,17 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
 
     // DIRTYING CARD FOR rdi
      DirtyCard_CmpXchg:
-        mov     byte ptr [r11 + rdx], 3
+        cmp     byte ptr [r11 + rdx], 4
+        je      Exit_CmpXchg
+        mov     byte ptr [r11 + rdx], 4
      DirtyGroup_CmpXchg:
-        mov     byte ptr [r11 + rsi * 2 + 0x80], 3
+        cmp     byte ptr [r11 + rsi * 2 + 0x80], 4
+        je      Exit_CmpXchg
+        mov     byte ptr [r11 + rsi * 2 + 0x80], 4
      DirtyPage_CmpXchg:
-        mov     byte ptr [r11], 3
+        cmp     byte ptr [r11], 4
+        je      Exit_CmpXchg
+        mov     byte ptr [r11], 4
 
     Exit_CmpXchg:
         ret
@@ -810,11 +822,17 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
 
     // DIRTYING CARD FOR rdi
      DirtyCard_Xchg:
-        mov     byte ptr [r11 + rdx], 3
+        cmp     byte ptr [r11 + rdx], 4
+        je      Exit_Xchg
+        mov     byte ptr [r11 + rdx], 4
      DirtyGroup_Xchg:
-        mov     byte ptr [r11 + rsi * 2 + 0x80], 3
+        cmp     byte ptr [r11 + rsi * 2 + 0x80], 4
+        je      Exit_Xchg
+        mov     byte ptr [r11 + rsi * 2 + 0x80], 4
      DirtyPage_Xchg:
-        mov     byte ptr [r11], 3
+        cmp     byte ptr [r11], 4
+        je      Exit_Xchg
+        mov     byte ptr [r11], 4
 
     Exit_Xchg:
         ret

@@ -247,7 +247,11 @@ struct segment_info
 #define GC_PROFILING       //Turn on profiling
 #endif // PROFILING_SUPPORTED
 
+#if !defined(FEATURE_SATORI_GC)
 #define LARGE_OBJECT_SIZE ((size_t)(85000))
+#else
+#define LARGE_OBJECT_SIZE ((size_t)(32 * 1024))
+#endif
 
 // The minimum size of an object is three pointers wide: one for the syncblock,
 // one for the object header, and one for the first field in the object.

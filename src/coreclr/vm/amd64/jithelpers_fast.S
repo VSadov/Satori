@@ -353,11 +353,17 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
 
      // DIRTYING CARD
      DirtyCard:
-        mov     byte ptr [rax + rdx], 3
+        cmp     byte ptr [rax + rdx], 4
+        je      Exit
+        mov     byte ptr [rax + rdx], 4
      DirtyGroup:
-        mov     byte ptr [rax + r8 * 2 + 0x80], 3
+        cmp     byte ptr [rax + r8 * 2 + 0x80], 4
+        je      Exit
+        mov     byte ptr [rax + r8 * 2 + 0x80], 4
      DirtyPage:
-        mov     byte ptr [rax], 3
+        cmp     byte ptr [rax], 4
+        je      Exit
+        mov     byte ptr [rax], 4
 
     Exit:
         ret
