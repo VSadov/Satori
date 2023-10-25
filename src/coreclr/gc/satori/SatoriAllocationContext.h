@@ -32,6 +32,7 @@
 
 class SatoriRegion;
 class SatoriRecycler;
+class SatoriObject;
 
 class SatoriAllocationContext : public gc_alloc_context
 {
@@ -48,6 +49,7 @@ public:
 
     // stop allocating on all associated regions and optionally detach from the context.
     void Deactivate(SatoriRecycler* recycler, bool detach);
+    SatoriObject* FinishAllocFromShared();
 
 private:
 

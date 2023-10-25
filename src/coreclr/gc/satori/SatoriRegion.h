@@ -61,6 +61,7 @@ public:
     SatoriRegion* TrySplit(size_t regionSize);
     bool CanDecommit();
     bool TryDecommit();
+    void TryCommit();
     bool CanCoalesceWithNext();
     bool TryCoalesceWithNext();
 
@@ -76,6 +77,7 @@ public:
 
     size_t StartAllocating(size_t minSize);
     void StopAllocating(size_t allocPtr);
+    void StopAllocating();
     bool IsAllocating();
 
     void AddFreeSpace(SatoriObject* freeObj);
@@ -92,7 +94,8 @@ public:
     void AttachToAllocatingOwner(SatoriRegion** attachementPoint);
     void DetachFromAlocatingOwnerRelease();
     bool IsAttachedToAllocatingOwner();
-    bool MaybeAttachedToAllocatingOwnerAcquire();
+    bool MaybeAllocatingAcquire();
+    void SetHasFinalizables();
 
     void ResetReusableForRelease();
 
@@ -117,14 +120,19 @@ public:
     void SetIndicesForObjectCore(size_t start, size_t end);
     void ClearIndicesForAllocRange();
 
+    int IncrementUnfinishedAlloc();
+    void DecrementUnfinishedAlloc();
+
     SatoriObject* SkipUnmarked(SatoriObject* from);
     SatoriObject* SkipUnmarkedAndClear(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
 
     void TakeFinalizerInfoFrom(SatoriRegion* other);
+    void IndividuallyPromote();
     void UpdateFinalizableTrackers();
     void UpdatePointers();
     void UpdatePointersInObject(SatoriObject* o);
+    void SetCardsForObject(SatoriObject* o);
 
     template <bool promotingAllRegions>
     void UpdatePointersInPromotedObjects();
@@ -153,6 +161,7 @@ public:
     bool& HasPendingFinalizables();
 
     void SetOccupancy(size_t occupancy, size_t objCount);
+    void SetOccupancy(size_t occupancy);
     size_t Occupancy();
     size_t& OccupancyAtReuse();
     size_t ObjCount();
@@ -160,6 +169,9 @@ public:
     bool& HasPinnedObjects();
     bool& DoNotSweep();
     bool& AcceptedPromotedObjects();
+    bool& IndividuallyPromoted();
+
+    size_t SweepsSinceLastAllocation();
 
     enum class ReuseLevel : uint8_t
     {
@@ -247,6 +259,9 @@ private:
             size_t m_objCount;
             size_t m_occupancy;
             size_t m_occupancyAtReuse;
+            size_t m_sweepsSinceLastAllocation;
+
+            size_t m_unfinishedAllocationCount;
 
             bool m_hasPinnedObjects;
             bool m_hasMarksSet;
@@ -254,6 +269,7 @@ private:
             bool m_hasFinalizables;
             bool m_hasPendingFinalizables;
             bool m_acceptedPromotedObjects;
+            bool m_individuallyPromoted;
 
             // when demoted, we remember our gen2 objects here
             SatoriWorkChunk* m_gen2Objects;
@@ -318,8 +334,10 @@ private:
     void SetExposed(SatoriObject** location);
 
     bool ValidateIndexEmpty();
-    void Coalesce(SatoriRegion* next);
+    bool Coalesce(SatoriRegion* next);
 
+    template <bool updatePointers, bool individuallyPromoted, bool isEscapeTracking>
+    bool Sweep();
 };
 
 #endif
