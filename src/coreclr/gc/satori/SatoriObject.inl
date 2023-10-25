@@ -212,6 +212,25 @@ inline bool SatoriObject::IsUnmovable()
     return ((DWORD*)this)[-1] & BIT_SBLK_GC_RESERVE;
 }
 
+// #define BIT_SBLK_UNUSED                     0x80000000
+#define BIT_SBLK_UNFINISHED                     0x80000000
+
+// used by shared allocations
+inline void SatoriObject::SetUnfinished()
+{
+    ((DWORD*)this)[-1] |= BIT_SBLK_UNFINISHED;
+}
+
+inline bool SatoriObject::IsUnfinished()
+{
+    return ((DWORD*)this)[-1] & BIT_SBLK_UNFINISHED;
+}
+
+inline void SatoriObject::UnsetUnfinished()
+{
+    ((DWORD*)this)[-1] &= ~BIT_SBLK_UNFINISHED;
+}
+
 template <typename F>
 inline void SatoriObject::ForEachObjectRef(F lambda, bool includeCollectibleAllocator)
 {
@@ -270,7 +289,7 @@ inline void SatoriObject::ForEachObjectRef(F lambda, bool includeCollectibleAllo
         {
             for (ptrdiff_t i = 0; i > numSeries; i--)
             {
-                val_serie_item item = cur->val_serie[i];
+                val_serie_item item = *(cur->val_serie + i);
                 size_t refPtrStop = refPtr + item.nptrs * sizeof(size_t);
                 do
                 {
@@ -360,7 +379,7 @@ inline void SatoriObject::ForEachObjectRef(F lambda, size_t start, size_t end)
         {
             for (ptrdiff_t i = 0; i > cnt; i--)
             {
-                val_serie_item item = cur->val_serie[i];
+                val_serie_item item = *(cur->val_serie + i);
                 size_t refPtrStop = refPtr + item.nptrs * sizeof(size_t);
 
                 if (refPtrStop <= start)
