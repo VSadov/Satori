@@ -67,10 +67,14 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
     _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY);
 
     SatoriObject* o = (SatoriObject*)location;
-    _ASSERTE(o->ContainingRegion()->m_used > location + 2 * sizeof(size_t));
+    _ASSERTE(o->ContainingRegion()->m_used > (location + 2 * sizeof(size_t)));
 
 #ifdef JUNK_FILL_FREE_SPACE
-    size_t dirtySize = min(size, o->ContainingRegion()->m_used - location);
+    size_t dirtySize = o->ContainingRegion()->m_used - location;
+    if (dirtySize > size)
+    {
+        dirtySize = size;
+    }
     memset((void*)(location - sizeof(size_t)), 0xAC, dirtySize);
 #endif
 

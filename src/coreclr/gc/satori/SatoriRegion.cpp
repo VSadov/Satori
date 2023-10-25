@@ -157,6 +157,8 @@ void SatoriRegion::MakeBlank()
     m_allocEnd = End();
     m_occupancy = m_allocEnd - m_allocStart;
     m_occupancyAtReuse = 0;
+    m_sweepsSinceLastAllocation = 0;
+    m_unfinishedAllocationCount = 0;
     m_markStack = 0;
     m_escapedSize = 0;
     m_objCount = 0;
@@ -272,9 +274,10 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
             m_freeLists[bucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
             m_allocStart = freeObj->Start();
             m_allocEnd = freeObj->End();
-            SetOccupancy(m_occupancy + m_allocEnd - m_allocStart, ObjCount());
+            SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
             ClearIndicesForAllocRange();
             _ASSERTE(GetAllocRemaining() >= minAllocSize);
+            m_sweepsSinceLastAllocation = 0;
             return m_allocStart;
         }
     }
@@ -285,25 +288,25 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
 void SatoriRegion::StopAllocating(size_t allocPtr)
 {
     _ASSERTE(IsAllocating());
-
-    if (allocPtr)
-    {
-        _ASSERTE(allocPtr <= m_allocStart);
-        m_allocStart = allocPtr;
-    }
+    _ASSERTE(allocPtr != 0);
 
     // make unused allocation span parseable
-    if (m_allocStart != m_allocEnd)
+    if (allocPtr != m_allocEnd)
     {
-        m_used = max(m_used, m_allocStart + Satori::MIN_FREE_SIZE);
-        size_t unused = m_allocEnd - m_allocStart;
+        m_used = max(m_used, allocPtr + Satori::MIN_FREE_SIZE);
+        size_t unused = m_allocEnd - allocPtr;
         _ASSERTE(m_occupancy >= unused);
-        SetOccupancy(m_occupancy - unused, ObjCount());
-        SatoriObject* freeObj = SatoriObject::FormatAsFree(m_allocStart, unused);
+        SetOccupancy(m_occupancy - unused);
+        SatoriObject* freeObj = SatoriObject::FormatAsFree(allocPtr, unused);
         AddFreeSpace(freeObj);
     }
 
     m_allocStart = m_allocEnd = 0;
+}
+
+void SatoriRegion::StopAllocating()
+{
+    StopAllocating(m_allocStart);
 }
 
 void SatoriRegion::AddFreeSpace(SatoriObject* freeObj)
@@ -438,26 +441,7 @@ bool SatoriRegion::CanCoalesceWithNext()
     return false;
 }
 
-bool SatoriRegion::TryCoalesceWithNext()
-{
-    SatoriRegion* next = NextInPage();
-    if (next)
-    {
-        auto queue = VolatileLoadWithoutBarrier(&next->m_containingQueue);
-        if (queue && queue->Kind() == QueueKind::Allocator)
-        {
-            if (queue->TryRemove(next))
-            {
-                Coalesce(next);
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-void SatoriRegion::Coalesce(SatoriRegion* next)
+bool SatoriRegion::Coalesce(SatoriRegion* next)
 {
     _ASSERTE(next->m_containingQueue == nullptr);
     _ASSERTE(next->m_containingPage == m_containingPage);
@@ -466,8 +450,8 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
     _ASSERTE(ValidateBlank());
     _ASSERTE(next->ValidateBlank());
 
-    m_end = next->m_end;
-    m_allocEnd = next->m_allocEnd;
+    size_t next_end = next->m_end;
+    size_t next_allocEnd = next->m_allocEnd;
 
     if (m_committed == next->Start())
     {
@@ -479,10 +463,41 @@ void SatoriRegion::Coalesce(SatoriRegion* next)
         _ASSERTE(next->m_committed > next->Start());
         size_t toDecommit = next->m_committed - next->Start();
         _ASSERTE(toDecommit % SatoriUtil::CommitGranularity() == 0);
-        GCToOSInterface::VirtualDecommit(next, toDecommit);
+        if (!GCToOSInterface::VirtualDecommit(next, toDecommit))
+        {
+            return false;
+        }
     }
 
+    m_end = next_end;
+    m_allocEnd = next_allocEnd;
     m_containingPage->OnRegionInitialized(this);
+
+    return true;
+}
+
+bool SatoriRegion::TryCoalesceWithNext()
+{
+    SatoriRegion* next = NextInPage();
+    if (next)
+    {
+        auto queue = VolatileLoadWithoutBarrier(&next->m_containingQueue);
+        if (queue && queue->Kind() == QueueKind::Allocator)
+        {
+            if (queue->TryRemove(next))
+            {
+                if(Coalesce(next))
+                {
+                    return true;
+                }
+
+                // could not coalesce, put the next back.
+                queue->Enqueue(next);
+            }
+        }
+    }
+
+    return false;
 }
 
 bool SatoriRegion::CanDecommit()
@@ -495,7 +510,7 @@ bool SatoriRegion::CanDecommit()
     }
 
     size_t decommitSize = m_committed - decommitStart;
-    return (decommitSize > Satori::REGION_SIZE_GRANULARITY / 8);
+    return decommitSize > 0;
 }
 
 bool SatoriRegion::TryDecommit()
@@ -508,15 +523,28 @@ bool SatoriRegion::TryDecommit()
     }
 
     size_t decommitSize = m_committed - decommitStart;
-    if (decommitSize > Satori::REGION_SIZE_GRANULARITY / 8)
+    if (decommitSize > 0)
     {
-        GCToOSInterface::VirtualDecommit((void*)decommitStart, decommitSize);
-        m_committed = decommitStart;
-        m_used = min(m_used, decommitStart);
-        return true;
+        if (GCToOSInterface::VirtualDecommit((void*)decommitStart, decommitSize))
+        {
+            m_committed = decommitStart;
+            m_used = min(m_used, decommitStart);
+            return true;
+        }
     }
 
     return false;
+}
+
+void SatoriRegion::TryCommit()
+{
+    if (m_committed < m_end)
+    {
+        if (GCToOSInterface::VirtualCommit((void*)m_committed, m_end - m_committed))
+        {
+            m_committed = m_end;
+        }
+    }
 }
 
 void SatoriRegion::ZeroInitAndLink(SatoriRegion* prev)
@@ -644,7 +672,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
 //
 // Typical usees:
 //  - precise root marking.
-//         not in allocating mode (not attached to allocation context)
+//         not in allocating mode (not attached to allocation context, parsable)
 //         always provides real refs into real objects.
 //  - conservative root marking
 //         not in allocating mode
@@ -658,6 +686,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
 SatoriObject* SatoriRegion::FindObject(size_t location)
 {
     _ASSERTE(m_generation >= 0 && location >= Start() && location < End());
+    _ASSERTE(m_unfinishedAllocationCount == 0);
 
     location = min(location, Start() + Satori::REGION_SIZE_GRANULARITY);
 
@@ -887,6 +916,13 @@ void SatoriRegion::SetOccupancy(size_t occupancy, size_t objCount)
     _ASSERTE(occupancy <= (Size() - offsetof(SatoriRegion, m_firstObject)));
     m_occupancy = occupancy;
     m_objCount = objCount;
+}
+
+void SatoriRegion::SetOccupancy(size_t occupancy)
+{
+    _ASSERTE(m_objCount == 0 || occupancy != 0);
+    _ASSERTE(occupancy <= (Size() - offsetof(SatoriRegion, m_firstObject)));
+    m_occupancy = occupancy;
 }
 
 // NB: dst is unused, it is just to avoid argument shuffle in x64 barriers
@@ -1792,6 +1828,21 @@ void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
         m_finalizableTrackers = otherFinalizables;
         other->m_finalizableTrackers = nullptr;
     }
+}
+
+void SatoriRegion::IndividuallyPromote()
+{
+    _ASSERTE(m_generation == 1);
+    _ASSERTE(!m_doNotSweep);
+
+    if(IsAttachedToAllocatingOwner())
+    {
+        DetachFromAlocatingOwnerRelease();
+    }
+
+    m_generation = 2;
+    m_individuallyPromoted = true;
+    RearmCardsForTenured();
 }
 
 bool SatoriRegion::TryDemote()

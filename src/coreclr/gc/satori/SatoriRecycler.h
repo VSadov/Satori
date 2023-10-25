@@ -79,6 +79,8 @@ public:
     size_t GetOccupancy(int i);
     size_t GetGcStartMillis(int generation);
 
+    int64_t GlobalGcIndex();
+
     void ScheduleMarkAsChildRanges(SatoriObject* o);
     bool ScheduleUpdateAsChildRanges(SatoriObject* o);
 
@@ -86,6 +88,9 @@ public:
     {
         return m_isBarrierConcurrent;
     }
+
+    bool IsReuseCandidate(SatoriRegion* region);
+    bool IsPromotionCandidate(SatoriRegion* region);
 
 private:
     SatoriHeap* m_heap;
@@ -141,10 +146,13 @@ private:
     void(SatoriRecycler::* m_activeHelperFn)();
 
     int m_condemnedGeneration;
+
+    bool m_concurrentCardsDone;
+    bool m_concurrentHandlesDone;
+
     bool m_isRelocating;
     bool m_isLowLatencyMode;
-    bool m_promoteAllRegions;  
-    bool m_allowPromotingRelocations;
+    bool m_promoteAllRegions;
     volatile bool m_isBarrierConcurrent;
 
     int m_prevCondemnedGeneration;
@@ -156,7 +164,6 @@ private:
     size_t m_totalBudget;
     size_t m_totalLimit;
     size_t m_condemnedRegionsCount;
-    size_t m_condemnedNurseryRegionsCount;
     size_t m_deferredSweepCount;
     size_t m_gen1AddedSinceLastCollection;
     size_t m_gen2AddedSinceLastCollection;
@@ -167,6 +174,7 @@ private:
 
     size_t m_relocatableEphemeralEstimate;
     size_t m_relocatableTenuredEstimate;
+    size_t m_promotionEstimate;
 
     int64_t m_currentAllocBytesLiveThreads;
     int64_t m_currentAllocBytesDeadThreads;

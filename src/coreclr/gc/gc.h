@@ -104,7 +104,11 @@ class Object;
 class IGCHeapInternal;
 
 /* misc defines */
+#if !defined(FEATURE_SATORI_GC)
 #define LARGE_OBJECT_SIZE ((size_t)(85000))
+#else
+#define LARGE_OBJECT_SIZE ((size_t)(32 * 1024))
+#endif
 
 enum gc_generation_num
 {

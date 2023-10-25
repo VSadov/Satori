@@ -77,6 +77,11 @@ public:
         }
     }
 
+    bool TryEnter()
+    {
+        return CompareExchangeAcq(&m_backoff, 1, 0);
+    }
+
     void Leave()
     {
         _ASSERTE(m_backoff);
@@ -141,6 +146,13 @@ public:
         : m_lock(lock)
     {
         m_lock->Enter();
+    }
+
+    SatoriLockHolder(T* lock, bool isLocked)
+        : m_lock(lock)
+    {
+        if (!isLocked)
+            m_lock->Enter();
     }
 
     ~SatoriLockHolder()
