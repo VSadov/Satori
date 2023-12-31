@@ -77,6 +77,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_noWorkSince = 0;
 
     m_perfCounterFrequencyMHz = GCToOSInterface::QueryPerformanceFrequency() / 1000;
+    m_perfCounterFrequencyGHz = GCToOSInterface::QueryPerformanceFrequency() / 1000000;
 
     m_heap = heap;
     m_trimmer = new (nothrow) SatoriTrimmer(heap);
@@ -141,6 +142,15 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_concurrentHandlesDone = false;
 
     m_isLowLatencyMode = SatoriUtil::IsLowLatencyMode();
+
+    for (int i = 0; i < 2; i++)
+    {
+        m_gcStartMillis[i] = m_gcDurationMillis[i] = 0;
+    }
+
+    m_lastEphemeralGcInfo = { 0 };
+    m_lastTenuredGcInfo   = { 0 };
+    m_CurrentGcInfo = nullptr;
 }
 
 void SatoriRecycler::ShutDown()
@@ -374,6 +384,7 @@ size_t SatoriRecycler::GetNowMillis()
 
 size_t SatoriRecycler::IncrementGen0Count()
 {
+    // duration of Gen0 is typically << msec, so we will not record that.
     m_gcStartMillis[0] = GetNowMillis();
     return Interlocked::Increment((size_t*)&m_gcCount[0]);
 }
@@ -384,6 +395,10 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
     if (m_gcState == GC_STATE_NONE &&
         Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
     {
+        m_CurrentGcInfo = generation == 2 ? &m_lastTenuredGcInfo :&m_lastEphemeralGcInfo;
+        m_CurrentGcInfo->m_condemnedGeneration = (uint8_t)generation;
+        m_CurrentGcInfo->m_concurrent = SatoriUtil::IsConcurrent();
+
         FIRE_EVENT(GCTriggered, (uint32_t)reason);
 
         m_trimmer->SetStopSuggested();
@@ -598,6 +613,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
 {
     if (Interlocked::CompareExchange(&m_ccStackMarkState, CC_MARK_STATE_SUSPENDING_EE, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
     {
+        size_t blockingStart = GCToOSInterface::QueryPerformanceCounter();
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
 
         // swap reusable and alternate so that we could filter through reusables.
@@ -631,6 +647,9 @@ void SatoriRecycler::BlockingMarkForConcurrent()
                 YieldProcessor();
             }
         }
+
+        size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
+        m_CurrentGcInfo->m_pauseDurations[1] = blockingDuration / m_perfCounterFrequencyGHz;
 
         GCToEEInterface::RestartEE(false);
     }
@@ -889,11 +908,12 @@ void SatoriRecycler::AdjustHeuristics()
 
 void SatoriRecycler::BlockingCollect()
 {
+    size_t blockingStart = GCToOSInterface::QueryPerformanceCounter();
+
     // stop other threads.
     GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
 
     FIRE_EVENT(GCStart_V2, (int)m_gcCount[0], m_condemnedGeneration, reason_empty, gc_etw_type_ngc);
-
     m_gcStartMillis[m_condemnedGeneration] = GetNowMillis();
 
 #ifdef TIMED
@@ -982,6 +1002,8 @@ void SatoriRecycler::BlockingCollect()
         m_gcCount[2]++;
     }
 
+    m_CurrentGcInfo->m_index = m_gcCount[1];
+
     // we are done with gen0 here, update the occupancy
     m_occupancy[0] = m_occupancyAcc[0];
 
@@ -1020,6 +1042,11 @@ void SatoriRecycler::BlockingCollect()
     }
 
     m_trimmer->SetOkToRun();
+
+    size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
+    m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_perfCounterFrequencyGHz;
+    m_gcDurationMillis[m_prevCondemnedGeneration] = blockingDuration / m_perfCounterFrequencyGHz;
+    m_CurrentGcInfo = nullptr;
 
     // restart VM
     GCToEEInterface::RestartEE(true);
@@ -3323,6 +3350,8 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
 
 void SatoriRecycler::Update()
 {
+    m_CurrentGcInfo->m_compaction = m_isRelocating;
+
     if (m_isRelocating)
     {
         IncrementRootScanTicket();
@@ -3842,6 +3871,11 @@ size_t SatoriRecycler::GetTotalOccupancy()
 size_t SatoriRecycler::GetGcStartMillis(int generation)
 {
     return m_gcStartMillis[generation];
+}
+
+size_t SatoriRecycler::GetGcDurationMillis(int generation)
+{
+    return m_gcDurationMillis[generation];
 }
 
 bool& SatoriRecycler::IsLowLatencyMode()
