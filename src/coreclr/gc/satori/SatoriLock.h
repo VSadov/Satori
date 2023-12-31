@@ -93,9 +93,9 @@ private:
     NOINLINE
     void EnterSpin()
     {
-        int localBackoff = m_backoff;
+        int localBackoff = 0;
         while (VolatileLoadWithoutBarrier(&m_backoff) ||
-            !CompareExchangeAcq(&m_backoff, localBackoff / 4 + 1, 0))
+            !CompareExchangeAcq(&m_backoff, 1, 0))
         {
             localBackoff = Backoff(localBackoff);
         }
