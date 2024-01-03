@@ -2949,6 +2949,36 @@ void SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker()
     FreeRelocatedRegionsWorker();
 }
 
+void SatoriRecycler::FreeRelocatedRegion(SatoriRegion* curRegion)
+{
+    _ASSERTE(!curRegion->HasPinnedObjects());
+    curRegion->ClearMarks();
+
+    bool isNurseryRegion = curRegion->IsAttachedToAllocatingOwner();
+    if (isNurseryRegion)
+    {
+        curRegion->DetachFromAlocatingOwnerRelease();
+    }
+
+    // return nursery regions eagerly
+    // there should be a modest number of those, but we may need them soon
+    // defer blanking of others
+    if (SatoriUtil::IsConcurrent() && !isNurseryRegion)
+    {
+#if _DEBUG
+        curRegion->HasMarksSet() = false;
+#endif
+        curRegion->DoNotSweep() = true;
+        curRegion->SetOccupancy(0, 0);
+        m_deferredSweepRegions->Enqueue(curRegion);
+    }
+    else
+    {
+        curRegion->MakeBlank();
+        m_heap->Allocator()->ReturnRegion(curRegion);
+    }
+}
+
 void SatoriRecycler::FreeRelocatedRegionsWorker()
 {
     SatoriRegion* curRegion = m_relocatedRegions->TryPop();
@@ -2957,32 +2987,7 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
         MaybeAskForHelp();
         do
         {
-            _ASSERTE(!curRegion->HasPinnedObjects());
-            curRegion->ClearMarks();
-
-            bool isNurseryRegion = curRegion->IsAttachedToAllocatingOwner();
-            if (isNurseryRegion)
-            {
-                curRegion->DetachFromAlocatingOwnerRelease();
-            }
-
-            // return nursery regions eagerly
-            // there should be a modest number of those, but we may need them soon
-            // defer blanking of others
-            if (SatoriUtil::IsConcurrent() && !isNurseryRegion)
-            {
-#if _DEBUG
-                curRegion->HasMarksSet() = false;
-#endif
-                curRegion->DoNotSweep() = true;
-                curRegion->SetOccupancy(0, 0);
-                m_deferredSweepRegions->Enqueue(curRegion);
-            }
-            else
-            {
-                curRegion->MakeBlank();
-                m_heap->Allocator()->ReturnRegion(curRegion);
-            }
+            FreeRelocatedRegion(curRegion);
         } while ((curRegion = m_relocatedRegions->TryPop()));
     }
 }
@@ -3337,19 +3342,30 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     // the target may yet have more space and be a target for more relocations.
     AddRelocationTarget(relocationTarget);
 
-    if (relocationIsPromotion)
+    if (objectsRelocated > 0)
     {
-        relocationTarget->AcceptedPromotedObjects() = true;
-        m_relocatedToHigherGenRegions->Push(relocationSource);
+        if (relocationIsPromotion)
+        {
+            relocationTarget->AcceptedPromotedObjects() = true;
+            m_relocatedToHigherGenRegions->Push(relocationSource);
+        }
+        else
+        {
+            m_relocatedRegions->Push(relocationSource);
+        }
     }
     else
     {
-        m_relocatedRegions->Push(relocationSource);
+        FreeRelocatedRegion(relocationSource);
     }
 }
 
 void SatoriRecycler::Update()
 {
+    // if we ended up not moving anything, this is no longer a relocating GC.
+    m_isRelocating = m_relocatedRegions->Count() > 0 ||
+        m_relocatedToHigherGenRegions->Count() > 0;
+
     m_CurrentGcInfo->m_compaction = m_isRelocating;
 
     if (m_isRelocating)

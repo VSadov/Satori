@@ -311,6 +311,7 @@ private:
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);
+    void FreeRelocatedRegion(SatoriRegion* curRegion);
     void FreeRelocatedRegionsWorker();
 
     void PromoteHandlesAndFreeRelocatedRegions();
