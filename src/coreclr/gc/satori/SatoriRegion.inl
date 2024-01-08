@@ -43,39 +43,39 @@ inline bool SatoriRegion::CanSplitWithoutCommit(size_t size)
 
 inline bool SatoriRegion::IsEscapeTracking()
 {
-    _ASSERTE(!m_ownerThreadTag || m_generation == 0);
-    return m_ownerThreadTag;
+    _ASSERTE(!OwnerThreadTagRef() || Generation() == 0);
+    return OwnerThreadTagRef();
 }
 
 inline bool SatoriRegion::MaybeEscapeTrackingAcquire()
 {
     // must check reusable level before the owner tag, before doing whatever follows
-    return VolatileLoad((uint8_t*)&m_reusableFor) == (uint8_t)ReuseLevel::Gen0 ||
-        VolatileLoad(&m_ownerThreadTag);
+    return VolatileLoad((uint8_t*)&ReusableForRef()) == (uint8_t)ReuseLevel::Gen0 ||
+        VolatileLoad(&OwnerThreadTagRef());
 }
 
 inline bool SatoriRegion::IsEscapeTrackedByCurrentThread()
 {
-    return m_ownerThreadTag == SatoriUtil::GetCurrentThreadTag();
+    return OwnerThreadTagRef() == SatoriUtil::GetCurrentThreadTag();
 }
 
 inline int SatoriRegion::Generation()
 {
-    return m_generation;
+    return GenerationRef();
 }
 
 inline int SatoriRegion::GenerationAcquire()
 {
-    return VolatileLoad(&m_generation);
+    return VolatileLoad(&GenerationRef());
 }
 
 inline void SatoriRegion::SetGeneration(int generation)
 {
     // Gen0 is controlled by thread-local tracking
     _ASSERTE(generation != 0);
-    _ASSERTE(m_generation != 0);
+    _ASSERTE(Generation() != 0);
 
-    m_generation = generation;
+    GenerationRef() = generation;
 }
 
 inline void SatoriRegion::SetGenerationRelease(int generation)
@@ -83,9 +83,9 @@ inline void SatoriRegion::SetGenerationRelease(int generation)
     // at the time when we set generation to 0+, we should make it certain if
     // the region is attached, since 0+ detached regions are assumed parseable.
     _ASSERTE(generation != 0 && generation != 2);
-    _ASSERTE(m_generation == -1 || IsReusable());
+    _ASSERTE(Generation() == -1 || IsReusable());
 
-    VolatileStore(&m_generation, generation);
+    VolatileStore(&GenerationRef(), generation);
 }
 
 inline void SatoriRegion::SetHasFinalizables()
@@ -137,10 +137,10 @@ inline SatoriObject* SatoriRegion::FirstObject()
 
 inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag)
 {
-    _ASSERTE(m_generation == -1 || m_reusableFor == ReuseLevel::Gen0);
+    _ASSERTE(Generation() == -1 || ReusableFor() == ReuseLevel::Gen0);
     m_escapeFunc = EscapeFn;
-    m_ownerThreadTag = threadTag;
-    VolatileStore(&m_generation, 0);
+    OwnerThreadTagRef() = threadTag;
+    VolatileStore(&GenerationRef(), 0);
 }
 
 inline void SatoriRegion::StopEscapeTracking()
@@ -152,10 +152,10 @@ inline void SatoriRegion::StopEscapeTracking()
 
         // must clear ownership after clearing marks
         // to make sure concurrent marking does not use dirty mark table
-        VolatileStore(&m_ownerThreadTag, (size_t)0);
+        VolatileStore(&OwnerThreadTagRef(), (size_t)0);
 
         m_escapeFunc = nullptr;
-        m_generation = 1;
+        GenerationRef() = 1;
         m_escapedSize = 0;
         m_allocBytesAtCollect = 0;
     }
@@ -415,12 +415,12 @@ inline size_t SatoriRegion::SweepsSinceLastAllocation()
 
 inline bool SatoriRegion::IsReusable()
 {
-    return m_reusableFor != ReuseLevel::None;
+    return ReusableFor() != ReuseLevel::None;
 }
 
 inline SatoriRegion::ReuseLevel& SatoriRegion::ReusableFor()
 {
-    return m_reusableFor;
+    return ReusableForRef();
 }
 
 inline SatoriQueue<SatoriRegion>* SatoriRegion::ContainingQueue()
@@ -459,13 +459,13 @@ inline bool SatoriRegion::IsAttachedToAllocatingOwner()
 inline bool SatoriRegion::MaybeAllocatingAcquire()
 {
     // must check reusable level before the attach point, before doing whatever follows
-    return VolatileLoad((uint8_t*)&m_reusableFor) ||
+    return VolatileLoad((uint8_t*)&ReusableForRef()) ||
         VolatileLoad(&m_allocatingOwnerAttachmentPoint) || m_unfinishedAllocationCount;
 }
 
 inline void SatoriRegion::ResetReusableForRelease()
 {
-    VolatileStore(&m_reusableFor, SatoriRegion::ReuseLevel::None);
+    VolatileStore(&ReusableForRef(), SatoriRegion::ReuseLevel::None);
 }
 
 inline bool SatoriRegion::IsDemoted()

@@ -93,7 +93,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     result->m_allocEnd = result->End();
     result->m_occupancy = result->m_allocEnd - result->m_allocStart;
     result->m_escapeFunc = nullptr;
-    result->m_generation = -1;
+    result->GenerationRef() = -1;
 
     result->m_containingPage->OnRegionInitialized(result);
     return result;
@@ -145,13 +145,15 @@ void SatoriRegion::MakeBlank()
     _ASSERTE(!m_gen2Objects);
     _ASSERTE(NothingMarked());
 
-    if (m_generation == 2)
+    if (Generation() == 2)
     {
         this->ResetCardsForEphemeral();
     }
 
-    m_generation = -1;
-    m_ownerThreadTag = 0;
+    GenerationRef() = -1;
+    OwnerThreadTagRef() = 0;
+    ReusableForRef() = ReuseLevel::None;
+
     m_escapeFunc = EscapeFn;
     m_allocStart = (size_t)&m_firstObject;
     m_allocEnd = End();
@@ -168,7 +170,6 @@ void SatoriRegion::MakeBlank()
     m_hasPinnedObjects = false;
     m_hasMarksSet = false;
     m_doNotSweep = false;
-    m_reusableFor = ReuseLevel::None;
 
     //clear index and free list
     ClearFreeLists();
@@ -685,7 +686,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
 //         can give refs pointing to Free. (because of card granularity)
 SatoriObject* SatoriRegion::FindObject(size_t location)
 {
-    _ASSERTE(m_generation >= 0 && location >= Start() && location < End());
+    _ASSERTE(Generation() >= 0 && location >= Start() && location < End());
     _ASSERTE(m_unfinishedAllocationCount == 0);
 
     location = min(location, Start() + Satori::REGION_SIZE_GRANULARITY);
@@ -1832,7 +1833,7 @@ void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
 
 void SatoriRegion::IndividuallyPromote()
 {
-    _ASSERTE(m_generation == 1);
+    _ASSERTE(Generation() == 1);
     _ASSERTE(!m_doNotSweep);
 
     if(IsAttachedToAllocatingOwner())
@@ -1840,7 +1841,7 @@ void SatoriRegion::IndividuallyPromote()
         DetachFromAlocatingOwnerRelease();
     }
 
-    m_generation = 2;
+    GenerationRef() = 2;
     m_individuallyPromoted = true;
     RearmCardsForTenured();
 }

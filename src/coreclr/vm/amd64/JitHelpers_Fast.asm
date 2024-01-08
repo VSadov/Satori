@@ -583,7 +583,7 @@ endif
     ;         need to suspend EE, not sure if skipping concurrent check would worth that much.
 
     ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        cmp     dword ptr [r8 + 16], 2
+        cmp     dword ptr [r8 + 8], 2
         jl      MarkCards
 
     CheckConcurrent:
@@ -660,7 +660,7 @@ endif
         sub  rsp, 20h
 
         ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
-        call    qword ptr [r8 + 8]
+        call    qword ptr [r8 + (71 * 8)]
 
         add     rsp, 20h
         pop     r8

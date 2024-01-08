@@ -173,7 +173,7 @@ public:
 
     size_t SweepsSinceLastAllocation();
 
-    enum class ReuseLevel : uint8_t
+    enum class ReuseLevel : uint32_t
     {
         None,
         Gen1,
@@ -225,23 +225,26 @@ private:
         {
             // just some thread-specific value that is easy to get.
             // TEB address could be used on Windows, for example
-            size_t m_ownerThreadTag;
-            void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
-            int m_generation;
-            ReuseLevel m_reusableFor;
+            // ---- 0
+            size_t m_ownerThreadTag0;
+            int32_t m_generation0;
+            ReuseLevel m_reusableFor0;
+
             SatoriRegion** m_allocatingOwnerAttachmentPoint;
+            size_t m_unfinishedAllocationCount;
 
             size_t m_end;
             size_t m_committed;
             size_t m_used;
             SatoriPage* m_containingPage;
 
+            // ---- 1
+            size_t m_unused8;
+            size_t m_unused9;
+
             SatoriRegion* m_prev;
             SatoriRegion* m_next;
             SatoriQueue<SatoriRegion>* m_containingQueue;
-
-            SatoriWorkChunk* m_finalizableTrackers;
-            int m_finalizableTrackersLock;
 
             // active allocation may happen in the following range.
             // the range may not be parseable as sequence of objects
@@ -250,6 +253,13 @@ private:
             size_t m_allocStart;
             size_t m_allocEnd;
 
+            SatoriWorkChunk* m_finalizableTrackers;
+
+            // ---- 2
+            size_t m_unused16;
+            size_t m_unused17;
+
+            int32_t m_finalizableTrackersLock;
             int32_t m_markStack;
 
             // counting escaped objects
@@ -259,22 +269,56 @@ private:
             size_t m_objCount;
             size_t m_occupancy;
             size_t m_occupancyAtReuse;
-            size_t m_sweepsSinceLastAllocation;
 
-            size_t m_unfinishedAllocationCount;
+            // ---- 3
+            size_t m_unused24;
+            size_t m_unused25;
+
+            size_t m_sweepsSinceLastAllocation;
 
             bool m_hasPinnedObjects;
             bool m_hasMarksSet;
             bool m_doNotSweep;
             bool m_hasFinalizables;
+
             bool m_hasPendingFinalizables;
             bool m_acceptedPromotedObjects;
             bool m_individuallyPromoted;
+            // bool unused;
+
+            size_t m_unused29_31[3];
+
+            // ---- 4
+            size_t m_unused32;
+            size_t m_unused33;
+
+            size_t m_unuseds34_39[6];
+
+            // ---- 5
+            size_t m_unused40;
+            size_t m_unused41;
+
+            size_t m_unuseds42_47[6];
+
+            // ---- 6
+            size_t m_unused48;
+            size_t m_unused49;
+
+            size_t m_unuseds50_55[6];
+
+            // ---- 7
+            size_t m_unused56;
+            size_t m_unused57;
 
             // when demoted, we remember our gen2 objects here
             SatoriWorkChunk* m_gen2Objects;
 
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
+
+            size_t m_unused67_70[4];
+
+            // word71
+            void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
         };
     };
 
@@ -284,6 +328,10 @@ private:
     SatoriObject m_firstObject;
 
 private:
+    inline size_t& OwnerThreadTagRef() { return m_ownerThreadTag0; };
+    inline int32_t& GenerationRef() { return m_generation0; };
+    inline ReuseLevel& ReusableForRef() { return m_reusableFor0; };
+
     bool CanSplitWithoutCommit(size_t size);
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
     void UndoSplitCore(size_t regionSize, size_t nextStart, size_t nextCommitted, size_t nextUsed);
