@@ -792,7 +792,7 @@ bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
     // One possible way to get here is a copy-back after a reflection call with a boxed nullable
     // argument that happen to escape.
     // 
-    // We could handle this is by conservatively escaping any value that matches an unescaped pointer in curRegion.
+    // We could handle this by conservatively escaping any value that matches an unescaped pointer in curRegion.
     // However, considering how uncommon this is, we will just give up tracking.
     curRegion->StopEscapeTracking();
     return false;

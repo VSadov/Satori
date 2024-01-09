@@ -223,7 +223,7 @@ private:
         // Header.(can be up to 72 size_t)
         struct
         {
-            // just some thread-specific value that is easy to get.
+            // the tag is just some thread-specific value that is easy to get.
             // TEB address could be used on Windows, for example
             // ---- 0
             size_t m_ownerThreadTag0;
@@ -286,7 +286,7 @@ private:
             bool m_individuallyPromoted;
             // bool unused;
 
-            size_t m_unused29_31[3];
+            size_t m_unused28_31[4];
 
             // ---- 4
             size_t m_unused32;
@@ -315,7 +315,7 @@ private:
 
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
 
-            size_t m_unused67_70[4];
+            size_t m_unused68_70[3];
 
             // word71
             void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
@@ -328,9 +328,11 @@ private:
     SatoriObject m_firstObject;
 
 private:
-    inline size_t& OwnerThreadTagRef() { return m_ownerThreadTag0; };
-    inline int32_t& GenerationRef() { return m_generation0; };
-    inline ReuseLevel& ReusableForRef() { return m_reusableFor0; };
+    inline size_t Offset() { return ((size_t)this >> (Satori::REGION_BITS - 6)) & (7 << 6); };
+
+    inline size_t& OwnerThreadTagRef() { return *(size_t*)((size_t)&m_ownerThreadTag0 + Offset()); };
+    inline int32_t& GenerationRef() { return *(int32_t*)((size_t)&m_generation0 + Offset()); };
+    inline ReuseLevel& ReusableForRef() { return *(ReuseLevel*)((size_t)&m_reusableFor0 + Offset()); };
 
     bool CanSplitWithoutCommit(size_t size);
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);

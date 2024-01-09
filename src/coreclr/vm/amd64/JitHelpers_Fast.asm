@@ -547,12 +547,16 @@ endif
         mov     r8, rdx
         and     r8, 0FFFFFFFFFFE00000h  ; source region
 
+        mov     r9, r8
+        shr     r9, 0Fh
+        and     r9d, 1C0h               ; offset
+
 ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
         jz      JustAssign              ; assigning null
 endif
 
         mov     rax,  gs:[30h]          ; thread tag, TEB on NT
-        cmp     qword ptr [r8], rax     
+        cmp     qword ptr [r8 + r9], rax
         jne     AssignAndMarkCards      ; not local to this thread
 
     ; 2) check if the src and dst are from the same region
@@ -583,7 +587,7 @@ endif
     ;         need to suspend EE, not sure if skipping concurrent check would worth that much.
 
     ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        cmp     dword ptr [r8 + 8], 2
+        cmp     dword ptr [r8 + r9 + 8], 2
         jl      MarkCards
 
     CheckConcurrent:
