@@ -661,12 +661,14 @@ endif
         push rcx
         push rdx
         push r8
+        push r9
         sub  rsp, 20h
 
         ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         call    qword ptr [r8 + (71 * 8)]
 
         add     rsp, 20h
+        pop     r9
         pop     r8
         pop     rdx
         pop     rcx

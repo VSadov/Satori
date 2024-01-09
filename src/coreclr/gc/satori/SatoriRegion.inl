@@ -50,7 +50,7 @@ inline bool SatoriRegion::IsEscapeTracking()
 inline bool SatoriRegion::MaybeEscapeTrackingAcquire()
 {
     // must check reusable level before the owner tag, before doing whatever follows
-    return VolatileLoad((uint8_t*)&ReusableForRef()) == (uint8_t)ReuseLevel::Gen0 ||
+    return VolatileLoad((uint32_t*)&ReusableForRef()) == (uint32_t)ReuseLevel::Gen0 ||
         VolatileLoad(&OwnerThreadTagRef());
 }
 
