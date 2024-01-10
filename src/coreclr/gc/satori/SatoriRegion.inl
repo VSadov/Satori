@@ -289,7 +289,7 @@ bool SatoriRegion::Sweep()
             size_t skipped = o->Start() - lastMarkedEnd;
             SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
             SetIndicesForObject(free, o->Start());
-            AddFreeSpace(free);
+            AddFreeSpace(free, skipped);
 
             if (o->Start() >= objLimit)
             {

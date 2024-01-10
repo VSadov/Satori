@@ -298,7 +298,7 @@ void SatoriRegion::StopAllocating(size_t allocPtr)
         _ASSERTE(m_occupancy >= unused);
         SetOccupancy(m_occupancy - unused);
         SatoriObject* freeObj = SatoriObject::FormatAsFree(allocPtr, unused);
-        AddFreeSpace(freeObj);
+        AddFreeSpace(freeObj, unused);
     }
 
     m_allocStart = m_allocEnd = 0;
@@ -309,11 +309,12 @@ void SatoriRegion::StopAllocating()
     StopAllocating(m_allocStart);
 }
 
-void SatoriRegion::AddFreeSpace(SatoriObject* freeObj)
+void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
 {
+    _ASSERTE(freeObj->Size() == size);
     // allocSize is smaller than size to make sure the span can always be made parseable
     // after allocating objects in it.
-    ptrdiff_t allocSize = freeObj->Size() - Satori::MIN_FREE_SIZE;
+    ptrdiff_t allocSize = size - Satori::MIN_FREE_SIZE;
     if (allocSize < Satori::MIN_FREELIST_SIZE)
     {
         return;
@@ -328,6 +329,7 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj)
     *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET) = m_freeLists[bucket];
     m_freeLists[bucket] = freeObj;
 }
+
 
 bool SatoriRegion::HasFreeSpaceInTopBucket()
 {
@@ -1406,7 +1408,7 @@ void SatoriRegion::ThreadLocalCompact()
             {
                 size_t freeSpace = d2->Start() - d1->Start();
                 SatoriObject* freeObj = SatoriObject::FormatAsFree(d1->Start(), freeSpace);
-                AddFreeSpace(freeObj);
+                AddFreeSpace(freeObj, freeSpace);
                 foundFree += freeSpace;
 
                 d1 = d2;

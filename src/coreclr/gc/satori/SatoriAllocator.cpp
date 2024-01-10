@@ -282,8 +282,9 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
         {
             if (freeObj && freeObj->ContainingRegion() == m_regularRegion)
             {
-                m_regularRegion->SetOccupancy(m_regularRegion->Occupancy() - freeObj->Size());
-                m_regularRegion->AddFreeSpace(freeObj);
+                size_t size = freeObj->Size();
+                m_regularRegion->SetOccupancy(m_regularRegion->Occupancy() - size);
+                m_regularRegion->AddFreeSpace(freeObj, size);
             }
 
             return AllocRegularShared(context, size, flags);

@@ -80,7 +80,7 @@ public:
     void StopAllocating();
     bool IsAllocating();
 
-    void AddFreeSpace(SatoriObject* freeObj);
+    void AddFreeSpace(SatoriObject* freeObj, size_t size);
 
     bool HasFreeSpaceInTopBucket();
     bool HasFreeSpaceInTopNBuckets(int n);
