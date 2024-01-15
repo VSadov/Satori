@@ -174,7 +174,7 @@ private:
 
     int m_condemnedGeneration;
 
-    bool m_concurrentCardsDone;
+    int m_concurrentCardPassesLeft;
     bool m_concurrentHandlesDone;
 
     bool m_isRelocating;
@@ -208,8 +208,8 @@ private:
     int64_t m_currentAllocBytesDeadThreads;
     int64_t m_totalAllocBytes;
 
-    int64_t m_perfCounterFrequencyMHz;
-    int64_t m_perfCounterFrequencyGHz;
+    int64_t m_perfCounterTicksPerMilli;
+    int64_t m_perfCounterTicksPerMicro;
 
     GCEvent* m_helpersGate;
     volatile int m_gateSignaled;
@@ -269,8 +269,10 @@ private:
 
     void PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o);
     void DrainMarkQueues(SatoriWorkChunk* srcChunk = nullptr);
+    void MarkOwnStackAndDrainQueues();
+    void MarkOwnStackOrDrainQueuesConcurrent(int64_t deadline);
+    bool MarkDemotedAndDrainQueuesConcurrent(int64_t deadline);
     bool DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk = nullptr, int64_t deadline = 0);
-    bool MarkOwnStackAndDrainQueues(int64_t deadline = 0);
 
     bool HasDirtyCards();
     bool ScanDirtyCardsConcurrent(int64_t deadline);
@@ -293,6 +295,11 @@ private:
     void DependentHandlesRescanWorker();
 
     void BlockingCollect();
+    // for profiling purposes Gen1 and Gen2 GC have distinct entrypoints, but the same implementation
+    void BlockingCollect1();
+    void BlockingCollect2();
+    void BlockingCollectImpl();
+
     void BlockingMark();
     void MarkNewReachable();
     void DrainAndCleanWorker();
