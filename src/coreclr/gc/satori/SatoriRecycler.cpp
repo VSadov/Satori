@@ -138,8 +138,11 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_activeHelperFn = nullptr;
     m_rootScanTicket = 0;
     m_cardScanTicket = 0;
+
     m_concurrentCardPassesLeft = 0;
     m_concurrentHandlesDone = false;
+    m_ccStackMarkingThreadsNum = 0;
+    m_ccCardMarkingThreadsNum = 0;
 
     m_isLowLatencyMode = SatoriUtil::IsLowLatencyMode();
 
@@ -194,9 +197,6 @@ void SatoriRecycler::IncrementRootScanTicket()
     {
         m_rootScanTicket++;
     }
-
-    m_concurrentCardPassesLeft = 1;
-    m_concurrentHandlesDone = false;
 }
 
 void SatoriRecycler::IncrementCardScanTicket()
@@ -413,6 +413,8 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
         {
             m_ccStackMarkState = CC_MARK_STATE_NONE;
             IncrementRootScanTicket();
+            m_concurrentCardPassesLeft = 2;
+            m_concurrentHandlesDone = false;
             SatoriHandlePartitioner::StartNextScan();
             m_activeHelperFn = &SatoriRecycler::ConcurrentHelp;
         }
@@ -521,11 +523,19 @@ bool SatoriRecycler::HelpOnceCore()
 
     if (m_concurrentCardPassesLeft > 0)
     {
-        bool moreWork = m_condemnedGeneration == 1 ?
+        bool moreWork;
+        Interlocked::Increment(&m_ccCardMarkingThreadsNum);
+        moreWork = m_condemnedGeneration == 1 ?
                             MarkThroughCardsConcurrent(deadline) :
                             ScanDirtyCardsConcurrent(deadline);
+        Interlocked::Decrement(&m_ccCardMarkingThreadsNum);
 
-        if (!moreWork)
+        if (moreWork)
+        {
+            return true;
+        }
+        // TODO: VS this should be done after draining.
+        else if (m_ccCardMarkingThreadsNum == 0)
         {
             int passesLeft = VolatileLoadWithoutBarrier(&m_concurrentCardPassesLeft);
             if (m_concurrentCardPassesLeft > 0 &&
@@ -533,9 +543,9 @@ bool SatoriRecycler::HelpOnceCore()
             {
                 IncrementCardScanTicket();
             }
-        }
 
-        return true;
+            return true;
+        }
     }
 
     if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
@@ -581,14 +591,14 @@ private:
 
 void SatoriRecycler::BlockingMarkForConcurrentHelper()
 {
-    Interlocked::Increment(&m_ccMarkingThreadsNum);
+    Interlocked::Increment(&m_ccStackMarkingThreadsNum);
     // check state again it could have changed if there were no marking threads
     if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
     {
         MarkAllStacksFinalizationAndDemotedRoots();
     }
 
-    Interlocked::Decrement(&m_ccMarkingThreadsNum);
+    Interlocked::Decrement(&m_ccStackMarkingThreadsNum);
 }
 
 /* static */
@@ -649,7 +659,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
 
         // done, wait for marking to finish and restart EE
         Interlocked::Exchange(&m_ccStackMarkState, CC_MARK_STATE_DONE);
-        while (m_ccMarkingThreadsNum)
+        while (m_ccStackMarkingThreadsNum)
         {
             // since we are waiting anyways, try helping
             if (!HelpOnceCore())
@@ -928,14 +938,12 @@ void SatoriRecycler::BlockingCollect()
 NOINLINE
 void SatoriRecycler::BlockingCollect1()
 {
-    m_condemnedGeneration = 1;
     BlockingCollectImpl();
 }
 
 NOINLINE
 void SatoriRecycler::BlockingCollect2()
 {
-    m_condemnedGeneration = 2;
     BlockingCollectImpl();
 }
 

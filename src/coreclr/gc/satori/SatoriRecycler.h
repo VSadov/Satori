@@ -166,7 +166,8 @@ private:
     static const int CC_MARK_STATE_DONE = 3;
 
     volatile int m_ccStackMarkState;
-    volatile int m_ccMarkingThreadsNum;
+    volatile int m_ccStackMarkingThreadsNum;
+    volatile int m_ccCardMarkingThreadsNum;
 
     int m_syncBlockCacheScanDone;
 
