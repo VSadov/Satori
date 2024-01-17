@@ -457,13 +457,6 @@ bool SatoriRecycler::HelpOnceCore()
         _ASSERTE(m_isBarrierConcurrent);
         // help with marking stacks and f-queue, this is urgent since EE is stopped for this.
         BlockingMarkForConcurrentHelper();
-
-        if (m_ccStackMarkState == CC_MARK_STATE_MARKING && IsHelperThread())
-        {
-            // before trying other things let other marking threads go ahead
-            // we do this curtesy because EE is stopped and we do not want to delay marking threads.
-            GCToOSInterface::YieldThread(0);
-        }
     }
 
     int64_t timeStamp = GCToOSInterface::QueryPerformanceCounter();
@@ -521,27 +514,46 @@ bool SatoriRecycler::HelpOnceCore()
         return true;
     }
 
-    if (m_concurrentCardPassesLeft > 0)
+    int passesLeft = VolatileLoadWithoutBarrier(&m_concurrentCardPassesLeft);
+    if (passesLeft > 0)
     {
-        bool moreWork;
         Interlocked::Increment(&m_ccCardMarkingThreadsNum);
-        moreWork = m_condemnedGeneration == 1 ?
+        bool moreWork = m_condemnedGeneration == 1 ?
                             MarkThroughCardsConcurrent(deadline) :
                             ScanDirtyCardsConcurrent(deadline);
-        Interlocked::Decrement(&m_ccCardMarkingThreadsNum);
+        int otherWorkers = Interlocked::Decrement(&m_ccCardMarkingThreadsNum);
 
         if (moreWork)
         {
             return true;
         }
-        // TODO: VS this should be done after draining.
-        else if (m_ccCardMarkingThreadsNum == 0)
+
+        if (DrainMarkQueuesConcurrent(nullptr, deadline))
         {
-            int passesLeft = VolatileLoadWithoutBarrier(&m_concurrentCardPassesLeft);
-            if (m_concurrentCardPassesLeft > 0 &&
-                Interlocked::CompareExchange(&m_concurrentCardPassesLeft, passesLeft - 1, passesLeft) == passesLeft)
+            return true;
+        }
+
+        // TODO: VS rename currentHalfPass or smth.
+        // this was the last pass and we saw no work.
+        if (passesLeft == 2)
+        {
+            m_concurrentCardPassesLeft = 0;
+        }
+        // If no other workers were marking when we were done
+        // and we saw nothing in queues, then this pass is over.
+        // This condition will be eventually true, as long as we have workers.
+        // at least it will be true for the last one passing through.
+        else if (otherWorkers == 0 && passesLeft % 2 == 0)
+        {
+            // claim our right to increment the ticket by making it odd
+            if (Interlocked::CompareExchange(&m_concurrentCardPassesLeft, passesLeft - 1, passesLeft) == passesLeft)
             {
                 IncrementCardScanTicket();
+
+                // signal that we are done.
+                // now someone can claim the right to increment the ticket, but will have to pick the new
+                // passesLeft before going through cards and draining.
+                VolatileStore(&m_concurrentCardPassesLeft, passesLeft - 2);
             }
 
             return true;
@@ -551,7 +563,7 @@ bool SatoriRecycler::HelpOnceCore()
     if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
     {
         _ASSERTE(IsHelperThread());
-        // come back and help
+        // do not leave, come back and help
         return true;
     }
 
@@ -938,22 +950,43 @@ void SatoriRecycler::BlockingCollect()
 NOINLINE
 void SatoriRecycler::BlockingCollect1()
 {
+    size_t blockingStart = GCToOSInterface::QueryPerformanceCounter();
+
+    // stop other threads.
+    GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
+
     BlockingCollectImpl();
+
+    size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
+    m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_perfCounterTicksPerMicro;
+    m_gcDurationMillis[1] = blockingDuration / m_perfCounterTicksPerMicro;
+    m_CurrentGcInfo = nullptr;
+
+    // restart VM
+    GCToEEInterface::RestartEE(true);
 }
 
 NOINLINE
 void SatoriRecycler::BlockingCollect2()
-{
-    BlockingCollectImpl();
-}
-
-void SatoriRecycler::BlockingCollectImpl()
 {
     size_t blockingStart = GCToOSInterface::QueryPerformanceCounter();
 
     // stop other threads.
     GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
 
+    BlockingCollectImpl();
+
+    size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
+    m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_perfCounterTicksPerMicro;
+    m_gcDurationMillis[2] = blockingDuration / m_perfCounterTicksPerMicro;
+    m_CurrentGcInfo = nullptr;
+
+    // restart VM
+    GCToEEInterface::RestartEE(true);
+}
+
+void SatoriRecycler::BlockingCollectImpl()
+{
     FIRE_EVENT(GCStart_V2, (int)m_gcCount[0], m_condemnedGeneration, reason_empty, gc_etw_type_ngc);
     m_gcStartMillis[m_condemnedGeneration] = GetNowMillis();
 
@@ -1083,14 +1116,6 @@ void SatoriRecycler::BlockingCollectImpl()
     }
 
     m_trimmer->SetOkToRun();
-
-    size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
-    m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_perfCounterTicksPerMicro;
-    m_gcDurationMillis[m_prevCondemnedGeneration] = blockingDuration / m_perfCounterTicksPerMicro;
-    m_CurrentGcInfo = nullptr;
-
-    // restart VM
-    GCToEEInterface::RestartEE(true);
 }
 
 void SatoriRecycler::RunWithHelp(void(SatoriRecycler::* method)())
