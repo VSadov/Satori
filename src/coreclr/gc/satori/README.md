@@ -45,7 +45,7 @@ A simple garbage collector that incorporates various ideas that I had over time.
 ### Roadmap: ###
 - [ ]  explicit memory limits
 - [x]  immortal allocations
-- [ ]  preallocated objects
+- [x]  preallocated objects
 - [ ]  perf tuning (possibly a lot of opportunities)
 - [ ]  more and better diagnostics (support for debuggers and profilers)
 - [ ]  NUMA awareness

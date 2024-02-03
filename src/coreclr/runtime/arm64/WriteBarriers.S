@@ -453,7 +453,8 @@ LEAF_ENTRY RhpCheckedAssignRefArm64, _TEXT
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x12
         add     x12, x12, x14, lsr #30
         ldrb    w12, [x12]
-        cbnz    x12, C_FUNC(RhpAssignRefArm64)
+        cbz     x12, LOCAL_LABEL(NotInHeap)
+        b       C_FUNC(RhpAssignRefArm64)
 
     LOCAL_LABEL(NotInHeap):
     ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
@@ -580,10 +581,10 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
 
     // DIRTYING CARD FOR X14
     LOCAL_LABEL(DirtyCard):
-        ldrb    w3, [x17, x2]
-        tbnz    w3, #2, LOCAL_LABEL(Exit)
         mov     w16, #4
-        strb    w16, [x17, x2]
+        add     x2, x2, x17
+        // must be after the field write to allow concurrent clean
+        stlrb    w16, [x2]
     LOCAL_LABEL(DirtyGroup):
         add     x12, x17, #0x80
         ldrb    w3, [x12, x15]
@@ -809,10 +810,10 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
 
     // DIRTYING CARD FOR X14
     LOCAL_LABEL(DirtyCard_Cmp_Xchg):
-        ldrb    w3, [x17, x2]
-        tbnz    w3, #2, LOCAL_LABEL(Exit_Cmp_Xchg)
         mov     w16, #4
-        strb    w16, [x17, x2]
+        add     x2, x2, x17
+        // must be after the field write to allow concurrent clean
+        stlrb    w16, [x2]
     LOCAL_LABEL(DirtyGroup_Cmp_Xchg):
         add     x12, x17, #0x80
         ldrb    w3, [x12, x15]
@@ -999,10 +1000,10 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
 
     // DIRTYING CARD FOR X14
     LOCAL_LABEL(DirtyCard_Xchg):
-        ldrb    w3, [x17, x2]
-        tbnz    w3, #2, LOCAL_LABEL(Exit_Xchg)
         mov     w16, #4
-        strb    w16, [x17, x2]
+        add     x2, x2, x17
+        // must be after the field write to allow concurrent clean
+        stlrb    w16, [x2]
     LOCAL_LABEL(DirtyGroup_Xchg):
         add     x12, x17, #0x80
         ldrb    w3, [x12, x15]
