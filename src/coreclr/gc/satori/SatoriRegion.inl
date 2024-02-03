@@ -1,4 +1,4 @@
-// Copyright (c) 2022 Vladimir Sadov
+// Copyright (c) 2024 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -161,6 +161,7 @@ inline void SatoriRegion::StopEscapeTracking()
     }
 }
 
+// Used to simulate writes when containing region is individually promoted.
 inline void SatoriRegion::SetCardsForObject(SatoriObject* o)
 {
     _ASSERTE(this->Size() == Satori::REGION_SIZE_GRANULARITY);
@@ -173,10 +174,11 @@ inline void SatoriRegion::SetCardsForObject(SatoriObject* o)
                 !child->IsExternal() &&
                 child->ContainingRegion()->Generation() < 2)
            {
-                // This does not happen concurrently with cleaning, so does not need to be ordered.
-                // If this does not run concurrently with mutator, we could do SetCardForAddress,
-                // but this should be relatively rare, so we will just dirty for simplicity.
-                ContainingPage()->DirtyCardForAddressUnordered((size_t)ppObject);
+                // This could run concurrenlty with mutator or in a blocking stage,
+                // but not when the blocking stage does cleaning.
+                // It also should be relatively rare, so we will just assume the mutator is running
+                // for simplicity and call a concurrent helper.
+                ContainingPage()->DirtyCardForAddressConcurrent((size_t)ppObject);
             }
         }
     );
@@ -289,7 +291,7 @@ bool SatoriRegion::Sweep()
             size_t skipped = o->Start() - lastMarkedEnd;
             SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
             SetIndicesForObject(free, o->Start());
-            AddFreeSpace(free);
+            AddFreeSpace(free, skipped);
 
             if (o->Start() >= objLimit)
             {
@@ -333,6 +335,7 @@ bool SatoriRegion::Sweep()
     this->HasMarksSet() = false;
 #endif
 
+    this->HasUnmarkedDemotedObjects() = IsDemoted();
     this->m_hasFinalizables = hasFinalizables;
     this->DoNotSweep() = true;
     this->HasPinnedObjects() = false;
@@ -476,6 +479,11 @@ inline bool SatoriRegion::IsDemoted()
 inline SatoriWorkChunk* &SatoriRegion::DemotedObjects()
 {
     return m_gen2Objects;
+}
+
+inline bool& SatoriRegion::HasUnmarkedDemotedObjects()
+{
+    return m_hasUnmarkedDemotedObjects;
 }
 
 inline void SatoriRegion::SetMarked(SatoriObject* o)

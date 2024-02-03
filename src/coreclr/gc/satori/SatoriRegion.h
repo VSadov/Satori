@@ -1,4 +1,4 @@
-// Copyright (c) 2022 Vladimir Sadov
+// Copyright (c) 2024 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -80,7 +80,7 @@ public:
     void StopAllocating();
     bool IsAllocating();
 
-    void AddFreeSpace(SatoriObject* freeObj);
+    void AddFreeSpace(SatoriObject* freeObj, size_t size);
 
     bool HasFreeSpaceInTopBucket();
     bool HasFreeSpaceInTopNBuckets(int n);
@@ -102,6 +102,7 @@ public:
     bool TryDemote();
     bool IsDemoted();
     SatoriWorkChunk* &DemotedObjects();
+    bool& HasUnmarkedDemotedObjects();
     void FreeDemotedTrackers();
 
     int Generation();
@@ -203,6 +204,9 @@ public:
 
     void Verify(bool allowMarked = false);
 
+    SatoriAllocator* Allocator();
+    SatoriRecycler* Recycler();
+
 private:
     static const int BITMAP_LENGTH = Satori::REGION_SIZE_GRANULARITY / sizeof(size_t) / sizeof(size_t) / 8;
 
@@ -270,6 +274,7 @@ private:
             bool m_hasPendingFinalizables;
             bool m_acceptedPromotedObjects;
             bool m_individuallyPromoted;
+            bool m_hasUnmarkedDemotedObjects;
 
             // when demoted, we remember our gen2 objects here
             SatoriWorkChunk* m_gen2Objects;
@@ -302,9 +307,6 @@ private:
     void ThreadLocalCompact();
     NOINLINE void ClearPinned(SatoriObject* o);
     void ThreadLocalPendFinalizables();
-
-    SatoriAllocator* Allocator();
-    SatoriRecycler* Recycler();
 
     void PushToMarkStackIfHasPointers(SatoriObject* obj);
     SatoriObject* PopFromMarkStack();

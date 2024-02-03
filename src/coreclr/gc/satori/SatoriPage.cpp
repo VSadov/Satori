@@ -1,4 +1,4 @@
-// Copyright (c) 2022 Vladimir Sadov
+// Copyright (c) 2024 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -179,21 +179,8 @@ void SatoriPage::SetCardForAddressOnly(size_t address)
     m_cardTable[cardByteOffset] = Satori::CardState::REMEMBERED;
 }
 
-void SatoriPage::DirtyCardForAddress(size_t address)
-{
-    size_t offset = address - Start();
-    size_t cardByteOffset = offset / Satori::BYTES_PER_CARD_BYTE;
-
-    _ASSERTE(cardByteOffset >= m_cardTableStart);
-    _ASSERTE(cardByteOffset < m_cardTableSize);
-
-    m_cardTable[cardByteOffset] = Satori::CardState::DIRTY;
-
-    size_t cardGroup = offset / Satori::REGION_SIZE_GRANULARITY;
-    VolatileStore(&this->m_cardGroups[cardGroup * 2], Satori::CardState::DIRTY);
-    VolatileStore(&this->m_cardState, Satori::CardState::DIRTY);
-}
-
+// setting cards is never concurent with unsetting (unlike dirtying)
+// so there are no ordering implications.
 void SatoriPage::SetCardsForRange(size_t start, size_t end)
 {
     _ASSERTE(end > start);
@@ -217,7 +204,7 @@ void SatoriPage::SetCardsForRange(size_t start, size_t end)
     _ASSERTE(lastCard < m_cardTableSize);
 
     memset((void*)(m_cardTable + firstCard), Satori::CardState::REMEMBERED, lastCard - firstCard + 1);
-   
+
     size_t firstGroup = firstByteOffset / Satori::REGION_SIZE_GRANULARITY;
     size_t lastGroup = lastByteOffset / Satori::REGION_SIZE_GRANULARITY;
     for (size_t i = firstGroup; i <= lastGroup; i++)
@@ -234,36 +221,23 @@ void SatoriPage::SetCardsForRange(size_t start, size_t end)
     }
 }
 
-// dirtying in nonblocking phases could be unordered since we do not clean concurrently with mutator
-void SatoriPage::DirtyCardsForRangeUnordered(size_t start, size_t end)
+// 
+void SatoriPage::DirtyCardForAddress(size_t address)
 {
-    size_t firstByteOffset = start - Start();
-    size_t lastByteOffset = end - Start() - 1;
+    size_t offset = address - Start();
+    size_t cardByteOffset = offset / Satori::BYTES_PER_CARD_BYTE;
 
-    size_t firstCard = firstByteOffset / Satori::BYTES_PER_CARD_BYTE;
-    _ASSERTE(firstCard >= m_cardTableStart);
-    _ASSERTE(firstCard < m_cardTableSize);
+    _ASSERTE(cardByteOffset >= m_cardTableStart);
+    _ASSERTE(cardByteOffset < m_cardTableSize);
 
-    size_t lastCard = lastByteOffset / Satori::BYTES_PER_CARD_BYTE;
-    _ASSERTE(lastCard >= m_cardTableStart);
-    _ASSERTE(lastCard < m_cardTableSize);
+    // we dirty the card unconditionally, since it can be concurrently cleaned
+    // however this does not get called after field writes (unlike in barriers),
+    // so the card dirtying write can be unordered.
+    m_cardTable[cardByteOffset] = Satori::CardState::DIRTY;
 
-    memset((void*)(m_cardTable + firstCard), Satori::CardState::DIRTY, lastCard - firstCard + 1);
-
-    size_t firstGroup = firstByteOffset / Satori::REGION_SIZE_GRANULARITY;
-    size_t lastGroup = lastByteOffset / Satori::REGION_SIZE_GRANULARITY;
-    for (size_t i = firstGroup; i <= lastGroup; i++)
-    {
-        if (m_cardGroups[i * 2] != Satori::CardState::DIRTY)
-        {
-            m_cardGroups[i * 2] = Satori::CardState::DIRTY;
-        }
-    }
-
-    if (m_cardState != Satori::CardState::DIRTY)
-    {
-        m_cardState = Satori::CardState::DIRTY;
-    }
+    size_t cardGroup = offset / Satori::REGION_SIZE_GRANULARITY;
+    VolatileStore(&this->m_cardGroups[cardGroup * 2], Satori::CardState::DIRTY);
+    VolatileStore(&this->m_cardState, Satori::CardState::DIRTY);
 }
 
 void SatoriPage::DirtyCardsForRange(size_t start, size_t end)
@@ -279,9 +253,11 @@ void SatoriPage::DirtyCardsForRange(size_t start, size_t end)
     _ASSERTE(lastCard >= m_cardTableStart);
     _ASSERTE(lastCard < m_cardTableSize);
 
+    // we dirty these cards unconditionally, since they can be concurrently cleaned
+    // see similar note above
     memset((void*)(m_cardTable + firstCard), Satori::CardState::DIRTY, lastCard - firstCard + 1);
 
-    // if dirtying can be concurrent with cleaning, so we must ensure order
+    // if dirtying can be concurrent with cleaning, we must ensure order
     // of writes: cards, then groups, then page.
     // cleaning will read in the opposite order
     VolatileStoreBarrier();
@@ -294,6 +270,44 @@ void SatoriPage::DirtyCardsForRange(size_t start, size_t end)
     }
 
     VolatileStore(&this->m_cardState, Satori::CardState::DIRTY);
+}
+
+// this is called concurently with mutator after bulk writes
+// we may be concurrently cleaning cards, but not groups and pages
+void SatoriPage::DirtyCardsForRangeConcurrent(size_t start, size_t end)
+{
+    size_t firstByteOffset = start - Start();
+    size_t lastByteOffset = end - Start() - 1;
+
+    size_t firstCard = firstByteOffset / Satori::BYTES_PER_CARD_BYTE;
+    _ASSERTE(firstCard >= m_cardTableStart);
+    _ASSERTE(firstCard < m_cardTableSize);
+
+    size_t lastCard = lastByteOffset / Satori::BYTES_PER_CARD_BYTE;
+    _ASSERTE(lastCard >= m_cardTableStart);
+    _ASSERTE(lastCard < m_cardTableSize);
+
+    // this must be ordered after bulk writes and cannot be conditional
+    // since we may be cleaning concurrently
+    VolatileStoreBarrier();
+    memset((void*)(m_cardTable + firstCard), Satori::CardState::DIRTY, lastCard - firstCard + 1);
+
+    // we do not clean groups concurrently, so these can be conditional and unordered
+    // only the eventual final state matters
+    size_t firstGroup = firstByteOffset / Satori::REGION_SIZE_GRANULARITY;
+    size_t lastGroup = lastByteOffset / Satori::REGION_SIZE_GRANULARITY;
+    for (size_t i = firstGroup; i <= lastGroup; i++)
+    {
+        if (m_cardGroups[i * 2] != Satori::CardState::DIRTY)
+        {
+            m_cardGroups[i * 2] = Satori::CardState::DIRTY;
+        }
+    }
+
+    if (m_cardState != Satori::CardState::DIRTY)
+    {
+        m_cardState = Satori::CardState::DIRTY;
+    }
 }
 
 void SatoriPage::WipeCardsForRange(size_t start, size_t end, bool isTenured)

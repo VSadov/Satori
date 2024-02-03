@@ -8224,7 +8224,9 @@ void Thread::InitializeSpecialUserModeApc()
 
     // In the future, once code paths using the special user-mode APC get some bake time, it should be used regardless of
     // whether CET shadow stacks are enabled
+#if !defined(FEATURE_SATORI_GC)
     if (AreCetShadowStacksEnabled())
+#endif
     {
         s_pfnQueueUserAPC2Proc = pfnQueueUserAPC2Proc;
     }

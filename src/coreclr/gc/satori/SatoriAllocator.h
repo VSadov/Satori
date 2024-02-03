@@ -1,4 +1,4 @@
-// Copyright (c) 2022 Vladimir Sadov
+// Copyright (c) 2024 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -40,6 +40,13 @@ class SatoriAllocationContext;
 class SatoriWorkChunk;
 class SatoriWorkList;
 
+enum AllocationTickKind
+{
+    Small = 0,
+    Large = 1,
+    Pinned = 2,
+};
+
 class SatoriAllocator
 {
 public:
@@ -49,6 +56,9 @@ public:
     SatoriRegion* GetRegion(size_t minSize);
     void AddRegion(SatoriRegion* region);
     void ReturnRegion(SatoriRegion* region);
+
+    void AllocationTickIncrement(AllocationTickKind isSmall, size_t totalAdded, SatoriObject* obj, size_t obj_size);
+    void AllocationTickDecrement(size_t totalUnused);
 
     SatoriWorkChunk* TryGetWorkChunk();
     SatoriWorkChunk* GetWorkChunk();
@@ -75,6 +85,11 @@ private:
     SatoriSpinLock m_regularAlocLock;
 
     volatile int32_t m_singePageAdders;
+
+    // for event trace
+    size_t m_smallAllocTickAmount;
+    size_t m_largeAllocTickAmount;
+    size_t m_pinnedAllocTickAmount;
 
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocRegularShared(SatoriAllocationContext* context, size_t size, uint32_t flags);

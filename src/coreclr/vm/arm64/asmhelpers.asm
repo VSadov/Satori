@@ -661,10 +661,10 @@ CardSet
 
     ; DIRTYING CARD FOR X14
 DirtyCard
-        ldrb    w3, [x17, x2]
-        tbnz    w3, #2, Exit
         mov     w16, #4
-        strb    w16, [x17, x2]
+        add     x2, x2, x17
+        ;; must be after the field write to allow concurrent clean
+        stlrb    w16, [x2]
 DirtyGroup
         add     x12, x17, #0x80
         ldrb    w3, [x12, x15]
