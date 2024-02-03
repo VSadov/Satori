@@ -1,4 +1,4 @@
-// Copyright (c) 2022 Vladimir Sadov
+// Copyright (c) 2024 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -446,8 +446,7 @@ size_t SatoriGC::GetLastGCStartTime(int generation)
 
 size_t SatoriGC::GetLastGCDuration(int generation)
 {
-    // NYI  (this is used for mem pressure aggressiveness)
-    return 10;
+    return m_heap->Recycler()->GetGcDurationMillis(generation);
 }
 
 size_t SatoriGC::GetNow()
@@ -483,7 +482,7 @@ void SatoriGC::PublishObject(uint8_t* obj)
         // in such case we simulate retroactive write by dirtying the card for the MT location.
         if (so->RawGetMethodTable()->Collectible())
         {
-            region->ContainingPage()->DirtyCardForAddressUnordered(so->Start());
+            region->ContainingPage()->DirtyCardForAddressConcurrent(so->Start());
         }
     }
     else if (so->IsUnfinished())
@@ -654,6 +653,8 @@ size_t SatoriGC::GetPromotedBytes(int heap_index)
 
 void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* totalAvailableMemoryBytes, uint64_t* lastRecordedMemLoadBytes, uint64_t* lastRecordedHeapSizeBytes, uint64_t* lastRecordedFragmentationBytes, uint64_t* totalCommittedBytes, uint64_t* promotedBytes, uint64_t* pinnedObjectCount, uint64_t* finalizationPendingCount, uint64_t* index, uint32_t* generation, uint32_t* pauseTimePct, bool* isCompaction, bool* isConcurrent, uint64_t* genInfoRaw, uint64_t* pauseInfoRaw, int kind)
 {
+    LastRecordedGcInfo* lastGcInfo = m_heap->Recycler()->GetLastGcInfo((gc_kind)kind);
+
     uint64_t totalLimit = GCToOSInterface::GetPhysicalMemoryLimit();
     *highMemLoadThresholdBytes = totalLimit * 99 / 100; // just say 99% for now
     *totalAvailableMemoryBytes = totalLimit;
@@ -666,18 +667,21 @@ void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* tota
     *lastRecordedHeapSizeBytes = GetTotalBytesInUse();
     *finalizationPendingCount = GetNumberOfFinalizable();
 
-    // the rest seems implementation specific and not strictly required.
     *lastRecordedFragmentationBytes = 0;
     *totalCommittedBytes = 0;
     *promotedBytes = 0;
     *pinnedObjectCount = 0;
-    *index = 0;
-    *generation = 0;
+    *index = lastGcInfo->m_index;
+    *generation = lastGcInfo->m_condemnedGeneration;
     *pauseTimePct = 0;
-    *isCompaction = 0;
-    *isConcurrent = 0;
+    *isCompaction = lastGcInfo->m_compaction;
+    *isConcurrent = lastGcInfo->m_concurrent;
     *genInfoRaw = 0;
-    *pauseInfoRaw = 0;
+    for (int i = 0; i < 2; i++)
+    {
+        // convert it to 100-ns units that TimeSpan needs.
+        pauseInfoRaw[i] = (uint64_t)(lastGcInfo->m_pauseDurations[i]) * 10;
+    }
 }
 
 uint32_t SatoriGC::GetMemoryLoad()
@@ -807,7 +811,7 @@ void SatoriGC::SetCardsAfterBulkCopy(size_t dst, size_t src, size_t len)
 
         if (recycler->IsBarrierConcurrent())
         {
-            page->DirtyCardsForRangeUnordered(dst, dst + len);
+            page->DirtyCardsForRangeConcurrent(dst, dst + len);
         }
     }
 }

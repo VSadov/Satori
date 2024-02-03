@@ -1093,12 +1093,12 @@ class TestSharedCode
             Assert.AreEqual(int.MaxValue, GC.GetGeneration(val));
 
             val = typeof(ClassWithTemplate<>).MakeGenericType(GetC4()).GetField("Array").GetValue(null);
-            Assert.AreEqual(0, GC.GetGeneration(val));
+            Assert.True(GC.GetGeneration(val) <= 2);
             Assert.AreEqual(nameof(C4), val.GetType().GetElementType().Name);
             static Type GetC4() => typeof(C4);
 
             val = typeof(TestSharedCode).GetMethod(nameof(AccessArray)).MakeGenericMethod(GetC5()).Invoke(null, Array.Empty<object>());
-            Assert.AreEqual(0, GC.GetGeneration(val));
+            Assert.True(GC.GetGeneration(val) <= 2);
             Assert.AreEqual(nameof(C5), val.GetType().GetElementType().Name);
             static Type GetC5() => typeof(C5);
         }

@@ -1,4 +1,4 @@
-// Copyright (c) 2022 Vladimir Sadov
+// Copyright (c) 2024 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -81,7 +81,11 @@ public:
         }
     }
 
-    inline void DirtyCardForAddressUnordered(size_t address)
+    // This is called to simulate a write concurrently with mutator.
+    // For example when concurrent mark can't mark a child object so we need to keep
+    // it logically gray, but can't keep it in the gray queue lest we never finish.
+    // So we make the reference dirty as if it was written, but there was no actual write.
+    inline void DirtyCardForAddressConcurrent(size_t address)
     {
         size_t offset = address - (size_t)this;
         size_t cardByteOffset = offset / Satori::BYTES_PER_CARD_BYTE;
@@ -89,17 +93,20 @@ public:
         _ASSERTE(cardByteOffset >= m_cardTableStart);
         _ASSERTE(cardByteOffset < m_cardTableSize);
 
-        if (m_cardTable[cardByteOffset] != Satori::CardState::DIRTY)
+        // we dirty the card unconditionally, since it can be concurrently cleaned
+        // however this does not get called after field writes (unlike in barriers or bulk helpers),
+        // so the dirtying write can be unordered.
+        m_cardTable[cardByteOffset] = Satori::CardState::DIRTY;
+
+        // we do not clean groups concurrently, so these can be conditional and unordered
+        // only the eventual final state matters
+        size_t cardGroup = offset / Satori::REGION_SIZE_GRANULARITY;
+        if (m_cardGroups[cardGroup * 2] != Satori::CardState::DIRTY)
         {
-            m_cardTable[cardByteOffset] = Satori::CardState::DIRTY;
-            size_t cardGroup = offset / Satori::REGION_SIZE_GRANULARITY;
-            if (m_cardGroups[cardGroup * 2] != Satori::CardState::DIRTY)
+            m_cardGroups[cardGroup * 2] = Satori::CardState::DIRTY;
+            if (m_cardState != Satori::CardState::DIRTY)
             {
-                m_cardGroups[cardGroup * 2] = Satori::CardState::DIRTY;
-                if (m_cardState != Satori::CardState::DIRTY)
-                {
-                    m_cardState = Satori::CardState::DIRTY;
-                }
+                m_cardState = Satori::CardState::DIRTY;
             }
         }
     }
@@ -108,7 +115,7 @@ public:
     void DirtyCardForAddress(size_t address);
     void SetCardsForRange(size_t start, size_t end);
     void DirtyCardsForRange(size_t start, size_t length);
-    void DirtyCardsForRangeUnordered(size_t start, size_t end);
+    void DirtyCardsForRangeConcurrent(size_t start, size_t end);
 
     void WipeCardsForRange(size_t start, size_t end, bool isTenured);
 

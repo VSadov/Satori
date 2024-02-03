@@ -447,8 +447,6 @@ endif
 
     ; DIRTYING CARD FOR RCX
      DirtyCard:
-        cmp     byte ptr [rax + r8], 4
-        je      Exit
         mov     byte ptr [rax + r8], 4
      DirtyGroup:
         cmp     byte ptr [rax + rdx * 2 + 80h], 4

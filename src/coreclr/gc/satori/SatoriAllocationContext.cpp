@@ -1,4 +1,4 @@
-// Copyright (c) 2022 Vladimir Sadov
+// Copyright (c) 2024 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -40,13 +40,14 @@ SatoriObject* SatoriAllocationContext::FinishAllocFromShared()
 {
     _ASSERTE(alloc_limit >= alloc_ptr);
     size_t unusedStart = (size_t)alloc_ptr;
-    size_t unused = (size_t)alloc_limit - unusedStart + Satori::MIN_FREE_SIZE;
-    SatoriObject* freeObj = SatoriObject::FormatAsFree(unusedStart, unused);
+    size_t unused = (size_t)alloc_limit - unusedStart;
+    SatoriObject* freeObj = SatoriObject::FormatAsFree(unusedStart, unused + Satori::MIN_FREE_SIZE);
     SatoriRegion* containingRegion = freeObj->ContainingRegion();
     // this portion is now parsable
     freeObj->ContainingRegion()->DecrementUnfinishedAlloc();
+    freeObj->ContainingRegion()->Allocator()->AllocationTickDecrement(unused);
     // unclaim unused.
-    alloc_bytes -= alloc_limit - alloc_ptr;
+    alloc_bytes -= unused;
     alloc_ptr = alloc_limit = nullptr;
 
     return freeObj;
@@ -59,8 +60,10 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
     {
         size_t allocPtr = (size_t)this->alloc_ptr;
 
-        this->alloc_bytes -= this->alloc_limit - this->alloc_ptr;
+        size_t unused = this->alloc_limit - this->alloc_ptr;
+        this->alloc_bytes -= unused;
         this->alloc_limit = this->alloc_ptr = nullptr;
+        region->Allocator()->AllocationTickDecrement(unused);
 
         if (region->IsAllocating())
         {

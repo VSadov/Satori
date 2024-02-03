@@ -99,7 +99,7 @@ static_assert (HANDLE_HANDLES_PER_MASK * 2 == HANDLE_HANDLES_PER_BLOCK);
 
 
 // cache layout metrics
-#define HANDLE_CACHE_TYPE_SIZE          128 // 128 == 63 handles per bank
+#define HANDLE_CACHE_TYPE_SIZE          1024 // 1024 == 511 handles per bank
 #define HANDLES_PER_CACHE_BANK          ((HANDLE_CACHE_TYPE_SIZE / 2) - 1)
 
 // cache policy defines
