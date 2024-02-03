@@ -1,4 +1,4 @@
-// Copyright (c) 2022 Vladimir Sadov
+// Copyright (c) 2024 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -36,6 +36,15 @@ class SatoriHeap;
 class SatoriTrimmer;
 class SatoriRegion;
 class MarkContext;
+
+struct LastRecordedGcInfo
+{
+    size_t m_index;
+    size_t m_pauseDurations[2];
+    uint8_t m_condemnedGeneration;
+    bool m_compaction;
+    bool m_concurrent;
+};
 
 class SatoriRecycler
 {
@@ -78,6 +87,7 @@ public:
     size_t GetTotalOccupancy();
     size_t GetOccupancy(int i);
     size_t GetGcStartMillis(int generation);
+    size_t GetGcDurationMillis(int generation);
 
     int64_t GlobalGcIndex();
 
@@ -92,6 +102,23 @@ public:
     bool IsReuseCandidate(SatoriRegion* region);
     bool IsPromotionCandidate(SatoriRegion* region);
 
+    LastRecordedGcInfo* GetLastGcInfo(gc_kind kind)
+    {
+        if (kind == gc_kind_ephemeral)
+            return &m_lastEphemeralGcInfo;
+
+        if (kind == gc_kind_full_blocking)
+            return GetLastGcInfo(gc_kind_any); // no concept of blocking GC, every GC has blocking part.
+
+        if (kind == gc_kind_background)
+            return GetLastGcInfo(gc_kind_any); // no concept of background GC, cant have 2 GCs at a time.
+
+        // if (kind == gc_kind_any)
+        return m_lastTenuredGcInfo.m_index > m_lastEphemeralGcInfo.m_index ?
+            &m_lastTenuredGcInfo :
+            &m_lastEphemeralGcInfo;
+    };
+
 private:
     SatoriHeap* m_heap;
 
@@ -104,6 +131,8 @@ private:
     // regions owned by recycler
     SatoriRegionQueue* m_ephemeralRegions;
     SatoriRegionQueue* m_ephemeralFinalizationTrackingRegions;
+    SatoriRegionQueue* m_ephemeralWithUnmarkedDemoted;
+
     SatoriRegionQueue* m_tenuredRegions;
     SatoriRegionQueue* m_tenuredFinalizationTrackingRegions;
 
@@ -124,8 +153,6 @@ private:
     SatoriRegionQueue* m_reusableRegions;
     SatoriRegionQueue* m_reusableRegionsAlternate;
 
-    SatoriRegionQueue* m_demotedRegions;
-
     static const int GC_STATE_NONE = 0;
     static const int GC_STATE_CONCURRENT = 1;
     static const int GC_STATE_BLOCKING = 2;
@@ -139,7 +166,7 @@ private:
     static const int CC_MARK_STATE_DONE = 3;
 
     volatile int m_ccStackMarkState;
-    volatile int m_ccMarkingThreadsNum;
+    volatile int m_ccStackMarkingThreadsNum;
 
     int m_syncBlockCacheScanDone;
 
@@ -159,6 +186,7 @@ private:
 
     int64_t m_gcCount[3];
     int64_t m_gcStartMillis[3];
+    int64_t m_gcDurationMillis[3];
 
     size_t m_gen1Budget;
     size_t m_totalBudget;
@@ -180,7 +208,8 @@ private:
     int64_t m_currentAllocBytesDeadThreads;
     int64_t m_totalAllocBytes;
 
-    int64_t m_perfCounterFrequencyMHz;
+    int64_t m_perfCounterTicksPerMilli;
+    int64_t m_perfCounterTicksPerMicro;
 
     GCEvent* m_helpersGate;
     volatile int m_gateSignaled;
@@ -188,6 +217,10 @@ private:
     volatile int m_totalHelpers;
 
     int64_t m_noWorkSince;
+
+    LastRecordedGcInfo m_lastEphemeralGcInfo;
+    LastRecordedGcInfo m_lastTenuredGcInfo;
+    LastRecordedGcInfo* m_CurrentGcInfo;
 
 private:
 
@@ -217,7 +250,6 @@ private:
     bool HelpOnceCore();
 
     void PushToEphemeralQueues(SatoriRegion* region);
-    void PushToEphemeralQueuesIgnoringDemoted(SatoriRegion* region);
     void PushToEphemeralQueue(SatoriRegion* region);
     void PushToTenuredQueues(SatoriRegion* region);
 
@@ -236,8 +268,10 @@ private:
 
     void PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o);
     void DrainMarkQueues(SatoriWorkChunk* srcChunk = nullptr);
+    void MarkOwnStackAndDrainQueues();
+    void MarkOwnStackOrDrainQueuesConcurrent(int64_t deadline);
+    bool MarkDemotedAndDrainQueuesConcurrent(int64_t deadline);
     bool DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk = nullptr, int64_t deadline = 0);
-    bool MarkOwnStackAndDrainQueues(int64_t deadline = 0);
 
     bool HasDirtyCards();
     bool ScanDirtyCardsConcurrent(int64_t deadline);
@@ -260,6 +294,11 @@ private:
     void DependentHandlesRescanWorker();
 
     void BlockingCollect();
+    // for profiling purposes Gen1 and Gen2 GC have distinct entrypoints, but the same implementation
+    void BlockingCollect1();
+    void BlockingCollect2();
+    void BlockingCollectImpl();
+
     void BlockingMark();
     void MarkNewReachable();
     void DrainAndCleanWorker();
@@ -278,6 +317,7 @@ private:
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);
+    void FreeRelocatedRegion(SatoriRegion* curRegion);
     void FreeRelocatedRegionsWorker();
 
     void PromoteHandlesAndFreeRelocatedRegions();
