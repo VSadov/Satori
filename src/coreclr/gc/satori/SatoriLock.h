@@ -1,4 +1,4 @@
-// Copyright (c) 2022 Vladimir Sadov
+// Copyright (c) 2024 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -93,9 +93,9 @@ private:
     NOINLINE
     void EnterSpin()
     {
-        int localBackoff = m_backoff;
+        int localBackoff = 0;
         while (VolatileLoadWithoutBarrier(&m_backoff) ||
-            !CompareExchangeAcq(&m_backoff, localBackoff / 4 + 1, 0))
+            !CompareExchangeAcq(&m_backoff, 1, 0))
         {
             localBackoff = Backoff(localBackoff);
         }

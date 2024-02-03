@@ -1,4 +1,4 @@
-// Copyright (c) 2022 Vladimir Sadov
+// Copyright (c) 2024 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -114,6 +114,7 @@ void SatoriRegion::RearmCardsForTenured()
 {
     _ASSERTE(Generation() == 2);
     m_containingPage->WipeCardsForRange(Start(), End(), /* tenured */ true);
+    HasUnmarkedDemotedObjects() = false;
 
     FreeDemotedTrackers();
 }
@@ -169,6 +170,7 @@ void SatoriRegion::MakeBlank()
     m_hasMarksSet = false;
     m_doNotSweep = false;
     m_reusableFor = ReuseLevel::None;
+    m_hasUnmarkedDemotedObjects = false;
 
     //clear index and free list
     ClearFreeLists();
@@ -298,7 +300,7 @@ void SatoriRegion::StopAllocating(size_t allocPtr)
         _ASSERTE(m_occupancy >= unused);
         SetOccupancy(m_occupancy - unused);
         SatoriObject* freeObj = SatoriObject::FormatAsFree(allocPtr, unused);
-        AddFreeSpace(freeObj);
+        AddFreeSpace(freeObj, unused);
     }
 
     m_allocStart = m_allocEnd = 0;
@@ -309,11 +311,12 @@ void SatoriRegion::StopAllocating()
     StopAllocating(m_allocStart);
 }
 
-void SatoriRegion::AddFreeSpace(SatoriObject* freeObj)
+void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
 {
+    _ASSERTE(freeObj->Size() == size);
     // allocSize is smaller than size to make sure the span can always be made parseable
     // after allocating objects in it.
-    ptrdiff_t allocSize = freeObj->Size() - Satori::MIN_FREE_SIZE;
+    ptrdiff_t allocSize = size - Satori::MIN_FREE_SIZE;
     if (allocSize < Satori::MIN_FREELIST_SIZE)
     {
         return;
@@ -328,6 +331,7 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj)
     *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET) = m_freeLists[bucket];
     m_freeLists[bucket] = freeObj;
 }
+
 
 bool SatoriRegion::HasFreeSpaceInTopBucket()
 {
@@ -949,14 +953,14 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
     m_allocBytesAtCollect = allocBytes;
 
     size_t count = Recycler()->IncrementGen0Count();
-    FIRE_EVENT(GCStart_V2, (int)count - 1, 0, gc_reason::reason_alloc_loh, gc_etw_type_ngc);
+    FIRE_EVENT(GCStart_V2, (int)count, 0, gc_reason::reason_alloc_soh, gc_etw_type_ngc);
 
     ThreadLocalMark();
     ThreadLocalPlan();
     ThreadLocalUpdatePointers();
     ThreadLocalCompact();
 
-    FIRE_EVENT(GCEnd_V1, (int)count - 1, 0);
+    FIRE_EVENT(GCEnd_V1, (int)count, 0);
 
     return true;
 }
@@ -1406,7 +1410,7 @@ void SatoriRegion::ThreadLocalCompact()
             {
                 size_t freeSpace = d2->Start() - d1->Start();
                 SatoriObject* freeObj = SatoriObject::FormatAsFree(d1->Start(), freeSpace);
-                AddFreeSpace(freeObj);
+                AddFreeSpace(freeObj, freeSpace);
                 foundFree += freeSpace;
 
                 d1 = d2;
@@ -1897,6 +1901,7 @@ bool SatoriRegion::TryDemote()
         return false;
     }
 
+    this->HasUnmarkedDemotedObjects() = true;
     this->ResetCardsForEphemeral();
     this->SetGeneration(1);
     return true;
@@ -1918,6 +1923,7 @@ bool SatoriRegion::NothingMarked()
 
 void SatoriRegion::ClearMarks()
 {
+    _ASSERTE(this->HasUnmarkedDemotedObjects() == false);
     memset(&m_bitmap[BITMAP_START], 0, (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
 }
 
