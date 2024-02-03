@@ -1,4 +1,4 @@
-// Copyright (c) 2022 Vladimir Sadov
+// Copyright (c) 2024 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -216,6 +216,35 @@ void SatoriAllocator::ReturnRegion(SatoriRegion* region)
     m_queues[SizeToBucket(region->Size())]->Push(region);
 }
 
+void SatoriAllocator::AllocationTickIncrement(AllocationTickKind allocationTickKind, size_t totalAdded, SatoriObject* obj, size_t objSize)
+{
+
+    size_t& tickAmout = allocationTickKind == AllocationTickKind::Small ?
+        m_smallAllocTickAmount :
+        allocationTickKind == AllocationTickKind::Large ?
+            m_largeAllocTickAmount :
+            m_pinnedAllocTickAmount;
+
+    const size_t etw_allocation_tick = 100 * 1024;
+    size_t current = Interlocked::ExchangeAdd64(&tickAmout, totalAdded) + totalAdded;
+
+    if ((int64_t)current > etw_allocation_tick &&
+        Interlocked::CompareExchange(&tickAmout, (size_t)0, current) == current)
+    {
+        FIRE_EVENT(GCAllocationTick_V4,
+            current,
+            /*kind*/ (uint32_t)allocationTickKind,
+            /*heap_number*/ 0,
+            (void*)obj,
+            objSize);
+    }
+}
+
+void SatoriAllocator::AllocationTickDecrement(size_t totalUnused)
+{
+    Interlocked::ExchangeAdd64(&m_smallAllocTickAmount, (size_t)(-(int64_t)totalUnused));
+}
+
 Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
     size = ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
@@ -282,8 +311,9 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
         {
             if (freeObj && freeObj->ContainingRegion() == m_regularRegion)
             {
-                m_regularRegion->SetOccupancy(m_regularRegion->Occupancy() - freeObj->Size());
-                m_regularRegion->AddFreeSpace(freeObj);
+                size_t size = freeObj->Size();
+                m_regularRegion->SetOccupancy(m_regularRegion->Occupancy() - size);
+                m_regularRegion->AddFreeSpace(freeObj, size);
             }
 
             return AllocRegularShared(context, size, flags);
@@ -326,13 +356,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                     result->CleanSyncBlock();
                     region->SetIndicesForObject(result, result->Start() + size);
 
-                    FIRE_EVENT(GCAllocationTick_V4,
-                        size,
-                        /*gen_number*/ 1,
-                        /*heap_number*/ 0,
-                        (void*)result,
-                        0);
-
+                    AllocationTickIncrement(AllocationTickKind::Small, moreSpace, result, size);
                     return result;
                 }
                 else
@@ -343,7 +367,10 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             }
 
             // unclaim unused.
-            context->alloc_bytes -= context->alloc_limit - context->alloc_ptr;
+            size_t unused = context->alloc_limit - context->alloc_ptr;
+            context->alloc_bytes -= unused;
+            AllocationTickDecrement(unused);
+
             if (region->IsAllocating())
             {
                 region->StopAllocating((size_t)context->alloc_ptr);
@@ -492,13 +519,7 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
                     memset((uint8_t*)result + sizeof(size_t), 0, moreSpace - 2 * sizeof(size_t));
                 }
 
-                FIRE_EVENT(GCAllocationTick_V4,
-                    size,
-                    /*gen_number*/ 1,
-                    /*heap_number*/ 0,
-                    (void*)result,
-                    0);
-
+                AllocationTickIncrement(AllocationTickKind::Small, moreSpace, result, size);
                 return result;
             }
 
@@ -640,13 +661,7 @@ tryAgain:
                 result->CleanSyncBlock();
                 region->SetIndicesForObject(result, result->Start() + size);
 
-                FIRE_EVENT(GCAllocationTick_V4,
-                    size,
-                    /*gen_number*/ 1,
-                    /*heap_number*/ 0,
-                    (void*)result,
-                    0);
-
+                AllocationTickIncrement(AllocationTickKind::Large, size, result, size);
                 return result;
             }
         }
@@ -748,13 +763,7 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
                     memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));
                 }
 
-                FIRE_EVENT(GCAllocationTick_V4,
-                    size,
-                    /*gen_number*/ 1,
-                    /*heap_number*/ 0,
-                    (void*)result,
-                    0);
-
+                AllocationTickIncrement(AllocationTickKind::Large, size, result, size);
                 return result;
             }
 
@@ -843,14 +852,8 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
         return nullptr;
     }
 
-    FIRE_EVENT(GCAllocationTick_V4,
-        size,
-        /*gen_number*/ 2,
-        /*heap_number*/ 0,
-        (void*)result,
-        0);
-
     context->alloc_bytes_uoh += size;
+    AllocationTickIncrement(AllocationTickKind::Large, size, result, size);
     return result;
 }
 
@@ -916,13 +919,7 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
                     memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));
                 }
 
-                FIRE_EVENT(GCAllocationTick_V4,
-                    size,
-                    /*gen_number*/ 1,
-                    /*heap_number*/ 0,
-                    (void*)result,
-                    0);
-
+                AllocationTickIncrement(AllocationTickKind::Pinned, size, result, size);
                 return result;
             }
 
@@ -994,6 +991,8 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
                 {
                     context->alloc_bytes_uoh += size;
                     region->SetIndicesForObject(result, result->Start() + size);
+
+                    AllocationTickIncrement(AllocationTickKind::Pinned, size, result, size);
                 }
                 else
                 {

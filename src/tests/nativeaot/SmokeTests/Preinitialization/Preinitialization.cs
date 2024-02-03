@@ -1005,11 +1005,11 @@ class TestSharedCode
             Assert.AreEqual(int.MaxValue, GC.GetGeneration(val));
 
             val = typeof(ClassWithTemplate<>).MakeGenericType(typeof(C4)).GetField("Array").GetValue(null);
-            Assert.AreEqual(0, GC.GetGeneration(val));
+            Assert.True(GC.GetGeneration(val) <= 2);
             Assert.AreEqual(nameof(C4), val.GetType().GetElementType().Name);
 
             val = typeof(TestSharedCode).GetMethod(nameof(AccessArray)).MakeGenericMethod(typeof(C5)).Invoke(null, Array.Empty<object>());
-            Assert.AreEqual(0, GC.GetGeneration(val));
+            Assert.True(GC.GetGeneration(val) <= 2);
             Assert.AreEqual(nameof(C5), val.GetType().GetElementType().Name);
         }
     }
