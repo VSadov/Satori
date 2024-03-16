@@ -674,7 +674,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
 //  - locations before the first object and after the last object match to the First/Last objects
 //  - location must not be inside unparseable unconsumed budget when actively allocating.
 //
-// Typical usees:
+// Typical uses:
 //  - precise root marking.
 //         not in allocating mode (not attached to allocation context, parsable)
 //         always provides real refs into real objects.
@@ -1765,7 +1765,7 @@ void SatoriRegion::UpdateFinalizableTrackers()
             {
                 if (!finalizable->SameRegion(this))
                 {
-                    ptrdiff_t ptr = ((ptrdiff_t*)finalizable)[-1];
+                    ptrdiff_t ptr = *((ptrdiff_t*)finalizable - 1);
                     _ASSERTE(finalizable->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
                     finalizable = (SatoriObject*)-ptr;
                     _ASSERTE(finalizable->SameRegion(this));
@@ -1790,7 +1790,7 @@ void SatoriRegion::UpdatePointersInObject(SatoriObject* o)
                 SatoriObject* child = *ppObject;
                 if (child)
                 {
-                    ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                    ptrdiff_t ptr = *((ptrdiff_t*)child - 1);
                     if (ptr < 0)
                     {
                         _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());

@@ -756,8 +756,7 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
                 m_largeAlocLock.Leave();
 
                 context->alloc_bytes_uoh += size;
-                result->CleanSyncBlock();
-                result->SetUnfinished();
+                result->CleanSyncBlockAndSetUnfinished();
                 if (!(flags & GC_ALLOC_ZEROING_OPTIONAL))
                 {
                     memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));
@@ -912,8 +911,7 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
                 m_pinnedAlocLock.Leave();
 
                 context->alloc_bytes_uoh += size;
-                result->CleanSyncBlock();
-                result->SetUnfinished();
+                result->CleanSyncBlockAndSetUnfinished();
                 if (!(flags & GC_ALLOC_ZEROING_OPTIONAL))
                 {
                     memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));

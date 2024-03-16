@@ -170,8 +170,6 @@ private:
 
     int m_syncBlockCacheScanDone;
 
-    void(SatoriRecycler::* m_activeHelperFn)();
-
     int m_condemnedGeneration;
 
     bool m_concurrentCardsDone;
@@ -215,6 +213,8 @@ private:
     volatile int m_gateSignaled;
     volatile int m_activeHelpers;
     volatile int m_totalHelpers;
+
+    void(SatoriRecycler::* volatile m_activeHelperFn)();
 
     int64_t m_noWorkSince;
 

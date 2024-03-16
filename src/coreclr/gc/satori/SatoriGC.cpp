@@ -490,6 +490,8 @@ void SatoriGC::PublishObject(uint8_t* obj)
         region->DecrementUnfinishedAlloc();
         so->UnsetUnfinished();
     }
+
+    _ASSERTE(!so->IsUnfinished());
 }
 
 void SatoriGC::SetWaitForGCEvent()

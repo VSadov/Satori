@@ -190,7 +190,7 @@ void SatoriRecycler::HelperThreadFn(void* param)
 
         recycler->m_gateSignaled = 0;
         Interlocked::Increment(&recycler->m_activeHelpers);
-        auto activeHelper = VolatileLoadWithoutBarrier(&recycler->m_activeHelperFn);
+        auto activeHelper = recycler->m_activeHelperFn;
         if (activeHelper)
         {
             (recycler->*activeHelper)();
@@ -705,11 +705,6 @@ void SatoriRecycler::ConcurrentHelp()
 
 int SatoriRecycler::MaxHelpers()
 {
-    if (IsBlockingPhase())
-    {
-        return GCToOSInterface::GetTotalProcessorCount() - 1;
-    }
-
     int helperCount = SatoriUtil::MaxHelpersCount();
     if (helperCount < 0)
     {
@@ -1244,6 +1239,7 @@ void SatoriRecycler::DeactivateFn(gc_alloc_context* gcContext, void* param)
     recycler->ReportThreadAllocBytes(context->alloc_bytes + context->alloc_bytes_uoh, /*islive*/ true);
 }
 
+// TODO: VS rename to deactivate regions
 void SatoriRecycler::DeactivateAllStacks()
 {
     m_currentAllocBytesLiveThreads = 0;
@@ -1361,7 +1357,7 @@ void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t
         }
     }
 
-    ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
+    ptrdiff_t ptr = *((ptrdiff_t*)o - 1);
     if (ptr < 0)
     {
         ptr = -ptr;
@@ -2734,7 +2730,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                         SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
                                         if (child && !child->IsExternal())
                                         {
-                                            ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                                            ptrdiff_t ptr = *((ptrdiff_t*)child - 1);
                                             if (ptr < 0)
                                             {
                                                 _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
@@ -3455,7 +3451,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         memcpy((void*)(dst - sizeof(size_t)), (void*)(o->Start() - sizeof(size_t)), size);
         // record the new location of the object by storing it in the syncblock space.
         // make it negative so it is different from a normal syncblock.
-        ((ptrdiff_t*)o)[-1] = -(ptrdiff_t)dst;
+        *((ptrdiff_t*)o - 1) = -(ptrdiff_t)dst;
 
         if (needToCopyMarks)
         {
@@ -3591,7 +3587,7 @@ void SatoriRecycler::UpdateRootsWorker()
                 [&](SatoriObject** ppObject)
                 {
                     SatoriObject* o = *ppObject;
-                    ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
+                    ptrdiff_t ptr = *((ptrdiff_t*)o - 1);
                     if (ptr < 0)
                     {
                         _ASSERTE(o->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
@@ -3652,7 +3648,7 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
                     SatoriObject* child = *ppObject;
                     if (child)
                     {
-                        ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                        ptrdiff_t ptr = *((ptrdiff_t*)child - 1);
                         if (ptr < 0)
                         {
                             _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
