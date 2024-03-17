@@ -703,6 +703,7 @@ AssignAndMarkCards_Cmp_Xchg
         mov    x15, x1                       ;; x15 = val
 TryAgain1_Cmp_Xchg
     ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
+    ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation2
         ldaxr   x0, [x14]
         cmp     x0, x2
         bne     NoUpdate_Cmp_Xchg
@@ -880,6 +881,7 @@ AssignAndMarkCards_Xchg
         mov    x15, x1                        ;; x15 = val    ;; TODO: VS not needed, can use x1
 TryAgain1_Xchg
     ALTERNATE_ENTRY RhpCheckedXchgAVLocation
+    ALTERNATE_ENTRY RhpCheckedXchgAVLocation2
         ldaxr   x17, [x0]
         stlxr   w12, x1, [x0]
         cbnz    w12, TryAgain1_Xchg

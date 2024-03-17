@@ -734,6 +734,7 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
 #else
     LOCAL_LABEL(TryAgain1_Cmp_Xchg):
 ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
+ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation2
         ldaxr   x0, [x14]
         cmp     x0, x2
         bne     LOCAL_LABEL(NoUpdate_Cmp_Xchg)
@@ -927,6 +928,7 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
 #else
     LOCAL_LABEL(TryAgain1_Xchg):
 ALTERNATE_ENTRY RhpCheckedXchgAVLocation
+ALTERNATE_ENTRY RhpCheckedXchgAVLocation2
         ldaxr   x17, [x0]
         stlxr   w12, x1, [x0]
         cbnz    w12, LOCAL_LABEL(TryAgain1_Xchg)
