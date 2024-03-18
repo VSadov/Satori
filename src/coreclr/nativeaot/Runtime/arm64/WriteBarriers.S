@@ -724,16 +724,23 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocationNotHeap
     LOCAL_LABEL(AssignAndMarkCards_Cmp_Xchg):
         mov    x14, x0                       // x14 = dst
         mov    x15, x1                       // x15 = val
-#ifdef TARGET_OSX
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        PREPARE_EXTERNAL_VAR_INDIRECT_W g_cpuFeatures, 16
+        tbz    w16, #ARM64_ATOMICS_FEATURE_FLAG_BIT, LOCAL_LABEL(TryAgain1_Cmp_Xchg)
+#endif
+
         mov    x17, x2
 ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         casal  x2, x1, [x0]                  // exchange
         mov    x0, x2                        // x0 = result
         cmp    x2, x17
         bne    LOCAL_LABEL(NoUpdate_Cmp_Xchg)
-#else
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        b      LOCAL_LABEL(DoCardsCmpXchg)
+
     LOCAL_LABEL(TryAgain1_Cmp_Xchg):
-ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
 ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation2
         ldaxr   x0, [x14]
         cmp     x0, x2
@@ -743,6 +750,8 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation2
         stlxr   w12, x1, [x14]
         cbnz    w12, LOCAL_LABEL(TryAgain1_Cmp_Xchg)  // if failed, try again
         dmb     ish
+
+LOCAL_LABEL(DoCardsCmpXchg):
 #endif
 
         eor     x12, x14, x15
