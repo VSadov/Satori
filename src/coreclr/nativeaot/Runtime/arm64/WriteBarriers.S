@@ -405,6 +405,10 @@ LOCAL_LABEL(NoBarrierXchg):
 
 #else  //FEATURE_SATORI_GC   ######################################################
 
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+.arch_extension lse
+#endif
+
 // void JIT_ByRefWriteBarrier
 // On entry:
 //   x13  : the source address (points to object reference to write)
@@ -1042,5 +1046,8 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation2
         b       LOCAL_LABEL(AssignAndMarkCards_Xchg)
 LEAF_END RhpCheckedXchg, _TEXT
 
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+.arch_extension nolse
+#endif
 
 #endif //FEATURE_SATORI_GC
