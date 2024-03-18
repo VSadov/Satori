@@ -652,20 +652,20 @@ LEAF_END RhpAssignRef, _TEXT
 //
 // On exit:
 //  x0: original value of objectref
-//  x10, x12, x17: trashed
+//  x10, x12, x16, x17: trashed
 //
 LEAF_ENTRY RhpCheckedLockCmpXchg
     // check if dst is in heap
-        PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x12
-        add     x12, x12, x0, lsr #30
+    // x10 contains region map, also, nonzero x10 means do not skip cards 
+        PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x10
+        add     x12, x10, x0, lsr #30
         ldrb    w12, [x12]
         cbz     x12, LOCAL_LABEL(JustAssign_Cmp_Xchg)
 
     // check for escaping assignment
     // 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
-        PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x12
-        add     x12, x12, x1, lsr #30
+        add     x12, x10, x1, lsr #30
         ldrb    w12, [x12]
         cbz     x12, LOCAL_LABEL(JustAssign_Cmp_Xchg)
 #else
@@ -696,28 +696,9 @@ LEAF_ENTRY RhpCheckedLockCmpXchg
         tbnz        x17, #0, LOCAL_LABEL(RecordEscape_Cmp_Xchg) // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign_Cmp_Xchg):
-#ifdef TARGET_OSX
+        // skip setting cards
 ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocationNotHeap
-        casal  x2, x1, [x0]                  // exchange
-        mov    x0, x2                        // x0 = result
-    LOCAL_LABEL(NoUpdate_Cmp_Xchg):
-        ret    lr
-#else
-        mov     x14, x0
-    LOCAL_LABEL(TryAgain_Cmp_Xchg):
-ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocationNotHeap
-        ldaxr   x0, [x14]
-        cmp     x0, x2
-        bne     LOCAL_LABEL(NoUpdate_Cmp_Xchg)
-
-        // Current value matches comparand, attempt to update with the new value.
-        stlxr   w12, x1, [x14]
-        cbnz    w12, LOCAL_LABEL(TryAgain_Cmp_Xchg)  // if failed, try again
-
-    LOCAL_LABEL(NoUpdate_Cmp_Xchg):
-        dmb     ish
-        ret     lr
-#endif
+        mov      x10, #0
 
     LOCAL_LABEL(AssignAndMarkCards_Cmp_Xchg):
         mov    x14, x0                       // x14 = dst
@@ -733,10 +714,13 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         casal  x2, x1, [x0]                  // exchange
         mov    x0, x2                        // x0 = result
         cmp    x2, x17
-        bne    LOCAL_LABEL(NoUpdate_Cmp_Xchg)
+        bne    LOCAL_LABEL(Exit_Cmp_Xchg)
 
 #ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
-        b      LOCAL_LABEL(DoCardsCmpXchg)
+        b      LOCAL_LABEL(SkipLLScCmpXchg)
+LOCAL_LABEL(NoUpdate_Cmp_Xchg):
+        dmb     ish
+        ret     lr
 
     LOCAL_LABEL(TryAgain1_Cmp_Xchg):
 ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation2
@@ -749,8 +733,14 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation2
         cbnz    w12, LOCAL_LABEL(TryAgain1_Cmp_Xchg)  // if failed, try again
         dmb     ish
 
-LOCAL_LABEL(DoCardsCmpXchg):
+LOCAL_LABEL(SkipLLScCmpXchg):
 #endif
+
+        cbnz    x10, LOCAL_LABEL(DoCardsCmpXchg)
+LOCAL_LABEL(Exit_Cmp_Xchg):
+        ret     lr
+
+LOCAL_LABEL(DoCardsCmpXchg):
 
         eor     x12, x14, x15
         lsr     x12, x12, #21
@@ -764,11 +754,8 @@ LOCAL_LABEL(DoCardsCmpXchg):
 
     LOCAL_LABEL(CheckConcurrent_Cmp_Xchg):
         PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  // !g_write_watch_table -> !concurrent
-        cbnz    x12, LOCAL_LABEL(MarkCards_Cmp_Xchg)
+        cbz     x12, LOCAL_LABEL(Exit_Cmp_Xchg)
         
-    LOCAL_LABEL(Exit_Cmp_Xchg):
-        ret  lr
-
     LOCAL_LABEL(MarkCards_Cmp_Xchg):
     // fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  // fetch the page map
@@ -803,7 +790,7 @@ LOCAL_LABEL(DoCardsCmpXchg):
     // check if concurrent marking is still not in progress
         PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  // !g_write_watch_table -> !concurrent
         cbnz    x12, LOCAL_LABEL(DirtyCard_Cmp_Xchg)
-        b       LOCAL_LABEL(Exit_Cmp_Xchg)
+        ret     lr
 
     // DIRTYING CARD FOR X14
     LOCAL_LABEL(DirtyCard_Cmp_Xchg):
@@ -820,7 +807,7 @@ LOCAL_LABEL(DoCardsCmpXchg):
         ldrb    w3, [x17]
         tbnz    w3, #2, LOCAL_LABEL(Exit_Cmp_Xchg)
         strb    w16, [x17]
-        b       LOCAL_LABEL(Exit_Cmp_Xchg)
+        ret     lr
 
     // this is expected to be rare.
     LOCAL_LABEL(RecordEscape_Cmp_Xchg):
@@ -849,6 +836,8 @@ LOCAL_LABEL(DoCardsCmpXchg):
         ldr     x2,      [sp, 16 * 2]
         ldp     x29,x30, [sp], 16 * 3
 
+        // x10 should be not 0 to indicate that can`t skip cards.
+        mov     x10,#1
         b       LOCAL_LABEL(AssignAndMarkCards_Cmp_Xchg)
 LEAF_END RhpCheckedLockCmpXchg, _TEXT
 
