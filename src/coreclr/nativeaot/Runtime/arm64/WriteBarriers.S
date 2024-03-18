@@ -594,11 +594,10 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
 
     // 4) check if the source is escaped
         and         x12, x15, #0xFFFFFFFFFFE00000  // source region
-        add         x15, x15, #8                   // escape bit is MT + 1
-        ubfx        x17, x15, #9,#12               // word index = (dst >> 9) & 0x1FFFFF
+        add         x16, x15, #8                   // escape bit is MT + 1
+        ubfx        x17, x16, #9,#12               // word index = (dst >> 9) & 0x1FFFFF
         ldr         x17, [x12, x17, lsl #3]        // mark word = [region + index * 8]
-        lsr         x12, x15, #3                   // bit = (dst >> 3) [& 63]
-        sub         x15, x15, #8     // undo MT + 1
+        lsr         x12, x16, #3                   // bit = (dst >> 3) [& 63]
         lsr         x17, x17, x12
         tbnz        x17, #0, LOCAL_LABEL(AssignAndMarkCards)        // source is already escaped.
 
@@ -614,9 +613,7 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         stp     x10,x11, [sp, 16 * 6]
         stp     x12,x13, [sp, 16 * 7]
         stp     x14,x15, [sp, 16 * 8]
-#ifndef TARGET_OSX
-        str     x18,     [sp, -16]!
-#endif
+
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         // mov  x0, x14  EscapeFn does not use dst, it is just to avoid arg shuffle on x64
         mov  x1, x15
@@ -624,9 +621,6 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         ldr  x12, [x2, #8]                 // EscapeFn address
         blr  x12
 
-#ifndef TARGET_OSX
-        ldr     x18,     [sp], 16
-#endif
         ldp     x0, x1,  [sp, 16 * 1]
         ldp     x2, x3,  [sp, 16 * 2]
         ldp     x4, x5,  [sp, 16 * 3]
