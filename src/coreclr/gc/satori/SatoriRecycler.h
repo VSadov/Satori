@@ -100,6 +100,7 @@ public:
     }
 
     bool IsReuseCandidate(SatoriRegion* region);
+    bool IsRelocationCandidate(SatoriRegion* region);
     bool IsPromotionCandidate(SatoriRegion* region);
 
     LastRecordedGcInfo* GetLastGcInfo(gc_kind kind)
@@ -250,7 +251,6 @@ private:
     bool HelpOnceCore();
 
     void PushToEphemeralQueues(SatoriRegion* region);
-    void PushToEphemeralQueue(SatoriRegion* region);
     void PushToTenuredQueues(SatoriRegion* region);
 
     void AdjustHeuristics();
@@ -308,7 +308,6 @@ private:
     void Plan();
     void PlanWorker();
     void PlanRegions(SatoriRegionQueue* regions);
-    bool IsRelocatable(SatoriRegion* region);
     void DenyRelocation();
     void AddTenuredRegionsToPlan(SatoriRegionQueue* regions);
     void AddRelocationTarget(SatoriRegion* region);
