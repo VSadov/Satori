@@ -192,7 +192,7 @@ namespace System
         // heavily on Reflection.Emit
         public static bool IsXmlDsigXsltTransformSupported => !PlatformDetection.IsInAppContainer && IsReflectionEmitSupported;
 
-        public static bool IsPreciseGcSupported => !IsMonoRuntime;
+        public static bool IsPreciseGcSupported => false; // !IsMonoRuntime;
 
         public static bool IsRareEnumsSupported => !IsNativeAot;
 
