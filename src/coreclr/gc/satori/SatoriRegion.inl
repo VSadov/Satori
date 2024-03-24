@@ -82,7 +82,7 @@ inline void SatoriRegion::SetGenerationRelease(int generation)
 {
     // at the time when we set generation to 0+, we should make it certain if
     // the region is attached, since 0+ detached regions are assumed parseable.
-    _ASSERTE(generation != 0 && generation != 2);
+    _ASSERTE(generation != 0);
     _ASSERTE(m_generation == -1 || IsReusable());
 
     VolatileStore(&m_generation, generation);

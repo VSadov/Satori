@@ -366,12 +366,9 @@ void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
     _ASSERTE(!region->HasMarksSet());
     _ASSERTE(!region->DoNotSweep());
 
-    region->Verify();
+    region->Verify(/* allowMarked */ SatoriUtil::IsConcurrent() && SatoriUtil::IsConservativeMode());
     PushToTenuredQueues(region);
-    _ASSERTE(region->Generation() == 1);
-    // published object cannot become gen2 concurrently
-    // ordinary set here, but the following full fence ensures that we publish after
-    region->SetGeneration(2);
+    _ASSERTE(region->Generation() == 2);
     Interlocked::ExchangeAdd64(&m_gen2AddedSinceLastCollection, region->Occupancy());
     region->RearmCardsForTenured();
 }
