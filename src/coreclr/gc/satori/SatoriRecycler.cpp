@@ -3252,7 +3252,15 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
             // select relocation candidates and relocation targets according to sizes.
             if (IsRelocationCandidate(curRegion))
             {
-                m_relocatingRegions->Push(curRegion);
+                // when relocating, we want to start with larger regions
+                if (curRegion->Occupancy() > Satori::REGION_SIZE_GRANULARITY * 2 / 5)
+                {
+                    m_relocatingRegions->Push(curRegion);
+                }
+                else
+                {
+                    m_relocatingRegions->Enqueue(curRegion);
+                }
             }
             else
             {
@@ -3278,6 +3286,7 @@ void SatoriRecycler::AddRelocationTarget(SatoriRegion* region)
         _ASSERTE(bucket >= 0);
         _ASSERTE(bucket < Satori::FREELIST_COUNT);
 
+        // within the same bucket, we'd prefer to fill up pinned ones first
         if (region->HasPinnedObjects())
         {
             m_relocationTargets[bucket]->Push(region);
