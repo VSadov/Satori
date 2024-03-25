@@ -3480,8 +3480,7 @@ retry:
             dwEnd = CLRGetTickCount64();
             if (dwEnd >= dwStart + millis)
             {
-                ret = WAIT_TIMEOUT;
-                goto WaitCompleted;
+                millis = 0;
             }
             else
             {
@@ -3686,8 +3685,7 @@ retry:
             dwEnd = CLRGetTickCount64();
             if (dwEnd >= dwStart + millis)
             {
-                ret = WAIT_TIMEOUT;
-                goto WaitCompleted;
+                millis = 0;
             }
             else
             {
@@ -3697,7 +3695,6 @@ retry:
         goto retry;
     }
 
-WaitCompleted:
     _ASSERTE(ret == WAIT_OBJECT_0 ||
              ret == WAIT_ABANDONED ||
              ret == WAIT_TIMEOUT ||
@@ -3800,8 +3797,7 @@ retry:
             dwEnd = CLRGetTickCount64();
             if (dwStart + millis <= dwEnd)
             {
-                ret = WAIT_TIMEOUT;
-                goto WaitCompleted;
+                millis = 0;
             }
             else
             {
@@ -3838,8 +3834,6 @@ retry:
                 break;
         }
     }
-
-WaitCompleted:
 
     //Check that the return state is valid
     _ASSERTE(WAIT_OBJECT_0 == ret  ||
