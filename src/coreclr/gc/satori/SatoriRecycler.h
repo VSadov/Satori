@@ -254,7 +254,7 @@ private:
     void PushToTenuredQueues(SatoriRegion* region);
 
     void AdjustHeuristics();
-    void DeactivateAllStacks();
+    void DeactivateAllocatingRegions();
 
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();

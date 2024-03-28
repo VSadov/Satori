@@ -1858,13 +1858,14 @@ bool SatoriRegion::TryDemote()
     // TUNING: heuristic for demoting -  could consider occupancy, pinning, etc...
     //         the cost here is increasing  gen1, which is supposed to be short as 
     //         demoted objects will have to be marked regardless of cards.
-    //         we can't have > MAX_DEMOTED_OBJECTS_IN_REGION objects, but they can be big
+    //         we can't have > MAX_DEMOTED_OBJECTS_IN_REGION objects, but the objects
+    //         themselves can be big arrays.
     //
     //         the worst case is if this is a largest possible reusable region that is also
-    //         pointer-dense.
-    //         TODO: VS - perhaps limit the size a bit further?
+    //         pointer-dense. Thus we will limit the size, just in case.
 
-   if (ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION)
+    if (ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION ||
+        Occupancy() > Satori::REGION_SIZE_GRANULARITY / 8)
     {
         return false;
     }

@@ -1006,7 +1006,8 @@ void SatoriRecycler::BlockingCollectImpl()
     }
 #endif
 
-    DeactivateAllStacks();
+    // this will make the heap officially parseable.
+    DeactivateAllocatingRegions();
 
     m_condemnedRegionsCount = m_condemnedGeneration == 2 ?
         RegionCount() :
@@ -1234,8 +1235,7 @@ void SatoriRecycler::DeactivateFn(gc_alloc_context* gcContext, void* param)
     recycler->ReportThreadAllocBytes(context->alloc_bytes + context->alloc_bytes_uoh, /*islive*/ true);
 }
 
-// TODO: VS rename to deactivate regions
-void SatoriRecycler::DeactivateAllStacks()
+void SatoriRecycler::DeactivateAllocatingRegions()
 {
     m_currentAllocBytesLiveThreads = 0;
     GCToEEInterface::GcEnumAllocContexts(DeactivateFn, m_heap->Recycler());
@@ -2112,7 +2112,8 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
                             SatoriObject* o = region->FindObject(start);
 
-                            // TODO: VS can do only if we cleaned.
+                            // NOTE: We could do this only if we cleaned any of the cards, but it does not seem worth checking that.
+                            //       Most likely we cleaned something.
                             // read marks after cleaning cards
                             MemoryBarrier();
 
@@ -3816,7 +3817,7 @@ bool SatoriRecycler::IsReuseCandidate(SatoriRegion* region)
     if (!region->HasFreeSpaceInTopNBuckets(Satori::REUSABLE_BUCKETS))
         return false;
 
-    // TODO: VS roughly estimating reuse goodness
+    // TUNING: here we are roughly estimating reuse goodness. A better idea?
     //       i.e. 32k max chunk can be not more than 131K (1/16 full)
     //            64k max chunk can be not more than 262K (1/8 full)
     //           128k max chunk can be not more than 524K (1/4 full)
