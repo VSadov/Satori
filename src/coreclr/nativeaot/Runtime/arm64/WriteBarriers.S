@@ -917,7 +917,6 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocationNotHeap
 
     LOCAL_LABEL(AssignAndMarkCards_Xchg):
         mov    x14, x0                        // x14 = dst
-        mov    x15, x1                        // x15 = val    // TODO: VS not needed, can use x1
 #ifdef TARGET_OSX
 ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         swpal  x1, x0, [x0]                   // exchange
@@ -932,13 +931,13 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation2
         dmb     ish
 #endif
 
-        eor     x12, x14, x15
+        eor     x12, x14, x1
         lsr     x12, x12, #21
         cbz     x12, LOCAL_LABEL(CheckConcurrent_Xchg) // same region, just check if barrier is not concurrent
 
     // we will trash x2 and x3, this is a regular call, so it is ok
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        and     x2,  x15, #0xFFFFFFFFFFE00000     // source region
+        and     x2,  x1, #0xFFFFFFFFFFE00000     // source region
         ldr     w12, [x2, 16]
         tbz     x12, #1, LOCAL_LABEL(MarkCards_Xchg)
 
@@ -955,8 +954,8 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation2
         lsr     x17, x14, #30
         ldr     x17, [x12, x17, lsl #3]              // page
         sub     x2,  x14, x17   // offset in page
-        lsr     x15, x2,  #21   // group index
-        lsl     x15, x15, #1    // group offset (index * 2)
+        lsr     x1, x2,  #21   // group index
+        lsl     x1, x1, #1    // group offset (index * 2)
         lsr     x2,  x2,  #9    // card offset
 
     // check if concurrent marking is in progress
@@ -971,9 +970,9 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation2
         strb    w16, [x17, x2]
     LOCAL_LABEL(SetGroup_Xchg):
         add     x12, x17, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x12, x1]
         cbnz    w3, LOCAL_LABEL(CardSet_Xchg)
-        strb    w16, [x12, x15]
+        strb    w16, [x12, x1]
     LOCAL_LABEL(SetPage_Xchg):
         ldrb    w3, [x17]
         cbnz    w3, LOCAL_LABEL(CardSet_Xchg)
@@ -993,9 +992,9 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation2
         stlrb    w16, [x2]
     LOCAL_LABEL(DirtyGroup_Xchg):
         add     x12, x17, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x12, x1]
         tbnz    w3, #2, LOCAL_LABEL(Exit_Xchg)
-        strb    w16, [x12, x15]
+        strb    w16, [x12, x1]
     LOCAL_LABEL(DirtyPage_Xchg):
         ldrb    w3, [x17]
         tbnz    w3, #2, LOCAL_LABEL(Exit_Xchg)
