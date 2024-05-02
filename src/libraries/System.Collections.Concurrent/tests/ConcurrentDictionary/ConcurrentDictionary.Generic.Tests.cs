@@ -44,6 +44,7 @@ namespace System.Collections.Concurrent.Tests
 
         protected override string CreateTValue(int seed) => CreateTKey(seed);
 
+        [ActiveIssue("Satori: tests implementation details")]
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
