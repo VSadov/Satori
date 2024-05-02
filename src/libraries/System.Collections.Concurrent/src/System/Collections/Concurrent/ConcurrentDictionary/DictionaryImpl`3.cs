@@ -764,7 +764,7 @@ namespace System.Collections.Concurrent
 
             // prev value is null or dead.
             // let's try install new value
-            newValObj = newValObj ?? ToObjectValue(result = valueFactory(key));
+            newValObj ??= ToObjectValue(result = valueFactory(key));
             while (true)
             {
                 Debug.Assert(!(entryValue is Prime));
