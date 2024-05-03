@@ -28,7 +28,6 @@ namespace System.Collections.Concurrent
     [DebuggerDisplay("Count = {Count}")]
     public class ConcurrentDictionary<TKey, TValue> : IDictionary<TKey, TValue>, IDictionary, IReadOnlyDictionary<TKey, TValue> where TKey : notnull
     {
-        internal readonly bool valueIsValueType = typeof(TValue).IsValueType;
         internal DictionaryImpl<TKey, TValue> _table;
         internal uint _lastResizeTickMillis;
         internal object _sweeperInstance;
@@ -169,7 +168,7 @@ namespace System.Collections.Concurrent
             }
             else
             {
-                if (typeof(TKey) == typeof(int) || (typeof(TKey) == typeof(uint) && comparer == null))
+                if (typeof(TKey) == typeof(int))
                 {
                     if (comparer == null)
                     {
@@ -183,7 +182,21 @@ namespace System.Collections.Concurrent
                     return;
                 }
 
-                if (typeof(TKey) == typeof(long) || (typeof(TKey) == typeof(ulong) && comparer == null))
+                if (typeof(TKey) == typeof(uint))
+                {
+                    if (comparer == null)
+                    {
+                        _table = Unsafe.As<DictionaryImpl<TKey, TValue>>(new DictionaryImplUintNoComparer<TValue>(capacity, Unsafe.As<ConcurrentDictionary<uint, TValue>>(this)));
+                    }
+                    else
+                    {
+                        _table = Unsafe.As<DictionaryImpl<TKey, TValue>>(new DictionaryImplUint<TValue>(capacity, Unsafe.As<ConcurrentDictionary<uint, TValue>>(this)));
+                        _table._keyComparer = comparer;
+                    }
+                    return;
+                }
+
+                if (typeof(TKey) == typeof(long))
                 {
                     if (comparer == null)
                     {
@@ -197,7 +210,21 @@ namespace System.Collections.Concurrent
                     return;
                 }
 
-                if (typeof(TKey) == typeof(nint) || (typeof(TKey) == typeof(nuint) && comparer == null))
+                if (typeof(TKey) == typeof(ulong))
+                {
+                    if (comparer == null)
+                    {
+                        _table = Unsafe.As<DictionaryImpl<TKey, TValue>>(new DictionaryImplUlongNoComparer<TValue>(capacity, Unsafe.As<ConcurrentDictionary<ulong, TValue>>(this)));
+                    }
+                    else
+                    {
+                        _table = Unsafe.As<DictionaryImpl<TKey, TValue>>(new DictionaryImplUlong<TValue>(capacity, Unsafe.As<ConcurrentDictionary<ulong, TValue>>(this)));
+                        _table._keyComparer = comparer;
+                    }
+                    return;
+                }
+
+                if (typeof(TKey) == typeof(nint))
                 {
                     if (comparer == null)
                     {
@@ -206,6 +233,20 @@ namespace System.Collections.Concurrent
                     else
                     {
                         _table = Unsafe.As<DictionaryImpl<TKey, TValue>>(new DictionaryImplNint<TValue>(capacity, Unsafe.As<ConcurrentDictionary<nint, TValue>>(this)));
+                        _table._keyComparer = comparer;
+                    }
+                    return;
+                }
+
+                if (typeof(TKey) == typeof(nuint))
+                {
+                    if (comparer == null)
+                    {
+                        _table = Unsafe.As<DictionaryImpl<TKey, TValue>>(new DictionaryImplNuintNoComparer<TValue>(capacity, Unsafe.As<ConcurrentDictionary<nuint, TValue>>(this)));
+                    }
+                    else
+                    {
+                        _table = Unsafe.As<DictionaryImpl<TKey, TValue>>(new DictionaryImplNuint<TValue>(capacity, Unsafe.As<ConcurrentDictionary<nuint, TValue>>(this)));
                         _table._keyComparer = comparer;
                     }
                     return;
@@ -306,7 +347,7 @@ namespace System.Collections.Concurrent
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private TValue FromObjectValue(object obj)
+        private static TValue FromObjectValue(object obj)
         {
             // regular value type
             if (default(TValue) != null)
@@ -321,7 +362,7 @@ namespace System.Collections.Concurrent
             }
 
             // ref type
-            if (!valueIsValueType)
+            if (!typeof(TValue).IsValueType)
             {
                 return Unsafe.As<object, TValue>(ref obj);
             }
