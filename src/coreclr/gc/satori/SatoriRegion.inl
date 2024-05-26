@@ -82,7 +82,7 @@ inline void SatoriRegion::SetGenerationRelease(int generation)
 {
     // at the time when we set generation to 0+, we should make it certain if
     // the region is attached, since 0+ detached regions are assumed parseable.
-    _ASSERTE(generation != 0 && generation != 2);
+    _ASSERTE(generation != 0);
     _ASSERTE(m_generation == -1 || IsReusable());
 
     VolatileStore(&m_generation, generation);
@@ -676,7 +676,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
 
         _ASSERTE(IsMarked(o));
 
-        ptrdiff_t r = ((ptrdiff_t*)o)[-1];
+        ptrdiff_t r = *((ptrdiff_t*)o - 1);
         _ASSERTE(r < 0);
         SatoriObject* relocated = (SatoriObject*)-r;
         _ASSERTE(relocated->RawGetMethodTable() == o->RawGetMethodTable());
@@ -690,7 +690,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
                 SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
                 if (child && !child->IsExternal())
                 {
-                    ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                    ptrdiff_t ptr = *((ptrdiff_t*)child - 1);
                     if (ptr < 0)
                     {
                         _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
