@@ -344,6 +344,20 @@ namespace System.Collections.Concurrent
                 {
                     throw new ArgumentException(SR.ConcurrentDictionary_SourceContainsDuplicateKeys);
                 }
+
+                if (typeof(TKey) == typeof(nuint))
+                {
+                    if (comparer == null)
+                    {
+                        _table = Unsafe.As<DictionaryImpl<TKey, TValue>>(new DictionaryImplNuintNoComparer<TValue>(capacity, Unsafe.As<ConcurrentDictionary<nuint, TValue>>(this)));
+                    }
+                    else
+                    {
+                        _table = Unsafe.As<DictionaryImpl<TKey, TValue>>(new DictionaryImplNuint<TValue>(capacity, Unsafe.As<ConcurrentDictionary<nuint, TValue>>(this)));
+                        _table._keyComparer = comparer;
+                    }
+                    return;
+                }
             }
 
             if (_budget == 0)

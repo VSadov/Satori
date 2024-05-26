@@ -409,7 +409,7 @@ NoBarrierXchg
 ;;
     LEAF_ENTRY RhpByRefAssignRefArm64, _TEXT
 
-   RhpByRefAssignRefAVLocation1
+   ALTERNATE_ENTRY RhpByRefAssignRefAVLocation1
         ldr     x15, [x13], 8
         b       RhpCheckedAssignRefArm64
 
@@ -631,20 +631,20 @@ RecordEscape
 ;;
 ;; On exit:
 ;;  x0: original value of objectref
-;;  x10, x12, x17: trashed
+;;  x10, x12, x16, x17: trashed
 ;;
     LEAF_ENTRY RhpCheckedLockCmpXchg
     ;; check if dst is in heap
-        PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x12
-        add     x12, x12, x0, lsr #30
+    ;; x10 contains region map, also, nonzero x10 means do not skip cards 
+        PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x10
+        add     x12, x10, x0, lsr #30
         ldrb    w12, [x12]
         cbz     x12, JustAssign_Cmp_Xchg
 
     ;; check for escaping assignment
     ;; 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
-        PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x12
-        add     x12, x12, x1, lsr #30
+        add     x12, x10, x1, lsr #30
         ldrb    w12, [x12]
         cbz     x12, JustAssign_Cmp_Xchg
 #else
@@ -669,26 +669,34 @@ RecordEscape
         tbnz        x17, #0, RecordEscape_Cmp_Xchg ;; target is exposed. record an escape.
 
 JustAssign_Cmp_Xchg
-        mov     x14, x0
-TryAgain_Cmp_Xchg
+        ;; skip setting cards
     ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocationNotHeap
-        ldaxr   x0, [x14]
-        cmp     x0, x2
-        bne     NoUpdate_Cmp_Xchg
-
-        ;; Current value matches comparand, attempt to update with the new value.
-        stlxr   w12, x1, [x14]
-        cbnz    w12, TryAgain_Cmp_Xchg  ;; if failed, try again
-
-NoUpdate_Cmp_Xchg
-        dmb     ish
-        ret     lr
+        mov     x10, #0
 
 AssignAndMarkCards_Cmp_Xchg
         mov    x14, x0                       ;; x14 = dst
         mov    x15, x1                       ;; x15 = val
-TryAgain1_Cmp_Xchg
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        PREPARE_EXTERNAL_VAR_INDIRECT_W g_cpuFeatures, 16
+        tbz    w16, #ARM64_ATOMICS_FEATURE_FLAG_BIT, TryAgain1_Cmp_Xchg
+#endif
+
+        mov    x17, x2
     ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
+        casal  x2, x1, [x0]                  ;; exchange
+        mov    x0, x2                        ;; x0 = result
+        cmp    x2, x17
+        bne    Exit_Cmp_Xchg
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        b      SkipLLScCmpXchg
+NoUpdate_Cmp_Xchg
+        dmb     ish
+        ret     lr
+
+TryAgain1_Cmp_Xchg
+    ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation2
         ldaxr   x0, [x14]
         cmp     x0, x2
         bne     NoUpdate_Cmp_Xchg
@@ -697,6 +705,15 @@ TryAgain1_Cmp_Xchg
         stlxr   w12, x1, [x14]
         cbnz    w12, TryAgain1_Cmp_Xchg  ;; if failed, try again
         dmb     ish
+
+SkipLLScCmpXchg
+#endif
+
+        cbnz    x10, DoCardsCmpXchg
+Exit_Cmp_Xchg
+        ret     lr
+
+DoCardsCmpXchg
 
         eor     x12, x14, x15
         lsr     x12, x12, #21
@@ -710,11 +727,8 @@ TryAgain1_Cmp_Xchg
 
 CheckConcurrent_Cmp_Xchg
         PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  ;; !g_write_watch_table -> !concurrent
-        cbnz    x12, MarkCards_Cmp_Xchg
+        cbz     x12, Exit_Cmp_Xchg
         
-Exit_Cmp_Xchg
-        ret  lr
-
 MarkCards_Cmp_Xchg
     ;; fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  ;; fetch the page map
@@ -749,7 +763,7 @@ CardSet_Cmp_Xchg
     ;; check if concurrent marking is still not in progress
         PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  ;; !g_write_watch_table -> !concurrent
         cbnz    x12, DirtyCard_Cmp_Xchg
-        b       Exit_Cmp_Xchg
+        ret     lr
 
     ;; DIRTYING CARD FOR X14
 DirtyCard_Cmp_Xchg
@@ -766,7 +780,7 @@ DirtyPage_Cmp_Xchg
         ldrb    w3, [x17]
         tbnz    w3, #2, Exit_Cmp_Xchg
         strb    w16, [x17]
-        b       Exit_Cmp_Xchg
+        ret     lr
 
     ;; this is expected to be rare.
 RecordEscape_Cmp_Xchg
@@ -795,6 +809,8 @@ RecordEscape_Cmp_Xchg
         ldr     x2,      [sp, 16 * 2]
         ldp     x29,x30, [sp], 16 * 3
 
+        ;; x10 should be not 0 to indicate that can`t skip cards.
+        mov     x10,#1
         b       AssignAndMarkCards_Cmp_Xchg
     LEAF_END RhpCheckedLockCmpXchg
 
@@ -863,22 +879,22 @@ TryAgain_Xchg
 
 AssignAndMarkCards_Xchg
         mov    x14, x0                        ;; x14 = dst
-        mov    x15, x1                        ;; x15 = val    ;; TODO: VS not needed, can use x1
 TryAgain1_Xchg
     ALTERNATE_ENTRY RhpCheckedXchgAVLocation
+    ALTERNATE_ENTRY RhpCheckedXchgAVLocation2
         ldaxr   x17, [x0]
         stlxr   w12, x1, [x0]
         cbnz    w12, TryAgain1_Xchg
         mov     x0, x17
         dmb     ish
 
-        eor     x12, x14, x15
+        eor     x12, x14, x1
         lsr     x12, x12, #21
         cbz     x12, CheckConcurrent_Xchg ;; same region, just check if barrier is not concurrent
 
     ;; we will trash x2 and x3, this is a regular call, so it is ok
     ;; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        and     x2,  x15, #0xFFFFFFFFFFE00000     ;; source region
+        and     x2,  x1, #0xFFFFFFFFFFE00000     ;; source region
         ldr     w12, [x2, 16]
         tbz     x12, #1, MarkCards_Xchg
 
@@ -895,8 +911,8 @@ MarkCards_Xchg
         lsr     x17, x14, #30
         ldr     x17, [x12, x17, lsl #3]              ;; page
         sub     x2,  x14, x17   ;; offset in page
-        lsr     x15, x2,  #21   ;; group index
-        lsl     x15, x15, #1    ;; group offset (index * 2)
+        lsr     x1, x2,  #21   ;; group index
+        lsl     x1, x1, #1    ;; group offset (index * 2)
         lsr     x2,  x2,  #9    ;; card offset
 
     ;; check if concurrent marking is in progress
@@ -911,9 +927,9 @@ SetCard_Xchg
         strb    w16, [x17, x2]
 SetGroup_Xchg
         add     x12, x17, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x12, x1]
         cbnz    w3, CardSet_Xchg
-        strb    w16, [x12, x15]
+        strb    w16, [x12, x1]
 SetPage_Xchg
         ldrb    w3, [x17]
         cbnz    w3, CardSet_Xchg
@@ -933,9 +949,9 @@ DirtyCard_Xchg
         stlrb    w16, [x2]
 DirtyGroup_Xchg
         add     x12, x17, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x12, x1]
         tbnz    w3, #2, Exit_Xchg
-        strb    w16, [x12, x15]
+        strb    w16, [x12, x1]
 DirtyPage_Xchg
         ldrb    w3, [x17]
         tbnz    w3, #2, Exit_Xchg

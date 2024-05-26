@@ -100,6 +100,7 @@ public:
     }
 
     bool IsReuseCandidate(SatoriRegion* region);
+    bool IsRelocationCandidate(SatoriRegion* region);
     bool IsPromotionCandidate(SatoriRegion* region);
 
     LastRecordedGcInfo* GetLastGcInfo(gc_kind kind)
@@ -170,8 +171,6 @@ private:
 
     int m_syncBlockCacheScanDone;
 
-    void(SatoriRecycler::* m_activeHelperFn)();
-
     int m_condemnedGeneration;
 
     bool m_concurrentCardsDone;
@@ -216,6 +215,8 @@ private:
     volatile int m_activeHelpers;
     volatile int m_totalHelpers;
 
+    void(SatoriRecycler::* volatile m_activeHelperFn)();
+
     int64_t m_noWorkSince;
 
     LastRecordedGcInfo m_lastEphemeralGcInfo;
@@ -250,11 +251,10 @@ private:
     bool HelpOnceCore();
 
     void PushToEphemeralQueues(SatoriRegion* region);
-    void PushToEphemeralQueue(SatoriRegion* region);
     void PushToTenuredQueues(SatoriRegion* region);
 
     void AdjustHeuristics();
-    void DeactivateAllStacks();
+    void DeactivateAllocatingRegions();
 
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();
@@ -308,7 +308,6 @@ private:
     void Plan();
     void PlanWorker();
     void PlanRegions(SatoriRegionQueue* regions);
-    bool IsRelocatable(SatoriRegion* region);
     void DenyRelocation();
     void AddTenuredRegionsToPlan(SatoriRegionQueue* regions);
     void AddRelocationTarget(SatoriRegion* region);

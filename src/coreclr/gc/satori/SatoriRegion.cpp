@@ -340,7 +340,6 @@ bool SatoriRegion::HasFreeSpaceInTopBucket()
 
 bool SatoriRegion::HasFreeSpaceInTopNBuckets(int n)
 {
-    //TUNING: more buckets means more aggressive demotion.
     for (int bucket = Satori::FREELIST_COUNT -  n; bucket < Satori::FREELIST_COUNT; bucket++)
     {
         if (m_freeLists[bucket])
@@ -360,6 +359,7 @@ size_t SatoriRegion::GetMaxAllocEstimate()
         if (m_freeLists[bucket])
         {
             maxRemaining = max(maxRemaining, ((size_t)1 << (bucket + Satori::MIN_FREELIST_SIZE_BITS)));
+            break;
         }
     }
 
@@ -674,7 +674,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
 //  - locations before the first object and after the last object match to the First/Last objects
 //  - location must not be inside unparseable unconsumed budget when actively allocating.
 //
-// Typical usees:
+// Typical uses:
 //  - precise root marking.
 //         not in allocating mode (not attached to allocation context, parsable)
 //         always provides real refs into real objects.
@@ -1765,7 +1765,7 @@ void SatoriRegion::UpdateFinalizableTrackers()
             {
                 if (!finalizable->SameRegion(this))
                 {
-                    ptrdiff_t ptr = ((ptrdiff_t*)finalizable)[-1];
+                    ptrdiff_t ptr = *((ptrdiff_t*)finalizable - 1);
                     _ASSERTE(finalizable->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
                     finalizable = (SatoriObject*)-ptr;
                     _ASSERTE(finalizable->SameRegion(this));
@@ -1790,7 +1790,7 @@ void SatoriRegion::UpdatePointersInObject(SatoriObject* o)
                 SatoriObject* child = *ppObject;
                 if (child)
                 {
-                    ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                    ptrdiff_t ptr = *((ptrdiff_t*)child - 1);
                     if (ptr < 0)
                     {
                         _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
@@ -1858,9 +1858,14 @@ bool SatoriRegion::TryDemote()
     // TUNING: heuristic for demoting -  could consider occupancy, pinning, etc...
     //         the cost here is increasing  gen1, which is supposed to be short as 
     //         demoted objects will have to be marked regardless of cards.
-    //         we can't have > MAX_DEMOTED_OBJECTS_IN_REGION objects, but they can be big
+    //         we can't have > MAX_DEMOTED_OBJECTS_IN_REGION objects, but the objects
+    //         themselves can be big arrays.
+    //
+    //         the worst case is if this is a largest possible reusable region that is also
+    //         pointer-dense. Thus we will limit the size, just in case.
 
-   if (ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION)
+    if (ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION ||
+        Occupancy() > Satori::REGION_SIZE_GRANULARITY / 8)
     {
         return false;
     }

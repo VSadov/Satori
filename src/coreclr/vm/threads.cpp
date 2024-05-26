@@ -2939,7 +2939,7 @@ DWORD Thread::DoReentrantWaitWithRetry(HANDLE handle, DWORD timeout, WaitMode mo
             if (dwEnd - dwStart >= timeout)
             {
                 ret = WAIT_TIMEOUT;
-                return ret;
+                goto WaitCompleted;
             }
 
             timeout -= (DWORD)(dwEnd - dwStart);
@@ -2947,6 +2947,54 @@ DWORD Thread::DoReentrantWaitWithRetry(HANDLE handle, DWORD timeout, WaitMode mo
         }
     }
 #endif
+}
+
+
+                millis -= (DWORD)(dwEnd - dwStart);
+                dwStart = dwEnd;
+            }
+            goto retry;
+        }
+        else
+        {
+            // Probe all handles with a timeout as zero, succeed with the first
+            // handle that doesn't timeout.
+            ret = WAIT_OBJECT_0;
+            int i;
+            for (i = 0; i < countHandles; i++)
+            {
+            TryAgain:
+                // WaitForSingleObject won't pump memssage; we already probe enough space
+                // before calling this function and we don't want to fail here, so we don't
+                // do a transition to tolerant code here
+                DWORD subRet = WaitForSingleObject (handles[i], 0);
+                if ((subRet == WAIT_OBJECT_0) || (subRet == WAIT_FAILED))
+                    break;
+                if (subRet == WAIT_ABANDONED)
+                {
+                    ret = (ret - WAIT_OBJECT_0) + WAIT_ABANDONED;
+                    break;
+                }
+                // If we get alerted it just masks the real state of the current
+                // handle, so retry the wait.
+                if (subRet == WAIT_IO_COMPLETION)
+                    goto TryAgain;
+                _ASSERTE(subRet == WAIT_TIMEOUT);
+                ret++;
+            }
+        }
+    }
+
+WaitCompleted:
+
+    _ASSERTE((ret != WAIT_TIMEOUT) || (millis != INFINITE));
+
+    if (sendWaitEvents)
+    {
+        FireEtwWaitHandleWaitStop(GetClrInstanceId());
+    }
+
+    return ret;
 }
 
 
@@ -2973,7 +3021,305 @@ DWORD Thread::DoAppropriateAptStateWait(int numWaiters, HANDLE* pHandles, BOOL b
     return WaitForMultipleObjectsEx(numWaiters, pHandles, bWaitAll, timeout, alertable);
 }
 
-#ifdef TARGET_WINDOWS
+    ret = SignalObjectAndWait(pHandles[0], pHandles[1], millis, alertable);
+
+retry:
+
+    if (WAIT_IO_COMPLETION == ret)
+    {
+        _ASSERTE (alertable);
+        // We could be woken by some spurious APC or an EE APC queued to
+        // interrupt us. In the latter case the TS_Interrupted bit will be set
+        // in the thread state bits. Otherwise we just go back to sleep again.
+        if ((m_State & TS_Interrupted))
+        {
+            HandleThreadInterrupt();
+        }
+        if (INFINITE != millis)
+        {
+            dwEnd = minipal_lowres_ticks();
+            if (dwStart + millis <= dwEnd)
+            {
+                ret = WAIT_TIMEOUT;
+                goto WaitCompleted;
+            }
+
+            millis -= (DWORD)(dwEnd - dwStart);
+            dwStart = dwEnd;
+        }
+        //Retry case we don't want to signal again so only do the wait...
+        ret = WaitForSingleObjectEx(pHandles[1],millis,TRUE);
+        goto retry;
+    }
+
+    if (WAIT_FAILED == ret)
+    {
+        DWORD errorCode = ::GetLastError();
+        //If the handle to signal is a mutex and
+        //   the calling thread is not the owner, errorCode is ERROR_NOT_OWNER
+
+        switch(errorCode)
+        {
+            case ERROR_INVALID_HANDLE:
+            case ERROR_NOT_OWNER:
+            case ERROR_ACCESS_DENIED:
+                COMPlusThrowWin32();
+                break;
+
+            case ERROR_TOO_MANY_POSTS:
+                ret = ERROR_TOO_MANY_POSTS;
+                break;
+
+            default:
+                CONSISTENCY_CHECK_MSGF(0, ("This errorCode is not understood '(%d)''\n", errorCode));
+                COMPlusThrowWin32();
+                break;
+        }
+    }
+
+WaitCompleted:
+
+    //Check that the return state is valid
+    _ASSERTE(WAIT_OBJECT_0 == ret  ||
+         WAIT_ABANDONED == ret ||
+         WAIT_TIMEOUT == ret ||
+         WAIT_FAILED == ret  ||
+         ERROR_TOO_MANY_POSTS == ret);
+
+    //Wrong to time out if the wait was infinite
+    _ASSERTE((WAIT_TIMEOUT != ret) || (INFINITE != millis));
+
+    return ret;
+}
+
+DWORD Thread::DoSyncContextWait(OBJECTREF *pSyncCtxObj, int countHandles, HANDLE *handles, BOOL waitAll, DWORD millis)
+{
+    CONTRACTL
+    {
+        THROWS;
+        GC_TRIGGERS;
+        MODE_COOPERATIVE;
+        PRECONDITION(CheckPointer(handles));
+        PRECONDITION(IsProtectedByGCFrame (pSyncCtxObj));
+    }
+    CONTRACTL_END;
+    MethodDescCallSite invokeWaitMethodHelper(METHOD__SYNCHRONIZATION_CONTEXT__INVOKE_WAIT_METHOD_HELPER);
+
+    BASEARRAYREF handleArrayObj = (BASEARRAYREF)AllocatePrimitiveArray(ELEMENT_TYPE_I, countHandles);
+    memcpyNoGCRefs(handleArrayObj->GetDataPtr(), handles, countHandles * sizeof(HANDLE));
+
+    ARG_SLOT args[6] =
+    {
+        ObjToArgSlot(*pSyncCtxObj),
+        ObjToArgSlot(handleArrayObj),
+        BoolToArgSlot(waitAll),
+        (ARG_SLOT)millis,
+    };
+
+    return invokeWaitMethodHelper.Call_RetI4(args);
+}
+
+// Called out of SyncBlock::Wait() to block this thread until the Notify occurs.
+BOOL Thread::Block(INT32 timeOut, PendingSync *syncState)
+{
+    WRAPPER_NO_CONTRACT;
+
+    _ASSERTE(this == GetThread());
+
+    // Before calling Block, the SyncBlock queued us onto it's list of waiting threads.
+    // However, before calling Block the SyncBlock temporarily left the synchronized
+    // region.  This allowed threads to enter the region and call Notify, in which
+    // case we may have been signalled before we entered the Wait.  So we aren't in the
+    // m_WaitSB list any longer.  Not a problem: the following Wait will return
+    // immediately.  But it means we cannot enforce the following assertion:
+//    _ASSERTE(m_WaitSB != NULL);
+
+    return (Wait(syncState->m_WaitEventLink->m_Next->m_EventWait, timeOut, syncState) != WAIT_OBJECT_0);
+}
+
+
+// Return whether or not a timeout occurred.  TRUE=>we waited successfully
+DWORD Thread::Wait(HANDLE *objs, int cntObjs, INT32 timeOut, PendingSync *syncInfo)
+{
+    WRAPPER_NO_CONTRACT;
+
+    DWORD   dwResult;
+    DWORD   dwTimeOut32;
+
+    _ASSERTE(timeOut >= 0 || timeOut == INFINITE_TIMEOUT);
+
+    dwTimeOut32 = (timeOut == INFINITE_TIMEOUT
+                   ? INFINITE
+                   : (DWORD) timeOut);
+
+    dwResult = DoAppropriateWait(cntObjs, objs, FALSE /*=waitAll*/, dwTimeOut32,
+                                 WaitMode_Alertable /*alertable*/,
+                                 syncInfo);
+
+    // Either we succeeded in the wait, or we timed out
+    _ASSERTE((dwResult >= WAIT_OBJECT_0 && dwResult < (DWORD)(WAIT_OBJECT_0 + cntObjs)) ||
+             (dwResult == WAIT_TIMEOUT));
+
+    return dwResult;
+}
+
+// Return whether or not a timeout occurred.  TRUE=>we waited successfully
+DWORD Thread::Wait(CLREvent *pEvent, INT32 timeOut, PendingSync *syncInfo)
+{
+    WRAPPER_NO_CONTRACT;
+
+    DWORD   dwResult;
+    DWORD   dwTimeOut32;
+
+    _ASSERTE(timeOut >= 0 || timeOut == INFINITE_TIMEOUT);
+
+    dwTimeOut32 = (timeOut == INFINITE_TIMEOUT
+                   ? INFINITE
+                   : (DWORD) timeOut);
+
+    dwResult = pEvent->Wait(dwTimeOut32, TRUE /*alertable*/, syncInfo);
+
+    // Either we succeeded in the wait, or we timed out
+    _ASSERTE((dwResult == WAIT_OBJECT_0) ||
+             (dwResult == WAIT_TIMEOUT));
+
+    return dwResult;
+}
+
+#define WAIT_INTERRUPT_THREADABORT 0x1
+#define WAIT_INTERRUPT_INTERRUPT 0x2
+#define WAIT_INTERRUPT_OTHEREXCEPTION 0x4
+
+// When we restore
+DWORD EnterMonitorForRestore(SyncBlock *pSB)
+{
+    CONTRACTL
+    {
+        THROWS;
+        GC_TRIGGERS;
+        MODE_COOPERATIVE;
+    }
+    CONTRACTL_END;
+
+    DWORD state = 0;
+    EX_TRY
+    {
+        pSB->EnterMonitor();
+    }
+    EX_CATCH
+    {
+        // Assume it is a normal exception unless proven.
+        state = WAIT_INTERRUPT_OTHEREXCEPTION;
+        Thread *pThread = GetThread();
+        if (pThread->IsAbortInitiated())
+        {
+            state = WAIT_INTERRUPT_THREADABORT;
+        }
+        else if (__pException != NULL)
+        {
+            if (__pException->GetHR() == COR_E_THREADINTERRUPTED)
+            {
+                state = WAIT_INTERRUPT_INTERRUPT;
+            }
+        }
+    }
+    EX_END_CATCH
+
+    return state;
+}
+
+// This is the service that backs us out of a wait that we interrupted.  We must
+// re-enter the monitor to the same extent the SyncBlock would, if we returned
+// through it (instead of throwing through it).  And we need to cancel the wait,
+// if it didn't get notified away while we are processing the interrupt.
+void PendingSync::Restore(BOOL bRemoveFromSB)
+{
+    CONTRACTL {
+        THROWS;
+        GC_TRIGGERS;
+    }
+    CONTRACTL_END;
+
+    _ASSERTE(m_EnterCount);
+
+    Thread      *pCurThread = GetThread();
+
+    _ASSERTE (pCurThread == m_OwnerThread);
+
+    WaitEventLink *pRealWaitEventLink = m_WaitEventLink->m_Next;
+
+    pRealWaitEventLink->m_RefCount --;
+    if (pRealWaitEventLink->m_RefCount == 0)
+    {
+        if (bRemoveFromSB) {
+            ThreadQueue::RemoveThread(pCurThread, pRealWaitEventLink->m_WaitSB);
+        }
+        if (pRealWaitEventLink->m_EventWait != &pCurThread->m_EventWait) {
+            // Put the event back to the pool.
+            StoreEventToEventStore(pRealWaitEventLink->m_EventWait);
+        }
+        // Remove from the link.
+        m_WaitEventLink->m_Next = m_WaitEventLink->m_Next->m_Next;
+    }
+
+    // Someone up the stack is responsible for keeping the syncblock alive by protecting
+    // the object that owns it.  But this relies on assertions that EnterMonitor is only
+    // called in cooperative mode.  Even though we are safe in preemptive, do the
+    // switch.
+    GCX_COOP_THREAD_EXISTS(pCurThread);
+    // We need to make sure that EnterMonitor succeeds.  We may have code like
+    // lock (a)
+    // {
+    // a.Wait
+    // }
+    // We need to make sure that the finally from lock is executed with the lock owned.
+    DWORD state = 0;
+    SyncBlock *psb = (SyncBlock*)((DWORD_PTR)pRealWaitEventLink->m_WaitSB & ~1);
+    for (LONG i=0; i < m_EnterCount;)
+    {
+        if ((state & (WAIT_INTERRUPT_THREADABORT | WAIT_INTERRUPT_INTERRUPT)) != 0)
+        {
+            // If the thread has been interrupted by Thread.Interrupt or Thread.Abort,
+            // disable the check at the beginning of DoAppropriateWait
+            pCurThread->SetThreadStateNC(Thread::TSNC_InRestoringSyncBlock);
+        }
+        DWORD result = EnterMonitorForRestore(psb);
+        if (result == 0)
+        {
+            i++;
+        }
+        else
+        {
+            // We block the thread until the thread acquires the lock.
+            // This is to make sure that when catch/finally is executed, the thread has the lock.
+            // We do not want thread to run its catch/finally if the lock is not taken.
+            state |= result;
+
+            // If the thread is being rudely aborted, and the thread has
+            // no Cer on stack, we will not run managed code to release the
+            // lock, so we can terminate the loop.
+            if (pCurThread->IsRudeAbortInitiated() &&
+                !pCurThread->IsExecutingWithinCer())
+            {
+                break;
+            }
+        }
+    }
+
+    pCurThread->ResetThreadStateNC(Thread::TSNC_InRestoringSyncBlock);
+
+    if ((state & WAIT_INTERRUPT_THREADABORT) != 0)
+    {
+        pCurThread->HandleThreadAbort();
+    }
+    else if ((state & WAIT_INTERRUPT_INTERRUPT) != 0)
+    {
+        COMPlusThrow(kThreadInterruptedException);
+    }
+}
+
+
+
 // This is the callback from the OS, when we queue an APC to interrupt a waiting thread.
 // The callback occurs on the thread we wish to interrupt.  It is a STATIC method.
 void WINAPI Thread::UserInterruptAPC(ULONG_PTR data)

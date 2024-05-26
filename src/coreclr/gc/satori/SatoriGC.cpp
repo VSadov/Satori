@@ -470,11 +470,11 @@ void SatoriGC::PublishObject(uint8_t* obj)
     // until we get here.
     if (region->Size() > Satori::REGION_SIZE_GRANULARITY)
     {
-        _ASSERTE(!region->IsAttachedToAllocatingOwner() && region->Generation() < 2);
-        region->SetGenerationRelease(1);
-        region->SetOccupancy(so->Size(), 1);
+        _ASSERTE(!region->IsAttachedToAllocatingOwner() && region->Generation() == -1);
 
-        // promote to gen2
+        // promote to gen2 and take out of -1, since now the region is parseable
+        region->SetGenerationRelease(2);
+        region->SetOccupancy(so->Size(), 1);
         m_heap->Recycler()->AddTenuredRegion(region);
 
         // the region has seen no writes, so no need to worry about cards.
@@ -490,6 +490,8 @@ void SatoriGC::PublishObject(uint8_t* obj)
         region->DecrementUnfinishedAlloc();
         so->UnsetUnfinished();
     }
+
+    _ASSERTE(!so->IsUnfinished());
 }
 
 void SatoriGC::SetWaitForGCEvent()

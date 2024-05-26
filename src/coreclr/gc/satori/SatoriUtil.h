@@ -91,6 +91,9 @@ namespace Satori
     static const size_t MIN_FREELIST_SIZE = 1 << MIN_FREELIST_SIZE_BITS;
     static const int FREELIST_COUNT = Satori::REGION_BITS - MIN_FREELIST_SIZE_BITS;
 
+    // TUNING: more buckets means more aggressive demotion.
+    static const int REUSABLE_BUCKETS = 6;
+
     // we will limit number of demoted objects to not use too many chunks
     // it will softly limit the occupancy as well.
     const static size_t MAX_DEMOTED_OBJECTS_IN_REGION = 2048;
