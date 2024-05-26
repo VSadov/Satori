@@ -416,6 +416,10 @@ LOCAL_LABEL(NoBarrierXchg):
 
 #else  //FEATURE_SATORI_GC   ######################################################
 
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+.arch_extension lse
+#endif
+
 // void JIT_ByRefWriteBarrier
 // On entry:
 //   x13  : the source address (points to object reference to write)
@@ -601,11 +605,10 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
 
     // 4) check if the source is escaped
         and         x12, x15, #0xFFFFFFFFFFE00000  // source region
-        add         x15, x15, #8                   // escape bit is MT + 1
-        ubfx        x17, x15, #9,#12               // word index = (dst >> 9) & 0x1FFFFF
+        add         x16, x15, #8                   // escape bit is MT + 1
+        ubfx        x17, x16, #9,#12               // word index = (dst >> 9) & 0x1FFFFF
         ldr         x17, [x12, x17, lsl #3]        // mark word = [region + index * 8]
-        lsr         x12, x15, #3                   // bit = (dst >> 3) [& 63]
-        sub         x15, x15, #8     // undo MT + 1
+        lsr         x12, x16, #3                   // bit = (dst >> 3) [& 63]
         lsr         x17, x17, x12
         tbnz        x17, #0, LOCAL_LABEL(AssignAndMarkCards)        // source is already escaped.
 
@@ -621,9 +624,7 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         stp     x10,x11, [sp, 16 * 6]
         stp     x12,x13, [sp, 16 * 7]
         stp     x14,x15, [sp, 16 * 8]
-#ifndef TARGET_OSX
-        str     x18,     [sp, -16]!
-#endif
+
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         // mov  x0, x14  EscapeFn does not use dst, it is just to avoid arg shuffle on x64
         mov  x1, x15
@@ -631,9 +632,6 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         ldr  x12, [x2, #8]                 // EscapeFn address
         blr  x12
 
-#ifndef TARGET_OSX
-        ldr     x18,     [sp], 16
-#endif
         ldp     x0, x1,  [sp, 16 * 1]
         ldp     x2, x3,  [sp, 16 * 2]
         ldp     x4, x5,  [sp, 16 * 3]
@@ -665,20 +663,20 @@ LEAF_END RhpAssignRef, _TEXT
 //
 // On exit:
 //  x0: original value of objectref
-//  x10, x12, x17: trashed
+//  x10, x12, x16, x17: trashed
 //
 LEAF_ENTRY RhpCheckedLockCmpXchg
     // check if dst is in heap
-        PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x12
-        add     x12, x12, x0, lsr #30
+    // x10 contains region map, also, nonzero x10 means do not skip cards 
+        PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x10
+        add     x12, x10, x0, lsr #30
         ldrb    w12, [x12]
         cbz     x12, LOCAL_LABEL(JustAssign_Cmp_Xchg)
 
     // check for escaping assignment
     // 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
-        PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x12
-        add     x12, x12, x1, lsr #30
+        add     x12, x10, x1, lsr #30
         ldrb    w12, [x12]
         cbz     x12, LOCAL_LABEL(JustAssign_Cmp_Xchg)
 #else
@@ -709,42 +707,34 @@ LEAF_ENTRY RhpCheckedLockCmpXchg
         tbnz        x17, #0, LOCAL_LABEL(RecordEscape_Cmp_Xchg) // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign_Cmp_Xchg):
-#ifdef TARGET_OSX
+        // skip setting cards
 ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocationNotHeap
-        casal  x2, x1, [x0]                  // exchange
-        mov    x0, x2                        // x0 = result
-    LOCAL_LABEL(NoUpdate_Cmp_Xchg):
-        ret    lr
-#else
-        mov     x14, x0
-    LOCAL_LABEL(TryAgain_Cmp_Xchg):
-ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocationNotHeap
-        ldaxr   x0, [x14]
-        cmp     x0, x2
-        bne     LOCAL_LABEL(NoUpdate_Cmp_Xchg)
-
-        // Current value matches comparand, attempt to update with the new value.
-        stlxr   w12, x1, [x14]
-        cbnz    w12, LOCAL_LABEL(TryAgain_Cmp_Xchg)  // if failed, try again
-
-    LOCAL_LABEL(NoUpdate_Cmp_Xchg):
-        dmb     ish
-        ret     lr
-#endif
+        mov      x10, #0
 
     LOCAL_LABEL(AssignAndMarkCards_Cmp_Xchg):
         mov    x14, x0                       // x14 = dst
         mov    x15, x1                       // x15 = val
-#ifdef TARGET_OSX
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        PREPARE_EXTERNAL_VAR_INDIRECT_W g_cpuFeatures, 16
+        tbz    w16, #ARM64_ATOMICS_FEATURE_FLAG_BIT, LOCAL_LABEL(TryAgain1_Cmp_Xchg)
+#endif
+
         mov    x17, x2
 ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         casal  x2, x1, [x0]                  // exchange
         mov    x0, x2                        // x0 = result
         cmp    x2, x17
-        bne    LOCAL_LABEL(NoUpdate_Cmp_Xchg)
-#else
+        bne    LOCAL_LABEL(Exit_Cmp_Xchg)
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        b      LOCAL_LABEL(SkipLLScCmpXchg)
+LOCAL_LABEL(NoUpdate_Cmp_Xchg):
+        dmb     ish
+        ret     lr
+
     LOCAL_LABEL(TryAgain1_Cmp_Xchg):
-ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
+ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation2
         ldaxr   x0, [x14]
         cmp     x0, x2
         bne     LOCAL_LABEL(NoUpdate_Cmp_Xchg)
@@ -753,7 +743,15 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         stlxr   w12, x1, [x14]
         cbnz    w12, LOCAL_LABEL(TryAgain1_Cmp_Xchg)  // if failed, try again
         dmb     ish
+
+LOCAL_LABEL(SkipLLScCmpXchg):
 #endif
+
+        cbnz    x10, LOCAL_LABEL(DoCardsCmpXchg)
+LOCAL_LABEL(Exit_Cmp_Xchg):
+        ret     lr
+
+LOCAL_LABEL(DoCardsCmpXchg):
 
         eor     x12, x14, x15
         lsr     x12, x12, #21
@@ -767,11 +765,8 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
 
     LOCAL_LABEL(CheckConcurrent_Cmp_Xchg):
         PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  // !g_write_watch_table -> !concurrent
-        cbnz    x12, LOCAL_LABEL(MarkCards_Cmp_Xchg)
+        cbz     x12, LOCAL_LABEL(Exit_Cmp_Xchg)
         
-    LOCAL_LABEL(Exit_Cmp_Xchg):
-        ret  lr
-
     LOCAL_LABEL(MarkCards_Cmp_Xchg):
     // fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  // fetch the page map
@@ -806,7 +801,7 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
     // check if concurrent marking is still not in progress
         PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  // !g_write_watch_table -> !concurrent
         cbnz    x12, LOCAL_LABEL(DirtyCard_Cmp_Xchg)
-        b       LOCAL_LABEL(Exit_Cmp_Xchg)
+        ret     lr
 
     // DIRTYING CARD FOR X14
     LOCAL_LABEL(DirtyCard_Cmp_Xchg):
@@ -823,7 +818,7 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         ldrb    w3, [x17]
         tbnz    w3, #2, LOCAL_LABEL(Exit_Cmp_Xchg)
         strb    w16, [x17]
-        b       LOCAL_LABEL(Exit_Cmp_Xchg)
+        ret     lr
 
     // this is expected to be rare.
     LOCAL_LABEL(RecordEscape_Cmp_Xchg):
@@ -852,6 +847,8 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         ldr     x2,      [sp, 16 * 2]
         ldp     x29,x30, [sp], 16 * 3
 
+        // x10 should be not 0 to indicate that can`t skip cards.
+        mov     x10,#1
         b       LOCAL_LABEL(AssignAndMarkCards_Cmp_Xchg)
 LEAF_END RhpCheckedLockCmpXchg, _TEXT
 
@@ -931,13 +928,13 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocationNotHeap
 
     LOCAL_LABEL(AssignAndMarkCards_Xchg):
         mov    x14, x0                        // x14 = dst
-        mov    x15, x1                        // x15 = val    // TODO: VS not needed, can use x1
 #ifdef TARGET_OSX
 ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         swpal  x1, x0, [x0]                   // exchange
 #else
     LOCAL_LABEL(TryAgain1_Xchg):
 ALTERNATE_ENTRY RhpCheckedXchgAVLocation
+ALTERNATE_ENTRY RhpCheckedXchgAVLocation2
         ldaxr   x17, [x0]
         stlxr   w12, x1, [x0]
         cbnz    w12, LOCAL_LABEL(TryAgain1_Xchg)
@@ -945,13 +942,13 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         dmb     ish
 #endif
 
-        eor     x12, x14, x15
+        eor     x12, x14, x1
         lsr     x12, x12, #21
         cbz     x12, LOCAL_LABEL(CheckConcurrent_Xchg) // same region, just check if barrier is not concurrent
 
     // we will trash x2 and x3, this is a regular call, so it is ok
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        and     x2,  x15, #0xFFFFFFFFFFE00000     // source region
+        and     x2,  x1, #0xFFFFFFFFFFE00000     // source region
         ldr     w12, [x2, 16]
         tbz     x12, #1, LOCAL_LABEL(MarkCards_Xchg)
 
@@ -968,8 +965,8 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         lsr     x17, x14, #30
         ldr     x17, [x12, x17, lsl #3]              // page
         sub     x2,  x14, x17   // offset in page
-        lsr     x15, x2,  #21   // group index
-        lsl     x15, x15, #1    // group offset (index * 2)
+        lsr     x1, x2,  #21   // group index
+        lsl     x1, x1, #1    // group offset (index * 2)
         lsr     x2,  x2,  #9    // card offset
 
     // check if concurrent marking is in progress
@@ -984,9 +981,9 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         strb    w16, [x17, x2]
     LOCAL_LABEL(SetGroup_Xchg):
         add     x12, x17, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x12, x1]
         cbnz    w3, LOCAL_LABEL(CardSet_Xchg)
-        strb    w16, [x12, x15]
+        strb    w16, [x12, x1]
     LOCAL_LABEL(SetPage_Xchg):
         ldrb    w3, [x17]
         cbnz    w3, LOCAL_LABEL(CardSet_Xchg)
@@ -1006,9 +1003,9 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         stlrb    w16, [x2]
     LOCAL_LABEL(DirtyGroup_Xchg):
         add     x12, x17, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x12, x1]
         tbnz    w3, #2, LOCAL_LABEL(Exit_Xchg)
-        strb    w16, [x12, x15]
+        strb    w16, [x12, x1]
     LOCAL_LABEL(DirtyPage_Xchg):
         ldrb    w3, [x17]
         tbnz    w3, #2, LOCAL_LABEL(Exit_Xchg)
@@ -1042,5 +1039,8 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         b       LOCAL_LABEL(AssignAndMarkCards_Xchg)
 LEAF_END RhpCheckedXchg, _TEXT
 
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+.arch_extension nolse
+#endif
 
 #endif //FEATURE_SATORI_GC
