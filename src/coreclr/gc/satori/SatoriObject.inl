@@ -149,18 +149,18 @@ inline void SatoriObject::UnSuppressFinalization()
 
 inline int32_t SatoriObject::GetNextInLocalMarkStack()
 {
-    return ((int32_t*)this)[-2];
+    return *((int32_t*)this - 2);
 }
 
 inline void SatoriObject::SetNextInLocalMarkStack(int32_t next)
 {
     _ASSERTE(GetNextInLocalMarkStack() == 0);
-    ((int32_t*)this)[-2] = next;
+    *((int32_t*)this - 2) = next;
 }
 
 inline void SatoriObject::ClearNextInLocalMarkStack()
 {
-    ((int32_t*)this)[-2] = 0;
+    *((int32_t*)this - 2) = 0;
 }
 
 inline int32_t SatoriObject::GetLocalReloc()
@@ -191,7 +191,7 @@ inline void SatoriObject::ClearMarkCompactStateForRelocation()
 
 inline void SatoriObject::CleanSyncBlock()
 {
-    ((size_t*)this)[-1] = 0;
+    *((size_t*)this - 1) = 0;
 }
 
 inline int SatoriObject::GetMarkBitAndWord(size_t* bitmapIndex)
@@ -204,31 +204,31 @@ inline int SatoriObject::GetMarkBitAndWord(size_t* bitmapIndex)
 // used by pinned allocations
 inline void SatoriObject::SetUnmovable()
 {
-    ((DWORD*)this)[-1] |= BIT_SBLK_GC_RESERVE;
+    *((DWORD*)this - 1) |= BIT_SBLK_GC_RESERVE;
 }
 
 inline bool SatoriObject::IsUnmovable()
 {
-    return ((DWORD*)this)[-1] & BIT_SBLK_GC_RESERVE;
+    return *((DWORD*)this - 1) & BIT_SBLK_GC_RESERVE;
 }
 
 // #define BIT_SBLK_UNUSED                     0x80000000
 #define BIT_SBLK_UNFINISHED                     0x80000000
 
 // used by shared allocations
-inline void SatoriObject::SetUnfinished()
+inline void SatoriObject::CleanSyncBlockAndSetUnfinished()
 {
-    ((DWORD*)this)[-1] |= BIT_SBLK_UNFINISHED;
+    *((size_t*)this - 1) = (size_t)BIT_SBLK_UNFINISHED << 32;
 }
 
 inline bool SatoriObject::IsUnfinished()
 {
-    return ((DWORD*)this)[-1] & BIT_SBLK_UNFINISHED;
+    return *((DWORD*)this - 1) & BIT_SBLK_UNFINISHED;
 }
 
 inline void SatoriObject::UnsetUnfinished()
 {
-    ((DWORD*)this)[-1] &= ~BIT_SBLK_UNFINISHED;
+    *((DWORD*)this - 1) &= ~BIT_SBLK_UNFINISHED;
 }
 
 template <typename F>

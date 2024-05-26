@@ -294,15 +294,11 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 
 SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
-    m_heap->Recycler()->HelpOnce();
 
 // tryAgain:
     if (!context->RegularRegion())
     {
-        if ((context->alloc_bytes ^ (context->alloc_bytes + SatoriUtil::MinZeroInitSize())) >> Satori::REGION_BITS)
-        {
-            m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
-        }
+        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
 
         SatoriObject* freeObj = context->alloc_ptr != 0 ? context->FinishAllocFromShared() : nullptr;
 
@@ -317,6 +313,18 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             }
 
             return AllocRegularShared(context, size, flags);
+        }
+    }
+    else
+    {
+        size_t expectedAlloc = max(size, SatoriUtil::MinZeroInitSize());
+        if ((context->alloc_bytes ^ (context->alloc_bytes + expectedAlloc)) >> Satori::REGION_BITS)
+        {
+            m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
+        }
+        else
+        {
+            m_heap->Recycler()->HelpOnce();
         }
     }
 
@@ -411,7 +419,6 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             //  goto tryAgain;
         }
 
-        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
         TryGetRegularRegion(region);
 
         if (region == nullptr)
@@ -610,21 +617,27 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
         return AllocHuge(context, size, flags);
     }
 
-    m_heap->Recycler()->HelpOnce();
-
 tryAgain:
     if (!context->LargeRegion() &&
         size < Satori::REGION_SIZE_GRANULARITY / 2)
     {
-        if ((context->alloc_bytes_uoh ^ (context->alloc_bytes_uoh + size)) >> Satori::REGION_BITS)
-        {
-            m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_loh);
-        }
+        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_loh);
 
         //m_largeAlocLock.Enter();
         if (m_largeAlocLock.TryEnter())
         {
             return AllocLargeShared(context, size, flags);
+        }
+    }
+    else
+    {
+        if ((context->alloc_bytes_uoh ^ (context->alloc_bytes_uoh + size)) >> Satori::REGION_BITS)
+        {
+            m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
+        }
+        else
+        {
+            m_heap->Recycler()->HelpOnce();
         }
     }
 
@@ -756,8 +769,7 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
                 m_largeAlocLock.Leave();
 
                 context->alloc_bytes_uoh += size;
-                result->CleanSyncBlock();
-                result->SetUnfinished();
+                result->CleanSyncBlockAndSetUnfinished();
                 if (!(flags & GC_ALLOC_ZEROING_OPTIONAL))
                 {
                     memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));
@@ -866,10 +878,7 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
         return AllocHuge(context, size, flags);
     }
 
-    if ((context->alloc_bytes_uoh ^ (context->alloc_bytes_uoh + size)) >> Satori::REGION_BITS)
-    {
-        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
-    }
+    m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
 
     // if can't get a lock, let AllocLarge handle this.
     if (!m_pinnedAlocLock.TryEnter())
@@ -912,8 +921,7 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
                 m_pinnedAlocLock.Leave();
 
                 context->alloc_bytes_uoh += size;
-                result->CleanSyncBlock();
-                result->SetUnfinished();
+                result->CleanSyncBlockAndSetUnfinished();
                 if (!(flags & GC_ALLOC_ZEROING_OPTIONAL))
                 {
                     memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));

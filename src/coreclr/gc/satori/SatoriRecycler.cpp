@@ -190,7 +190,7 @@ void SatoriRecycler::HelperThreadFn(void* param)
 
         recycler->m_gateSignaled = 0;
         Interlocked::Increment(&recycler->m_activeHelpers);
-        auto activeHelper = VolatileLoadWithoutBarrier(&recycler->m_activeHelperFn);
+        auto activeHelper = recycler->m_activeHelperFn;
         if (activeHelper)
         {
             (recycler->*activeHelper)();
@@ -284,44 +284,42 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
     {
         m_ephemeralWithUnmarkedDemoted->Push(region);
     }
-    else if (region->HasFinalizables())
-    {
-        m_ephemeralFinalizationTrackingRegions->Push(region);
-    }
     else
     {
-        PushToEphemeralQueue(region);
-    }
-}
+        if (IsRelocationCandidate(region))
+        {
+            Interlocked::Increment(&m_relocatableEphemeralEstimate);
+        }
 
-void SatoriRecycler::PushToEphemeralQueue(SatoriRegion* region)
-{
-    if (IsRelocatable(region))
-    {
-        Interlocked::Increment(&m_relocatableEphemeralEstimate);
-    }
+        if (IsPromotionCandidate(region))
+        {
+            Interlocked::Increment(&m_promotionEstimate);
+        }
 
-    if (IsPromotionCandidate(region))
-    {
-        Interlocked::Increment(&m_promotionEstimate);
+        if (region->HasFinalizables())
+        {
+            m_ephemeralFinalizationTrackingRegions->Push(region);
+        }
+        else
+        {
+            m_ephemeralRegions->Push(region);
+        }
     }
-
-    m_ephemeralRegions->Push(region);
 }
 
 void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
 {
+    if (IsRelocationCandidate(region))
+    {
+        Interlocked::Increment(&m_relocatableTenuredEstimate);
+    }
+
     if (region->HasFinalizables())
     {
         m_tenuredFinalizationTrackingRegions->Push(region);
     }
     else
     {
-        if (IsRelocatable(region))
-        {
-            Interlocked::Increment(&m_relocatableTenuredEstimate);
-        }
-
         m_tenuredRegions->Push(region);
     }
 }
@@ -368,12 +366,9 @@ void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
     _ASSERTE(!region->HasMarksSet());
     _ASSERTE(!region->DoNotSweep());
 
-    region->Verify();
+    region->Verify(/* allowMarked */ SatoriUtil::IsConcurrent() && SatoriUtil::IsConservativeMode());
     PushToTenuredQueues(region);
-    _ASSERTE(region->Generation() == 1);
-    // published object cannot become gen2 concurrently
-    // ordinary set here, but the following full fence ensures that we publish after
-    region->SetGeneration(2);
+    _ASSERTE(region->Generation() == 2);
     Interlocked::ExchangeAdd64(&m_gen2AddedSinceLastCollection, region->Occupancy());
     region->RearmCardsForTenured();
 }
@@ -705,11 +700,6 @@ void SatoriRecycler::ConcurrentHelp()
 
 int SatoriRecycler::MaxHelpers()
 {
-    if (IsBlockingPhase())
-    {
-        return GCToOSInterface::GetTotalProcessorCount() - 1;
-    }
-
     int helperCount = SatoriUtil::MaxHelpersCount();
     if (helperCount < 0)
     {
@@ -1016,7 +1006,8 @@ void SatoriRecycler::BlockingCollectImpl()
     }
 #endif
 
-    DeactivateAllStacks();
+    // this will make the heap officially parseable.
+    DeactivateAllocatingRegions();
 
     m_condemnedRegionsCount = m_condemnedGeneration == 2 ?
         RegionCount() :
@@ -1244,7 +1235,7 @@ void SatoriRecycler::DeactivateFn(gc_alloc_context* gcContext, void* param)
     recycler->ReportThreadAllocBytes(context->alloc_bytes + context->alloc_bytes_uoh, /*islive*/ true);
 }
 
-void SatoriRecycler::DeactivateAllStacks()
+void SatoriRecycler::DeactivateAllocatingRegions()
 {
     m_currentAllocBytesLiveThreads = 0;
     GCToEEInterface::GcEnumAllocContexts(DeactivateFn, m_heap->Recycler());
@@ -1361,7 +1352,7 @@ void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t
         }
     }
 
-    ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
+    ptrdiff_t ptr = *((ptrdiff_t*)o - 1);
     if (ptr < 0)
     {
         ptr = -ptr;
@@ -2121,7 +2112,8 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
                             SatoriObject* o = region->FindObject(start);
 
-                            // TODO: VS can do only if we cleaned.
+                            // NOTE: We could do this only if we cleaned any of the cards, but it does not seem worth checking that.
+                            //       Most likely we cleaned something.
                             // read marks after cleaning cards
                             MemoryBarrier();
 
@@ -2734,7 +2726,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                         SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
                                         if (child && !child->IsExternal())
                                         {
-                                            ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                                            ptrdiff_t ptr = *((ptrdiff_t*)child - 1);
                                             if (ptr < 0)
                                             {
                                                 _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
@@ -2947,7 +2939,14 @@ void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContex
             }
             else
             {
-                PushToEphemeralQueue(region);
+                if (region->Generation() == 2)
+                {
+                    m_tenuredRegions->Push(region);
+                }
+                else
+                {
+                    m_ephemeralRegions->Push(region);
+                }
             }
         } while ((region = queue->TryPop()));
     }
@@ -2986,7 +2985,14 @@ void SatoriRecycler::QueueCriticalFinalizablesWorker()
                 }
             );
 
-            PushToEphemeralQueue(region);
+            if (region->Generation() == 2)
+            {
+                m_tenuredRegions->Push(region);
+            }
+            else
+            {
+                m_ephemeralRegions->Push(region);
+            }
         } while ((region = m_finalizationPendingRegions->TryPop()));
 
 
@@ -3130,18 +3136,6 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
     }
 }
 
-bool SatoriRecycler::IsRelocatable(SatoriRegion* region)
-{
-    if (region->Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2 || // too full
-        region->HasPinnedObjects()                                   // pinned cannot be evacuated
-        )
-    {
-        return false;
-    }
-
-    return true;
-}
-
 void SatoriRecycler::Plan()
 {
     _ASSERTE(m_ephemeralFinalizationTrackingRegions->IsEmpty());
@@ -3175,9 +3169,14 @@ void SatoriRecycler::Plan()
         m_relocatableTenuredEstimate = 0;
     }
 
+    // If we do relocation, we are committed to do pointer updates.
+    // At an extreme we do not want to relocate one region
+    // and then go through 100 regions and update pointers.
+    //
     // TUNING: 
-    // If we can reduce condemned generation by 12-25% regions, then do relocations.
-    size_t desiredRelocating = m_condemnedRegionsCount / 4;
+    // As crude criteria, we will do relocations if at least 1/4
+    // of condemened regions want to participate. And at least 2.
+    size_t desiredRelocating = m_condemnedRegionsCount / 4 + 2;
 
     if (m_isRelocating == false ||
         relocatableEstimate <= desiredRelocating)
@@ -3248,10 +3247,18 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         {
             _ASSERTE(curRegion->Generation() <= m_condemnedGeneration);
 
-            // select evacuation candidates and relocation targets according to sizes.
-            if (IsRelocatable(curRegion))
+            // select relocation candidates and relocation targets according to sizes.
+            if (IsRelocationCandidate(curRegion))
             {
-                m_relocatingRegions->Push(curRegion);
+                // when relocating, we want to start with larger regions
+                if (curRegion->Occupancy() > Satori::REGION_SIZE_GRANULARITY * 2 / 5)
+                {
+                    m_relocatingRegions->Push(curRegion);
+                }
+                else
+                {
+                    m_relocatingRegions->Enqueue(curRegion);
+                }
             }
             else
             {
@@ -3277,6 +3284,7 @@ void SatoriRecycler::AddRelocationTarget(SatoriRegion* region)
         _ASSERTE(bucket >= 0);
         _ASSERTE(bucket < Satori::FREELIST_COUNT);
 
+        // within the same bucket, we'd prefer to fill up pinned ones first
         if (region->HasPinnedObjects())
         {
             m_relocationTargets[bucket]->Push(region);
@@ -3310,19 +3318,21 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool exis
         0;
 
     _ASSERTE(bucket >= 0);
-    _ASSERTE(bucket < Satori::FREELIST_COUNT);
 
-    for (; bucket < Satori::FREELIST_COUNT; bucket++)
+    if(bucket < Satori::FREELIST_COUNT)
     {
-        SatoriRegionQueue* queue = m_relocationTargets[bucket];
-        if (queue)
+        for (; bucket < Satori::FREELIST_COUNT; bucket++)
         {
-            SatoriRegion* region = queue->TryPop();
-            if (region)
+            SatoriRegionQueue* queue = m_relocationTargets[bucket];
+            if (queue)
             {
-                size_t allocStart = region->StartAllocating(allocSize);
-                _ASSERTE(allocStart);
-                return region;
+                SatoriRegion* region = queue->TryPop();
+                if (region)
+                {
+                    size_t allocStart = region->StartAllocating(allocSize);
+                    _ASSERTE(allocStart);
+                    return region;
+                }
             }
         }
     }
@@ -3455,7 +3465,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         memcpy((void*)(dst - sizeof(size_t)), (void*)(o->Start() - sizeof(size_t)), size);
         // record the new location of the object by storing it in the syncblock space.
         // make it negative so it is different from a normal syncblock.
-        ((ptrdiff_t*)o)[-1] = -(ptrdiff_t)dst;
+        *((ptrdiff_t*)o - 1) = -(ptrdiff_t)dst;
 
         if (needToCopyMarks)
         {
@@ -3591,7 +3601,7 @@ void SatoriRecycler::UpdateRootsWorker()
                 [&](SatoriObject** ppObject)
                 {
                     SatoriObject* o = *ppObject;
-                    ptrdiff_t ptr = ((ptrdiff_t*)o)[-1];
+                    ptrdiff_t ptr = *((ptrdiff_t*)o - 1);
                     if (ptr < 0)
                     {
                         _ASSERTE(o->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
@@ -3652,7 +3662,7 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
                     SatoriObject* child = *ppObject;
                     if (child)
                     {
-                        ptrdiff_t ptr = ((ptrdiff_t*)child)[-1];
+                        ptrdiff_t ptr = *((ptrdiff_t*)child - 1);
                         if (ptr < 0)
                         {
                             _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
@@ -3800,12 +3810,54 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
     }
 }
 
+// ideally, we just reuse the region for allocations.
+// the region must have enough free space and not be very fragmented
 bool SatoriRecycler::IsReuseCandidate(SatoriRegion* region)
 {
-    return region->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 2 &&
-        region->HasFreeSpaceInTopNBuckets(6);
+    if (!region->HasFreeSpaceInTopNBuckets(Satori::REUSABLE_BUCKETS))
+        return false;
+
+    // TUNING: here we are roughly estimating reuse goodness. A better idea?
+    //       i.e. 32k max chunk can be not more than 131K (1/16 full)
+    //            64k max chunk can be not more than 262K (1/8 full)
+    //           128k max chunk can be not more than 524K (1/4 full)
+    //           256k max chunk can be not more than   1M (1/2 full)
+    //           512k max chunk                    always acceptable
+    //             1M max chunk                    always acceptable
+    return region->GetMaxAllocEstimate() * 4 > region->Occupancy();
 }
 
+// we relocate regions if that would improve their reuse quality.
+// compaction might also improve mutator locality, somewhat.
+// TUNING: heuristic for reuse could be more aggressive, consider pinning, etc...
+//         the cost here is inability to trace byrefs concurrently, not huge,
+//         byref is rarely the only ref.
+bool SatoriRecycler::IsRelocationCandidate(SatoriRegion* region)
+{
+    if (region->HasPinnedObjects())
+    {
+        return false;
+    }
+
+    // two half empty may fit two in one, so always try relocating
+    if (region->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 2)
+    {
+        return true;
+    }
+
+    // region up to 3/4 will free 524K+ chunk, compact if not reusable
+    if (region->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 4 * 3 &&
+        !IsReuseCandidate(region))
+    {
+        return true;
+    }
+
+
+    return false;
+}
+
+// regions that were not reused or relocated for a while could be tenured.
+// unless it is a reuse candidate
 bool SatoriRecycler::IsPromotionCandidate(SatoriRegion* region)
 {
     // TUNING: individual promoting heuristic
@@ -3821,20 +3873,10 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
     _ASSERTE(curRegion->Generation() > 0);
 
     curRegion->DoNotSweep() = false;
-
-    // TUNING: heuristic for reuse could be more aggressive, consider pinning, etc...
-    //         the cost here is inability to trace byrefs concurrently, not huge,
-    //         byref is rarely the only ref.
-
-    // we will try reusing half-empty regions, unless they are too fragmented
     curRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
     if (IsReuseCandidate(curRegion))
     {
         _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
-
-        // TUNING: heuristic for demoting -  could consider occupancy, pinning, etc...
-        //         the cost here is increasing  gen1, which is supposed to be small.
-        //         demoted objects will have to be marked in Gen1 regardless of cards.
         if ((curRegion->Generation() == 1) || curRegion->TryDemote())
         {
 #if _DEBUG
