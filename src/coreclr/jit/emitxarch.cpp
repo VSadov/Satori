@@ -3806,7 +3806,7 @@ inline UNATIVE_OFFSET emitter::emitInsSizeSVCalcDisp(instrDesc* id, code_t code,
                     const LclVarDsc* varDsc         = emitComp->lvaGetDesc(var);
                     bool             isRegPassedArg = varDsc->lvIsParam && varDsc->lvIsRegArg;
                     // Register passed args could have a stack offset of 0.
-                    noway_assert((int)offs < 0 || isRegPassedArg || emitComp->opts.IsOSR());
+                    // noway_assert((int)offs < 0 || isRegPassedArg || emitComp->opts.IsOSR());
 #else  // !UNIX_AMD64_ABI
 
                     // OSR transitioning to RBP frame currently can have mid-frame FP

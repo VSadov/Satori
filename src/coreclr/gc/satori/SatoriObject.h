@@ -69,7 +69,7 @@ public:
     void SetUnmovable();
     bool IsUnmovable();
 
-    void SetUnfinished();
+    void CleanSyncBlockAndSetUnfinished();
     bool IsUnfinished();
     void UnsetUnfinished();
 

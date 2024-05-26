@@ -19,6 +19,9 @@
     <Compile Include="System\Collections\Concurrent\ConcurrentDictionary\DictionaryImplInt.cs" />
     <Compile Include="System\Collections\Concurrent\ConcurrentDictionary\DictionaryImplLong.cs" />
     <Compile Include="System\Collections\Concurrent\ConcurrentDictionary\DictionaryImplNint.cs" />
+    <Compile Include="System\Collections\Concurrent\ConcurrentDictionary\DictionaryImplUint.cs" />
+    <Compile Include="System\Collections\Concurrent\ConcurrentDictionary\DictionaryImplUlong.cs" />
+    <Compile Include="System\Collections\Concurrent\ConcurrentDictionary\DictionaryImplNuint.cs" />
     <Compile Include="System\Collections\Concurrent\ConcurrentDictionary\DictionaryImplRef.cs" />
 
     <Compile Include="System\Collections\Concurrent\ConcurrentDictionary\Counter\CounterBase.cs" />
