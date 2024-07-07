@@ -792,9 +792,16 @@ bool SatoriRecycler::IsBlockingPhase()
 // do gen2 when total doubles
 #define GEN2_THRESHOLD 2
 
+static size_t gcNextTime;
+
 void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 {
     int generation = 0;
+
+    if (GetNowMillis() < gcNextTime)
+    {
+        return;
+    }
 
     if (m_gen1AddedSinceLastCollection > m_gen1Budget)
     {
@@ -1093,6 +1100,8 @@ void SatoriRecycler::BlockingCollectImpl()
     m_occupancy[0] = m_occupancyAcc[0];
 
     m_trimmer->SetOkToRun();
+
+    gcNextTime = GetNowMillis() + 100;
 }
 
 void SatoriRecycler::RunWithHelp(void(SatoriRecycler::* method)())
