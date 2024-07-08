@@ -3368,7 +3368,7 @@ void ThreadSuspend::SuspendRuntime(ThreadSuspend::SUSPEND_REASON reason)
     // while checking, we also will try suspending and hijacking
     // unless we have just done that, then we can observeOnly and see if situation improves
     // we do not on uniprocessor though (spin-checking is pointless on uniprocessor)
-    bool observeOnly = false;
+    bool observeOnly = true;
 
     _ASSERTE(!pCurThread || !pCurThread->HasThreadState(Thread::TS_GCSuspendFlags));
 #ifdef _DEBUG
@@ -3579,6 +3579,9 @@ void ThreadSuspend::SuspendRuntime(ThreadSuspend::SUSPEND_REASON reason)
             break;
         }
 
+        // small pause
+        SpinWait(5);
+
         bool hasProgress = previousCount != countThreads;
         previousCount = countThreads;
 
@@ -3592,9 +3595,6 @@ void ThreadSuspend::SuspendRuntime(ThreadSuspend::SUSPEND_REASON reason)
         // Thus we require either PING_JIT_TIMEOUT or some progress between active suspension attempts.
         if (g_SystemInfo.dwNumberOfProcessors > 1 && (hasProgress || !observeOnly))
         {
-            // small pause
-            SpinWait(5);
-
             STRESS_LOG1(LF_SYNC, LL_INFO1000, "Spinning, %d threads remaining\n", countThreads);
             observeOnly = true;
             continue;
@@ -3615,7 +3615,6 @@ void ThreadSuspend::SuspendRuntime(ThreadSuspend::SUSPEND_REASON reason)
 
         STRESS_LOG1(LF_SYNC, LL_INFO1000, "Waiting for suspend event %d threads remaining\n", countThreads);
         // DWORD res = g_pGCSuspendEvent->Wait(PING_JIT_TIMEOUT, FALSE);
-
         SpinWait(min(1 << retries++, 100));
 
         // make sure our spining is not starving other threads, but not too often,
