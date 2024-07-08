@@ -73,9 +73,17 @@ EXTERN_C NATIVEAOT_API int32_t __cdecl RhpStartNoGCRegion(int64_t totalSize, UIn
 
 EXTERN_C NATIVEAOT_API int32_t __cdecl RhpEndNoGCRegion()
 {
-    ASSERT(!ThreadStore::GetCurrentThread()->IsCurrentThreadInCooperativeMode());
+    Thread *pCurThread = ThreadStore::GetCurrentThread();
+    ASSERT(!pCurThread->IsCurrentThreadInCooperativeMode());
 
-    return GCHeapUtilities::GetGCHeap()->EndNoGCRegion();
+    pCurThread->DeferTransitionFrame();
+    pCurThread->DisablePreemptiveMode();
+
+    int result = GCHeapUtilities::GetGCHeap()->EndNoGCRegion();
+
+    pCurThread->EnablePreemptiveMode();
+
+    return result;
 }
 
 COOP_PINVOKE_HELPER(void, RhSuppressFinalize, (OBJECTREF refObj))
