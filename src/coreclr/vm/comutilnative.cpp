@@ -794,17 +794,18 @@ extern "C" int QCALLTYPE GCInterface_StartNoGCRegion(INT64 totalSize, BOOL lohSi
 
 extern "C" int QCALLTYPE GCInterface_EndNoGCRegion()
 {
-    QCALL_CONTRACT;
+    QCALL_CONTRACT_NO_GC_TRANSITION;
+    return 0;
 
-    int retVal = FALSE;
+    //int retVal = FALSE;
 
-    BEGIN_QCALL;
+    //BEGIN_QCALL;
 
-    retVal = GCHeapUtilities::GetGCHeap()->EndNoGCRegion();
+    //retVal = GCHeapUtilities::GetGCHeap()->EndNoGCRegion();
 
-    END_QCALL;
+    //END_QCALL;
 
-    return retVal;
+    //return retVal;
 }
 
 /*===============================GetGenerationWR================================

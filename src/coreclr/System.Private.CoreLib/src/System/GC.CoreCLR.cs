@@ -93,6 +93,7 @@ namespace System
         internal static partial int _StartNoGCRegion(long totalSize, [MarshalAs(UnmanagedType.Bool)] bool lohSizeKnown, long lohSize, [MarshalAs(UnmanagedType.Bool)] bool disallowFullBlockingGC);
 
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "GCInterface_EndNoGCRegion")]
+        [SuppressGCTransition]
         internal static partial int _EndNoGCRegion();
 
         // keep in sync with GC_ALLOC_FLAGS in gcinterface.h
