@@ -925,7 +925,8 @@ namespace System.Threading
                 currentThread.ResetThreadPoolThread();
 
                 // GC.Poll()
-                GC.EndNoGCRegion();
+                // GC.EndNoGCRegion();
+                Stopwatch.GetTimestamp();
 
                 //
                 // Notify the VM that we executed this workitem.  This is also our opportunity to ask whether Hill Climbing wants
