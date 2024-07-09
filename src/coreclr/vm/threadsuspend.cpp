@@ -5611,7 +5611,7 @@ void ThreadSuspend::RestartEE(BOOL bFinishedGC, BOOL SuspendSucceeded)
     // This is needed to synchronize threads that were running in preemptive mode while
     // the runtime was suspended and that will return to cooperative mode after the runtime
     // is restarted.
-    if (Info.SuspendEE.Reason != SUSPEND_FOR_GC_PREP)
+    if (m_suspendReason != SUSPEND_FOR_GC_PREP)
     {
         ::FlushProcessWriteBuffers();
     }
