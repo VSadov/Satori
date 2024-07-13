@@ -146,6 +146,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_totalBudget = MIN_GEN1_BUDGET;
     m_totalLimit = m_totalBudget;
     m_prevCondemnedGeneration = 2;
+    m_gcNextTimeTarget = 0;
 
     m_activeHelperFn = nullptr;
     m_rootScanTicket = 0;
@@ -792,13 +793,11 @@ bool SatoriRecycler::IsBlockingPhase()
 // do gen2 when total doubles
 #define GEN2_THRESHOLD 2
 
-static size_t gcNextTime;
-
 void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 {
     int generation = 0;
 
-    if (GetNowMillis() < gcNextTime)
+    if (GetNowMillis() < m_gcNextTimeTarget)
     {
         return;
     }
@@ -1101,7 +1100,7 @@ void SatoriRecycler::BlockingCollectImpl()
 
     m_trimmer->SetOkToRun();
 
-    gcNextTime = GetNowMillis() + 100;
+    m_gcNextTimeTarget = GetNowMillis() + SatoriUtil::GcRate();
 }
 
 void SatoriRecycler::RunWithHelp(void(SatoriRecycler::* method)())

@@ -195,6 +195,7 @@ private:
     size_t m_gen1AddedSinceLastCollection;
     size_t m_gen2AddedSinceLastCollection;
     size_t m_gen1CountAtLastGen2;
+    size_t m_gcNextTimeTarget;
 
     size_t m_occupancy[3];
     size_t m_occupancyAcc[3];
