@@ -211,10 +211,11 @@ private:
     int64_t m_perfCounterTicksPerMilli;
     int64_t m_perfCounterTicksPerMicro;
 
-    GCEvent* m_helpersGate;
+    GCEvent* m_helpersGateEvent;
     volatile int m_gateSignaled;
     volatile int m_activeHelpers;
     volatile int m_totalHelpers;
+    volatile bool m_gateMaySpin;
 
     void(SatoriRecycler::* volatile m_activeHelperFn)();
 
