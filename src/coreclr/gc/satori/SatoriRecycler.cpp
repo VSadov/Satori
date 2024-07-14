@@ -203,7 +203,8 @@ void SatoriRecycler::HelperThreadFn(void* param)
                         goto released;
                     }
 
-                    i = min(30, i++);
+                    i++;
+                    i = min(30, i);
                     int j = (1 << i);
                     while (--j > 0)
                     {
