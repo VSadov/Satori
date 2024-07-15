@@ -38,7 +38,7 @@ private:
     pthread_mutex_t m_cs;
     pthread_cond_t m_cv;
 #else
-    size_t dummy[10];
+    size_t dummy[100];
 #endif
 
 public:
