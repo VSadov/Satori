@@ -225,8 +225,9 @@ void SatoriRecycler::HelperThreadFn(void* param)
                 while(GCToOSInterface::QueryPerformanceCounter() < limit);
             }
 
-    wait:
-            if (recycler->m_helperGate->Wait(1000))
+        wait:
+            // Wait returns true if was woken up.
+            if (!recycler->m_helperGate->Wait(1000))
             {
                 printf("@");
                 Interlocked::Decrement(&recycler->m_totalHelpers);

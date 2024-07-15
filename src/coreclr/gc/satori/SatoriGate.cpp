@@ -24,6 +24,8 @@
 // SatoriGate.cpp
 //
 
+#ifdef TARGET_WINDOWS
+
 #include "windows.h"
 #include "synchapi.h"
 #include "SatoriGate.h"
@@ -31,17 +33,17 @@
 SatoriGate::SatoriGate()
 {
     InitializeCriticalSection(&m_cs);
-    InitializeConditionVariable(&m_cv);
+    m_cv = CONDITION_VARIABLE_INIT;
 }
 
-// returns false if was woken up
+// returns true if was woken up
 bool SatoriGate::Wait(int timeout)
 {
     EnterCriticalSection(&m_cs);
     // FALSE -> error or timeout
     BOOL waitResult = SleepConditionVariableCS(&m_cv, &m_cs, (DWORD)timeout);
     LeaveCriticalSection(&m_cs);
-    return !waitResult;
+    return waitResult == TRUE;
 }
 
 void SatoriGate::WakeAll()
@@ -53,3 +55,5 @@ void SatoriGate::WakeOne()
 {
     WakeConditionVariable(&m_cv);
 }
+
+#endif

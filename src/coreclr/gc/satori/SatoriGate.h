@@ -30,9 +30,15 @@
 class SatoriGate
 {
 private:
+
 #ifdef _INC_WINDOWS
     CRITICAL_SECTION m_cs;
     CONDITION_VARIABLE m_cv;
+#endif
+
+#ifdef _INC_PTHREADS
+    pthread_mutex_t m_cs;
+    pthread_cond_t m_cv;
 #endif
 
 public:
