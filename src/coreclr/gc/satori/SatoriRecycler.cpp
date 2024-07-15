@@ -196,7 +196,7 @@ void SatoriRecycler::HelperThreadFn(void* param)
             if (recycler->maySpinAtGate)
             {
                 // spin for ~10 microseconds
-                int64_t limit = GCToOSInterface::QueryPerformanceCounter() + recycler->m_perfCounterTicksPerMicro * 50;
+                int64_t limit = GCToOSInterface::QueryPerformanceCounter() + recycler->m_perfCounterTicksPerMicro * 500;
                 int i = 0;
                 do
                 {
