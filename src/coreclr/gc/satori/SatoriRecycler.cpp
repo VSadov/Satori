@@ -182,13 +182,13 @@ void SatoriRecycler::HelperThreadFn(void* param)
     {
         Interlocked::Decrement(&recycler->m_activeHelpers);
 
-//        bool entered = true;
+        bool entered = true;
         for (;;)
         {   if (recycler->m_gateSignaled &&
                Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
             {
-                //if (entered)
-                //    printf(".");
+                if (entered)
+                    printf(".");
 
                 goto released;
             }
@@ -210,8 +210,8 @@ void SatoriRecycler::HelperThreadFn(void* param)
                         if (recycler->m_gateSignaled &&
                             Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
                         {
-                            //if (entered)
-                            //    printf(".");
+                            if (entered)
+                                printf(".");
 
                             goto released;
                         }
@@ -229,13 +229,13 @@ void SatoriRecycler::HelperThreadFn(void* param)
             // Wait returns true if was woken up.
             if (!recycler->m_helperGate->Wait(1000))
             {
-//                printf("@");
+                printf("@");
                 Interlocked::Decrement(&recycler->m_totalHelpers);
                 return;
             }
 
-            //entered = false;
-            //printf("+");
+            entered = false;
+            printf("+");
         }
 
     released:
