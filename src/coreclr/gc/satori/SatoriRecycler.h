@@ -31,6 +31,7 @@
 #include "../gc.h"
 #include "SatoriRegionQueue.h"
 #include "SatoriWorkList.h"
+#include "SatoriGate.h"
 
 class SatoriHeap;
 class SatoriTrimmer;
@@ -211,11 +212,12 @@ private:
     int64_t m_perfCounterTicksPerMilli;
     int64_t m_perfCounterTicksPerMicro;
 
-    GCEvent* m_helpersGateEvent;
+    SatoriGate* m_helperGate;
+
     volatile int m_gateSignaled;
     volatile int m_activeHelpers;
     volatile int m_totalHelpers;
-    volatile bool m_gateMaySpin;
+    volatile bool maySpinAtGate;
 
     void(SatoriRecycler::* volatile m_activeHelperFn)();
 

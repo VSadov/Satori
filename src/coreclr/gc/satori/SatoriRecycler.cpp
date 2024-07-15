@@ -80,12 +80,11 @@ static SatoriRegionQueue* AllocQueue(QueueKind kind)
 
 void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
-    m_helpersGateEvent = new (nothrow) GCEvent;
-    m_helpersGateEvent->CreateAutoEventNoThrow(false);
+    m_helperGate = new (nothrow) SatoriGate();
     m_gateSignaled = 0;
     m_activeHelpers= 0;
     m_totalHelpers = 0;
-    m_gateMaySpin = false;
+    maySpinAtGate = false;
 
     m_noWorkSince = 0;
 
@@ -183,43 +182,59 @@ void SatoriRecycler::HelperThreadFn(void* param)
     {
         Interlocked::Decrement(&recycler->m_activeHelpers);
 
+        bool entered = true;
         for (;;)
         {   if (recycler->m_gateSignaled &&
                Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
             {
+                if (entered)
+                    printf(".");
+
                 goto released;
             }
 
-            if (recycler->m_gateMaySpin)
+            if (recycler->maySpinAtGate)
             {
                 // spin for ~10 microseconds
-                int64_t limit = GCToOSInterface::QueryPerformanceCounter() + recycler->m_perfCounterTicksPerMicro * 10;
+                int64_t limit = GCToOSInterface::QueryPerformanceCounter() + recycler->m_perfCounterTicksPerMicro * 50;
                 int i = 0;
                 do
                 {
-                    if (recycler->m_gateSignaled &&
-                        Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
-                    {
-                        goto released;
-                    }
-
                     i++;
                     i = min(30, i);
                     int j = (1 << i);
                     while (--j > 0)
                     {
                         YieldProcessor();
+
+                        if (recycler->m_gateSignaled &&
+                            Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
+                        {
+                            if (entered)
+                                printf(".");
+
+                            goto released;
+                        }
+
+                        if (!recycler->maySpinAtGate)
+                        {
+                            goto wait;
+                        }
                     }
                 }
-                while(recycler->m_gateMaySpin && GCToOSInterface::QueryPerformanceCounter() < limit);
+                while(GCToOSInterface::QueryPerformanceCounter() < limit);
             }
 
-            uint32_t waitResult = recycler->m_helpersGateEvent->Wait(1000, FALSE);
-            if (waitResult != WAIT_OBJECT_0)
+    wait:
+            if (recycler->m_helperGate->Wait(1000))
             {
+                printf("@");
                 Interlocked::Decrement(&recycler->m_totalHelpers);
                 return;
             }
+
+            entered = false;
+            printf("+");
         }
 
     released:
@@ -770,7 +785,7 @@ void SatoriRecycler::AskForHelp()
 
     if (!m_gateSignaled && Interlocked::CompareExchange(&m_gateSignaled, 1, 0) == 0)
     {
-        m_helpersGateEvent->Set();
+        m_helperGate->WakeOne();
     }
 }
 
@@ -986,7 +1001,7 @@ void SatoriRecycler::BlockingCollect2()
 
 void SatoriRecycler::BlockingCollectImpl()
 {
-    m_gateMaySpin = true;
+    maySpinAtGate = true;
 
     FIRE_EVENT(GCStart_V2, (uint32_t)GlobalGcIndex() + 1, (uint32_t)m_condemnedGeneration, (uint32_t)reason_empty, (uint32_t)gc_etw_type_ngc);
     m_gcStartMillis[m_condemnedGeneration] = GetNowMillis();
@@ -1020,6 +1035,8 @@ void SatoriRecycler::BlockingCollectImpl()
     {
         m_isRelocating = false;
     }
+
+    m_helperGate->WakeAll();
 
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
 
@@ -1059,7 +1076,7 @@ void SatoriRecycler::BlockingCollectImpl()
     Relocate();
     Update();
 
-    m_gateMaySpin = false;
+    maySpinAtGate = false;
 
     m_gcCount[0]++;
     m_gcCount[1]++;

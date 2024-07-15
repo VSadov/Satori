@@ -39,6 +39,7 @@ set(GC_SOURCES
   satori/SatoriAllocationContext.cpp
   satori/SatoriUtil.cpp
   satori/SatoriLock.cpp
+  satori/SatoriGate.cpp
 )
 
 if(CLR_CMAKE_HOST_UNIX)
@@ -122,6 +123,7 @@ if (CLR_CMAKE_TARGET_WIN32)
     satori/SatoriAllocationContext.h
     satori/SatoriUtil.h
     satori/SatoriLock.h
+    satori/SatoriGate.h
   )
 endif(CLR_CMAKE_TARGET_WIN32)
 
