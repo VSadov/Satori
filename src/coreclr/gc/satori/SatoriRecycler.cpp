@@ -182,13 +182,13 @@ void SatoriRecycler::HelperThreadFn(void* param)
     {
         Interlocked::Decrement(&recycler->m_activeHelpers);
 
-        bool entered = true;
+//        bool entered = true;
         for (;;)
         {   if (recycler->m_gateSignaled &&
                Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
             {
-                if (entered)
-                    printf(".");
+                //if (entered)
+                //    printf(".");
 
                 goto released;
             }
@@ -196,7 +196,8 @@ void SatoriRecycler::HelperThreadFn(void* param)
             if (recycler->maySpinAtGate)
             {
                 // spin for ~10 microseconds
-                int64_t limit = GCToOSInterface::QueryPerformanceCounter() + recycler->m_perfCounterTicksPerMicro * 500;
+                int64_t limit = GCToOSInterface::QueryPerformanceCounter() +
+                    recycler->m_perfCounterTicksPerMicro * SatoriUtil::GcSpin();
                 int i = 0;
                 do
                 {
@@ -210,8 +211,8 @@ void SatoriRecycler::HelperThreadFn(void* param)
                         if (recycler->m_gateSignaled &&
                             Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
                         {
-                            if (entered)
-                                printf(".");
+                            //if (entered)
+                            //    printf(".");
 
                             goto released;
                         }
@@ -229,13 +230,13 @@ void SatoriRecycler::HelperThreadFn(void* param)
             // Wait returns true if was woken up.
             if (!recycler->m_helperGate->Wait(1000))
             {
-                printf("@");
+//                printf("@");
                 Interlocked::Decrement(&recycler->m_totalHelpers);
                 return;
             }
 
-            entered = false;
-            printf("+");
+            //entered = false;
+            //printf("+");
         }
 
     released:
@@ -1037,8 +1038,6 @@ void SatoriRecycler::BlockingCollectImpl()
         m_isRelocating = false;
     }
 
-    m_helperGate->WakeAll();
-
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
 
     // all sweeping should be done by now
@@ -1237,6 +1236,8 @@ void SatoriRecycler::MarkStrongReferences()
     // therefore we must rescan even after concurrent mark completed its work
     IncrementRootScanTicket();
     SatoriHandlePartitioner::StartNextScan();
+
+    m_helperGate->WakeAll();
     RunWithHelp(&SatoriRecycler::MarkStrongReferencesWorker);
 }
 
@@ -3587,6 +3588,8 @@ void SatoriRecycler::Update()
         {
             IncrementCardScanTicket();
         }
+
+        m_helperGate->WakeAll();
     }
 
     RunWithHelp(&SatoriRecycler::UpdateRootsWorker);

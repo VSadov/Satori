@@ -264,6 +264,18 @@ public:
 
         return gcRate;
     }
+    
+    // DOTNET_gcRate
+    static int GcSpin()
+    {
+        int gcSpin = (int)GCConfig::GetGCSpin();
+        if (gcSpin == -1)
+        {
+            return 5;
+        }
+
+        return gcSpin;
+    }
 };
 
 #endif
