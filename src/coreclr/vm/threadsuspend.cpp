@@ -3205,41 +3205,6 @@ COR_PRF_SUSPEND_REASON GCSuspendReasonToProfSuspendReason(ThreadSuspend::SUSPEND
 }
 #endif // PROFILING_SUPPORTED
 
-// exponential spinwait with an approximate time limit for waiting in microsecond range.
-// when iteration == -1, only usecLimit is used
-void SpinWait(int usecLimit)
-{
-    LARGE_INTEGER li;
-    QueryPerformanceCounter(&li);
-    int64_t startTicks = li.QuadPart;
-
-    QueryPerformanceFrequency(&li);
-    int64_t ticksPerSecond = li.QuadPart;
-    int64_t endTicks = startTicks + (usecLimit * ticksPerSecond) / 1000000;
-
-#ifdef TARGET_UNIX
-    if (usecLimit > 10)
-    {
-        PAL_nanosleep(usecLimit * 1000);
-    }
-#endif // TARGET_UNIX
-
-    for (int i = 0; i < 30; i++)
-    {
-        QueryPerformanceCounter(&li);
-        int64_t currentTicks = li.QuadPart;
-        if (currentTicks > endTicks)
-        {
-            break;
-        }
-
-        for (int j = 0; j < (1 << i); j++)
-        {
-            System_YieldProcessor();
-        }
-    }
-}
-
 //************************************************************************************
 //
 // SuspendRuntime is responsible for ensuring that all managed threads reach a
@@ -3368,14 +3333,13 @@ void ThreadSuspend::SuspendRuntime(ThreadSuspend::SUSPEND_REASON reason)
     // while checking, we also will try suspending and hijacking
     // unless we have just done that, then we can observeOnly and see if situation improves
     // we do not on uniprocessor though (spin-checking is pointless on uniprocessor)
-    bool observeOnly = true;
+    bool observeOnly = false;
 
     _ASSERTE(!pCurThread || !pCurThread->HasThreadState(Thread::TS_GCSuspendFlags));
 #ifdef _DEBUG
     DWORD dbgStartTimeout = GetTickCount();
 #endif
 
-    int retries = 0;
     while (true)
     {
         Thread* thread = NULL;
@@ -3579,9 +3543,6 @@ void ThreadSuspend::SuspendRuntime(ThreadSuspend::SUSPEND_REASON reason)
             break;
         }
 
-        // small pause
-        SpinWait(5);
-
         bool hasProgress = previousCount != countThreads;
         previousCount = countThreads;
 
@@ -3595,6 +3556,9 @@ void ThreadSuspend::SuspendRuntime(ThreadSuspend::SUSPEND_REASON reason)
         // Thus we require either PING_JIT_TIMEOUT or some progress between active suspension attempts.
         if (g_SystemInfo.dwNumberOfProcessors > 1 && (hasProgress || !observeOnly))
         {
+            // small pause
+            YieldProcessorNormalized();
+
             STRESS_LOG1(LF_SYNC, LL_INFO1000, "Spinning, %d threads remaining\n", countThreads);
             observeOnly = true;
             continue;
@@ -3614,18 +3578,7 @@ void ThreadSuspend::SuspendRuntime(ThreadSuspend::SUSPEND_REASON reason)
         // milliseconds, causing long GC pause times.
 
         STRESS_LOG1(LF_SYNC, LL_INFO1000, "Waiting for suspend event %d threads remaining\n", countThreads);
-        // DWORD res = g_pGCSuspendEvent->Wait(PING_JIT_TIMEOUT, FALSE);
-        SpinWait(min(1 << retries++, 100));
-
-        // make sure our spining is not starving other threads, but not too often,
-        // this can cause a 1-15 msec delay, depending on OS, and that is a lot while
-        // very rarely needed, since threads are supposed to be releasing their CPUs
-        if ((retries & 127) == 0)
-        {
-            SwitchToThread();
-        }
-
-        DWORD res = WAIT_OBJECT_0;
+        DWORD res = g_pGCSuspendEvent->Wait(PING_JIT_TIMEOUT, FALSE);
 
 #ifdef TIME_SUSPEND
         g_SuspendStatistics.wait.Accumulate(
@@ -5611,10 +5564,7 @@ void ThreadSuspend::RestartEE(BOOL bFinishedGC, BOOL SuspendSucceeded)
     // This is needed to synchronize threads that were running in preemptive mode while
     // the runtime was suspended and that will return to cooperative mode after the runtime
     // is restarted.
-    if (m_suspendReason != SUSPEND_FOR_GC_PREP)
-    {
-        ::FlushProcessWriteBuffers();
-    }
+    ::FlushProcessWriteBuffers();
 #endif //TARGET_ARM || TARGET_ARM64
 
     //
