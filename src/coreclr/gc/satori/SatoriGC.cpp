@@ -657,14 +657,14 @@ void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* tota
 {
     LastRecordedGcInfo* lastGcInfo = m_heap->Recycler()->GetLastGcInfo((gc_kind)kind);
 
-    uint64_t totalLimit = GCToOSInterface::GetPhysicalMemoryLimit();
+    uint64_t totalLimit = 1000000000; // GCToOSInterface::GetPhysicalMemoryLimit();
     *highMemLoadThresholdBytes = totalLimit * 99 / 100; // just say 99% for now
     *totalAvailableMemoryBytes = totalLimit;
 
-    uint32_t memLoad;
-    uint64_t availPhysical, availPage;
-    GCToOSInterface::GetMemoryStatus(totalLimit, &memLoad, &availPhysical, &availPage);
-    *lastRecordedMemLoadBytes = memLoad * totalLimit / 100;
+    //uint32_t memLoad;
+    //uint64_t availPhysical, availPage;
+    //GCToOSInterface::GetMemoryStatus(totalLimit, &memLoad, &availPhysical, &availPage);
+    *lastRecordedMemLoadBytes = 10; //memLoad * totalLimit / 100;
 
     *lastRecordedHeapSizeBytes = GetTotalBytesInUse();
     *finalizationPendingCount = GetNumberOfFinalizable();
