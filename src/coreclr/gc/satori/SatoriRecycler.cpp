@@ -860,10 +860,10 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
     size_t currentAddedEstimate = m_gen2AddedSinceLastCollection +
         m_gen1AddedSinceLastCollection / EPH_SURV_TARGET;
 
-    if (currentAddedEstimate > m_totalBudget)
-    {
-        generation = 2;
-    }
+    //if (currentAddedEstimate > m_totalBudget)
+    //{
+    //    generation = 2;
+    //}
 
     // just make sure gen2 happens eventually. 
     if (m_gcCount[1] - m_gen1CountAtLastGen2 > 16)
