@@ -115,7 +115,7 @@ public:
         }
 
         item->m_containingQueue = this;
-        _ASSERT(m_count >= oldCount);
+        _ASSERTE(m_count >= oldCount);
 
 #ifdef _DEBUG
         Interlocked::Increment(&m_count);
