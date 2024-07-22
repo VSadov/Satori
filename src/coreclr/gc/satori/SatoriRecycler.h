@@ -121,6 +121,8 @@ public:
             &m_lastEphemeralGcInfo;
     };
 
+    bool IsBlockingPhase();
+
 private:
     SatoriHeap* m_heap;
 
@@ -228,9 +230,6 @@ private:
     LastRecordedGcInfo* m_CurrentGcInfo;
 
 private:
-
-    bool IsBlockingPhase();
-
     size_t Gen1RegionCount();
     size_t Gen2RegionCount();
     size_t RegionCount();

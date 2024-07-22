@@ -92,6 +92,36 @@ public:
         m_head = item;
     }
 
+    void PushNoLock(T* item)
+    {
+        _ASSERTE(item->m_next == nullptr);
+        _ASSERTE(item->m_prev == nullptr);
+        _ASSERTE(item->m_containingQueue == nullptr);
+
+#ifdef _DEBUG
+        size_t oldCount = m_count;
+#endif
+
+        T* head = Interlocked::ExchangePointer(&m_head, item);
+        if (head == nullptr)
+        {
+            _ASSERTE(m_tail == nullptr);
+            m_tail = item;
+        }
+        else
+        {
+            item->m_next = head;
+            head->m_prev = item;
+        }
+
+        item->m_containingQueue = this;
+        _ASSERT(m_count >= oldCount);
+
+#ifdef _DEBUG
+        Interlocked::Increment(&m_count);
+#endif
+    }
+
     T* TryPop()
     {
         if (IsEmpty())

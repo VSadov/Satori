@@ -56,6 +56,7 @@ public:
     SatoriRegion* GetRegion(size_t minSize);
     void AddRegion(SatoriRegion* region);
     void ReturnRegion(SatoriRegion* region);
+    void ReturnRegionNoLock(SatoriRegion * region);
 
     void AllocationTickIncrement(AllocationTickKind isSmall, size_t totalAdded, SatoriObject* obj, size_t obj_size);
     void AllocationTickDecrement(size_t totalUnused);

@@ -3807,7 +3807,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                         else
                         {
                             curRegion->MakeBlank();
-                            m_heap->Allocator()->ReturnRegion(curRegion);
+                            m_heap->Allocator()->ReturnRegionNoLock(curRegion);
                         }
 
                         continue;
@@ -3831,7 +3831,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                 {
                     curRegion->DetachFromAlocatingOwnerRelease();
                     curRegion->MakeBlank();
-                    m_heap->Allocator()->ReturnRegion(curRegion);
+                    m_heap->Allocator()->ReturnRegionNoLock(curRegion);
                 }
                 else
                 {
@@ -4102,7 +4102,9 @@ void SatoriRecycler::SweepAndReturnRegion(SatoriRegion* curRegion)
     if (curRegion->Occupancy() == 0)
     {
         curRegion->MakeBlank();
-        m_heap->Allocator()->ReturnRegion(curRegion);
+        IsBlockingPhase() ?
+            m_heap->Allocator()->ReturnRegionNoLock(curRegion) :
+            m_heap->Allocator()->ReturnRegion(curRegion);
     }
     else
     {
