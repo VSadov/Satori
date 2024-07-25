@@ -132,6 +132,7 @@ if(CLR_CMAKE_HOST_WIN32)
     ${STATIC_MT_CRT_LIB}
     ${STATIC_MT_VCRT_LIB}
     kernel32.lib
+    Synchronization.lib
     advapi32.lib)
 endif(CLR_CMAKE_HOST_WIN32)
 

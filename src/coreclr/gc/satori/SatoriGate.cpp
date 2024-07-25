@@ -30,30 +30,35 @@
 #include "synchapi.h"
 #include "SatoriGate.h"
 
+// static
+uint32_t SatoriGate::s_open = 1;
+uint32_t SatoriGate::s_blocking = 0;
+
 SatoriGate::SatoriGate()
 {
-    InitializeCriticalSection(&m_cs);
-    m_cv = CONDITION_VARIABLE_INIT;
+    m_state = s_blocking;
 }
 
-// returns true if was woken up
+// returns true if was woken up,
+// false if timed out.
 bool SatoriGate::Wait(int timeout)
 {
-    EnterCriticalSection(&m_cs);
-    // FALSE -> error or timeout
-    BOOL waitResult = SleepConditionVariableCS(&m_cv, &m_cs, (DWORD)timeout);
-    LeaveCriticalSection(&m_cs);
-    return waitResult == TRUE;
+    // TODO: VS handle errors?
+    BOOL result = WaitOnAddress(&m_state, &s_blocking, sizeof(uint32_t), timeout);
+    m_state = s_blocking;
+    return result == TRUE;
 }
 
 void SatoriGate::WakeAll()
 {
-    WakeAllConditionVariable(&m_cv);
+    m_state = s_open;
+    WakeByAddressAll(&m_state);
 }
 
 void SatoriGate::WakeOne()
 {
-    WakeConditionVariable(&m_cv);
+    m_state = s_open;
+    WakeByAddressSingle(&m_state);
 }
 
 #endif

@@ -27,13 +27,16 @@
 #ifndef __SATORI_GATE_H__
 #define __SATORI_GATE_H__
 
+#include <stdint.h>
+
 class SatoriGate
 {
 private:
+    static uint32_t s_open;
+    static uint32_t s_blocking;
 
+    uint32_t m_state;
 #if defined(_INC_WINDOWS)
-    CRITICAL_SECTION m_cs;
-    CONDITION_VARIABLE m_cv;
 #elif defined(_INC_PTHREADS)
     pthread_mutex_t m_cs;
     pthread_cond_t m_cv;
