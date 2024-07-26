@@ -498,7 +498,12 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         bt      qword ptr [r8], rax
         jb      AssignAndMarkCards            ; source is already escaped.
 
-        ; save rcx, rdx, r8 and have enough stack for the callee
+        ; Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+
+        ; save rsp, rcx, rdx, r8 and have enough stack for the callee
+        push r9
         push rcx
         push rdx
         push r8
@@ -511,6 +516,7 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         pop     r8
         pop     rdx
         pop     rcx
+        pop     rsp
         jmp     AssignAndMarkCards
 LEAF_END RhpAssignRef, _TEXT
 
@@ -678,21 +684,27 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         bt      qword ptr [r8], r11
         jb      AssignAndMarkCards            ; source is already escaped.
 
-        ; save rax, rcx, rdx, r8 and have enough stack for the callee
+        ; Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+
+        ; save rsp, rax, rcx, rdx, r8 and have enough stack for the callee
+        push r9
         push rax
         push rcx
         push rdx
         push r8
-        sub  rsp, 20h
+        sub  rsp, 28h
 
         ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         call    qword ptr [r8 + 8]
 
-        add     rsp, 20h
+        add     rsp, 28h
         pop     r8
         pop     rdx
         pop     rcx
         pop     rax
+        pop     rsp
         jmp     AssignAndMarkCards
 LEAF_END RhpCheckedLockCmpXchg, _TEXT
 
@@ -826,21 +838,27 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         bt      qword ptr [r8], r11
         jb      AssignAndMarkCards            ; source is already escaped.
 
-        ; save rax, rcx, rdx, r8 and have enough stack for the callee
+        ; Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+
+        ; save rsp, rax, rcx, rdx, r8 and have enough stack for the callee
+        push r9
         push rax
         push rcx
         push rdx
         push r8
-        sub  rsp, 20h
+        sub  rsp, 28h
 
         ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         call    qword ptr [r8 + 8]
 
-        add     rsp, 20h
+        add     rsp, 28h
         pop     r8
         pop     rdx
         pop     rcx
         pop     rax
+        pop     rsp
         jmp     AssignAndMarkCards
 LEAF_END RhpCheckedXchg, _TEXT
 
