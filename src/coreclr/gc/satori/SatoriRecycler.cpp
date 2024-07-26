@@ -228,7 +228,7 @@ void SatoriRecycler::HelperThreadFn(void* param)
 
         wait:
             // Wait returns true if was woken up.
-            if (!recycler->m_helperGate->Wait(1000))
+            if (!recycler->m_helperGate->TimedWait(1000))
             {
 //                printf("@");
                 Interlocked::Decrement(&recycler->m_totalHelpers);

@@ -651,7 +651,12 @@ endif
         bt      qword ptr [r8], rax
         jb      AssignAndMarkCards            ; source is already escaped.
 
-        ; save rcx, rdx, r8 and have enough stack for the callee
+        ; Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+
+        ; save rsp, rcx, rdx, r8 and have enough stack for the callee
+        push r9
         push rcx
         push rdx
         push r8
@@ -664,6 +669,7 @@ endif
         pop     r8
         pop     rdx
         pop     rcx
+        pop     rsp
         jmp     AssignAndMarkCards
 LEAF_END_MARKED JIT_WriteBarrier, _TEXT
 

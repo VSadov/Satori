@@ -43,8 +43,8 @@ SatoriTrimmer::SatoriTrimmer(SatoriHeap* heap)
     m_heap  = heap;
     m_state = TRIMMER_STATE_STOPPED;
 
-    m_gate = new (nothrow) GCEvent;
-    m_gate->CreateAutoEventNoThrow(false);
+    m_event = new (nothrow) GCEvent;
+    m_event->CreateAutoEventNoThrow(false);
 
     if (SatoriUtil::IsTrimmingEnabled())
     {
@@ -150,7 +150,7 @@ void SatoriTrimmer::StopAndWait()
 
             if (Interlocked::CompareExchange(&m_state, TRIMMER_STATE_BLOCKED, state) == state)
             {
-                m_gate->Wait(INFINITE, false);
+                m_event->Wait(INFINITE, false);
             }
             continue;
         case TRIMMER_STATE_RUNNING:
@@ -170,7 +170,7 @@ void SatoriTrimmer::SetOkToRun()
     case TRIMMER_STATE_BLOCKED:
         // trimmer can't get out of BlOCKED by itself, ordinary assignment is ok
         m_state = TRIMMER_STATE_OK_TO_RUN;
-        m_gate->Set();
+        m_event->Set();
         break;
     case TRIMMER_STATE_STOPPED:
         Interlocked::CompareExchange(&m_state, TRIMMER_STATE_OK_TO_RUN, state);

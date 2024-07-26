@@ -51,7 +51,7 @@ private:
     static const int TRIMMER_STATE_RUNNING = 3;
 
     SatoriHeap*  m_heap;
-    GCEvent*     m_gate;
+    GCEvent*     m_event;
     size_t       m_lastGen2Count;
     volatile int m_state;
 

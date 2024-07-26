@@ -35,33 +35,6 @@
 class SatoriLock
 {
 private:
-    CLRCriticalSection m_cs;
-
-public:
-    void Initialize()
-    {
-        m_cs.Initialize();
-    }
-
-    void Destroy()
-    {
-        m_cs.Destroy();
-    }
-
-    void Enter()
-    {
-        m_cs.Enter();
-    }
-
-    void Leave()
-    {
-        m_cs.Leave();
-    }
-};
-
-class SatoriSpinLock
-{
-private:
     // m_state layout:
     //
     // bit 0: True if the lock is held, false otherwise.
@@ -114,14 +87,14 @@ private:
 
     static const uint16_t SpinCountNotInitialized = INT16_MIN;
 
-    // TODO: VS remove "default"
-    static const uint16_t DefaultMaxSpinCount = 22;
-    static const uint16_t DefaultMinSpinCount = 1;
-
     // While spinning is parameterized in terms of iterations,
     // the internal tuning operates with spin count at a finer scale.
     // One iteration is mapped to 64 spin count units.
     static const int SpinCountScaleShift = 6;
+
+    // TODO: VS remove "default"
+    static const uint16_t DefaultMaxSpinCount = 22 << SpinCountScaleShift;
+    static const uint16_t DefaultMinSpinCount = 1 << SpinCountScaleShift;
 
     // We will use exponential backoff in rare cases when we need to change state atomically and cannot
     // make progress due to concurrent state changes by other threads.
@@ -137,7 +110,9 @@ private:
     // then release and reacquire fast enough that waiters have no chance to get the lock.
     // In extreme cases one thread could keep retaking the lock starving everybody else.
     // If we see woken waiters not able to take the lock for too long we will ask nonwaiters to wait.
-    static const uint32_t WaiterWatchdogTicks = 100;
+    // TODO: VS too short? we do not want to hold user thread by accident, when it is helping.
+    //       also - for non user threads or during bocking phase we do not need fairness.
+    static const uint32_t WaiterWatchdogTicks = 60;
 
 public:
     void Initialize()
@@ -149,6 +124,7 @@ public:
         _gate = new SatoriGate();
     }
 
+    FORCEINLINE
     bool TryEnter()
     {
         uint32_t origState = _state;
@@ -166,6 +142,7 @@ public:
         return false;
     }
 
+    FORCEINLINE
     void Enter()
     {
         if (!TryEnter())
@@ -179,6 +156,7 @@ public:
         return (_state & Locked) != 0;
     }
 
+    FORCEINLINE
     void Leave()
     {
         _ASSERTE(IsLocked());
@@ -250,21 +228,27 @@ private:
                 uint32_t newState = oldState | WaiterWoken;
 
                 uint16_t lastWakeTicks = _wakeWatchDog;
-                if (lastWakeTicks != 0 && GetTickCount() - lastWakeTicks > WaiterWatchdogTicks)
+                if (lastWakeTicks != 0)
                 {
-                    newState |= YieldToWaiters;
+                    uint16_t currentTicks = GetTickCount();
+                    if ((int16_t)currentTicks - (int16_t)lastWakeTicks > (int16_t)WaiterWatchdogTicks)
+                    {
+                        //printf("Last: %i ", (int)lastWakeTicks);
+                        //printf("Current: %i \n", (int)currentTicks);
+
+                        newState |= YieldToWaiters;
+                    }
                 }
 
                 if (Interlocked::CompareExchange(&_state, newState, oldState) == oldState)
                 {
-                    _gate->WakeOne();
-                    //_gate->WakeAll();
                     if (lastWakeTicks == 0)
                     {
-                        // nonzero timestamp of the last wake
-                        _wakeWatchDog = (uint16_t)(GetTickCount() | 1);
+                        // sometimes timestamp will be 0, it is harmless.
+                        _wakeWatchDog = GetTickCount();
                     }
 
+                    _gate->WakeOne();
                     return;
                 }
             }
@@ -394,7 +378,7 @@ private:
             // Now we wait.
             //
             _ASSERTE(_state >= WaiterCountIncrement);
-            // bool waitSucceeded = _gate->Wait(-1);
+            _gate->Wait();
             _ASSERTE(_state >= WaiterCountIncrement);
 
             // this was either real or spurious wake.

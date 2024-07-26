@@ -47,7 +47,9 @@ private:
 public:
     SatoriGate();
 
-    bool Wait(int timeout);
+    void Wait();
+
+    bool TimedWait(int timeout);
 
     void WakeOne();
 

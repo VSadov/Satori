@@ -41,9 +41,17 @@ SatoriGate::SatoriGate()
 
 // returns true if was woken up,
 // false if timed out.
-bool SatoriGate::Wait(int timeout)
+void SatoriGate::Wait()
 {
-    // TODO: VS handle errors?
+    // TODO: VS handle errors? at least asserts
+    BOOL result = WaitOnAddress(&m_state, &s_blocking, sizeof(uint32_t), INFINITE);
+}
+
+// returns true if was woken up,
+// false if timed out.
+bool SatoriGate::TimedWait(int timeout)
+{
+    // TODO: VS handle errors? at least asserts
     BOOL result = WaitOnAddress(&m_state, &s_blocking, sizeof(uint32_t), timeout);
     m_state = s_blocking;
     return result == TRUE;

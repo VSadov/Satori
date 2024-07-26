@@ -52,7 +52,7 @@ public:
     {
         _ASSERTE(item->m_next == nullptr);
 
-        SatoriLockHolder<SatoriSpinLock> holder(&m_lock);
+        SatoriLockHolder<SatoriLock> holder(&m_lock);
         item->m_next = m_head;
         m_head = item;
 #ifdef _DEBUG
@@ -69,7 +69,7 @@ public:
 
         SatoriWorkChunk* result;
         {
-            SatoriLockHolder<SatoriSpinLock> holder(&m_lock);
+            SatoriLockHolder<SatoriLock> holder(&m_lock);
             result = m_head;
             if (result == nullptr)
             {
@@ -94,7 +94,7 @@ public:
 #endif
 
 private:
-    SatoriSpinLock m_lock;
+    SatoriLock m_lock;
     SatoriWorkChunk* m_head;
 #ifdef _DEBUG
     size_t m_count;
