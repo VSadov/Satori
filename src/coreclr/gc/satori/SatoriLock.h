@@ -216,53 +216,6 @@ private:
     }
 
     NOINLINE
-    void AwakeWaiterIfNeeded()
-    {
-        int collisions = 0;
-        while (true)
-        {
-            uint32_t oldState = _state;
-            if ((int32_t)oldState >= (int32_t)WaiterCountIncrement) // false if WaiterWoken is set
-            {
-                // there are waiters, and nobody has woken one.
-                uint32_t newState = oldState | WaiterWoken;
-
-                uint16_t lastWakeTicks = _wakeWatchDog;
-                if (lastWakeTicks != 0)
-                {
-                    uint16_t currentTicks = GetTickCount();
-                    if ((int16_t)currentTicks - (int16_t)lastWakeTicks > (int16_t)WaiterWatchdogTicks)
-                    {
-                        //printf("Last: %i ", (int)lastWakeTicks);
-                        //printf("Current: %i \n", (int)currentTicks);
-
-                        newState |= YieldToWaiters;
-                    }
-                }
-
-                if (Interlocked::CompareExchange(&_state, newState, oldState) == oldState)
-                {
-                    if (lastWakeTicks == 0)
-                    {
-                        // sometimes timestamp will be 0, it is harmless.
-                        _wakeWatchDog = GetTickCount();
-                    }
-
-                    _gate->WakeOne();
-                    return;
-                }
-            }
-            else
-            {
-                // no need to wake a waiter.
-                return;
-            }
-
-            CollisionBackoff(++collisions);
-        }
-    }
-
-    NOINLINE
     void EnterSlow()
     {
         bool hasWaited = false;
@@ -359,7 +312,19 @@ private:
                 }
                 else if (!canAcquire)
                 {
-                    // We reached our spin limit, and need to wait.  Increment the waiter count.
+                    // We reached our spin limit, and need to wait.
+
+                    // If waiter was awaken spuriously, it may acquire the lock before wake watchdog is set.
+                    // If there are no more waiters for a long time, the watchdog could hang around for a while too.
+                    // When a new waiter enters the system, it may look like we had no waiter progress for all that time.
+                    // To avoid this, if it looks like we have no waiters and will be the first new one,
+                    // clear the watchdog.
+                    // It is ok to clear even if we will not end up the first one.
+                    // We will self-correct on the next wake and reestablish a new watchdog.
+                    if (oldState < WaiterCountIncrement && _wakeWatchDog !=0)
+                        _wakeWatchDog = 0;
+                    
+                    // Increment the waiter count.
                     // Note that we do not do any overflow checking on this increment.  In order to overflow,
                     // we'd need to have about 1 billion waiting threads, which is inconceivable anytime in the
                     // forseeable future.
@@ -384,6 +349,53 @@ private:
             // this was either real or spurious wake.
             // either way try acquire again.
             hasWaited = true;
+        }
+    }
+
+    NOINLINE
+    void AwakeWaiterIfNeeded()
+    {
+        int collisions = 0;
+        while (true)
+        {
+            uint32_t oldState = _state;
+            if ((int32_t)oldState >= (int32_t)WaiterCountIncrement) // false if WaiterWoken is set
+            {
+                // there are waiters, and nobody has woken one.
+                uint32_t newState = oldState | WaiterWoken;
+
+                uint16_t lastWakeTicks = _wakeWatchDog;
+                if (lastWakeTicks != 0)
+                {
+                    uint16_t currentTicks = GetTickCount();
+                    if ((int16_t)currentTicks - (int16_t)lastWakeTicks > (int16_t)WaiterWatchdogTicks)
+                    {
+                        //printf("Last: %i ", (int)lastWakeTicks);
+                        //printf("Current: %i \n", (int)currentTicks);
+                        newState |= YieldToWaiters;
+                    }
+                }
+
+                if (Interlocked::CompareExchange(&_state, newState, oldState) == oldState)
+                {
+                    if (lastWakeTicks == 0)
+                    {
+                        // Sometimes timestamp will be 0.
+                        // It is harmless. We will try again on the next wake
+                        _wakeWatchDog = GetTickCount();
+                    }
+
+                    _gate->WakeOne();
+                    return;
+                }
+            }
+            else
+            {
+                // no need to wake a waiter.
+                return;
+            }
+
+            CollisionBackoff(++collisions);
         }
     }
 };
