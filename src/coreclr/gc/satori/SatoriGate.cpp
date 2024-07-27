@@ -26,6 +26,7 @@
 
 #ifdef TARGET_WINDOWS
 
+#include "common.h"
 #include "windows.h"
 #include "synchapi.h"
 #include "SatoriGate.h"
@@ -39,34 +40,53 @@ SatoriGate::SatoriGate()
     m_state = s_blocking;
 }
 
-// returns true if was woken up,
-// false if timed out.
+// If this gate is in blocking state, the thread will block
+// until woken up, possibly spuriously.
 void SatoriGate::Wait()
 {
-    // TODO: VS handle errors? at least asserts
     BOOL result = WaitOnAddress(&m_state, &s_blocking, sizeof(uint32_t), INFINITE);
+    _ASSERTE(result == TRUE);
+
+    // must close the gate before doing anything else.
+    // closing gate later may potentially lead to a lost wake
+    m_state = s_blocking;
+    MemoryBarrier();
 }
 
-// returns true if was woken up,
-// false if timed out.
+// If this gate is in blocking state, the thread will block
+// until woken up, possibly spuriously.
+// or until the wait times out. (in a case of timeout returns false)
 bool SatoriGate::TimedWait(int timeout)
 {
-    // TODO: VS handle errors? at least asserts
     BOOL result = WaitOnAddress(&m_state, &s_blocking, sizeof(uint32_t), timeout);
+    _ASSERTE(result == TRUE || GetLastError() == ERROR_TIMEOUT);
+
+    // must close the gate before doing anything else.
+    // closing gate later may potentially lead to a lost wake
     m_state = s_blocking;
+    MemoryBarrier();
+
     return result == TRUE;
 }
 
-void SatoriGate::WakeAll()
-{
-    m_state = s_open;
-    WakeByAddressAll(&m_state);
-}
-
+// After this call at least one thread will go through the gate, either by waking up,
+// or by going through Wait without blocking.
+// The thread may not be woken by this wait, if there are several racing waikes,
+// one or more may take effect, but all wakes will see at least one thread going
+// through the gate.
 void SatoriGate::WakeOne()
 {
     m_state = s_open;
-    WakeByAddressSingle(&m_state);
+    WakeByAddressSingle((PVOID)&m_state);
 }
+
+// Same as WakeOne, but if there are multiple waiters sleeping,
+// all will be woken up and go through the gate.
+void SatoriGate::WakeAll()
+{
+    m_state = s_open;
+    WakeByAddressAll((PVOID)&m_state);
+}
+
 
 #endif

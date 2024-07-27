@@ -59,6 +59,7 @@ private:
     SatoriGate* _gate;
 
 private:
+    FORCEINLINE
     static bool CompareExchangeAcq(uint32_t volatile* destination, uint32_t exchange, uint32_t comparand)
     {
 #ifdef _MSC_VER
@@ -72,6 +73,7 @@ private:
 #endif
     }
 
+    FORCEINLINE
     static uint32_t InterlockedDecRel(volatile uint32_t* arg)
     {
 #ifdef _MSC_VER
@@ -85,6 +87,31 @@ private:
 #endif
     }
 
+    FORCEINLINE
+    static int64_t GetCpuCycles()
+    {
+#if defined(TARGET_AMD64)
+#ifdef _MSC_VER
+        return __rdtsc();
+#else
+        ptrdiff_t cycles;
+        ptrdiff_t cyclesHi;
+        __asm__ __volatile__
+        ("rdtsc":"=a" (cycles), "=d" (cyclesHi));
+        return (cyclesHi << 32) | cycles;
+#endif
+#elif defined(TARGET_ARM64)
+        // On arm64 just read timer register instead
+#ifdef _MSC_VER
+        return _ReadStatusReg(ARM64_CNTVCT_EL0);
+#else
+        int64_t timerTicks;
+        asm volatile("mrs %0, cntvct_el0" : "=r"(timerTicks));
+        return timerTicks;
+#endif
+#endif
+    }
+
     static const uint16_t SpinCountNotInitialized = INT16_MIN;
 
     // While spinning is parameterized in terms of iterations,
@@ -92,7 +119,6 @@ private:
     // One iteration is mapped to 64 spin count units.
     static const int SpinCountScaleShift = 6;
 
-    // TODO: VS remove "default"
     static const uint16_t DefaultMaxSpinCount = 22 << SpinCountScaleShift;
     static const uint16_t DefaultMinSpinCount = 1 << SpinCountScaleShift;
 
@@ -110,8 +136,6 @@ private:
     // then release and reacquire fast enough that waiters have no chance to get the lock.
     // In extreme cases one thread could keep retaking the lock starving everybody else.
     // If we see woken waiters not able to take the lock for too long we will ask nonwaiters to wait.
-    // TODO: VS too short? we do not want to hold user thread by accident, when it is helping.
-    //       also - for non user threads or during bocking phase we do not need fairness.
     static const uint32_t WaiterWatchdogTicks = 60;
 
 public:
@@ -186,13 +210,11 @@ private:
     {
         _ASSERTE(collisions > 0);
 
-        // TODO: VS s_contentionCount or smth else for randomness.
-        // no need for much randomness here, we will just hash the stack address + s_contentionCount.
-        uint32_t rand = ((uint32_t)(size_t)&collisions /* + (uint32_t)s_contentionCount */) * 2654435769u;
+        // no need for much randomness here, we will just hash the stack location and a timestamp.
+        uint32_t rand = ((uint32_t)(size_t)&collisions + (uint32_t)GetCpuCycles()) * 2654435769u;
         uint32_t spins = rand >> (uint8_t)((uint32_t)32 - min(collisions, MaxExponentialBackoffBits));
         for (int i = 0; i < (int)spins; i++)
         {
-            // TODO: VS this is now uncalibrated. Is that ok?
             YieldProcessor();
         }
     }
@@ -202,15 +224,13 @@ private:
     {
         _ASSERTE(iteration > 0 && iteration < MaxExponentialBackoffBits);
 
-        // TODO: VS s_contentionCount or smth else for randomness.
-        uint32_t rand = ((uint32_t)(size_t)&iteration /* + (uint32_t)s_contentionCount */) * 2654435769u;
+        uint32_t rand = ((uint32_t)(size_t)&iteration + (uint32_t)GetCpuCycles()) * 2654435769u;
         // set the highmost bit to ensure minimum number of spins is exponentialy increasing
         // it basically gurantees that we spin at least 1, 2, 4, 8, 16, times, and so on
         rand |= (1u << 31);
         uint32_t spins = rand >> (uint8_t)(32 - iteration);
         for (int i = 0; i < (int)spins; i++)
         {
-            // TODO: VS this is now uncalibrated. Is that ok?
             YieldProcessor();
         }
     }

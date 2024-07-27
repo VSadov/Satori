@@ -35,7 +35,7 @@ private:
     static uint32_t s_open;
     static uint32_t s_blocking;
 
-    uint32_t m_state;
+    volatile uint32_t m_state;
 #if defined(_INC_WINDOWS)
 #elif defined(_INC_PTHREADS)
     pthread_mutex_t m_cs;

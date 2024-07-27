@@ -201,7 +201,6 @@ tryAgain:
     return nullptr;
 }
 
-// TODO: VS when do we actually want to use Add?
 void SatoriAllocator::AddRegion(SatoriRegion* region)
 {
     _ASSERTE(region->Generation() == -1);
