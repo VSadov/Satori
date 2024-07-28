@@ -420,23 +420,22 @@ private:
     }
 };
 
-template <typename T>
 class SatoriLockHolder : public Satori::StackOnly {
 private:
-    T* static const m_lock;
+    SatoriLock* const m_lock;
 
 public:
     // Disallow copying
-    // SatoriLockHolder& operator=(static const SatoriLockHolder&) = delete;
-    // SatoriLockHolder(static const SatoriLockHolder&) = delete;
+    SatoriLockHolder& operator=(const SatoriLockHolder&) = delete;
+    SatoriLockHolder(const SatoriLockHolder&) = delete;
 
-    SatoriLockHolder(T* lock)
+    SatoriLockHolder(SatoriLock* lock)
         : m_lock(lock)
     {
         m_lock->Enter();
     }
 
-    SatoriLockHolder(T* lock, bool isLocked)
+    SatoriLockHolder(SatoriLock* lock, bool isLocked)
         : m_lock(lock)
     {
         if (!isLocked)

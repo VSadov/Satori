@@ -991,7 +991,7 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
     // immortal allocs should be way less than region size.
     _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY / 2);
 
-    SatoriLockHolder<SatoriLock> holder(&m_immortalAlocLock);
+    SatoriLockHolder holder(&m_immortalAlocLock);
     SatoriRegion* region = m_immortalRegion;
 
     while (true)

@@ -75,7 +75,7 @@ public:
         _ASSERTE(item->m_prev == nullptr);
         _ASSERTE(item->m_containingQueue == nullptr);
 
-        SatoriLockHolder<SatoriLock> holder(&m_lock);
+        SatoriLockHolder holder(&m_lock);
         m_count++;
         item->m_containingQueue = this;
         if (m_head == nullptr)
@@ -131,7 +131,7 @@ public:
 
         T* result;
         {
-            SatoriLockHolder<SatoriLock> holder(&m_lock);
+            SatoriLockHolder holder(&m_lock);
             result = m_head;
             if (result == nullptr)
             {
@@ -163,7 +163,7 @@ public:
         _ASSERTE(item->m_prev == nullptr);
         _ASSERTE(item->m_containingQueue == nullptr);
 
-        SatoriLockHolder<SatoriLock> holder(&m_lock);
+        SatoriLockHolder holder(&m_lock);
         m_count++;
         item->m_containingQueue = this;
         if (m_tail == nullptr)
@@ -211,7 +211,7 @@ public:
     bool TryRemove(T* item)
     {
         {
-            SatoriLockHolder<SatoriLock> holder(&m_lock);
+            SatoriLockHolder holder(&m_lock);
             if (!Contains(item))
             {
                 return false;
