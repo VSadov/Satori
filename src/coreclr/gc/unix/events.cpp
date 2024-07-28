@@ -324,7 +324,7 @@ SatoriGate::SatoriGate()
 }
 
 // returns true if was woken up
-bool SatoriGate::Wait(int timeout)
+bool SatoriGate::TimedWait(int timeout)
 {
     timespec endTime;
 #if HAVE_CLOCK_GETTIME_NSEC_NP
@@ -347,6 +347,14 @@ bool SatoriGate::Wait(int timeout)
 #else // HAVE_CLOCK_GETTIME_NSEC_NP
     waitResult = pthread_cond_timedwait(&m_cv, &m_cs, &endTime);
 #endif // HAVE_CLOCK_GETTIME_NSEC_NP
+    pthread_mutex_unlock(&m_cs);
+    return waitResult == 0;
+}
+
+// returns true if was woken up
+bool SatoriGate::Wait(int timeout)
+{
+    waitResult = pthread_cond_wait(&m_cv, &m_cs);
     pthread_mutex_unlock(&m_cs);
     return waitResult == 0;
 }
