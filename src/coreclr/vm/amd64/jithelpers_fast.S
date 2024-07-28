@@ -623,8 +623,13 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         bt      qword ptr [rdx], rax
         jb      AssignAndMarkCards            // source is already escaped.
 
+        ; Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+
     RecordEscape:
         // save rdi, rsi, rdx and r10 (possibly preadjusted rsi)
+        push r9
         push rdi
         push rsi
         push rdx
@@ -637,6 +642,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         pop     rdx
         pop     rsi
         pop     rdi
+        pop     rsp
         jmp     AssignAndMarkCards
 LEAF_END_MARKED JIT_WriteBarrier, _TEXT
 

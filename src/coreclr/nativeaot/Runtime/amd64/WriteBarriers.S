@@ -495,7 +495,12 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         bt      qword ptr [rdx], rax
         jb      AssignAndMarkCards            // source is already escaped.
 
-        // save rdi, rsi, rdx and r10 (possibly preadjusted rsi)
+        // Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+
+        // save rsp, rdi, rsi, rdx and r10 (possibly preadjusted rsi)
+        push r9
         push rdi
         push rsi
         push rdx
@@ -508,6 +513,7 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         pop     rdx
         pop     rsi
         pop     rdi
+        pop     rsp
         jmp     AssignAndMarkCards
 LEAF_END RhpAssignRef, _TEXT
 
@@ -681,7 +687,12 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         bt      qword ptr [rdx], r11
         jb      AssignAndMarkCards_CmpXchg            // source is already escaped.
 
+        // Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+
         // save rax, rdi, rsi, rdx and have enough stack for the callee
+        push r9
         push rax
         push rdi
         push rsi
@@ -696,6 +707,7 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         pop     rsi
         pop     rdi
         pop     rax
+        pop     rsp
         jmp     AssignAndMarkCards_CmpXchg
 LEAF_END RhpCheckedLockCmpXchg, _TEXT
 
@@ -835,7 +847,12 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         bt      qword ptr [rdx], r11
         jb      AssignAndMarkCards_Xchg            // source is already escaped.
 
-        // save rax, rdi, rsi, rdx and have enough stack for the callee
+        // Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+
+        // save rsp, rax, rdi, rsi, rdx and have enough stack for the callee
+        push r9
         push rax
         push rdi
         push rsi
@@ -850,6 +867,7 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         pop     rsi
         pop     rdi
         pop     rax
+        pop     rsp
         jmp     AssignAndMarkCards_Xchg
 LEAF_END RhpCheckedXchg, _TEXT
 
