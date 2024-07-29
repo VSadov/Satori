@@ -312,14 +312,17 @@ bool GCEvent::CreateOSManualEventNoThrow(bool initialState)
 
 SatoriGate::SatoriGate()
 {
-    pthread_mutex_init(&m_cs, NULL);
+    m_cs = new pthread_mutex_t();
+    m_cv = new pthread_cond_t();
+
+    pthread_mutex_init(m_cs, NULL);
     pthread_condattr_t attrs;
     pthread_condattr_init(&attrs);
 #if HAVE_PTHREAD_CONDATTR_SETCLOCK && !HAVE_CLOCK_GETTIME_NSEC_NP
     // Ensure that the pthread_cond_timedwait will use CLOCK_MONOTONIC
     pthread_condattr_setclock(&attrs, CLOCK_MONOTONIC);
 #endif // HAVE_PTHREAD_CONDATTR_SETCLOCK && !HAVE_CLOCK_GETTIME_NSEC_NP
-    pthread_cond_init(&m_cv, &attrs);
+    pthread_cond_init(m_cv, &attrs);
     pthread_condattr_destroy(&attrs);
 }
 
@@ -340,31 +343,51 @@ bool SatoriGate::TimedWait(int timeout)
 #endif
 
     int waitResult = 0;
-    pthread_mutex_lock(&m_cs);
+    pthread_mutex_lock(m_cs);
 #if HAVE_CLOCK_GETTIME_NSEC_NP
     // Since OSX doesn't support CLOCK_MONOTONIC, we use relative variant of the timed wait.
-    waitResult = pthread_cond_timedwait_relative_np(&m_cv, &m_cs, &endTime);
+    waitResult = m_state == s_open ?
+        0 :
+        pthread_cond_timedwait_relative_np(m_cv, m_cs, &endTime);
 #else // HAVE_CLOCK_GETTIME_NSEC_NP
-    waitResult = pthread_cond_timedwait(&m_cv, &m_cs, &endTime);
+    waitResult = m_state == SatoriGate::s_open ?
+        0 :
+        pthread_cond_timedwait(m_cv, m_cs, &endTime);
 #endif // HAVE_CLOCK_GETTIME_NSEC_NP
-    pthread_mutex_unlock(&m_cs);
+    pthread_mutex_unlock(m_cs);
+    assert(waitResult == 0 || waitResult == ETIMEDOUT);
+
+    m_state = s_blocking;
     return waitResult == 0;
 }
 
-// returns true if was woken up
-bool SatoriGate::Wait(int timeout)
+void SatoriGate::Wait()
 {
-    waitResult = pthread_cond_wait(&m_cv, &m_cs);
-    pthread_mutex_unlock(&m_cs);
-    return waitResult == 0;
+    int waitResult;
+    pthread_mutex_lock(m_cs);
+
+    waitResult = m_state == SatoriGate::s_open ?
+        0 :
+        pthread_cond_wait(m_cv, m_cs);
+
+    pthread_mutex_unlock(m_cs);
+    assert(waitResult == 0);
+
+    m_state = s_blocking;
 }
 
 void SatoriGate::WakeAll()
 {
-    pthread_cond_broadcast(&m_cv);
+    m_state = SatoriGate::s_open;
+    pthread_mutex_lock(m_cs);
+    pthread_cond_broadcast(m_cv);
+    pthread_mutex_unlock(m_cs);
 }
 
 void SatoriGate::WakeOne()
 {
-    pthread_cond_signal(&m_cv);
+    m_state = SatoriGate::s_open;
+    pthread_mutex_lock(m_cs);
+    pthread_cond_signal(m_cv);
+    pthread_mutex_unlock(m_cs);
 }

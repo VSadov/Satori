@@ -31,10 +31,6 @@
 #include "synchapi.h"
 #include "SatoriGate.h"
 
-// static
-uint32_t SatoriGate::s_open = 1;
-uint32_t SatoriGate::s_blocking = 0;
-
 SatoriGate::SatoriGate()
 {
     m_state = s_blocking;
@@ -44,13 +40,10 @@ SatoriGate::SatoriGate()
 // until woken up, possibly spuriously.
 void SatoriGate::Wait()
 {
-    BOOL result = WaitOnAddress(&m_state, &s_blocking, sizeof(uint32_t), INFINITE);
+    uint32_t blocking = s_blocking;
+    BOOL result = WaitOnAddress(&m_state, &blocking, sizeof(uint32_t), INFINITE);
     _ASSERTE(result == TRUE);
-
-    // must close the gate before doing anything else.
-    // closing gate later may potentially lead to a lost wake
     m_state = s_blocking;
-    MemoryBarrier();
 }
 
 // If this gate is in blocking state, the thread will block
@@ -58,22 +51,18 @@ void SatoriGate::Wait()
 // or until the wait times out. (in a case of timeout returns false)
 bool SatoriGate::TimedWait(int timeout)
 {
-    BOOL result = WaitOnAddress(&m_state, &s_blocking, sizeof(uint32_t), timeout);
+    uint32_t blocking = s_blocking;
+    BOOL result = WaitOnAddress(&m_state, &blocking, sizeof(uint32_t), timeout);
     _ASSERTE(result == TRUE || GetLastError() == ERROR_TIMEOUT);
-
-    // must close the gate before doing anything else.
-    // closing gate later may potentially lead to a lost wake
     m_state = s_blocking;
-    MemoryBarrier();
 
     return result == TRUE;
 }
 
 // After this call at least one thread will go through the gate, either by waking up,
 // or by going through Wait without blocking.
-// The thread may not be woken by this wait, if there are several racing waikes,
-// one or more may take effect, but all wakes will see at least one thread going
-// through the gate.
+// If there are several racing wakes, one or more may take effect,
+// but all wakes will see at least one thread going through the gate.
 void SatoriGate::WakeOne()
 {
     m_state = s_open;

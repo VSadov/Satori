@@ -226,7 +226,7 @@ private:
 
         uint32_t rand = ((uint32_t)(size_t)&iteration + (uint32_t)GetCpuCycles()) * 2654435769u;
         // set the highmost bit to ensure minimum number of spins is exponentialy increasing
-        // it basically gurantees that we spin at least 1, 2, 4, 8, 16, times, and so on
+        // it basically guarantees that we spin at least 1, 2, 4, 8, 16, times, and so on
         rand |= (1u << 31);
         uint32_t spins = rand >> (uint8_t)(32 - iteration);
         for (int i = 0; i < (int)spins; i++)

@@ -32,16 +32,17 @@
 class SatoriGate
 {
 private:
-    static uint32_t s_open;
-    static uint32_t s_blocking;
+    static const uint32_t s_open = 1;
+    static const uint32_t s_blocking = 0;
 
     volatile uint32_t m_state;
-#if defined(_INC_WINDOWS)
-#elif defined(_INC_PTHREADS)
-    pthread_mutex_t m_cs;
-    pthread_cond_t m_cv;
+
+#if defined(_INC_PTHREADS)
+    pthread_mutex_t* m_cs;
+    pthread_cond_t* m_cv;
 #else
-    size_t dummy[100];
+    size_t* dummy1;
+    size_t* dummy2;
 #endif
 
 public:
