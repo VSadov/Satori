@@ -616,6 +616,8 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         ret
 
     // this is expected to be rare.
+    RecordEscape:
+
     // 4) check if the source is escaped
         mov     rax, rsi
         and     rax, 0x1FFFFF
@@ -623,12 +625,12 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         bt      qword ptr [rdx], rax
         jb      AssignAndMarkCards            // source is already escaped.
 
-        ; Align rsp
+        // Align rsp
         mov  r9, rsp
         and  rsp, -16
+        sub  rsp, 8
 
-    RecordEscape:
-        // save rdi, rsi, rdx and r10 (possibly preadjusted rsi)
+        // save rsp, rdi, rsi, rdx and r10 (possibly preadjusted rsi)
         push r9
         push rdi
         push rsi

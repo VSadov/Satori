@@ -498,6 +498,7 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         // Align rsp
         mov  r9, rsp
         and  rsp, -16
+        sub  rsp, 8
 
         // save rsp, rdi, rsi, rdx and r10 (possibly preadjusted rsi)
         push r9
@@ -690,19 +691,18 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         // Align rsp
         mov  r9, rsp
         and  rsp, -16
+        sub  rsp, 8
 
-        // save rax, rdi, rsi, rdx and have enough stack for the callee
+        // save rsp, rax, rdi, rsi, rdx and have enough stack for the callee
         push r9
         push rax
         push rdi
         push rsi
         push rdx
-        sub  rsp, 0x20
 
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         call    qword ptr [rdx + 8]
 
-        add     rsp, 0x20
         pop     rdx
         pop     rsi
         pop     rdi
@@ -850,6 +850,7 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         // Align rsp
         mov  r9, rsp
         and  rsp, -16
+        sub  rsp, 8
 
         // save rsp, rax, rdi, rsi, rdx and have enough stack for the callee
         push r9
@@ -857,12 +858,10 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         push rdi
         push rsi
         push rdx
-        sub  rsp, 0x20
 
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         call    qword ptr [rdx + 8]
 
-        add     rsp, 0x20
         pop     rdx
         pop     rsi
         pop     rdi
