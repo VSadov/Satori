@@ -2922,6 +2922,8 @@ void SatoriRecycler::ScanAllFinalizableRegionsWorker()
 
     if (c.m_WorkChunk != nullptr)
     {
+        // some dead finalizables were added to F-queue and made reachable.
+        // need to trace them, but also finalizer thread has work to do
         GCToEEInterface::EnableFinalization(true);
         m_workList->Push(c.m_WorkChunk);
     }
@@ -3062,6 +3064,8 @@ void SatoriRecycler::QueueCriticalFinalizablesWorker()
 
         if (c.m_WorkChunk != nullptr)
         {
+            // some dead finalizables were added to F-queue and made reachable.
+            // need to trace them, but also finalizer thread has work to do
             GCToEEInterface::EnableFinalization(true);
             m_workList->Push(c.m_WorkChunk);
         }

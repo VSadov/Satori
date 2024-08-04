@@ -310,6 +310,55 @@ bool GCEvent::CreateOSManualEventNoThrow(bool initialState)
 #define _INC_PTHREADS
 #include "..\satori\SatoriGate.h"
 
+#if defined(TARGET_LINUX)
+
+#include <linux/futex.h>      /* Definition of FUTEX_* constants */
+#include <sys/syscall.h>      /* Definition of SYS_* constants */
+#include <unistd.h>
+
+#ifndef  INT_MAX
+#define INT_MAX 2147483647
+#endif
+
+SatoriGate::SatoriGate()
+{
+    m_state = s_blocking;
+}
+
+// returns true if was woken up. false if timed out
+bool SatoriGate::TimedWait(int timeout)
+{
+    timespec t;
+    uint64_t nanoseconds = (uint64_t)timeout * tccMilliSecondsToNanoSeconds;
+    t.tv_sec = nanoseconds / tccSecondsToNanoSeconds;
+    t.tv_nsec = nanoseconds % tccSecondsToNanoSeconds;
+
+    long waitResult = syscall(SYS_futex, &m_state, FUTEX_WAIT_PRIVATE, s_blocking, &t, NULL, 0);
+
+    // woken, not blocking, interrupted, timeout
+    assert(waitResult == 0 || errno == EAGAIN || errno == ETIMEDOUT || errno == EINTR);
+
+    m_state = s_blocking;
+    return waitResult == 0 || errno != ETIMEDOUT;
+}
+
+void SatoriGate::Wait()
+{
+    syscall(SYS_futex, &m_state, FUTEX_WAIT_PRIVATE, s_blocking, NULL, NULL, 0);
+}
+
+void SatoriGate::WakeAll()
+{
+    m_state = s_open;
+    syscall(SYS_futex, &m_state, FUTEX_WAKE_PRIVATE, s_blocking, INT_MAX , NULL, 0);
+}
+
+void SatoriGate::WakeOne()
+{
+    m_state = s_open;
+    syscall(SYS_futex, &m_state, FUTEX_WAKE_PRIVATE, s_blocking, 1, NULL, 0);
+}
+#else
 SatoriGate::SatoriGate()
 {
     m_cs = new pthread_mutex_t();
@@ -391,3 +440,5 @@ void SatoriGate::WakeOne()
     pthread_cond_signal(m_cv);
     pthread_mutex_unlock(m_cs);
 }
+#endif
+
