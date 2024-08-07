@@ -469,13 +469,14 @@ WRITE_BARRIER_END JIT_WriteBarrier
 //   x12  : trashed
 //   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
 //   x15  : trashed
-//   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+//   x16  : trashed (ip0)
+//   x17  : trashed (ip1)
 //
 WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
   // See if dst is in GCHeap
-    ldr     x12, LOCAL_LABEL(wbs_card_bundle_table)
+    ldr     x16, LOCAL_LABEL(wbs_card_bundle_table)
     lsr     x17, x14, #30                       // source page index
-    ldrb    w12, [x12, x17]
+    ldrb    w12, [x16, x17]
     cbz     x12, LOCAL_LABEL(NotInHeap)
     b       C_FUNC(JIT_WriteBarrier)
 
@@ -493,15 +494,16 @@ WRITE_BARRIER_END JIT_CheckedWriteBarrier
 //   x12  : trashed
 //   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
 //   x15  : trashed
-//   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+//   x16  : trashed (ip0)
+//   x17  : trashed (ip1)
 //
 WRITE_BARRIER_ENTRY JIT_WriteBarrier
     // check for escaping assignment
     // 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
-        ldr     x12, LOCAL_LABEL(wbs_card_bundle_table)
+        ldr     x16, LOCAL_LABEL(wbs_card_bundle_table)
         lsr     x17, x15, #30                   // source page index
-        ldrb    w12, [x12, x17]
+        ldrb    w12, [x16, x17]
         cbz     x12, LOCAL_LABEL(JustAssign)
 #else
         cbz     x15, LOCAL_LABEL(JustAssign)    // assigning null
