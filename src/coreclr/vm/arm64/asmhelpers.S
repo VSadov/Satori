@@ -506,8 +506,8 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 #else
         cbz     x15, LOCAL_LABEL(JustAssign)    // assigning null
 #endif
-        and     x12,  x15, #0xFFFFFFFFFFE00000  // source region
-        ldr     x12, [x12]                      // region tag
+        and     x16,  x15, #0xFFFFFFFFFFE00000  // source region
+        ldr     x12, [x16]                      // region tag
 #ifdef TARGET_OSX
         mrs     x17, TPIDRRO_EL0
         and     x17, x17, #-8                   // thread tag on OSX
@@ -524,8 +524,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 
     // 3) check if the target is exposed
         ubfx        x17, x14,#9,#12              // word index = (dst >> 9) & 0x1FFFFF
-        and         x12, x15, #0xFFFFFFFFFFE00000  // source region
-        ldr         x17, [x12, x17, lsl #3]      // mark word = [region + index * 8]
+        ldr         x17, [x16, x17, lsl #3]      // mark word = [region + index * 8]
         lsr         x12, x14, #3                 // bit = (dst >> 3) [& 63]
         lsr         x17, x17, x12
         tbnz        x17, #0, LOCAL_LABEL(RecordEscape) // target is exposed. record an escape.
@@ -546,8 +545,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         cbz     x12, LOCAL_LABEL(CheckConcurrent) // same region, just check if barrier is not concurrent
 
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        and     x17,  x15, #0xFFFFFFFFFFE00000     // source region
-        ldr     w12, [x17, 16]
+        ldr     w12, [x16, 16]                    // source region + 16 -> generation
         tbz     x12, #1, LOCAL_LABEL(MarkCards)
 
     LOCAL_LABEL(CheckConcurrent):
@@ -615,12 +613,11 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     // this is expected to be rare.
     LOCAL_LABEL(RecordEscape):
 
-    // 4) check if the source is escaped
-        and         x12, x15, #0xFFFFFFFFFFE00000  // source region
-        add         x16, x15, #8                   // escape bit is MT + 1
-        ubfx        x17, x16, #9,#12               // word index = (dst >> 9) & 0x1FFFFF
-        ldr         x17, [x12, x17, lsl #3]        // mark word = [region + index * 8]
-        lsr         x12, x16, #3                   // bit = (dst >> 3) [& 63]
+    // 4) check if the source is escaped (x16 has source region)
+        add         x12, x15, #8                   // escape bit is MT + 1
+        ubfx        x17, x12, #9,#12               // word index = (dst >> 9) & 0x1FFFFF
+        ldr         x17, [x16, x17, lsl #3]        // mark word = [region + index * 8]
+        lsr         x12, x12, #3                   // bit = (dst >> 3) [& 63]
         lsr         x17, x17, x12
         tbnz        x17, #0, LOCAL_LABEL(AssignAndMarkCards)        // source is already escaped.
 
@@ -654,6 +651,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         ldp     x14,x15, [sp, 16 * 8]
         ldp     x29,x30, [sp], 16 * 9
 
+        and     x16, x15, #0xFFFFFFFFFFE00000  // source region
         b       LOCAL_LABEL(AssignAndMarkCards)
 WRITE_BARRIER_END JIT_WriteBarrier
 
