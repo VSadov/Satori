@@ -474,15 +474,14 @@ WRITE_BARRIER_END JIT_WriteBarrier
 //
 WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
   // See if dst is in GCHeap
-    ldr     x16, LOCAL_LABEL(wbs_card_bundle_table)
-    lsr     x17, x14, #30                       // source page index
-    ldrb    w12, [x16, x17]
-    cbz     x12, LOCAL_LABEL(NotInHeap)
-    b       C_FUNC(JIT_WriteBarrier)
+        ldr     x16, LOCAL_LABEL(wbs_card_bundle_table)
+        lsr     x17, x14, #30                       // source page index
+        ldrb    w12, [x16, x17]
+        cbnz    x12, LOCAL_LABEL(CheckedEntry)
 
-LOCAL_LABEL(NotInHeap):
-    str  x15, [x14], #8
-    ret  lr
+    LOCAL_LABEL(NotInHeap):
+        str  x15, [x14], #8
+        ret  lr
 WRITE_BARRIER_END JIT_CheckedWriteBarrier
 
 // void JIT_WriteBarrier(Object** dst, Object* src)
@@ -502,10 +501,12 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     // 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         ldr     x16, LOCAL_LABEL(wbs_card_bundle_table)
+    LOCAL_LABEL(CheckedEntry):
         lsr     x17, x15, #30                   // source page index
         ldrb    w12, [x16, x17]
         cbz     x12, LOCAL_LABEL(JustAssign)
 #else
+    LOCAL_LABEL(CheckedEntry):
         cbz     x15, LOCAL_LABEL(JustAssign)    // assigning null
 #endif
         and     x16,  x15, #0xFFFFFFFFFFE00000  // source region
