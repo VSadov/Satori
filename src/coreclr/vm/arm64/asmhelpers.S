@@ -541,9 +541,6 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     LOCAL_LABEL(AssignAndMarkCards):
         stlr    x15, [x14]
 
-    // need couple temps. Save before using.
-        stp     x2,  x3,  [sp, -16]!
-
         eor     x12, x14, x15
         lsr     x12, x12, #21
         cbz     x12, LOCAL_LABEL(CheckConcurrent) // same region, just check if barrier is not concurrent
@@ -556,12 +553,14 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         ldr     x12, LOCAL_LABEL(wbs_sw_ww_table) // !wbs_sw_ww_table -> !concurrent
         cbnz    x12, LOCAL_LABEL(MarkCards)
         
-    LOCAL_LABEL(Exit):
-        ldp  x2,  x3, [sp], 16
+    // no marking needed
         add  x14, x14, 8
         ret  lr
 
     LOCAL_LABEL(MarkCards):
+    // need couple temps. Save before using.
+        stp     x2,  x3,  [sp, -16]!
+
     // fetch card location for x14
         ldr     x12, LOCAL_LABEL(wbs_card_table)     // fetch the page map
         lsr     x17, x14, #30
@@ -595,7 +594,11 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     // check if concurrent marking is still not in progress
         ldr     x12, LOCAL_LABEL(wbs_sw_ww_table)    // !wbs_sw_ww_table -> !concurrent
         cbnz    x12, LOCAL_LABEL(DirtyCard)
-        b       LOCAL_LABEL(Exit)
+
+    LOCAL_LABEL(Exit):
+        ldp  x2,  x3, [sp], 16
+        add  x14, x14, 8
+        ret  lr
 
     // DIRTYING CARD FOR X14
     LOCAL_LABEL(DirtyCard):
