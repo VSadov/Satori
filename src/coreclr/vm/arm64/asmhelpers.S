@@ -524,12 +524,12 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     // 2) check if the src and dst are from the same region
         eor     x12, x14, x15
         lsr     x12, x12, #21
-        cbnz    x12, LOCAL_LABEL(RecordEscape )  // cross region assignment. definitely escaping
+        cbnz    x12, LOCAL_LABEL(RecordEscape)  // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
-        ubfx        x17, x14,#9,#12              // word index = (dst >> 9) & 0x1FFFFF
-        ldr         x17, [x16, x17, lsl #3]      // mark word = [region + index * 8]
-        lsr         x12, x14, #3                 // bit = (dst >> 3) [& 63]
+        ubfx        x17, x14,#9,#12             // word index = (dst >> 9) & 0x1FFFFF
+        ldr         x17, [x16, x17, lsl #3]     // mark word = [region + index * 8]
+        lsr         x12, x14, #3                // bit = (dst >> 3) [& 63]
         lsr         x17, x17, x12
         tbnz        x17, #0, LOCAL_LABEL(RecordEscape) // target is exposed. record an escape.
 
