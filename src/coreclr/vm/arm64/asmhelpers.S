@@ -514,7 +514,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 #else
         mrs     x17, TPIDR_EL0                  // thread tag on other Unix
 #endif
-        cmp     x12, x17     
+        cmp     x12, x17
         bne     LOCAL_LABEL(AssignAndMarkCards) // not local to this thread
 
     // 2) check if the src and dst are from the same region
@@ -530,13 +530,10 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         lsr         x17, x17, x12
         tbnz        x17, #0, LOCAL_LABEL(RecordEscape) // target is exposed. record an escape.
 
-        str  x15, [x14], #8                      // UNORDERED assignment of unescaped object
-        ret  lr
-
+    // UNORDERED! assignment of unescaped, null or external (immutable) object
     LOCAL_LABEL(JustAssign):
-        stlr    x15, [x14]                       // no card marking, src is not a heap object
-        add     x14, x14, 8
-        ret     lr
+        str  x15, [x14], #8
+        ret  lr
 
     LOCAL_LABEL(AssignAndMarkCards):
         stlr    x15, [x14]
