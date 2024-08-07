@@ -295,7 +295,8 @@ LEAF_END JIT_PatchedCodeStart, _TEXT
 //   x13  : incremented by 8
 //   x14  : incremented by 8
 //   x15  : trashed
-//   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+//   x16  : trashed (ip0)
+//   x17  : trashed (ip1)
 //
 WRITE_BARRIER_ENTRY JIT_ByRefWriteBarrier
 
@@ -504,7 +505,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     LOCAL_LABEL(CheckedEntry):
         lsr     x17, x15, #30                   // source page index
         ldrb    w12, [x16, x17]
-        cbz     x12, LOCAL_LABEL(JustAssign)
+        cbz     x12, LOCAL_LABEL(JustAssign)    // null or external (immutable) object
 #else
     LOCAL_LABEL(CheckedEntry):
         cbz     x15, LOCAL_LABEL(JustAssign)    // assigning null
