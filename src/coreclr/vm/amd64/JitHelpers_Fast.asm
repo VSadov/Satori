@@ -514,9 +514,9 @@ LEAF_END JIT_PatchedCodeStart, _TEXT
 ; void JIT_CheckedWriteBarrier(Object** dst, Object* src)
 LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
 
-        ; See if this is in GCHeap
+    ; See if dst is in GCHeap
         mov     rax, rcx
-        shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
+        shr     rax, 30                    ; dst page index
         add     rax, [g_card_bundle_table] ; fetch the page byte map
         cmp     byte ptr [rax], 0
         jne     JIT_WriteBarrier
@@ -533,17 +533,18 @@ LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
 ;
 LEAF_ENTRY JIT_WriteBarrier, _TEXT
     align 16
-    ; check for escaping assignment
-    ; 1) check if we own the source region
 
 ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+    ; check if src is in heap
         mov     rax, rdx
-        shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
+        shr     rax, 30                    ; source page index
         add     rax, [g_card_bundle_table] ; fetch the page byte map
         cmp     byte ptr [rax], 0
         je      JustAssign              ; src not in heap
 endif
 
+    ; check for escaping assignment
+    ; 1) check if we own the source region
         mov     r8, rdx
         and     r8, 0FFFFFFFFFFE00000h  ; source region
 

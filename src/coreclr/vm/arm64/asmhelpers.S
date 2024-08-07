@@ -472,9 +472,10 @@ WRITE_BARRIER_END JIT_WriteBarrier
 //   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 //
 WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
+  // See if dst is in GCHeap
     ldr     x12, LOCAL_LABEL(wbs_card_bundle_table)
-    add     x12, x12, x14, lsr #30
-    ldrb    w12, [x12]
+    lsr     x17, x14, #30                       // source page index
+    ldrb    w12, [x12, x17]
     cbz     x12, LOCAL_LABEL(NotInHeap)
     b       C_FUNC(JIT_WriteBarrier)
 
@@ -499,8 +500,8 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     // 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         ldr     x12, LOCAL_LABEL(wbs_card_bundle_table)
-        add     x12, x12, x15, lsr #30
-        ldrb    w12, [x12]
+        lsr     x17, x15, #30                   // source page index
+        ldrb    w12, [x12, x17]
         cbz     x12, LOCAL_LABEL(JustAssign)
 #else
         cbz     x15, LOCAL_LABEL(JustAssign)    // assigning null
@@ -548,8 +549,8 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         cbz     x12, LOCAL_LABEL(CheckConcurrent) // same region, just check if barrier is not concurrent
 
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        and     x2,  x15, #0xFFFFFFFFFFE00000     // source region
-        ldr     w12, [x2, 16]
+        and     x17,  x15, #0xFFFFFFFFFFE00000     // source region
+        ldr     w12, [x17, 16]
         tbz     x12, #1, LOCAL_LABEL(MarkCards)
 
     LOCAL_LABEL(CheckConcurrent):
