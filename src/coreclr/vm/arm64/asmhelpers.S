@@ -569,8 +569,8 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         ldr     x17, [x12, x17, lsl #3]              // page
         sub     x2,  x14, x17   // offset in page
         lsr     x15, x2,  #21   // group index
-        lsl     x15, x15, #1    // group offset (index * 2)
         lsr     x2,  x2,  #9    // card offset
+        lsl     x15, x15, #1    // group offset (index * 2)
 
     // check if concurrent marking is in progress
         ldr     x12, LOCAL_LABEL(wbs_sw_ww_table)    // !wbs_sw_ww_table -> !concurrent
