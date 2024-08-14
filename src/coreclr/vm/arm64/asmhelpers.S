@@ -524,9 +524,9 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         bne     LOCAL_LABEL(AssignAndMarkCards) // not local to this thread
 
     // 2) check if the src and dst are from the same region
-        eor     x12, x14, x15
-        lsr     x12, x12, #21
-        cbnz    x12, LOCAL_LABEL(RecordEscape)  // cross region assignment. definitely escaping
+        and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
+        cmp     x12, x16
+        bne     LOCAL_LABEL(RecordEscape)       // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
         ubfx        x17, x14,#9,#12             // word index = (dst >> 9) & 0x1FFFFF
@@ -543,9 +543,9 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     LOCAL_LABEL(AssignAndMarkCards):
         stlr    x15, [x14]
 
-        eor     x12, x14, x15
-        lsr     x12, x12, #21
-        cbz     x12, LOCAL_LABEL(CheckConcurrent) // same region, just check if barrier is not concurrent
+        and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
+        cmp     x12, x16
+        beq     LOCAL_LABEL(CheckConcurrent)    // same region, just check if barrier is not concurrent
 
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         ldr     w12, [x16, 16]                    // source region + 16 -> generation
