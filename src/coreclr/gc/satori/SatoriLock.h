@@ -32,6 +32,10 @@
 #include "SatoriUtil.h"
 #include "SatoriGate.h"
 
+#if defined(TARGET_OSX)
+#include <time.h>
+#endif
+
 class SatoriLock
 {
 private:
@@ -88,7 +92,7 @@ private:
     }
 
     FORCEINLINE
-    static int64_t GetCpuCycles()
+    static int64_t GetCheapTimeStamp()
     {
 #if defined(TARGET_AMD64)
 #ifdef _MSC_VER
@@ -103,12 +107,17 @@ private:
 #elif defined(TARGET_ARM64)
         // On arm64 just read timer register instead
 #ifdef _MSC_VER
+#define ARM64_CNTVCT_EL0 ARM64_SYSREG(3,3,14,0,2)
         return _ReadStatusReg(ARM64_CNTVCT_EL0);
-#else
+#elif defined(TARGET_LINUX)
         int64_t timerTicks;
         asm volatile("mrs %0, cntvct_el0" : "=r"(timerTicks));
         return timerTicks;
+#elif defined(TARGET_OSX)
+        return (int64_t)clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
 #endif
+#else
+        Unsupported platform?
 #endif
     }
 
@@ -211,7 +220,7 @@ private:
         _ASSERTE(collisions > 0);
 
         // no need for much randomness here, we will just hash the stack location and a timestamp.
-        uint32_t rand = ((uint32_t)(size_t)&collisions + (uint32_t)GetCpuCycles()) * 2654435769u;
+        uint32_t rand = ((uint32_t)(size_t)&collisions + (uint32_t)GetCheapTimeStamp()) * 2654435769u;
         uint32_t spins = rand >> (uint8_t)((uint32_t)32 - min(collisions, MaxExponentialBackoffBits));
         for (int i = 0; i < (int)spins; i++)
         {
@@ -224,7 +233,7 @@ private:
     {
         _ASSERTE(iteration > 0 && iteration < MaxExponentialBackoffBits);
 
-        uint32_t rand = ((uint32_t)(size_t)&iteration + (uint32_t)GetCpuCycles()) * 2654435769u;
+        uint32_t rand = ((uint32_t)(size_t)&iteration + (uint32_t)GetCheapTimeStamp()) * 2654435769u;
         // set the highmost bit to ensure minimum number of spins is exponentialy increasing
         // it basically guarantees that we spin at least 1, 2, 4, 8, 16, times, and so on
         rand |= (1u << 31);
