@@ -446,7 +446,6 @@ LEAF_END RhpByRefAssignRefArm64, _TEXT
 //   x16  : trashed (ip0)
 //   x17  : trashed (ip1)
 LEAF_ENTRY RhpCheckedAssignRefArm64, _TEXT
-    .balign 64
     // See if dst is in GCHeap
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
         lsr     x17, x14, #30                       // dst page index
@@ -474,8 +473,8 @@ LEAF_END RhpCheckedAssignRefArm64, _TEXT
 //   x15  : trashed
 //   x16  : trashed (ip0)
 //   x17  : trashed (ip1)
-LEAF_ENTRY RhpAssignRefArm64, _TEXT
     .balign 32
+LEAF_ENTRY RhpAssignRefArm64, _TEXT
     // check for escaping assignment
     // 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS

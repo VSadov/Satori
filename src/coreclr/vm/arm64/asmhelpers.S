@@ -474,7 +474,6 @@ WRITE_BARRIER_END JIT_WriteBarrier
 //   x17  : trashed (ip1)
 //
 WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
-    .balign 64
     // See if dst is in GCHeap
         ldr     x16, LOCAL_LABEL(wbs_card_bundle_table)
         lsr     x17, x14, #30                       // dst page index
@@ -499,7 +498,6 @@ WRITE_BARRIER_END JIT_CheckedWriteBarrier
 //   x17  : trashed (ip1)
 //
 WRITE_BARRIER_ENTRY JIT_WriteBarrier
-    .balign 32
     // check for escaping assignment
     // 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS

@@ -540,7 +540,6 @@ Exit
 ;   x15  : trashed
 ;   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 ;
-        ALIGN 64
     WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
     ; See if dst is in GCHeap
         ldr     x16, wbs_card_bundle_table
@@ -565,7 +564,6 @@ NotInHeap
 ;   x16  : trashed (ip0)
 ;   x17  : trashed (ip1)
 ;
-        ALIGN 32
     WRITE_BARRIER_ENTRY JIT_WriteBarrier
     ; check for escaping assignment
     ; 1) check if we own the source region
