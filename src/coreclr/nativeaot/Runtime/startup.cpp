@@ -343,6 +343,7 @@ void RuntimeThreadShutdown(void* thread)
     {
         // At this point other threads could be terminated rudely while leaving runtime
         // in inconsistent state, so we would be risking blocking the process from exiting.
+        _exit(0);
         return;
     }
 #else
