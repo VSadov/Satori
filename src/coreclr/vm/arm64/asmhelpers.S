@@ -477,7 +477,7 @@ WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
     .balign 64
     // See if dst is in GCHeap
         ldr     x16, LOCAL_LABEL(wbs_card_bundle_table)
-        lsr     x17, x14, #30                       // source page index
+        lsr     x17, x14, #30                       // dst page index
         ldrb    w12, [x16, x17]
         cbnz    x12, LOCAL_LABEL(CheckedEntry)
 
@@ -646,8 +646,8 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         // mov  x0, x14  EscapeFn does not use dst, it is just to avoid arg shuffle on x64
         mov  x1, x15
-        and  x2, x15, #0xFFFFFFFFFFE00000  // source region
-        ldr  x12, [x2, #8]                 // EscapeFn address
+        mov  x2, x16                       // source region
+        ldr  x12, [x16, #8]                 // EscapeFn address
         blr  x12
 
         ldp     x0, x1,  [sp, 16 * 1]

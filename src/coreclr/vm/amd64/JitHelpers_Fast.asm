@@ -513,19 +513,26 @@ LEAF_END JIT_PatchedCodeStart, _TEXT
 
 ; void JIT_CheckedWriteBarrier(Object** dst, Object* src)
 LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
+    align 16
 
     ; See if dst is in GCHeap
-        mov     rax, rcx
-        shr     rax, 30                    ; dst page index
-        add     rax, [g_card_bundle_table] ; fetch the page byte map
-        cmp     byte ptr [rax], 0
-        jne     JIT_WriteBarrier
+        mov     rax, [g_card_bundle_table] ; fetch the page byte map
+        mov     r8,  rcx
+        shr     r8,  30                    ; dst page index
+        cmp     byte ptr [rax + r8], 0
+        jne     CheckedEntry
 
     NotInHeap:
         ; See comment above about possible AV
         mov     [rcx], rdx
         ret
 LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
+
+ALTERNATE_ENTRY macro Name
+
+Name label proc
+PUBLIC Name
+        endm
 
 ;
 ;   rcx - dest address 
@@ -536,11 +543,14 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
 
 ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
     ; check if src is in heap
-        mov     rax, rdx
-        shr     rax, 30                    ; source page index
-        add     rax, [g_card_bundle_table] ; fetch the page byte map
-        cmp     byte ptr [rax], 0
-        je      JustAssign              ; src not in heap
+        mov     rax, [g_card_bundle_table] ; fetch the page byte map
+    ALTERNATE_ENTRY CheckedEntry
+        mov     r8,  rdx
+        shr     r8,  30                    ; src page index
+        cmp     byte ptr [rax + r8], 0
+        je      JustAssign                 ; src not in heap
+else
+    ALTERNATE_ENTRY CheckedEntry
 endif
 
     ; check for escaping assignment
@@ -602,6 +612,7 @@ endif
         mov     rdx,r8
         shr     r8, 9     ; card offset
         shr     rdx, 21   ; group offset
+        lea     rdx, [rax + rdx * 2 + 80h]
 
     ; check if concurrent marking is in progress
         cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
@@ -613,9 +624,9 @@ endif
         jne     CardSet
         mov     byte ptr [rax + r8], 1
      SetGroup:
-        cmp     byte ptr [rax + rdx * 2 + 80h], 0
+        cmp     byte ptr [rdx], 0
         jne     CardSet
-        mov     byte ptr [rax + rdx * 2 + 80h], 1
+        mov     byte ptr [rdx], 1
      SetPage:
         cmp     byte ptr [rax], 0
         jne     CardSet
@@ -631,9 +642,9 @@ endif
      DirtyCard:
         mov     byte ptr [rax + r8], 4
      DirtyGroup:
-        cmp     byte ptr [rax + rdx * 2 + 80h], 4
+        cmp     byte ptr [rdx], 4
         je      Exit
-        mov     byte ptr [rax + rdx * 2 + 80h], 4
+        mov     byte ptr [rdx], 4
      DirtyPage:
         cmp     byte ptr [rax], 4
         je      Exit
@@ -647,6 +658,7 @@ endif
 
         ; 4) check if the source is escaped
         mov     rax, rdx
+        add     rax, 8                        ; escape bit is MT + 1
         and     rax, 01FFFFFh
         shr     rax, 3
         bt      qword ptr [r8], rax
@@ -691,12 +703,12 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
         add     rdi, 8h
         add     rsi, 8h
 
-        ; See if assignment is into heap
-        mov     rax, rcx
-        shr     rax, 30                    ; round to page size ( >> PAGE_BITS )
-        add     rax, [g_card_bundle_table] ; fetch the page byte map
-        cmp     byte ptr [rax], 0
-        jne     JIT_WriteBarrier
+    ; See if dst is in GCHeap
+        mov     rax, [g_card_bundle_table] ; fetch the page byte map
+        mov     r8,  rcx
+        shr     r8,  30                    ; dst page index
+        cmp     byte ptr [rax + r8], 0
+        jne     CheckedEntry
 
     align 16
     NotInHeap:
