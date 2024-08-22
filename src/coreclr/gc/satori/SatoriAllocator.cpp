@@ -216,9 +216,17 @@ void SatoriAllocator::ReturnRegion(SatoriRegion* region)
     m_queues[SizeToBucket(region->Size())]->Push(region);
 }
 
+void SatoriAllocator::ReturnRegionNoLock(SatoriRegion* region)
+{
+    _ASSERTE(region->IsAttachedToAllocatingOwner() == false);
+    _ASSERTE(region->Generation() == -1);
+    _ASSERTE(m_heap->Recycler()->IsBlockingPhase());
+
+    m_queues[SizeToBucket(region->Size())]->PushNoLock(region);
+}
+
 void SatoriAllocator::AllocationTickIncrement(AllocationTickKind allocationTickKind, size_t totalAdded, SatoriObject* obj, size_t objSize)
 {
-
     size_t& tickAmout = allocationTickKind == AllocationTickKind::Small ?
         m_smallAllocTickAmount :
         allocationTickKind == AllocationTickKind::Large ?
@@ -983,7 +991,7 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
     // immortal allocs should be way less than region size.
     _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY / 2);
 
-    SatoriLockHolder<SatoriLock> holder(&m_immortalAlocLock);
+    SatoriLockHolder holder(&m_immortalAlocLock);
     SatoriRegion* region = m_immortalRegion;
 
     while (true)

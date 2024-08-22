@@ -75,7 +75,7 @@ public:
         _ASSERTE(item->m_prev == nullptr);
         _ASSERTE(item->m_containingQueue == nullptr);
 
-        SatoriLockHolder<SatoriSpinLock> holder(&m_lock);
+        SatoriLockHolder holder(&m_lock);
         m_count++;
         item->m_containingQueue = this;
         if (m_head == nullptr)
@@ -92,6 +92,36 @@ public:
         m_head = item;
     }
 
+    void PushNoLock(T* item)
+    {
+        _ASSERTE(item->m_next == nullptr);
+        _ASSERTE(item->m_prev == nullptr);
+        _ASSERTE(item->m_containingQueue == nullptr);
+
+#ifdef _DEBUG
+        size_t oldCount = m_count;
+#endif
+
+        T* head = Interlocked::ExchangePointer(&m_head, item);
+        if (head == nullptr)
+        {
+            _ASSERTE(m_tail == nullptr);
+            m_tail = item;
+        }
+        else
+        {
+            item->m_next = head;
+            head->m_prev = item;
+        }
+
+        item->m_containingQueue = this;
+        _ASSERTE(m_count >= oldCount);
+
+#ifdef _DEBUG
+        Interlocked::Increment(&m_count);
+#endif
+    }
+
     T* TryPop()
     {
         if (IsEmpty())
@@ -101,7 +131,7 @@ public:
 
         T* result;
         {
-            SatoriLockHolder<SatoriSpinLock> holder(&m_lock);
+            SatoriLockHolder holder(&m_lock);
             result = m_head;
             if (result == nullptr)
             {
@@ -133,7 +163,7 @@ public:
         _ASSERTE(item->m_prev == nullptr);
         _ASSERTE(item->m_containingQueue == nullptr);
 
-        SatoriLockHolder<SatoriSpinLock> holder(&m_lock);
+        SatoriLockHolder holder(&m_lock);
         m_count++;
         item->m_containingQueue = this;
         if (m_tail == nullptr)
@@ -181,7 +211,7 @@ public:
     bool TryRemove(T* item)
     {
         {
-            SatoriLockHolder<SatoriSpinLock> holder(&m_lock);
+            SatoriLockHolder holder(&m_lock);
             if (!Contains(item))
             {
                 return false;
@@ -246,7 +276,7 @@ public:
 
 protected:
     QueueKind m_kind;
-    SatoriSpinLock m_lock;
+    SatoriLock m_lock;
     T* m_head;
     T* m_tail;
     size_t m_count;

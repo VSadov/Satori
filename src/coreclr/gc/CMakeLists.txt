@@ -39,6 +39,7 @@ set(GC_SOURCES
   satori/SatoriAllocationContext.cpp
   satori/SatoriUtil.cpp
   satori/SatoriLock.cpp
+  satori/SatoriGate.cpp
 )
 
 if(CLR_CMAKE_HOST_UNIX)
@@ -122,6 +123,7 @@ if (CLR_CMAKE_TARGET_WIN32)
     satori/SatoriAllocationContext.h
     satori/SatoriUtil.h
     satori/SatoriLock.h
+    satori/SatoriGate.h
   )
 endif(CLR_CMAKE_TARGET_WIN32)
 
@@ -130,6 +132,7 @@ if(CLR_CMAKE_HOST_WIN32)
     ${STATIC_MT_CRT_LIB}
     ${STATIC_MT_VCRT_LIB}
     kernel32.lib
+    Synchronization.lib
     advapi32.lib)
 endif(CLR_CMAKE_HOST_WIN32)
 

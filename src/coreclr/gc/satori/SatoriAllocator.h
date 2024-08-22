@@ -56,6 +56,7 @@ public:
     SatoriRegion* GetRegion(size_t minSize);
     void AddRegion(SatoriRegion* region);
     void ReturnRegion(SatoriRegion* region);
+    void ReturnRegionNoLock(SatoriRegion * region);
 
     void AllocationTickIncrement(AllocationTickKind isSmall, size_t totalAdded, SatoriObject* obj, size_t obj_size);
     void AllocationTickDecrement(size_t totalUnused);
@@ -76,13 +77,13 @@ private:
     SatoriLock m_immortalAlocLock;
 
     SatoriRegion* m_pinnedRegion;
-    SatoriSpinLock m_pinnedAlocLock;
+    SatoriLock m_pinnedAlocLock;
 
     SatoriRegion* m_largeRegion;
-    SatoriSpinLock m_largeAlocLock;
+    SatoriLock m_largeAlocLock;
 
     SatoriRegion* m_regularRegion;
-    SatoriSpinLock m_regularAlocLock;
+    SatoriLock m_regularAlocLock;
 
     volatile int32_t m_singePageAdders;
 

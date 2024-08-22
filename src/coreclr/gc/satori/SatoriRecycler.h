@@ -31,6 +31,7 @@
 #include "../gc.h"
 #include "SatoriRegionQueue.h"
 #include "SatoriWorkList.h"
+#include "SatoriGate.h"
 
 class SatoriHeap;
 class SatoriTrimmer;
@@ -120,6 +121,9 @@ public:
             &m_lastEphemeralGcInfo;
     };
 
+    // TODO: VS needs to be public?
+    bool IsBlockingPhase();
+
 private:
     SatoriHeap* m_heap;
 
@@ -195,6 +199,7 @@ private:
     size_t m_gen1AddedSinceLastCollection;
     size_t m_gen2AddedSinceLastCollection;
     size_t m_gen1CountAtLastGen2;
+    size_t m_gcNextTimeTarget;
 
     size_t m_occupancy[3];
     size_t m_occupancyAcc[3];
@@ -210,10 +215,12 @@ private:
     int64_t m_perfCounterTicksPerMilli;
     int64_t m_perfCounterTicksPerMicro;
 
-    GCEvent* m_helpersGate;
+    SatoriGate* m_helperGate;
+
     volatile int m_gateSignaled;
     volatile int m_activeHelpers;
     volatile int m_totalHelpers;
+    volatile bool maySpinAtGate;
 
     void(SatoriRecycler::* volatile m_activeHelperFn)();
 
@@ -224,9 +231,6 @@ private:
     LastRecordedGcInfo* m_CurrentGcInfo;
 
 private:
-
-    bool IsBlockingPhase();
-
     size_t Gen1RegionCount();
     size_t Gen2RegionCount();
     size_t RegionCount();

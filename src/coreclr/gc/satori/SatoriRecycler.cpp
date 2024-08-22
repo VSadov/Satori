@@ -80,11 +80,11 @@ static SatoriRegionQueue* AllocQueue(QueueKind kind)
 
 void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
-    m_helpersGate = new (nothrow) GCEvent;
-    m_helpersGate->CreateAutoEventNoThrow(false);
+    m_helperGate = new (nothrow) SatoriGate();
     m_gateSignaled = 0;
     m_activeHelpers= 0;
     m_totalHelpers = 0;
+    maySpinAtGate = false;
 
     m_noWorkSince = 0;
 
@@ -146,6 +146,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_totalBudget = MIN_GEN1_BUDGET;
     m_totalLimit = m_totalBudget;
     m_prevCondemnedGeneration = 2;
+    m_gcNextTimeTarget = 0;
 
     m_activeHelperFn = nullptr;
     m_rootScanTicket = 0;
@@ -181,14 +182,55 @@ void SatoriRecycler::HelperThreadFn(void* param)
     {
         Interlocked::Decrement(&recycler->m_activeHelpers);
 
-        uint32_t waitResult = recycler->m_helpersGate->Wait(1000, FALSE);
-        if (waitResult != WAIT_OBJECT_0)
-        {
-            Interlocked::Decrement(&recycler->m_totalHelpers);
-            return;
+//        bool entered = true;
+        for (;;)
+        {   if (recycler->m_gateSignaled &&
+               Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
+            {
+                goto released;
+            }
+
+            // TODO: VS revisit the value of spinning
+            if (recycler->maySpinAtGate)
+            {
+                // spin for ~10 microseconds
+                int64_t limit = GCToOSInterface::QueryPerformanceCounter() +
+                    recycler->m_perfCounterTicksPerMicro * SatoriUtil::GcSpin();
+                int i = 0;
+                do
+                {
+                    i++;
+                    i = min(30, i);
+                    int j = (1 << i);
+                    while (--j > 0)
+                    {
+                        YieldProcessor();
+
+                        if (recycler->m_gateSignaled &&
+                            Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
+                        {
+                            goto released;
+                        }
+
+                        if (!recycler->maySpinAtGate)
+                        {
+                            goto wait;
+                        }
+                    }
+                }
+                while(GCToOSInterface::QueryPerformanceCounter() < limit);
+            }
+
+        wait:
+            // Wait returns true if was woken up.
+            if (!recycler->m_helperGate->TimedWait(10000))
+            {
+                Interlocked::Decrement(&recycler->m_totalHelpers);
+                return;
+            }
         }
 
-        recycler->m_gateSignaled = 0;
+    released:
         Interlocked::Increment(&recycler->m_activeHelpers);
         auto activeHelper = recycler->m_activeHelperFn;
         if (activeHelper)
@@ -736,7 +778,7 @@ void SatoriRecycler::AskForHelp()
 
     if (!m_gateSignaled && Interlocked::CompareExchange(&m_gateSignaled, 1, 0) == 0)
     {
-        m_helpersGate->Set();
+        m_helperGate->WakeOne();
     }
 }
 
@@ -796,6 +838,11 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 {
     int generation = 0;
 
+    if (GetNowMillis() < m_gcNextTimeTarget)
+    {
+        return;
+    }
+
     if (m_gen1AddedSinceLastCollection > m_gen1Budget)
     {
         generation = 1;
@@ -804,10 +851,11 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
     size_t currentAddedEstimate = m_gen2AddedSinceLastCollection +
         m_gen1AddedSinceLastCollection / EPH_SURV_TARGET;
 
-    if (currentAddedEstimate > m_totalBudget)
-    {
-        generation = 2;
-    }
+    // TODO: VS revisit gen selection heuristics
+    //if (currentAddedEstimate > m_totalBudget)
+    //{
+    //    generation = 2;
+    //}
 
     // just make sure gen2 happens eventually. 
     if (m_gcCount[1] - m_gen1CountAtLastGen2 > 16)
@@ -947,6 +995,8 @@ void SatoriRecycler::BlockingCollect2()
 
 void SatoriRecycler::BlockingCollectImpl()
 {
+    maySpinAtGate = true;
+
     FIRE_EVENT(GCStart_V2, (uint32_t)GlobalGcIndex() + 1, (uint32_t)m_condemnedGeneration, (uint32_t)reason_empty, (uint32_t)gc_etw_type_ngc);
     m_gcStartMillis[m_condemnedGeneration] = GetNowMillis();
 
@@ -1017,6 +1067,8 @@ void SatoriRecycler::BlockingCollectImpl()
     Plan();
     Relocate();
     Update();
+
+    maySpinAtGate = false;
 
     m_gcCount[0]++;
     m_gcCount[1]++;
@@ -1093,6 +1145,8 @@ void SatoriRecycler::BlockingCollectImpl()
     m_occupancy[0] = m_occupancyAcc[0];
 
     m_trimmer->SetOkToRun();
+
+    m_gcNextTimeTarget = GetNowMillis() + SatoriUtil::GcRate();
 }
 
 void SatoriRecycler::RunWithHelp(void(SatoriRecycler::* method)())
@@ -1174,6 +1228,8 @@ void SatoriRecycler::MarkStrongReferences()
     // therefore we must rescan even after concurrent mark completed its work
     IncrementRootScanTicket();
     SatoriHandlePartitioner::StartNextScan();
+
+    m_helperGate->WakeAll();
     RunWithHelp(&SatoriRecycler::MarkStrongReferencesWorker);
 }
 
@@ -2858,6 +2914,8 @@ void SatoriRecycler::ScanAllFinalizableRegionsWorker()
 
     if (c.m_WorkChunk != nullptr)
     {
+        // some dead finalizables were added to F-queue and made reachable.
+        // need to trace them, but also finalizer thread has work to do
         GCToEEInterface::EnableFinalization(true);
         m_workList->Push(c.m_WorkChunk);
     }
@@ -2998,6 +3056,8 @@ void SatoriRecycler::QueueCriticalFinalizablesWorker()
 
         if (c.m_WorkChunk != nullptr)
         {
+            // some dead finalizables were added to F-queue and made reachable.
+            // need to trace them, but also finalizer thread has work to do
             GCToEEInterface::EnableFinalization(true);
             m_workList->Push(c.m_WorkChunk);
         }
@@ -3524,6 +3584,9 @@ void SatoriRecycler::Update()
         {
             IncrementCardScanTicket();
         }
+
+        // TODO: VS revisit value of WakeAll()
+        m_helperGate->WakeAll();
     }
 
     RunWithHelp(&SatoriRecycler::UpdateRootsWorker);
@@ -3741,7 +3804,9 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                         else
                         {
                             curRegion->MakeBlank();
-                            m_heap->Allocator()->ReturnRegion(curRegion);
+                            // TODO: VS use ReturnRegionNoLock in more places? (or less?)
+                            //       what about work chunk queue, can that be lock-free?
+                            m_heap->Allocator()->ReturnRegionNoLock(curRegion);
                         }
 
                         continue;
@@ -3765,7 +3830,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                 {
                     curRegion->DetachFromAlocatingOwnerRelease();
                     curRegion->MakeBlank();
-                    m_heap->Allocator()->ReturnRegion(curRegion);
+                    m_heap->Allocator()->ReturnRegionNoLock(curRegion);
                 }
                 else
                 {
@@ -4036,7 +4101,9 @@ void SatoriRecycler::SweepAndReturnRegion(SatoriRegion* curRegion)
     if (curRegion->Occupancy() == 0)
     {
         curRegion->MakeBlank();
-        m_heap->Allocator()->ReturnRegion(curRegion);
+        IsBlockingPhase() ?
+            m_heap->Allocator()->ReturnRegionNoLock(curRegion) :
+            m_heap->Allocator()->ReturnRegion(curRegion);
     }
     else
     {

@@ -169,7 +169,7 @@ public:
         // we can also support PAGE_SIZE_GRANULARITY
         size_t result = 1024 * 32;
 
-        // result = Satori::REGION_SIZE_GRANULARITY;
+        result = Satori::REGION_SIZE_GRANULARITY;
 
         // result = Satori::PAGE_SIZE_GRANULARITY;
 
@@ -189,43 +189,43 @@ public:
         return 16 * 1024;
     }
 
-    // COMPlus_gcConservative
+    // DOTNET_gcConservative
     static bool IsConservativeMode()
     {
         return (GCConfig::GetConservativeGC());
     }
 
-    // COMPlus_gcConcurrent
+    // DOTNET_gcConcurrent
     static bool IsConcurrent()
     {
         return (GCConfig::GetConcurrentGC());
     }
 
-    // COMPlus_gcRelocatingGen1
+    // DOTNET_gcRelocatingGen1
     static bool IsRelocatingInGen1()
     {
         return (GCConfig::GetRelocatingInGen1());
     }
 
-    // COMPlus_gcRelocatingGen2
+    // DOTNET_gcRelocatingGen2
     static bool IsRelocatingInGen2()
     {
         return (GCConfig::GetRelocatingInGen2());
     }
 
-    // COMPlus_gcThreadLocal
+    // DOTNET_gcThreadLocal
     static bool IsThreadLocalGCEnabled()
     {
         return (GCConfig::GetThreadLocalGC());
     }
 
-    // COMPlus_gcTrim
+    // DOTNET_gcTrim
     static bool IsTrimmingEnabled()
     {
         return (GCConfig::GetTrimmigGC());
     }
 
-    // COMPlus_GCLatencyMode
+    // DOTNET_GCLatencyMode
     static bool IsLowLatencyMode()
     {
         return (GCConfig::GetLatencyMode()) >= 2;
@@ -242,10 +242,39 @@ public:
         return partitionCount;
     }
 
-    // COMPlus_gcParallel
+    // DOTNET_gcParallel
     static int MaxHelpersCount()
     {
         return (int)GCConfig::GetParallelGC();
+    }
+
+    // DOTNET_gcRate
+    static int GcRate()
+    {
+        int gcRate = (int)GCConfig::GetGCRate();
+        if (gcRate == -1)
+        {
+#if _DEBUG
+            // minimum rate-limiting in debug
+            return 2;
+#else
+            return 200;
+#endif
+        }
+
+        return gcRate;
+    }
+    
+    // DOTNET_gcSpin
+    static int GcSpin()
+    {
+        int gcSpin = (int)GCConfig::GetGCSpin();
+        if (gcSpin == -1)
+        {
+            return 5;
+        }
+
+        return gcSpin;
     }
 };
 
