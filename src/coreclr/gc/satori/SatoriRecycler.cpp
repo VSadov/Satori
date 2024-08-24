@@ -828,11 +828,8 @@ bool SatoriRecycler::IsBlockingPhase()
 // we target 1/EPH_SURV_TARGET ephemeral survival rate
 #define EPH_SURV_TARGET 4
 
-// when we do not know, we estimate 1/10 of total heap to be ephemeral.
-#define EPH_RATIO 10
-
 // do gen2 when total doubles
-#define GEN2_THRESHOLD 2
+#define GEN2_SURV_TARGET 2
 
 void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 {
@@ -848,17 +845,17 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
         generation = 1;
     }
 
-    size_t currentAddedEstimate = m_gen2AddedSinceLastCollection +
-        m_gen1AddedSinceLastCollection / EPH_SURV_TARGET;
+    size_t totalAddedEstimate = m_gen2AddedSinceLastCollection +
+        m_gen1AddedSinceLastCollection;
 
-    // TODO: VS revisit gen selection heuristics
-    //if (currentAddedEstimate > m_totalBudget)
-    //{
-    //    generation = 2;
-    //}
+    if (totalAddedEstimate > m_totalBudget)
+    {
+        generation = 2;
+    }
 
     // just make sure gen2 happens eventually. 
-    if (m_gcCount[1] - m_gen1CountAtLastGen2 > 16)
+    if (generation > 0 &&
+        m_gcCount[1] - m_gen1CountAtLastGen2 > 16)
     {
         generation = 2;
     }
@@ -881,48 +878,50 @@ size_t GetAvailableMemory()
 
 void SatoriRecycler::AdjustHeuristics()
 {
-    // ocupancies as of last collection
-    size_t occupancy = GetTotalOccupancy();
+    // occupancies as of last collection
     size_t ephemeralOccupancy = m_occupancy[1] + m_occupancy[0];
+    size_t tenuredOccupancy = m_occupancy[2];
+    size_t occupancy = tenuredOccupancy + ephemeralOccupancy;
 
     if (m_prevCondemnedGeneration == 2)
     {
-        m_totalLimit = occupancy * GEN2_THRESHOLD;
+        m_totalLimit = occupancy * GEN2_SURV_TARGET;
     }
 
-    size_t currentTotalEstimate = occupancy +
-        m_gen2AddedSinceLastCollection +
-        m_gen1AddedSinceLastCollection / EPH_SURV_TARGET;
+    // what we may have after collection
+    size_t currentTotalEstimate;
+    if (m_condemnedGeneration == 2)
+    {
+        currentTotalEstimate =
+            (occupancy + m_gen2AddedSinceLastCollection + m_gen1AddedSinceLastCollection) / GEN2_SURV_TARGET;
+    }
+    else
+    {
+        currentTotalEstimate = tenuredOccupancy + m_gen2AddedSinceLastCollection +
+            (ephemeralOccupancy + m_gen1AddedSinceLastCollection) / EPH_SURV_TARGET;
+    }
 
     m_totalBudget = m_totalLimit > currentTotalEstimate ?
-        max(MIN_GEN1_BUDGET, m_totalLimit - currentTotalEstimate) :
-        MIN_GEN1_BUDGET;
+    max(MIN_GEN1_BUDGET, m_totalLimit - currentTotalEstimate) :
+    MIN_GEN1_BUDGET;
 
     // we will try not to use the last 10%
     size_t available = GetAvailableMemory() * 9 / 10;
     m_totalBudget = min(m_totalBudget, available);
 
-    // we look for 1 / EPH_SURV_TARGET ephemeral survivorship, thus budget is ephemeralOccupancy * EPH_SURV_TARGET
-    // we compute that based on actual ephemeralOccupancy or (occupancy / EPH_RATIO / 2), whichever is larger
-    // and limit that to MIN_GEN1_BUDGET
-    size_t minGen1 = max(MIN_GEN1_BUDGET, occupancy * EPH_SURV_TARGET / EPH_RATIO / 2);
+    if (ephemeralOccupancy == 0)
+    {
+        // after mass-promoting GC ephemeral size will be 0, so temporarily assume it is 1/8 of total
+        ephemeralOccupancy = occupancy / 8;
+    }
 
-    size_t newGen1Budget = max(minGen1, ephemeralOccupancy * EPH_SURV_TARGET);
+    // we look for 1 / EPH_SURV_TARGET ephemeral survivorship, thus budget is ephemeralOccupancy * EPH_SURV_TARGET
+    size_t newGen1Budget = max(MIN_GEN1_BUDGET, ephemeralOccupancy * EPH_SURV_TARGET);
 
     // smooth the budget a bit
     // TUNING: using exponential smoothing with alpha == 1/2. is it a good smooth/lag balance?
     m_gen1Budget = (m_gen1Budget + newGen1Budget) / 2;
 
-    if (m_condemnedGeneration == 2)
-    {
-        // we expect heap size to reduce and will readjust the limit at the next gc,
-        // but if heap doubles we do gen2 again.
-        m_totalBudget = min(currentTotalEstimate, available);
-
-        // we will also lower gen1 budget, so that a large gen1 budget does not lead to
-        // perpetual gen2s if heap collapses. Normally gen1 budget will be less than gen2.
-        m_gen1Budget = max(MIN_GEN1_BUDGET, m_totalBudget / 8);
-    }
 
     // now figure if we will promote
     m_promoteAllRegions = false;
@@ -938,7 +937,17 @@ void SatoriRecycler::AdjustHeuristics()
     {
         if (promotionEstimate > Gen1RegionCount() / 2)
         {
+            // will promote too many, just promote all
             m_promoteAllRegions = true;
+        }
+
+        if (m_gen1Budget <= m_totalBudget)
+        {
+            // TODO: VS next GC will be gen2, just promote all.
+            // m_promoteAllRegions = true;
+
+            // TODO: and more importantly alloc should skip gen1.
+            //       no point in setting cards.
         }
     }
 }
