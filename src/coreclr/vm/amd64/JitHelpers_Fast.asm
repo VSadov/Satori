@@ -583,6 +583,11 @@ endif
     AssignAndMarkCards:
         mov     [rcx], rdx
 
+        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
+        jne     Generational
+        ret
+
+    Generational:
         xor     rdx, rcx
         shr     rdx, 21
         jz      CheckConcurrent         ; same region, just check if barrier is not concurrent

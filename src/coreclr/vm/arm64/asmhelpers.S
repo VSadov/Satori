@@ -541,6 +541,13 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     LOCAL_LABEL(AssignAndMarkCards):
         stlr    x15, [x14]
 
+        ldr     x17, LOCAL_LABEL(wbs_sw_ww_table) // !wbs_sw_ww_table -> !concurrent
+        cbnz    x17, LOCAL_LABEL(Generational)
+    // no marking needed
+        add  x14, x14, 8
+        ret  lr
+
+    LOCAL_LABEL(Generational):
         and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
         beq     LOCAL_LABEL(CheckConcurrent)    // same region, just check if barrier is not concurrent
@@ -550,8 +557,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         tbz     x12, #1, LOCAL_LABEL(MarkCards)
 
     LOCAL_LABEL(CheckConcurrent):
-        ldr     x12, LOCAL_LABEL(wbs_sw_ww_table) // !wbs_sw_ww_table -> !concurrent
-        cbnz    x12, LOCAL_LABEL(MarkCards)
+        cbnz    x17, LOCAL_LABEL(MarkCards)
         
     // no marking needed
         add  x14, x14, 8

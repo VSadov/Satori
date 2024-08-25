@@ -430,6 +430,8 @@ size_t SatoriRecycler::IncrementGen0Count()
 
 void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
 {
+    generation = 2;
+
     int newState = SatoriUtil::IsConcurrent() ? GC_STATE_CONCURRENT : GC_STATE_BLOCKING;
     if (m_gcState == GC_STATE_NONE &&
         Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
