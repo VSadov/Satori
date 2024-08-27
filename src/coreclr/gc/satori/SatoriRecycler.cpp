@@ -648,10 +648,35 @@ void SatoriRecycler::ConcurrentPhasePrepFn(gc_alloc_context* gcContext, void* pa
     }
 }
 
+// if generation is too small or the pause to collect it is too short
+// we do not bother with stopping the world for pre-marking threads
+static const int bgMarkThreshold = 8 * 1024  * 1024;
+
 void SatoriRecycler::BlockingMarkForConcurrent()
 {
-    if (Interlocked::CompareExchange(&m_ccStackMarkState, CC_MARK_STATE_SUSPENDING_EE, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
+    int targetState = CC_MARK_STATE_SUSPENDING_EE;
+    if (m_condemnedGeneration == 2)
     {
+        if ((this->m_occupancy[2] < bgMarkThreshold) &&
+            m_lastTenuredGcInfo.m_pauseDurations[0] < 1000)
+        {
+            targetState = CC_MARK_STATE_DONE;
+        }
+    }
+    else
+    {
+        if ((this->m_occupancy[1] < bgMarkThreshold) &&
+            m_lastEphemeralGcInfo.m_pauseDurations[0] < 1000)
+        {
+            targetState = CC_MARK_STATE_DONE;
+        }
+    }
+
+    if (Interlocked::CompareExchange(&m_ccStackMarkState, targetState, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
+    {
+        if (targetState == CC_MARK_STATE_DONE)
+            return;
+
         size_t blockingStart = GCToOSInterface::QueryPerformanceCounter();
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
 
