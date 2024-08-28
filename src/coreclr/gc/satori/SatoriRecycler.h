@@ -192,8 +192,9 @@ private:
     int64_t m_gcDurationMillis[3];
 
     size_t m_gen1Budget;
-    size_t m_totalBudget;
-    size_t m_totalLimit;
+    size_t m_gen2Limit;
+    size_t m_nextGcIsFullGc;
+
     size_t m_condemnedRegionsCount;
     size_t m_deferredSweepCount;
     size_t m_gen1AddedSinceLastCollection;

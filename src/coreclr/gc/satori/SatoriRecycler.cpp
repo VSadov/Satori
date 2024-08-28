@@ -143,8 +143,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_gen1CountAtLastGen2 = 0;
     m_gen1Budget = MIN_GEN1_BUDGET;
-    m_totalBudget = MIN_GEN1_BUDGET;
-    m_totalLimit = m_totalBudget;
+    m_gen2Limit = MIN_GEN1_BUDGET;
+    m_nextGcIsFullGc = false;
     m_prevCondemnedGeneration = 2;
     m_gcNextTimeTarget = 0;
 
@@ -430,6 +430,9 @@ size_t SatoriRecycler::IncrementGen0Count()
 
 void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
 {
+    if (m_nextGcIsFullGc)
+        generation = 2;
+
     int newState = SatoriUtil::IsConcurrent() ? GC_STATE_CONCURRENT : GC_STATE_BLOCKING;
     if (m_gcState == GC_STATE_NONE &&
         Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
@@ -865,22 +868,14 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
         return;
     }
 
+    // if allocated enough, we can tax the app - in terms of doing a GC
     if (m_gen1AddedSinceLastCollection > m_gen1Budget)
     {
         generation = 1;
     }
 
-    size_t totalAddedEstimate = m_gen2AddedSinceLastCollection +
-        m_gen1AddedSinceLastCollection;
-
-    if (totalAddedEstimate > m_totalBudget)
-    {
-        generation = 2;
-    }
-
-    // just make sure gen2 happens eventually. 
-    if (generation > 0 &&
-        m_gcCount[1] - m_gen1CountAtLastGen2 > 16)
+    // if allocated enough into gen2 (huge objects case), trigger gen2 GC
+    if (m_gen2AddedSinceLastCollection > (m_gen2Limit / GEN2_SURV_TARGET * (GEN2_SURV_TARGET - 1)))
     {
         generation = 2;
     }
@@ -910,69 +905,85 @@ void SatoriRecycler::AdjustHeuristics()
 
     if (m_prevCondemnedGeneration == 2)
     {
-        m_totalLimit = occupancy * GEN2_SURV_TARGET;
+        m_gen2Limit = tenuredOccupancy * GEN2_SURV_TARGET;
     }
 
-    // what we may have after collection
-    size_t currentTotalEstimate;
-    if (m_condemnedGeneration == 2)
-    {
-        currentTotalEstimate =
-            (occupancy + m_gen2AddedSinceLastCollection + m_gen1AddedSinceLastCollection) / GEN2_SURV_TARGET;
-    }
-    else
-    {
-        currentTotalEstimate = tenuredOccupancy + m_gen2AddedSinceLastCollection +
-            (ephemeralOccupancy + m_gen1AddedSinceLastCollection) / EPH_SURV_TARGET;
-    }
+    //// estimate how much of ephemeral set will survive current collection.
+    //// we will size our next GC budget relative to that size.
+    //ephemeralOccupancy = (ephemeralOccupancy + m_gen1AddedSinceLastCollection) / EPH_SURV_TARGET;
 
-    m_totalBudget = m_totalLimit > currentTotalEstimate ?
-    max(MIN_GEN1_BUDGET, m_totalLimit - currentTotalEstimate) :
-    MIN_GEN1_BUDGET;
-
-    // we will try not to use the last 10%
-    size_t available = GetAvailableMemory() * 9 / 10;
-    m_totalBudget = min(m_totalBudget, available);
-
-    if (ephemeralOccupancy == 0)
-    {
-        // after mass-promoting GC ephemeral size will be 0, so temporarily assume it is 1/8 of total
-        ephemeralOccupancy = occupancy / 8;
-    }
-
-    // we look for 1 / EPH_SURV_TARGET ephemeral survivorship, thus budget is ephemeralOccupancy * EPH_SURV_TARGET
-    size_t newGen1Budget = max(MIN_GEN1_BUDGET, ephemeralOccupancy * EPH_SURV_TARGET);
+    // we look for 1 / EPH_SURV_TARGET ephemeral survivorship, the diff is roughly our budget
+    size_t newGen1Budget = max(MIN_GEN1_BUDGET, ephemeralOccupancy * (EPH_SURV_TARGET - 1));
 
     // smooth the budget a bit
     // TUNING: using exponential smoothing with alpha == 1/2. is it a good smooth/lag balance?
-    m_gen1Budget = (m_gen1Budget + newGen1Budget) / 2;
+    newGen1Budget = (m_gen1Budget + newGen1Budget) / 2;
+
+    //// we will try not to use the last 10%
+    //size_t available = GetAvailableMemory() * 9 / 10;
+    //newGen1Budget = min(newGen1Budget, available);
+
+    //size_t oldGen2 = m_gen2Limit / GEN2_SURV_TARGET;
+    //size_t gen2TotalBudget = m_gen2Limit - oldGen2;
+    //if (m_gen2AddedSinceLastCollection < gen2TotalBudget)
+    //{
+    //    size_t gen2RemainingBudget = gen2TotalBudget - m_gen2AddedSinceLastCollection;
+    //    gen2RemainingBudget = min(gen2RemainingBudget, available - newGen1Budget);
+    //    m_gen2Limit = min(m_gen2Limit, oldGen2 + m_gen2AddedSinceLastCollection + gen2RemainingBudget);
+    //}
+
+    m_gen1Budget = newGen1Budget;
 
 
-    // now figure if we will promote
+    // now figure if the next GC will be a Full GC
+    m_nextGcIsFullGc = false;
+    if (m_condemnedGeneration != 2)
+    {
+        // we do full GC every 16 GCs
+        if (m_gcCount[1] - m_gen1CountAtLastGen2 > 16)
+        {
+            m_nextGcIsFullGc = true;
+        }
+
+        // also do full GC if gen2 exceeded the limit
+        if (tenuredOccupancy > m_gen2Limit)
+        {
+            m_nextGcIsFullGc = true;
+        }
+    }
+
+
+    // now figure if we will promote in the current GC
     m_promoteAllRegions = false;
     size_t promotionEstimate = m_promotionEstimate;
     m_promotionEstimate = 0;
 
     if (m_condemnedGeneration == 2)
     {
+        // we promote all in gen2 collections. This is the simplest option.
+        // - gen2 objects will be collected, so would need to ensure cards are only for live ones.
+        // - compacting will need to deal with mixed regions - which generation? what happens to cards?
+        // - there is inefficiency in promoting some gen1 survivors early (1 mark vs. nAge marks), but:
+        //   - still needs to survive at least 1 mark
+        //   - not a big deal if gen2 >> gen1 and it is good that real gen2 stay in place.
+        //   - for gen2 << gen1 this will increase gen2 float by about ~gen1 surv size
+        //     nepotism may lead to more gen2 collections
+        //     but generational behavior is already not working well for gen1 >> gen2
+        //
+        // Another idea is for gen1 >> gen2 case make everything gen1 and reset cards.
+        // the differences:
+        //     will need to rejuvenate handles and syncblocks
+        //     true gen2 will participate in gen1 for nAging collections, then promote back (and cause gen2?)
+        //     how do we know the size of gen2?
         m_promoteAllRegions = true;
         m_gen1CountAtLastGen2 = (int)m_gcCount[1];
     }
     else
     {
-        if (promotionEstimate > Gen1RegionCount() / 2)
+        // if (promotionEstimate > Gen1RegionCount() / 2)
         {
             // will promote too many, just promote all
             m_promoteAllRegions = true;
-        }
-
-        if (m_gen1Budget <= m_totalBudget)
-        {
-            // TODO: VS next GC will be gen2, just promote all.
-            // m_promoteAllRegions = true;
-
-            // TODO: and more importantly alloc should skip gen1.
-            //       no point in setting cards.
         }
     }
 }
@@ -1156,11 +1167,15 @@ void SatoriRecycler::BlockingCollectImpl()
         (uint32_t)0,
         (uint32_t)0);
 
+    m_gen1AddedSinceLastCollection = 0;
+    if (m_condemnedGeneration == 2)
+    {
+        m_gen2AddedSinceLastCollection = 0;
+    }
+
     m_prevCondemnedGeneration = m_condemnedGeneration;
     m_condemnedGeneration = 0;
     m_gcState = GC_STATE_NONE;
-    m_gen1AddedSinceLastCollection = 0;
-    m_gen2AddedSinceLastCollection = 0;
 
     if (SatoriUtil::IsConcurrent() && !m_deferredSweepRegions->IsEmpty())
     {
@@ -3179,7 +3194,8 @@ void SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker()
             [&](int p)
             {
                 sc.thread_number = p;
-                GCScan::GcPromotionsGranted(m_condemnedGeneration, 2, &sc);
+                // age gen1 handles
+                GCScan::GcPromotionsGranted(1, 2, &sc);
             }
         );
     }
@@ -3299,7 +3315,7 @@ void SatoriRecycler::DenyRelocation()
     m_isRelocating = false;
 
     // put all affected regions into staying queue
-    if (m_promoteAllRegions)
+    if (m_condemnedGeneration == 2 || m_promoteAllRegions)
     {
         m_occupancyAcc[2] = 0;
         m_relocatableTenuredEstimate = 0;
