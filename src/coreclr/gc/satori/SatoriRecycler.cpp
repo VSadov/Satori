@@ -143,8 +143,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_gen1CountAtLastGen2 = 0;
     m_gen1Budget = MIN_GEN1_BUDGET;
-    m_totalBudget = MIN_GEN1_BUDGET;
-    m_totalLimit = m_totalBudget;
+    m_totalLimit = MIN_GEN1_BUDGET;
+    m_nextGcIsFullGc = true;
     m_prevCondemnedGeneration = 2;
     m_gcNextTimeTarget = 0;
 
@@ -430,6 +430,11 @@ size_t SatoriRecycler::IncrementGen0Count()
 
 void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
 {
+    if (m_nextGcIsFullGc)
+    {
+        generation = 2;
+    }
+
     int newState = SatoriUtil::IsConcurrent() ? GC_STATE_CONCURRENT : GC_STATE_BLOCKING;
     if (m_gcState == GC_STATE_NONE &&
         Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
@@ -648,10 +653,36 @@ void SatoriRecycler::ConcurrentPhasePrepFn(gc_alloc_context* gcContext, void* pa
     }
 }
 
+// if generation is too small or the pause to collect it is too short
+// we do not bother with stopping the world for thread pre-marking
+static const int bgMarkThreshold = 8 * 1024  * 1024;
+static const int bgPauseThreshold = 1000; // microseconds
+
 void SatoriRecycler::BlockingMarkForConcurrent()
 {
-    if (Interlocked::CompareExchange(&m_ccStackMarkState, CC_MARK_STATE_SUSPENDING_EE, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
+    int targetState = CC_MARK_STATE_SUSPENDING_EE;
+    if (m_condemnedGeneration == 2)
     {
+        if ((this->m_occupancy[2] < bgMarkThreshold) &&
+            m_lastTenuredGcInfo.m_pauseDurations[0] < bgPauseThreshold)
+        {
+            targetState = CC_MARK_STATE_DONE;
+        }
+    }
+    else
+    {
+        if ((this->m_occupancy[1] < bgMarkThreshold) &&
+            m_lastEphemeralGcInfo.m_pauseDurations[0] < bgPauseThreshold)
+        {
+            targetState = CC_MARK_STATE_DONE;
+        }
+    }
+
+    if (Interlocked::CompareExchange(&m_ccStackMarkState, targetState, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
+    {
+        if (targetState == CC_MARK_STATE_DONE)
+            return;
+
         size_t blockingStart = GCToOSInterface::QueryPerformanceCounter();
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
 
@@ -828,11 +859,8 @@ bool SatoriRecycler::IsBlockingPhase()
 // we target 1/EPH_SURV_TARGET ephemeral survival rate
 #define EPH_SURV_TARGET 4
 
-// when we do not know, we estimate 1/10 of total heap to be ephemeral.
-#define EPH_RATIO 10
-
 // do gen2 when total doubles
-#define GEN2_THRESHOLD 2
+#define GEN2_SURV_TARGET 2
 
 void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 {
@@ -840,6 +868,7 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 
     if (GetNowMillis() < m_gcNextTimeTarget)
     {
+        // too early
         return;
     }
 
@@ -848,17 +877,9 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
         generation = 1;
     }
 
-    size_t currentAddedEstimate = m_gen2AddedSinceLastCollection +
-        m_gen1AddedSinceLastCollection / EPH_SURV_TARGET;
-
-    // TODO: VS revisit gen selection heuristics
-    //if (currentAddedEstimate > m_totalBudget)
-    //{
-    //    generation = 2;
-    //}
-
-    // just make sure gen2 happens eventually. 
-    if (m_gcCount[1] - m_gen1CountAtLastGen2 > 16)
+    // gen2 allocations are rare and do not count towards gen1 budget since gen1 will not help with that
+    // they can be big though, so check if by any chance gen2 allocs alone pushed us over the limit
+    if (m_gen2AddedSinceLastCollection * GEN2_SURV_TARGET > m_totalLimit)
     {
         generation = 2;
     }
@@ -881,47 +902,45 @@ size_t GetAvailableMemory()
 
 void SatoriRecycler::AdjustHeuristics()
 {
-    // ocupancies as of last collection
-    size_t occupancy = GetTotalOccupancy();
+    // all sweeping should be done by now and occupancies should reflect live set.
+    // m_gen1AddedSinceLastCollection collects direct allocs into gen1 and is not reflected in that.
+    // m_gen2AddedSinceLastCollection collects direct allocs into gen2 and is not included in m_occupancy[2]
+    // m_gen2AddedSinceLastCollection may accumulate across several collections, name is a bit misleading.
+    // these counts are really just diffs not included in occupancy
+    // sum of all occupancies and allocs added is the total that we have in gen1/gen2 (but not in gen0).
+    // (TODO: VS worth asserting?)
+
     size_t ephemeralOccupancy = m_occupancy[1] + m_occupancy[0];
+    size_t tenuredOccupancy = m_occupancy[2];
+    size_t occupancy = tenuredOccupancy + ephemeralOccupancy;
 
     if (m_prevCondemnedGeneration == 2)
     {
-        m_totalLimit = occupancy * GEN2_THRESHOLD;
+        m_totalLimit = occupancy * GEN2_SURV_TARGET;
     }
 
-    size_t currentTotalEstimate = occupancy +
-        m_gen2AddedSinceLastCollection +
-        m_gen1AddedSinceLastCollection / EPH_SURV_TARGET;
+    // we look for 1 / EPH_SURV_TARGET ephemeral survivorship, thus budget is the diff
+    size_t newGen1Budget = max(MIN_GEN1_BUDGET, ephemeralOccupancy * (EPH_SURV_TARGET - 1));
 
-    m_totalBudget = m_totalLimit > currentTotalEstimate ?
-        max(MIN_GEN1_BUDGET, m_totalLimit - currentTotalEstimate) :
-        MIN_GEN1_BUDGET;
+    // alternatively we allow gen1 allocs up to 1/8 of total limit.
+    size_t altNewGen1Budget = max(MIN_GEN1_BUDGET, m_totalLimit / 8);
 
-    // we will try not to use the last 10%
-    size_t available = GetAvailableMemory() * 9 / 10;
-    m_totalBudget = min(m_totalBudget, available);
-
-    // we look for 1 / EPH_SURV_TARGET ephemeral survivorship, thus budget is ephemeralOccupancy * EPH_SURV_TARGET
-    // we compute that based on actual ephemeralOccupancy or (occupancy / EPH_RATIO / 2), whichever is larger
-    // and limit that to MIN_GEN1_BUDGET
-    size_t minGen1 = max(MIN_GEN1_BUDGET, occupancy * EPH_SURV_TARGET / EPH_RATIO / 2);
-
-    size_t newGen1Budget = max(minGen1, ephemeralOccupancy * EPH_SURV_TARGET);
+    // take max of both budgets
+    newGen1Budget = max(newGen1Budget, altNewGen1Budget);
 
     // smooth the budget a bit
     // TUNING: using exponential smoothing with alpha == 1/2. is it a good smooth/lag balance?
     m_gen1Budget = (m_gen1Budget + newGen1Budget) / 2;
 
-    if (m_condemnedGeneration == 2)
-    {
-        // we expect heap size to reduce and will readjust the limit at the next gc,
-        // but if heap doubles we do gen2 again.
-        m_totalBudget = min(currentTotalEstimate, available);
+    // if the heap size will definitely be over the limit at next GC, make the next GC a full GC
+    m_nextGcIsFullGc = occupancy + m_gen1Budget > m_totalLimit;
 
-        // we will also lower gen1 budget, so that a large gen1 budget does not lead to
-        // perpetual gen2s if heap collapses. Normally gen1 budget will be less than gen2.
-        m_gen1Budget = max(MIN_GEN1_BUDGET, m_totalBudget / 8);
+    // we will try not to use the last 10%
+    size_t available = GetAvailableMemory() * 9 / 10;
+    if (available < m_gen1Budget)
+    {
+        m_gen1Budget = available;
+        m_nextGcIsFullGc = true;
     }
 
     // now figure if we will promote
@@ -938,6 +957,7 @@ void SatoriRecycler::AdjustHeuristics()
     {
         if (promotionEstimate > Gen1RegionCount() / 2)
         {
+            // will promote too many, just promote all
             m_promoteAllRegions = true;
         }
     }
@@ -1126,7 +1146,6 @@ void SatoriRecycler::BlockingCollectImpl()
     m_condemnedGeneration = 0;
     m_gcState = GC_STATE_NONE;
     m_gen1AddedSinceLastCollection = 0;
-    m_gen2AddedSinceLastCollection = 0;
 
     if (SatoriUtil::IsConcurrent() && !m_deferredSweepRegions->IsEmpty())
     {
@@ -3123,7 +3142,8 @@ void SatoriRecycler::DependentHandlesRescanWorker()
 
 void SatoriRecycler::PromoteHandlesAndFreeRelocatedRegions()
 {
-    // NB: we may promote some objects in gen1 gc, but it is ok if handles stay young
+    // NB: we may promote some objects in gen1 gc, but it is ok if handles stay young.
+    //     promote handles only after en-masse promotion.
     if (m_promoteAllRegions)
     {
         SatoriHandlePartitioner::StartNextScan();
@@ -3145,7 +3165,8 @@ void SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker()
             [&](int p)
             {
                 sc.thread_number = p;
-                GCScan::GcPromotionsGranted(m_condemnedGeneration, 2, &sc);
+                // promote gen1 handles
+                GCScan::GcPromotionsGranted(1, 2, &sc);
             }
         );
     }
@@ -3226,6 +3247,7 @@ void SatoriRecycler::Plan()
     {
         relocatableEstimate += m_relocatableTenuredEstimate;
         m_occupancyAcc[2] = 0;
+        m_gen2AddedSinceLastCollection = 0;
         m_relocatableTenuredEstimate = 0;
     }
 
@@ -3268,6 +3290,7 @@ void SatoriRecycler::DenyRelocation()
     if (m_promoteAllRegions)
     {
         m_occupancyAcc[2] = 0;
+        m_gen2AddedSinceLastCollection = 0;
         m_relocatableTenuredEstimate = 0;
         m_stayingRegions->AppendUnsafe(m_ephemeralRegions);
         m_stayingRegions->AppendUnsafe(m_tenuredRegions);
@@ -3451,6 +3474,7 @@ void SatoriRecycler::RelocateWorker()
     if (m_condemnedGeneration != 2 && m_promoteAllRegions)
     {
         m_occupancyAcc[2] = 0;
+        m_gen2AddedSinceLastCollection = 0;
         m_relocatableTenuredEstimate = 0;
 
         AddTenuredRegionsToPlan(m_tenuredRegions);
