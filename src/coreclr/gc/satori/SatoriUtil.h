@@ -256,9 +256,9 @@ public:
         {
 #if _DEBUG
             // minimum rate-limiting in debug
-            return 2;
+            return 0;
 #else
-            return 200;
+            return 3;
 #endif
         }
 
