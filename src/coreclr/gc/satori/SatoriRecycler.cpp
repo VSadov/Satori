@@ -895,9 +895,17 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 size_t GetAvailableMemory()
 {
     uint64_t available;
-    GCToOSInterface::GetMemoryStatus(0, nullptr, &available, nullptr);
+    uint64_t total;
+    GCToOSInterface::GetMemoryStatus(0, nullptr, &available, &total);
 
-    return available;
+    // we will not use the last 10% of physical memory
+    uint64_t reserve = total * 10 / 100;
+    if (available > reserve)
+    {
+        return available - reserve;
+    }
+
+    return 0;
 }
 
 void SatoriRecycler::AdjustHeuristics()
@@ -935,8 +943,7 @@ void SatoriRecycler::AdjustHeuristics()
     // if the heap size will definitely be over the limit at next GC, make the next GC a full GC
     m_nextGcIsFullGc = occupancy + m_gen1Budget > m_totalLimit;
 
-    // we will try not to use the last 10%
-    size_t available = GetAvailableMemory() * 9 / 10;
+    size_t available = GetAvailableMemory();
     if (available < m_gen1Budget)
     {
         m_gen1Budget = available;
