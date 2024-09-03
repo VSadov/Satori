@@ -100,6 +100,11 @@ public:
         return m_isBarrierConcurrent;
     }
 
+    inline bool IsNextGcFullGc()
+    {
+        return m_nextGcIsFullGc;
+    }
+
     bool IsReuseCandidate(SatoriRegion* region);
     bool IsRelocationCandidate(SatoriRegion* region);
     bool IsPromotionCandidate(SatoriRegion* region);
