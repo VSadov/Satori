@@ -519,21 +519,30 @@ ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
 ALTERNATE_ENTRY RhpAssignRefAVLocation
         stlr    x15, [x14]
 
+    // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+    //         needs to suspend EE, not sure if skipping mode check would worth that much.
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
+    // check the barrier state. this must be done after the assignment (in program order)
+    // if state == 2 we do not set or dirty cards.
+        tbz     x17, #1, LOCAL_LABEL(DoCards)
+
+    LOCAL_LABEL(ExitNoCards):
+        add     x14, x14, 8
+        ret     lr
+
+    LOCAL_LABEL(DoCards):
+    // if same region, just check if barrier is not concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
         beq     LOCAL_LABEL(CheckConcurrent)    // same region, just check if barrier is not concurrent
 
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        ldr     w12, [x16, 16]                    // source region + 16 -> generation
+        ldr     w12, [x16, 16]                  // source region + 16 -> generation
         tbz     x12, #1, LOCAL_LABEL(MarkCards)
 
     LOCAL_LABEL(CheckConcurrent):
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  // !g_write_watch_table -> !concurrent
-        cbnz    x12, LOCAL_LABEL(MarkCards)
-        
-    // no marking needed
-        add  x14, x14, 8
-        ret  lr
+    // if not concurrent, exit
+        cbz     x17, LOCAL_LABEL(ExitNoCards)
 
     LOCAL_LABEL(MarkCards):
     // need couple temps. Save before using.
@@ -541,36 +550,35 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
 
     // fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  // fetch the page map
-        lsr     x17, x14, #30
-        ldr     x17, [x12, x17, lsl #3]              // page
-        sub     x2,  x14, x17   // offset in page
+        lsr     x16, x14, #30
+        ldr     x16, [x12, x16, lsl #3]              // page
+        sub     x2,  x14, x16   // offset in page
         lsr     x15, x2,  #21   // group index
         lsr     x2,  x2,  #9    // card offset
         lsl     x15, x15, #1    // group offset (index * 2)
 
     // check if concurrent marking is in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  // !g_write_watch_table -> !concurrent
-        cbnz    x12, LOCAL_LABEL(DirtyCard)
+        cbnz    x17, LOCAL_LABEL(DirtyCard)
 
     // SETTING CARD FOR X14
     LOCAL_LABEL(SetCard):
-        ldrb    w3, [x17, x2]
-        cbnz    w3, LOCAL_LABEL(CardSet)
-        mov     w16, #1
-        strb    w16, [x17, x2]
+        ldrb    w3, [x16, x2]
+        cbnz    w3, LOCAL_LABEL(Exit)
+        mov     w17, #1
+        strb    w17, [x16, x2]
     LOCAL_LABEL(SetGroup):
-        add     x12, x17, #0x80
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
         cbnz    w3, LOCAL_LABEL(CardSet)
-        strb    w16, [x12, x15]
+        strb    w17, [x12, x15]
     LOCAL_LABEL(SetPage):
-        ldrb    w3, [x17]
+        ldrb    w3, [x16]
         cbnz    w3, LOCAL_LABEL(CardSet)
-        strb    w16, [x17]
+        strb    w17, [x16]
 
     LOCAL_LABEL(CardSet):
     // check if concurrent marking is still not in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  // !g_write_watch_table -> !concurrent
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12
         cbnz    x12, LOCAL_LABEL(DirtyCard)
 
     LOCAL_LABEL(Exit):
@@ -580,19 +588,19 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
 
     // DIRTYING CARD FOR X14
     LOCAL_LABEL(DirtyCard):
-        mov     w16, #4
-        add     x2, x2, x17
+        mov     w17, #4
+        add     x2, x2, x16
         // must be after the field write to allow concurrent clean
-        stlrb   w16, [x2]
+        stlrb   w17, [x2]
     LOCAL_LABEL(DirtyGroup):
-        add     x12, x17, #0x80
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
         tbnz    w3, #2, LOCAL_LABEL(Exit)
-        strb    w16, [x12, x15]
+        strb    w17, [x12, x15]
     LOCAL_LABEL(DirtyPage):
-        ldrb    w3, [x17]
+        ldrb    w3, [x16]
         tbnz    w3, #2, LOCAL_LABEL(Exit)
-        strb    w16, [x17]
+        strb    w17, [x16]
         b       LOCAL_LABEL(Exit)
 
     // this is expected to be rare.
@@ -719,7 +727,7 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         casal  x2, x1, [x0]                  // exchange
         mov    x0, x2                        // x0 = result
         cmp    x2, x17
-        bne    LOCAL_LABEL(Exit_Cmp_Xchg)
+        bne    LOCAL_LABEL(Exit_Cmp_XchgNoCards)
 
 #ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
         b      LOCAL_LABEL(SkipLLScCmpXchg)
@@ -742,76 +750,90 @@ LOCAL_LABEL(SkipLLScCmpXchg):
 #endif
 
         cbnz    x10, LOCAL_LABEL(DoCardsCmpXchg)
-LOCAL_LABEL(Exit_Cmp_Xchg):
+LOCAL_LABEL(Exit_Cmp_XchgNoCards):
         ret     lr
 
 LOCAL_LABEL(DoCardsCmpXchg):
 
-        and     x12, x14, #0xFFFFFFFFFFE00000
+    // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+    //         needs to suspend EE, not sure if skipping mode check would worth that much.
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
+
+    // check the barrier state. this must be done after the assignment (in program order)
+    // if state == 2 we do not set or dirty cards.
+        tbnz    x17, #1, LOCAL_LABEL(Exit_Cmp_XchgNoCards)
+
+    LOCAL_LABEL(DoCardsCmpXchg1):
+    // if same region, just check if barrier is not concurrent
+        and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
-        beq     LOCAL_LABEL(CheckConcurrent_Cmp_Xchg)  // same region, just check if barrier is not concurrent
+        beq     LOCAL_LABEL(CheckConcurrentCmpXchg)    // same region, just check if barrier is not concurrent
 
-    // we will trash x2 and x3, this is a regular call, so it is ok
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        ldr     w12, [x16, 16]
-        tbz     x12, #1, LOCAL_LABEL(MarkCards_Cmp_Xchg)
+        ldr     w12, [x16, 16]                  // source region + 16 -> generation
+        tbz     x12, #1, LOCAL_LABEL(MarkCardsCmpXchg)
 
-    LOCAL_LABEL(CheckConcurrent_Cmp_Xchg):
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  // !g_write_watch_table -> !concurrent
-        cbz     x12, LOCAL_LABEL(Exit_Cmp_Xchg)
-        
-    LOCAL_LABEL(MarkCards_Cmp_Xchg):
+    LOCAL_LABEL(CheckConcurrentCmpXchg):
+    // if not concurrent, exit
+        cbz     x17, LOCAL_LABEL(Exit_Cmp_XchgNoCards)
+
+    LOCAL_LABEL(MarkCardsCmpXchg):
+    // need couple temps. Save before using.
+        stp     x2,  x3,  [sp, -16]!
+
     // fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  // fetch the page map
-        lsr     x17, x14, #30
-        ldr     x17, [x12, x17, lsl #3]              // page
-        sub     x2,  x14, x17   // offset in page
+        lsr     x16, x14, #30
+        ldr     x16, [x12, x16, lsl #3]              // page
+        sub     x2,  x14, x16   // offset in page
         lsr     x15, x2,  #21   // group index
         lsr     x2,  x2,  #9    // card offset
         lsl     x15, x15, #1    // group offset (index * 2)
 
     // check if concurrent marking is in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  // !g_write_watch_table -> !concurrent
-        cbnz    x12, LOCAL_LABEL(DirtyCard_Cmp_Xchg)
+        cbnz    x17, LOCAL_LABEL(DirtyCardCmpXchg)
 
     // SETTING CARD FOR X14
-    LOCAL_LABEL(SetCard_Cmp_Xchg):
-        ldrb    w3, [x17, x2]
-        cbnz    w3, LOCAL_LABEL(CardSet_Cmp_Xchg)
-        mov     w16, #1
-        strb    w16, [x17, x2]
-    LOCAL_LABEL(SetGroup_Cmp_Xchg):
-        add     x12, x17, #0x80
+    LOCAL_LABEL(SetCardCmpXchg):
+        ldrb    w3, [x16, x2]
+        cbnz    w3, LOCAL_LABEL(ExitCmpXchg)
+        mov     w17, #1
+        strb    w17, [x16, x2]
+    LOCAL_LABEL(SetGroupCmpXchg):
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
-        cbnz    w3, LOCAL_LABEL(CardSet_Cmp_Xchg)
-        strb    w16, [x12, x15]
-    LOCAL_LABEL(SetPage_Cmp_Xchg):
-        ldrb    w3, [x17]
-        cbnz    w3, LOCAL_LABEL(CardSet_Cmp_Xchg)
-        strb    w16, [x17]
+        cbnz    w3, LOCAL_LABEL(CardSetCmpXchg)
+        strb    w17, [x12, x15]
+    LOCAL_LABEL(SetPageCmpXchg):
+        ldrb    w3, [x16]
+        cbnz    w3, LOCAL_LABEL(CardSetCmpXchg)
+        strb    w17, [x16]
 
-    LOCAL_LABEL(CardSet_Cmp_Xchg):
+    LOCAL_LABEL(CardSetCmpXchg):
     // check if concurrent marking is still not in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  // !g_write_watch_table -> !concurrent
-        cbnz    x12, LOCAL_LABEL(DirtyCard_Cmp_Xchg)
-        ret     lr
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12
+        cbnz    x12, LOCAL_LABEL(DirtyCardCmpXchg)
+
+    LOCAL_LABEL(ExitCmpXchg):
+        ldp  x2,  x3, [sp], 16
+        ret  lr
 
     // DIRTYING CARD FOR X14
-    LOCAL_LABEL(DirtyCard_Cmp_Xchg):
-        mov     w16, #4
-        add     x2, x2, x17
+    LOCAL_LABEL(DirtyCardCmpXchg):
+        mov     w17, #4
+        add     x2, x2, x16
         // must be after the field write to allow concurrent clean
-        stlrb    w16, [x2]
-    LOCAL_LABEL(DirtyGroup_Cmp_Xchg):
-        add     x12, x17, #0x80
+        stlrb   w17, [x2]
+    LOCAL_LABEL(DirtyGroupCmpXchg):
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
-        tbnz    w3, #2, LOCAL_LABEL(Exit_Cmp_Xchg)
-        strb    w16, [x12, x15]
-    LOCAL_LABEL(DirtyPage_Cmp_Xchg):
-        ldrb    w3, [x17]
-        tbnz    w3, #2, LOCAL_LABEL(Exit_Cmp_Xchg)
-        strb    w16, [x17]
-        ret     lr
+        tbnz    w3, #2, LOCAL_LABEL(ExitCmpXchg)
+        strb    w17, [x12, x15]
+    LOCAL_LABEL(DirtyPagCmpXchge):
+        ldrb    w3, [x16]
+        tbnz    w3, #2, LOCAL_LABEL(ExitCmpXchg)
+        strb    w17, [x16]
+        b       LOCAL_LABEL(ExitCmpXchg)
 
     // this is expected to be rare.
     LOCAL_LABEL(RecordEscape_Cmp_Xchg):
@@ -934,74 +956,87 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation2
         dmb     ish
 #endif
 
-        and     x12, x14, #0xFFFFFFFFFFE00000
+    // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+    //         needs to suspend EE, not sure if skipping mode check would worth that much.
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
+    // check the barrier state. this must be done after the assignment (in program order)
+    // if state == 2 we do not set or dirty cards.
+        tbz     x17, #1, LOCAL_LABEL(DoCardsXchg)
+
+    LOCAL_LABEL(ExitNoCardsXchg):
+        ret     lr
+
+    LOCAL_LABEL(DoCardsXchg):
+    // if same region, just check if barrier is not concurrent
+        and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
-        beq     LOCAL_LABEL(CheckConcurrent_Xchg) // same region, just check if barrier is not concurrent
+        beq     LOCAL_LABEL(CheckConcurrentXchg)    // same region, just check if barrier is not concurrent
 
-    // we will trash x2 and x3, this is a regular call, so it is ok
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        ldr     w12, [x16, 16]
-        tbz     x12, #1, LOCAL_LABEL(MarkCards_Xchg)
+        ldr     w12, [x16, 16]                  // source region + 16 -> generation
+        tbz     x12, #1, LOCAL_LABEL(MarkCardsXchg)
 
-    LOCAL_LABEL(CheckConcurrent_Xchg):
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  // !g_write_watch_table -> !concurrent
-        cbnz    x12, LOCAL_LABEL(MarkCards_Xchg)
+    LOCAL_LABEL(CheckConcurrentXchg):
+    // if not concurrent, exit
+        cbz     x17, LOCAL_LABEL(ExitNoCardsXchg)
 
-    LOCAL_LABEL(Exit_Xchg):
-        ret  lr
+    LOCAL_LABEL(MarkCardsXchg):
+    // need couple temps. Save before using.
+        stp     x2,  x3,  [sp, -16]!
 
-    LOCAL_LABEL(MarkCards_Xchg):
     // fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  // fetch the page map
-        lsr     x17, x14, #30
-        ldr     x17, [x12, x17, lsl #3]              // page
-        sub     x2,  x14, x17   // offset in page
+        lsr     x16, x14, #30
+        ldr     x16, [x12, x16, lsl #3]              // page
+        sub     x2,  x14, x16   // offset in page
         lsr     x15, x2,  #21   // group index
         lsr     x2,  x2,  #9    // card offset
         lsl     x15, x15, #1    // group offset (index * 2)
 
     // check if concurrent marking is in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  // !g_write_watch_table -> !concurrent
-        cbnz    x12, LOCAL_LABEL(DirtyCard_Xchg)
+        cbnz    x17, LOCAL_LABEL(DirtyCardXchg)
 
     // SETTING CARD FOR X14
-    LOCAL_LABEL(SetCard_Xchg):
-        ldrb    w3, [x17, x2]
-        cbnz    w3, LOCAL_LABEL(CardSet_Xchg)
-        mov     w16, #1
-        strb    w16, [x17, x2]
-    LOCAL_LABEL(SetGroup_Xchg):
-        add     x12, x17, #0x80
+    LOCAL_LABEL(SetCardXchg):
+        ldrb    w3, [x16, x2]
+        cbnz    w3, LOCAL_LABEL(ExitXchg)
+        mov     w17, #1
+        strb    w17, [x16, x2]
+    LOCAL_LABEL(SetGroupXchg):
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
-        cbnz    w3, LOCAL_LABEL(CardSet_Xchg)
-        strb    w16, [x12, x15]
-    LOCAL_LABEL(SetPage_Xchg):
-        ldrb    w3, [x17]
-        cbnz    w3, LOCAL_LABEL(CardSet_Xchg)
-        strb    w16, [x17]
+        cbnz    w3, LOCAL_LABEL(CardSetXchg)
+        strb    w17, [x12, x15]
+    LOCAL_LABEL(SetPageXchg):
+        ldrb    w3, [x16]
+        cbnz    w3, LOCAL_LABEL(CardSetXchg)
+        strb    w17, [x16]
 
-    LOCAL_LABEL(CardSet_Xchg):
+    LOCAL_LABEL(CardSetXchg):
     // check if concurrent marking is still not in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  // !g_write_watch_table -> !concurrent
-        cbnz    x12, LOCAL_LABEL(DirtyCard_Xchg)
-        ret     lr
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12
+        cbnz    x12, LOCAL_LABEL(DirtyCardXchg)
+
+    LOCAL_LABEL(ExitXchg):
+        ldp  x2,  x3, [sp], 16
+        ret  lr
 
     // DIRTYING CARD FOR X14
-    LOCAL_LABEL(DirtyCard_Xchg):
-        mov     w16, #4
-        add     x2, x2, x17
+    LOCAL_LABEL(DirtyCardXchg):
+        mov     w17, #4
+        add     x2, x2, x16
         // must be after the field write to allow concurrent clean
-        stlrb    w16, [x2]
-    LOCAL_LABEL(DirtyGroup_Xchg):
-        add     x12, x17, #0x80
+        stlrb   w17, [x2]
+    LOCAL_LABEL(DirtyGroupXchg):
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
-        tbnz    w3, #2, LOCAL_LABEL(Exit_Xchg)
-        strb    w16, [x12, x15]
-    LOCAL_LABEL(DirtyPage_Xchg):
-        ldrb    w3, [x17]
-        tbnz    w3, #2, LOCAL_LABEL(Exit_Xchg)
-        strb    w16, [x17]
-        ret     lr
+        tbnz    w3, #2, LOCAL_LABEL(ExitXchg)
+        strb    w17, [x12, x15]
+    LOCAL_LABEL(DirtyPagXchge):
+        ldrb    w3, [x16]
+        tbnz    w3, #2, LOCAL_LABEL(ExitXchg)
+        strb    w17, [x16]
+        b       LOCAL_LABEL(ExitXchg)
 
     // this is expected to be rare.
     LOCAL_LABEL(RecordEscape_Xchg):

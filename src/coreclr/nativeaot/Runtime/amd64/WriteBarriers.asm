@@ -425,21 +425,30 @@ ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
 ALTERNATE_ENTRY RhpAssignRefAVLocation
         mov     [rcx], rdx
 
+    ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+    ;         needs to suspend EE, not sure if skipping mode check would worth that much.
+        mov     r11, qword ptr [g_write_watch_table]
+
+    ; check the barrier state. this must be done after the assignment (in program order)
+    ; if state == 2 we do not set or dirty cards.
+        cmp     r11, 2h
+        jne     DoCards
+    Exit:
+        ret
+
+    DoCards:
+    ; if same region, just check if barrier is not concurrent
         xor     rdx, rcx
         shr     rdx, 21
-        jz      CheckConcurrent         ; same region, just check if barrier is not concurrent
-
-    ; TUNING: nonconcurrent and concurrent barriers could be separate pieces of code, but to switch 
-    ;         need to suspend EE, not sure if skipping concurrent check would worth that much.
+        jz      CheckConcurrent
 
     ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [r8 + 16], 2
         jl      MarkCards
 
     CheckConcurrent:
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
-        jne     MarkCards
-        ret
+        cmp     r11, 0h
+        je      Exit
 
     MarkCards:
     ; fetch card location for rcx
@@ -454,13 +463,13 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         lea     rdx, [rax + rdx * 2 + 80h]
 
     ; check if concurrent marking is in progress
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
+        cmp     r11, 0h
         jne     DirtyCard
 
     ; SETTING CARD FOR RCX
      SetCard:
         cmp     byte ptr [rax + r8], 0
-        jne     CardSet
+        jne     Exit
         mov     byte ptr [rax + r8], 1
      SetGroup:
         cmp     byte ptr [rdx], 0
@@ -473,7 +482,7 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
 
      CardSet:
     ; check if concurrent marking is still not in progress
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
+        cmp     qword ptr [g_write_watch_table], 0h
         jne     DirtyCard
         ret
 
@@ -488,8 +497,6 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         cmp     byte ptr [rax], 4
         je      Exit
         mov     byte ptr [rax], 4
-
-    Exit:
         ret
 
     ; this is expected to be rare.
@@ -611,71 +618,78 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         lock cmpxchg    [rcx], rdx
         jne             Exit
 
+    ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+    ;         needs to suspend EE, not sure if skipping mode check would worth that much.
+        mov     r11, qword ptr [g_write_watch_table]
+
+    ; check the barrier state. this must be done after the assignment (in program order)
+    ; if state == 2 we do not set or dirty cards.
+        cmp     r11, 2h
+        jne     DoCards
+    Exit:
+        ret
+
+    DoCards:
+    ; if same region, just check if barrier is not concurrent
         xor     rdx, rcx
         shr     rdx, 21
-        jz      CheckConcurrent         ; same region, just check if barrier is not concurrent
-
-    ; TUNING: nonconcurrent and concurrent barriers could be separate pieces of code, but to switch 
-    ;         need to suspend EE, not sure if skipping concurrent check would worth that much.
+        jz      CheckConcurrent
 
     ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [r8 + 16], 2
         jl      MarkCards
 
     CheckConcurrent:
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
-        jne     MarkCards
-        ret
+        cmp     r11, 0h
+        je      Exit
 
     MarkCards:
     ; fetch card location for rcx
         mov     r9 , [g_card_table]     ; fetch the page map
         mov     r8,  rcx
         shr     rcx, 30
-        mov     r11, qword ptr [r9 + rcx * 8] ; page
-        sub     r8, r11   ; offset in page
+        mov     r10, qword ptr [r9 + rcx * 8] ; page
+        sub     r8, r10   ; offset in page
         mov     rdx,r8
         shr     r8, 9     ; card offset
         shr     rdx, 21   ; group offset
-        lea     rdx, [r11 + rdx * 2 + 80h]
+        lea     rdx, [r10 + rdx * 2 + 80h]
 
     ; check if concurrent marking is in progress
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
+        cmp     r11, 0h
         jne     DirtyCard
 
     ; SETTING CARD FOR RCX
      SetCard:
-        cmp     byte ptr [r11 + r8], 0
-        jne     CardSet
-        mov     byte ptr [r11 + r8], 1
+        cmp     byte ptr [r10 + r8], 0
+        jne     Exit
+        mov     byte ptr [r10 + r8], 1
      SetGroup:
         cmp     byte ptr [rdx], 0
         jne     CardSet
         mov     byte ptr [rdx], 1
      SetPage:
-        cmp     byte ptr [r11], 0
+        cmp     byte ptr [r10], 0
         jne     CardSet
-        mov     byte ptr [r11], 1
+        mov     byte ptr [r10], 1
 
      CardSet:
     ; check if concurrent marking is still not in progress
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
+        cmp     qword ptr [g_write_watch_table], 0h
         jne     DirtyCard
         ret
 
     ; DIRTYING CARD FOR RCX
      DirtyCard:
-        mov     byte ptr [r11 + r8], 4
+        mov     byte ptr [r10 + r8], 4
      DirtyGroup:
         cmp     byte ptr [rdx], 4
         je      Exit
         mov     byte ptr [rdx], 4
      DirtyPage:
-        cmp     byte ptr [r11], 4
+        cmp     byte ptr [r10], 4
         je      Exit
-        mov     byte ptr [r11], 4
-
-    Exit:
+        mov     byte ptr [r10], 4
         ret
 
     ; this is expected to be rare.
@@ -766,71 +780,78 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocationNotHeap
 ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         xchg    [rcx], rax
 
+    ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+    ;         needs to suspend EE, not sure if skipping mode check would worth that much.
+        mov     r11, qword ptr [g_write_watch_table]
+
+    ; check the barrier state. this must be done after the assignment (in program order)
+    ; if state == 2 we do not set or dirty cards.
+        cmp     r11, 2h
+        jne     DoCards
+    Exit:
+        ret
+
+    DoCards:
+    ; if same region, just check if barrier is not concurrent
         xor     rdx, rcx
         shr     rdx, 21
-        jz      CheckConcurrent         ; same region, just check if barrier is not concurrent
-
-    ; TUNING: nonconcurrent and concurrent barriers could be separate pieces of code, but to switch 
-    ;         need to suspend EE, not sure if skipping concurrent check would worth that much.
+        jz      CheckConcurrent
 
     ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [r8 + 16], 2
         jl      MarkCards
 
     CheckConcurrent:
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
-        jne     MarkCards
-        ret
+        cmp     r11, 0h
+        je      Exit
 
     MarkCards:
     ; fetch card location for rcx
         mov     r9 , [g_card_table]     ; fetch the page map
         mov     r8,  rcx
         shr     rcx, 30
-        mov     r11, qword ptr [r9 + rcx * 8] ; page
-        sub     r8, r11   ; offset in page
+        mov     r10, qword ptr [r9 + rcx * 8] ; page
+        sub     r8, r10   ; offset in page
         mov     rdx,r8
         shr     r8, 9     ; card offset
         shr     rdx, 21   ; group offset
-        lea     rdx, [r11 + rdx * 2 + 80h]
+        lea     rdx, [r10 + rdx * 2 + 80h]
 
     ; check if concurrent marking is in progress
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
+        cmp     r11, 0h
         jne     DirtyCard
 
     ; SETTING CARD FOR RCX
      SetCard:
-        cmp     byte ptr [r11 + r8], 0
-        jne     CardSet
-        mov     byte ptr [r11 + r8], 1
+        cmp     byte ptr [r10 + r8], 0
+        jne     Exit
+        mov     byte ptr [r10 + r8], 1
      SetGroup:
         cmp     byte ptr [rdx], 0
         jne     CardSet
         mov     byte ptr [rdx], 1
      SetPage:
-        cmp     byte ptr [r11], 0
+        cmp     byte ptr [r10], 0
         jne     CardSet
-        mov     byte ptr [r11], 1
+        mov     byte ptr [r10], 1
 
      CardSet:
     ; check if concurrent marking is still not in progress
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
+        cmp     qword ptr [g_write_watch_table], 0h
         jne     DirtyCard
         ret
 
     ; DIRTYING CARD FOR RCX
      DirtyCard:
-        mov     byte ptr [r11 + r8], 4
+        mov     byte ptr [r10 + r8], 4
      DirtyGroup:
         cmp     byte ptr [rdx], 4
         je      Exit
         mov     byte ptr [rdx], 4
      DirtyPage:
-        cmp     byte ptr [r11], 4
+        cmp     byte ptr [r10], 4
         je      Exit
-        mov     byte ptr [r11], 4
-
-    Exit:
+        mov     byte ptr [r10], 4
         ret
 
     ; this is expected to be rare.
