@@ -497,6 +497,7 @@ LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
 //   rdi - dest address
 //   rsi - object
 //
+.balign 16
 LEAF_ENTRY JIT_WriteBarrier, _TEXT
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
     // check if src is in heap
