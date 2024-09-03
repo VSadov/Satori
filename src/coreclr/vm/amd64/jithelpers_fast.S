@@ -464,6 +464,11 @@ LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
 
 #else  //FEATURE_SATORI_GC      ##############################################################################
 
+.macro ALTERNATE_ENTRY Name
+        .global C_FUNC(\Name)
+C_FUNC(\Name):
+.endm
+
 // Mark start of the code region that we patch at runtime
 LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
         ret
@@ -473,13 +478,13 @@ LEAF_END JIT_PatchedCodeStart, _TEXT
 // void JIT_CheckedWriteBarrier(Object** dst, Object* src)
 LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
 
-        // See if this is in GCHeap
-        mov     rax, rdi
-        shr     rax, 30                 // round to page size ( >> PAGE_BITS )
-        PREPARE_EXTERNAL_VAR g_card_bundle_table, r8
-        add     rax, [r8]               // fetch the page byte map
-        cmp     byte ptr [rax], 0
-        jne     C_FUNC(JIT_WriteBarrier)
+     // See if dst is in GCHeap
+        PREPARE_EXTERNAL_VAR g_card_bundle_table, rax   // fetch the page byte map
+        mov     rax, [rax]
+        mov     r8, rdi
+        shr     r8, 30                                  // dst page index
+        cmp     byte ptr [rax + r8], 0
+        jne     C_FUNC(CheckedEntry)
 
     NotInHeap:
         // See comment above about possible AV
@@ -495,13 +500,18 @@ LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
 .balign 16
 LEAF_ENTRY JIT_WriteBarrier, _TEXT
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
-        mov     rax, rsi
-        shr     rax, 30                 // round to page size ( >> PAGE_BITS )
-        PREPARE_EXTERNAL_VAR g_card_bundle_table, r8
-        add     rax, [r8]               // fetch the page byte map
-        cmp     byte ptr [rax], 0
-        je      JustAssign              // src not in heap
+    // check if src is in heap
+        PREPARE_EXTERNAL_VAR g_card_bundle_table, rax   // fetch the page byte map
+        mov     rax, [rax]
+    ALTERNATE_ENTRY CheckedEntry
+        mov     r8, rsi
+        shr     r8, 30                                  //  src page index
+        cmp     byte ptr [rax + r8], 0
+        je      JustAssign                              // src not in heap
+#else
+    ALTERNATE_ENTRY CheckedEntry
 #endif
+
     // check for escaping assignment
     // 1) check if we own the source region
         mov     rdx, rsi
@@ -575,6 +585,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         mov     r8,  rdx
         shr     rdx, 9     // card offset
         shr     r8,  21   // group offset
+        lea     r8,  [rax + r8 * 2 + 0x80]
 
      // check if concurrent marking is in progress
         cmp     byte ptr [r11], 0
@@ -586,9 +597,9 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         jne     CardSet
         mov     byte ptr [rax + rdx], 1
      SetGroup:
-        cmp     byte ptr [rax + r8 * 2 + 0x80], 0
+        cmp     byte ptr [r8], 0
         jne     CardSet
-        mov     byte ptr [rax + r8 * 2 + 0x80], 1
+        mov     byte ptr [r8], 1
      SetPage:
         cmp     byte ptr [rax], 0
         jne     CardSet
@@ -604,9 +615,9 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
      DirtyCard:
         mov     byte ptr [rax + rdx], 4
      DirtyGroup:
-        cmp     byte ptr [rax + r8 * 2 + 0x80], 4
+        cmp     byte ptr [r8], 4
         je      Exit
-        mov     byte ptr [rax + r8 * 2 + 0x80], 4
+        mov     byte ptr [r8], 4
      DirtyPage:
         cmp     byte ptr [rax], 4
         je      Exit
@@ -616,15 +627,23 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         ret
 
     // this is expected to be rare.
+    RecordEscape:
+
     // 4) check if the source is escaped
         mov     rax, rsi
+        add     rax, 8                        // escape bit is MT + 1
         and     rax, 0x1FFFFF
         shr     rax, 3
         bt      qword ptr [rdx], rax
         jb      AssignAndMarkCards            // source is already escaped.
 
-    RecordEscape:
-        // save rdi, rsi, rdx and r10 (possibly preadjusted rsi)
+        // Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+        sub  rsp, 8
+
+        // save rsp, rdi, rsi, rdx and r10 (possibly preadjusted rsi)
+        push r9
         push rdi
         push rsi
         push rdx
@@ -637,6 +656,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         pop     rdx
         pop     rsi
         pop     rdi
+        pop     rsp
         jmp     AssignAndMarkCards
 LEAF_END_MARKED JIT_WriteBarrier, _TEXT
 
@@ -656,19 +676,15 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
         lea     r10, [rsi + 8]
         mov     rsi, [rsi]
 
-        // See if this is in GCHeap
-        PREPARE_EXTERNAL_VAR g_highest_address, rax
-        cmp     rdi, [rax]
-        ja      NotInHeap_ByRefWriteBarrier
+     // See if dst is in GCHeap
+        PREPARE_EXTERNAL_VAR g_card_bundle_table, rax   // fetch the page byte map
+        mov     rax, [rax]
 
-        PREPARE_EXTERNAL_VAR g_card_table, r8
-        mov     r8,  [r8]               // fetch the page map
-        mov     rax, rdi
-        shr     rax, 30                 // round to page size ( >> PAGE_BITS )
-        cmp     qword ptr [r8 + rax * 8], 0
-        jne     C_FUNC(JIT_WriteBarrier)
+        mov     r8, rdi
+        shr     r8, 30                                  // dst page index
+        cmp     byte ptr [rax + r8], 0
+        jne     C_FUNC(CheckedEntry)
 
-    .balign 16
     NotInHeap_ByRefWriteBarrier:
         mov     [rdi], rsi
         add     rdi, 8
