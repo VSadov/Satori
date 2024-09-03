@@ -55,12 +55,20 @@
 
 static const int MIN_GEN1_BUDGET = 2 * Satori::REGION_SIZE_GRANULARITY;
 
-void ToggleWriteBarrier(bool concurrent, bool eeSuspended)
+void ToggleWriteBarrier(bool concurrent, bool skipCards, bool eeSuspended)
 {
     WriteBarrierParameters args = {};
-    args.operation = concurrent ?
-        WriteBarrierOp::StartConcurrentMarkingSatori :
-        WriteBarrierOp::StopConcurrentMarkingSatori;
+
+    if (concurrent)
+    {
+        args.operation = WriteBarrierOp::StartConcurrentMarkingSatori;
+        args.write_watch_table = (uint8_t*)1; // barrier state --> concurrent
+    }
+    else
+    {
+        args.operation = WriteBarrierOp::StopConcurrentMarkingSatori;
+        args.write_watch_table = skipCards ? (uint8_t*)2 : (uint8_t*)0;
+    }
 
     args.is_runtime_suspended = eeSuspended;
     GCToEEInterface::StompWriteBarrier(&args);
@@ -182,7 +190,6 @@ void SatoriRecycler::HelperThreadFn(void* param)
     {
         Interlocked::Decrement(&recycler->m_activeHelpers);
 
-//        bool entered = true;
         for (;;)
         {   if (recycler->m_gateSignaled &&
                Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
@@ -520,7 +527,7 @@ bool SatoriRecycler::HelpOnceCore()
     if (!m_isBarrierConcurrent)
     {
         // toggling is a ProcessWide fence.
-        ToggleWriteBarrier(true, /* eeSuspended */ false);
+        ToggleWriteBarrier(true, /* skipCards */ false, /* eeSuspended */ false);
         m_isBarrierConcurrent = true;
     }
 
@@ -1022,6 +1029,8 @@ void SatoriRecycler::BlockingCollect2()
 
 void SatoriRecycler::BlockingCollectImpl()
 {
+    _ASSERTE(!m_nextGcIsFullGc || m_condemnedGeneration ==2);
+
     maySpinAtGate = true;
 
     FIRE_EVENT(GCStart_V2, (uint32_t)GlobalGcIndex() + 1, (uint32_t)m_condemnedGeneration, (uint32_t)reason_empty, (uint32_t)gc_etw_type_ngc);
@@ -1040,12 +1049,6 @@ void SatoriRecycler::BlockingCollectImpl()
         {
             YieldProcessor();
         }
-    }
-
-    if (m_isBarrierConcurrent)
-    {
-        ToggleWriteBarrier(false, /* eeSuspended */ true);
-        m_isBarrierConcurrent = false;
     }
 
     m_gcState = GC_STATE_BLOCKED;
@@ -1071,6 +1074,10 @@ void SatoriRecycler::BlockingCollectImpl()
     // now we know survivorship after the last GC
     // and we can figure what we want to do in this GC and when we will do the next one
     AdjustHeuristics();
+
+    // Here we know if the next GC will surely be a full GC.
+    ToggleWriteBarrier(false, /* skipCards */ m_nextGcIsFullGc, /* eeSuspended */ true);
+    m_isBarrierConcurrent = false;
 
     // tell EE that we are starting
     // this needs to be called on a "GC" thread while EE is stopped.
