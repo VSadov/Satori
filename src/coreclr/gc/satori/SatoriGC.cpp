@@ -859,7 +859,8 @@ void SatoriGC::BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteC
     memmove(dst, src, byteCount);
 
     if (byteCount >= sizeof(size_t) &&
-       (!localAssignment || m_heap->Recycler()->IsBarrierConcurrent()))
+       (!(localAssignment || m_heap->Recycler()->IsNextGcFullGc()) ||
+           m_heap->Recycler()->IsBarrierConcurrent()))
     {
         SetCardsAfterBulkCopy((size_t)dst, (size_t)src, byteCount);
     }
