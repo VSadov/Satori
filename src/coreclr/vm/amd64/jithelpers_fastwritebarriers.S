@@ -218,7 +218,13 @@ LEAF_END_MARKED JIT_WriteBarrier_SVR64, _TEXT
         .balign 8
 LEAF_ENTRY JIT_WriteBarrier_SATORI, _TEXT
     // TODO: Satori, when we need barrier replacement
-        mov qword ptr[0], 0
+        int 3
+        int 3
+        int 3
+        int 3
+        int 3
+        int 3
+        int 3
         ret
 LEAF_END_MARKED JIT_WriteBarrier_SATORI, _TEXT
 

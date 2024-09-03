@@ -583,21 +583,30 @@ endif
     AssignAndMarkCards:
         mov     [rcx], rdx
 
+    ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+    ;         needs to suspend EE, not sure if skipping mode check would worth that much.
+        mov     r11, qword ptr [g_sw_ww_table]
+
+    ; check the barrier state. this must be done after the assignment (in program order)
+    ; if state == 2 we do not set or dirty cards.
+        cmp     r11, 2h
+        jne     DoCards
+    Exit:
+        ret
+
+    DoCards:
+    ; if same region, just check if barrier is not concurrent
         xor     rdx, rcx
         shr     rdx, 21
-        jz      CheckConcurrent         ; same region, just check if barrier is not concurrent
-
-    ; TUNING: nonconcurrent and concurrent barriers could be separate pieces of code, but to switch 
-    ;         need to suspend EE, not sure if skipping concurrent check would worth that much.
+        jz      CheckConcurrent
 
     ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [r8 + 16], 2
         jl      MarkCards
 
     CheckConcurrent:
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
-        jne     MarkCards
-        ret
+        cmp     r11, 0h
+        je      Exit
 
     MarkCards:
     ; fetch card location for rcx
@@ -612,13 +621,13 @@ endif
         lea     rdx, [rax + rdx * 2 + 80h]
 
     ; check if concurrent marking is in progress
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
+        cmp     r11, 0h
         jne     DirtyCard
 
     ; SETTING CARD FOR RCX
      SetCard:
         cmp     byte ptr [rax + r8], 0
-        jne     CardSet
+        jne     Exit
         mov     byte ptr [rax + r8], 1
      SetGroup:
         cmp     byte ptr [rdx], 0
@@ -631,7 +640,7 @@ endif
 
      CardSet:
     ; check if concurrent marking is still not in progress
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
+        cmp     qword ptr [g_sw_ww_table], 0h
         jne     DirtyCard
         ret
 
@@ -646,8 +655,6 @@ endif
         cmp     byte ptr [rax], 4
         je      Exit
         mov     byte ptr [rax], 4
-
-    Exit:
         ret
 
     ; this is expected to be rare.
