@@ -551,18 +551,30 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
     AssignAndMarkCards:
         mov     [rdi], rsi
 
-        PREPARE_EXTERNAL_VAR g_sw_ww_enabled_for_gc_heap, r11
+        // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+        //         needs to suspend EE, not sure if skipping mode check would worth that much.
+        PREPARE_EXTERNAL_VAR g_sw_ww_table, rcx
+        mov     r11, [rcx]
 
         // set rdi per contract with JIT_ByRefWriteBarrier
         mov     rax, rdi
         add     rdi, 8
 
-        xor     rsi, rax
-        shr     rsi, 21                 // check if assigning within the same region (sets flags)
-
+        // check the barrier state. this must be done after the assignment (in program order)
+        // if state == 2 we do not set or dirty cards.
+        cmp     r11, 2
+        jne     DoCards
         // set rsi per contract with JIT_ByRefWriteBarrier
         mov     rsi, r10
+    Exit:
+        ret
 
+    DoCards:
+    // if same region, just check if barrier is not concurrent
+        xor     rsi, rax
+        shr     rsi, 21
+        // set rsi per contract with JIT_ByRefWriteBarrier
+        mov     rsi, r10
         jz      CheckConcurrent         // same region, just check if barrier is not concurrent
 
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
@@ -570,9 +582,9 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         jl     MarkCards
 
     CheckConcurrent:
-        cmp     byte ptr [r11], 0
-        jne     MarkCards
-        ret
+    // if concurrent, load card location
+        cmp     r11, 0
+        je      Exit
 
     MarkCards:
     // fetch card location for rax  (saved rdi)
@@ -588,13 +600,13 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         lea     r8,  [rax + r8 * 2 + 0x80]
 
      // check if concurrent marking is in progress
-        cmp     byte ptr [r11], 0
+        cmp     r11, 0
         jne     DirtyCard
 
      // SETTING CARD
      SetCard:
         cmp     byte ptr [rax + rdx], 0
-        jne     CardSet
+        jne     Exit
         mov     byte ptr [rax + rdx], 1
      SetGroup:
         cmp     byte ptr [r8], 0
@@ -607,7 +619,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
 
      CardSet:
      // check if concurrent marking is still not in progress
-        cmp     byte ptr [r11], 0
+        cmp     qword ptr [rcx], 0
         jne     DirtyCard
         ret
 
@@ -622,8 +634,6 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         cmp     byte ptr [rax], 4
         je      Exit
         mov     byte ptr [rax], 4
-
-    Exit:
         ret
 
     // this is expected to be rare.

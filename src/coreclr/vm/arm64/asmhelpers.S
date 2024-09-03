@@ -541,21 +541,30 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     LOCAL_LABEL(AssignAndMarkCards):
         stlr    x15, [x14]
 
+    // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+    //         needs to suspend EE, not sure if skipping mode check would worth that much.
+        ldr     x17, LOCAL_LABEL(wbs_sw_ww_table)
+    // check the barrier state. this must be done after the assignment (in program order)
+    // if state == 2 we do not set or dirty cards.
+        tbz     x17, #1, LOCAL_LABEL(DoCards)
+
+    LOCAL_LABEL(ExitNoCards):
+        add     x14, x14, 8
+        ret     lr
+
+    LOCAL_LABEL(DoCards):
+    // if same region, just check if barrier is not concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
         beq     LOCAL_LABEL(CheckConcurrent)    // same region, just check if barrier is not concurrent
 
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        ldr     w12, [x16, 16]                    // source region + 16 -> generation
+        ldr     w12, [x16, 16]                  // source region + 16 -> generation
         tbz     x12, #1, LOCAL_LABEL(MarkCards)
 
     LOCAL_LABEL(CheckConcurrent):
-        ldr     x12, LOCAL_LABEL(wbs_sw_ww_table) // !wbs_sw_ww_table -> !concurrent
-        cbnz    x12, LOCAL_LABEL(MarkCards)
-        
-    // no marking needed
-        add  x14, x14, 8
-        ret  lr
+    // if not concurrent, exit
+        cbz     x17, LOCAL_LABEL(ExitNoCards)
 
     LOCAL_LABEL(MarkCards):
     // need couple temps. Save before using.
@@ -563,32 +572,31 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 
     // fetch card location for x14
         ldr     x12, LOCAL_LABEL(wbs_card_table)     // fetch the page map
-        lsr     x17, x14, #30
-        ldr     x17, [x12, x17, lsl #3]              // page
-        sub     x2,  x14, x17   // offset in page
+        lsr     x16, x14, #30
+        ldr     x16, [x12, x16, lsl #3]              // page
+        sub     x2,  x14, x16   // offset in page
         lsr     x15, x2,  #21   // group index
         lsr     x2,  x2,  #9    // card offset
         lsl     x15, x15, #1    // group offset (index * 2)
 
     // check if concurrent marking is in progress
-        ldr     x12, LOCAL_LABEL(wbs_sw_ww_table)    // !wbs_sw_ww_table -> !concurrent
-        cbnz    x12, LOCAL_LABEL(DirtyCard)
+        cbnz    x17, LOCAL_LABEL(DirtyCard)
 
     // SETTING CARD FOR X14
     LOCAL_LABEL(SetCard):
-        ldrb    w3, [x17, x2]
-        cbnz    w3, LOCAL_LABEL(CardSet)
-        mov     w16, #1
-        strb    w16, [x17, x2]
+        ldrb    w3, [x16, x2]
+        cbnz    w3, LOCAL_LABEL(Exit)
+        mov     w17, #1
+        strb    w17, [x16, x2]
     LOCAL_LABEL(SetGroup):
-        add     x12, x17, #0x80
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
         cbnz    w3, LOCAL_LABEL(CardSet)
-        strb    w16, [x12, x15]
+        strb    w17, [x12, x15]
     LOCAL_LABEL(SetPage):
-        ldrb    w3, [x17]
+        ldrb    w3, [x16]
         cbnz    w3, LOCAL_LABEL(CardSet)
-        strb    w16, [x17]
+        strb    w17, [x16]
 
     LOCAL_LABEL(CardSet):
     // check if concurrent marking is still not in progress
@@ -602,19 +610,19 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 
     // DIRTYING CARD FOR X14
     LOCAL_LABEL(DirtyCard):
-        mov     w16, #4
-        add     x2, x2, x17
+        mov     w17, #4
+        add     x2, x2, x16
         // must be after the field write to allow concurrent clean
-        stlrb   w16, [x2]
+        stlrb   w17, [x2]
     LOCAL_LABEL(DirtyGroup):
-        add     x12, x17, #0x80
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
         tbnz    w3, #2, LOCAL_LABEL(Exit)
-        strb    w16, [x12, x15]
+        strb    w17, [x12, x15]
     LOCAL_LABEL(DirtyPage):
-        ldrb    w3, [x17]
+        ldrb    w3, [x16]
         tbnz    w3, #2, LOCAL_LABEL(Exit)
-        strb    w16, [x17]
+        strb    w17, [x16]
         b       LOCAL_LABEL(Exit)
 
     // this is expected to be rare.

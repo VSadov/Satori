@@ -514,58 +514,66 @@ AssignAndMarkCards
     ALTERNATE_ENTRY RhpAssignRefAVLocation
         stlr    x15, [x14]
 
-        and     x12, x14, #0xFFFFFFFFFFE00000   ;; target aligned to region
-        cmp     x12, x16
-        beq     CheckConcurrent                 ;; same region, just check if barrier is not concurrent
+    ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+    ;         needs to suspend EE, not sure if skipping mode check would worth that much.
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
+    ; check the barrier state. this must be done after the assignment (in program order
+    ; if state == 2 we do not set or dirty cards.
+        tbz     x17, #1, DoCards
 
-    ;; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        ldr     w12, [x16, 16]                  ;; source region + 16 -> generation
+ExitNoCards
+        add     x14, x14, 8
+        ret     lr
+
+DoCards
+    ; if same region, just check if barrier is not concurrent
+        and     x12, x14, #0xFFFFFFFFFFE00000   ; target aligned to region
+        cmp     x12, x16
+        beq     CheckConcurrent    ; same region, just check if barrier is not concurrent
+
+    ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+        ldr     w12, [x16, 16]                  ; source region + 16 -> generation
         tbz     x12, #1, MarkCards
 
 CheckConcurrent
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  ;; !g_write_watch_table -> !concurrent
-        cbnz    x12, MarkCards
-        
-    ;; no marking needed
-        add  x14, x14, 8
-        ret  lr
+    ; if not concurrent, exit
+        cbz     x17, ExitNoCards
 
 MarkCards
-    ;; need couple temps. Save before using.
+    ; need couple temps. Save before using.
         stp     x2,  x3,  [sp, -16]!
 
-    ;; fetch card location for x14
-        PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  ;; fetch the page map
-        lsr     x17, x14, #30
-        ldr     x17, [x12, x17, lsl #3]             ;; page
-        sub     x2,  x14, x17                       ;; offset in page
-        lsr     x15, x2,  #21                       ;; group index
-        lsr     x2,  x2,  #9                        ;; card offset
-        lsl     x15, x15, #1                        ;; group offset (index * 2)
+    ; fetch card location for x14
+        PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  ; fetch the page map
+        lsr     x16, x14, #30
+        ldr     x16, [x12, x16, lsl #3]              ; page
+        sub     x2,  x14, x16   ; offset in page
+        lsr     x15, x2,  #21   ; group index
+        lsr     x2,  x2,  #9    ; card offset
+        lsl     x15, x15, #1    ; group offset (index * 2)
 
-    ;; check if concurrent marking is in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  ;; !g_write_watch_table -> !concurrent
-        cbnz    x12, DirtyCard
+    ; check if concurrent marking is in progress
+        cbnz    x17, DirtyCard
 
-    ;; SETTING CARD FOR X14
+    ; SETTING CARD FOR X14
 SetCard
-        ldrb    w3, [x17, x2]
-        cbnz    w3, CardSet
-        mov     w16, #1
-        strb    w16, [x17, x2]
+        ldrb    w3, [x16, x2]
+        cbnz    w3, Exit
+        mov     w17, #1
+        strb    w17, [x16, x2]
 SetGroup
-        add     x12, x17, #0x80
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
         cbnz    w3, CardSet
-        strb    w16, [x12, x15]
+        strb    w17, [x12, x15]
 SetPage
-        ldrb    w3, [x17]
+        ldrb    w3, [x16]
         cbnz    w3, CardSet
-        strb    w16, [x17]
+        strb    w17, [x16]
 
 CardSet
-    ;; check if concurrent marking is still not in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  ;; !g_write_watch_table -> !concurrent
+    ; check if concurrent marking is still not in progress
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12
         cbnz    x12, DirtyCard
 
 Exit
@@ -573,21 +581,21 @@ Exit
         add  x14, x14, 8
         ret  lr
 
-    ;; DIRTYING CARD FOR X14
+    ; DIRTYING CARD FOR X14
 DirtyCard
-        mov     w16, #4
-        add     x2, x2, x17
-        ;; must be after the field write to allow concurrent clean
-        stlrb   w16, [x2]
+        mov     w17, #4
+        add     x2, x2, x16
+        ; must be after the field write to allow concurrent clean
+        stlrb   w17, [x2]
 DirtyGroup
-        add     x12, x17, #0x80
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
         tbnz    w3, #2, Exit
-        strb    w16, [x12, x15]
+        strb    w17, [x12, x15]
 DirtyPage
-        ldrb    w3, [x17]
+        ldrb    w3, [x16]
         tbnz    w3, #2, Exit
-        strb    w16, [x17]
+        strb    w17, [x16]
         b       Exit
 
     ;; this is expected to be rare.
@@ -709,7 +717,7 @@ AssignAndMarkCards_Cmp_Xchg
         casal  x2, x1, [x0]                  ;; exchange
         mov    x0, x2                        ;; x0 = result
         cmp    x2, x17
-        bne    Exit_Cmp_Xchg
+        bne    Exit_Cmp_XchgNoCards
 
 #ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
         b      SkipLLScCmpXchg
@@ -732,76 +740,89 @@ SkipLLScCmpXchg
 #endif
 
         cbnz    x10, DoCardsCmpXchg
-Exit_Cmp_Xchg
+Exit_Cmp_XchgNoCards
         ret     lr
 
 DoCardsCmpXchg
 
-        and     x12, x14, #0xFFFFFFFFFFE00000
+    ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+    ;         needs to suspend EE, not sure if skipping mode check would worth that much.
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
+
+    ; check the barrier state. this must be done after the assignment (in program order
+    ; if state == 2 we do not set or dirty cards.
+        tbnz     x17, #1, Exit_Cmp_XchgNoCards
+
+    ; if same region, just check if barrier is not concurrent
+        and     x12, x14, #0xFFFFFFFFFFE00000   ; target aligned to region
         cmp     x12, x16
-        beq     CheckConcurrent_Cmp_Xchg ;; same region, just check if barrier is not concurrent
+        beq     CheckConcurrentCmpXchg    ; same region, just check if barrier is not concurrent
 
-    ;; we will trash x2 and x3, this is a regular call, so it is ok
-    ;; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        ldr     w12, [x16, 16]
-        tbz     x12, #1, MarkCards_Cmp_Xchg
+    ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+        ldr     w12, [x16, 16]                  ; source region + 16 -> generation
+        tbz     x12, #1, MarkCardsCmpXchg
 
-CheckConcurrent_Cmp_Xchg
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  ;; !g_write_watch_table -> !concurrent
-        cbz     x12, Exit_Cmp_Xchg
-        
-MarkCards_Cmp_Xchg
-    ;; fetch card location for x14
-        PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  ;; fetch the page map
-        lsr     x17, x14, #30
-        ldr     x17, [x12, x17, lsl #3]              ;; page
-        sub     x2,  x14, x17   ;; offset in page
-        lsr     x15, x2,  #21   ;; group index
-        lsr     x2,  x2,  #9    ;; card offset
-        lsl     x15, x15, #1    ;; group offset (index * 2)
+CheckConcurrentCmpXchg
+    ; if not concurrent, exit
+        cbz     x17, Exit_Cmp_XchgNoCards
 
-    ;; check if concurrent marking is in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  ;; !g_write_watch_table -> !concurrent
-        cbnz    x12, DirtyCard_Cmp_Xchg
+MarkCardsCmpXchg
+    ; need couple temps. Save before using.
+        stp     x2,  x3,  [sp, -16]!
 
-    ;; SETTING CARD FOR X14
-SetCard_Cmp_Xchg
-        ldrb    w3, [x17, x2]
-        cbnz    w3, CardSet_Cmp_Xchg
-        mov     w16, #1
-        strb    w16, [x17, x2]
-SetGroup_Cmp_Xchg
-        add     x12, x17, #0x80
+    ; fetch card location for x14
+        PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  ; fetch the page map
+        lsr     x16, x14, #30
+        ldr     x16, [x12, x16, lsl #3]              ; page
+        sub     x2,  x14, x16   ; offset in page
+        lsr     x15, x2,  #21   ; group index
+        lsr     x2,  x2,  #9    ; card offset
+        lsl     x15, x15, #1    ; group offset (index * 2)
+
+    ; check if concurrent marking is in progress
+        cbnz    x17, DirtyCardCmpXchg
+
+    ; SETTING CARD FOR X14
+SetCardCmpXchg
+        ldrb    w3, [x16, x2]
+        cbnz    w3, ExitCmpXchg
+        mov     w17, #1
+        strb    w17, [x16, x2]
+SetGroupCmpXchg
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
-        cbnz    w3, CardSet_Cmp_Xchg
-        strb    w16, [x12, x15]
-SetPage_Cmp_Xchg
-        ldrb    w3, [x17]
-        cbnz    w3, CardSet_Cmp_Xchg
-        strb    w16, [x17]
+        cbnz    w3, CardSetCmpXchg
+        strb    w17, [x12, x15]
+SetPageCmpXchg
+        ldrb    w3, [x16]
+        cbnz    w3, CardSetCmpXchg
+        strb    w17, [x16]
 
-CardSet_Cmp_Xchg
-    ;; check if concurrent marking is still not in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  ;; !g_write_watch_table -> !concurrent
-        cbnz    x12, DirtyCard_Cmp_Xchg
-        ret     lr
+CardSetCmpXchg
+    ; check if concurrent marking is still not in progress
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12
+        cbnz    x12, DirtyCardCmpXchg
 
-    ;; DIRTYING CARD FOR X14
-DirtyCard_Cmp_Xchg
-        mov     w16, #4
-        add     x2, x2, x17
-        ;; must be after the field write to allow concurrent clean
-        stlrb    w16, [x2]
-DirtyGroup_Cmp_Xchg
-        add     x12, x17, #0x80
+ExitCmpXchg
+        ldp  x2,  x3, [sp], 16
+        ret  lr
+
+    ; DIRTYING CARD FOR X14
+DirtyCardCmpXchg
+        mov     w17, #4
+        add     x2, x2, x16
+        ; must be after the field write to allow concurrent clean
+        stlrb   w17, [x2]
+DirtyGroupCmpXchg
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
-        tbnz    w3, #2, Exit_Cmp_Xchg
-        strb    w16, [x12, x15]
-DirtyPage_Cmp_Xchg
-        ldrb    w3, [x17]
-        tbnz    w3, #2, Exit_Cmp_Xchg
-        strb    w16, [x17]
-        ret     lr
+        tbnz    w3, #2, ExitCmpXchg
+        strb    w17, [x12, x15]
+DirtyPageCmpXchg
+        ldrb    w3, [x16]
+        tbnz    w3, #2, ExitCmpXchg
+        strb    w17, [x16]
+        b       Exit
 
     ;; this is expected to be rare.
 RecordEscape_Cmp_Xchg
@@ -909,74 +930,88 @@ TryAgain1_Xchg
         mov     x0, x17
         dmb     ish
 
-        and     x12, x14, #0xFFFFFFFFFFE00000
+    ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+    ;         needs to suspend EE, not sure if skipping mode check would worth that much.
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
+
+    ; check the barrier state. this must be done after the assignment (in program order
+    ; if state == 2 we do not set or dirty cards.
+        tbz     x17, #1, DoCardsXchg
+
+ExitNoCardsXchg
+        ret     lr
+
+DoCardsXchg
+    ; if same region, just check if barrier is not concurrent
+        and     x12, x14, #0xFFFFFFFFFFE00000   ; target aligned to region
         cmp     x12, x16
-        beq     CheckConcurrent_Xchg ;; same region, just check if barrier is not concurrent
+        beq     CheckConcurrentXchg    ; same region, just check if barrier is not concurrent
 
-    ;; we will trash x2 and x3, this is a regular call, so it is ok
-    ;; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        ldr     w12, [x16, 16]
-        tbz     x12, #1, MarkCards_Xchg
+    ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+        ldr     w12, [x16, 16]                  ; source region + 16 -> generation
+        tbz     x12, #1, MarkCardsXchg
 
-CheckConcurrent_Xchg
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  ;; !g_write_watch_table -> !concurrent
-        cbnz    x12, MarkCards_Xchg
-        
-Exit_Xchg
+CheckConcurrentXchg
+    ; if not concurrent, exit
+        cbz     x17, ExitNoCardsXchg
+
+MarkCardsXchg
+    ; need couple temps. Save before using.
+        stp     x2,  x3,  [sp, -16]!
+
+    ; fetch card location for x14
+        PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  ; fetch the page map
+        lsr     x16, x14, #30
+        ldr     x16, [x12, x16, lsl #3]              ; page
+        sub     x2,  x14, x16   ; offset in page
+        lsr     x15, x2,  #21   ; group index
+        lsr     x2,  x2,  #9    ; card offset
+        lsl     x15, x15, #1    ; group offset (index * 2)
+
+    ; check if concurrent marking is in progress
+        cbnz    x17, DirtyCardXchg
+
+    ; SETTING CARD FOR X14
+SetCardXchg
+        ldrb    w3, [x16, x2]
+        cbnz    w3, ExitXchg
+        mov     w17, #1
+        strb    w17, [x16, x2]
+SetGroupXchg
+        add     x12, x16, #0x80
+        ldrb    w3, [x12, x15]
+        cbnz    w3, CardSetXchg
+        strb    w17, [x12, x15]
+SetPageXchg
+        ldrb    w3, [x16]
+        cbnz    w3, CardSetXchg
+        strb    w17, [x16]
+
+CardSetXchg
+    ; check if concurrent marking is still not in progress
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12
+        cbnz    x12, DirtyCardXchg
+
+ExitXchg
+        ldp  x2,  x3, [sp], 16
         ret  lr
 
-MarkCards_Xchg
-    ;; fetch card location for x14
-        PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  ;; fetch the page map
-        lsr     x17, x14, #30
-        ldr     x17, [x12, x17, lsl #3]                  ;; page
-        sub     x2,  x14, x17                            ;; offset in page
-        lsr     x15, x2,  #21                            ;; group index
-        lsr     x2,  x2,  #9                             ;; card offset
-        lsl     x15, x15, #1                             ;; group offset (index * 2)
-
-    ;; check if concurrent marking is in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  ;; !g_write_watch_table -> !concurrent
-        cbnz    x12, DirtyCard_Xchg
-
-    ;; SETTING CARD FOR X14
-SetCard_Xchg
-        ldrb    w3, [x17, x2]
-        cbnz    w3, CardSet_Xchg
-        mov     w16, #1
-        strb    w16, [x17, x2]
-SetGroup_Xchg
-        add     x12, x17, #0x80
+    ; DIRTYING CARD FOR X14
+DirtyCardXchg
+        mov     w17, #4
+        add     x2, x2, x16
+        ; must be after the field write to allow concurrent clean
+        stlrb   w17, [x2]
+DirtyGroupXchg
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
-        cbnz    w3, CardSet_Xchg
-        strb    w16, [x12, x15]
-SetPage_Xchg
-        ldrb    w3, [x17]
-        cbnz    w3, CardSet_Xchg
-        strb    w16, [x17]
-
-CardSet_Xchg
-    ;; check if concurrent marking is still not in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12  ;; !g_write_watch_table -> !concurrent
-        cbnz    x12, DirtyCard_Xchg
-        ret     lr
-
-    ;; DIRTYING CARD FOR X14
-DirtyCard_Xchg
-        mov     w16, #4
-        add     x2, x2, x17
-        ;; must be after the field write to allow concurrent clean
-        stlrb    w16, [x2]
-DirtyGroup_Xchg
-        add     x12, x17, #0x80
-        ldrb    w3, [x12, x15]
-        tbnz    w3, #2, Exit_Xchg
-        strb    w16, [x12, x15]
-DirtyPage_Xchg
-        ldrb    w3, [x17]
-        tbnz    w3, #2, Exit_Xchg
-        strb    w16, [x17]
-        ret     lr
+        tbnz    w3, #2, ExitXchg
+        strb    w17, [x12, x15]
+DirtyPageXchg
+        ldrb    w3, [x16]
+        tbnz    w3, #2, ExitXchg
+        strb    w17, [x16]
+        b       ExitXchg
 
     ;; this is expected to be rare.
 RecordEscape_Xchg
