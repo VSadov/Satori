@@ -271,7 +271,7 @@ public:
         int gcSpin = (int)GCConfig::GetGCSpin();
         if (gcSpin == -1)
         {
-            return 5;
+            return 10;
         }
 
         return gcSpin;

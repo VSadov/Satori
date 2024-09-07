@@ -197,12 +197,12 @@ void SatoriRecycler::HelperThreadFn(void* param)
                 goto released;
             }
 
-            // TODO: VS revisit the value of spinning
             if (recycler->maySpinAtGate)
             {
-                // spin for ~10 microseconds
+                // spin for ~10 microseconds (GcSpin)
                 int64_t limit = GCToOSInterface::QueryPerformanceCounter() +
                     recycler->m_perfCounterTicksPerMicro * SatoriUtil::GcSpin();
+
                 int i = 0;
                 do
                 {
@@ -702,6 +702,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
 
         // signal to everybody to start marking roots
         VolatileStore((int*)&m_ccStackMarkState, CC_MARK_STATE_MARKING);
+        m_helperGate->WakeAll();
 
         // mark demoted regions if any attached to thread contexts
         MarkContext c(this);
@@ -3623,7 +3624,6 @@ void SatoriRecycler::Update()
             IncrementCardScanTicket();
         }
 
-        // TODO: VS revisit value of WakeAll()
         m_helperGate->WakeAll();
     }
 
@@ -3843,7 +3843,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                         {
                             curRegion->MakeBlank();
                             // TODO: VS use ReturnRegionNoLock in more places? (or less?)
-                            //       what about work chunk queue, can that be lock-free?
+                            //       what about work chunk queue? that be lock-free.
                             m_heap->Allocator()->ReturnRegionNoLock(curRegion);
                         }
 
