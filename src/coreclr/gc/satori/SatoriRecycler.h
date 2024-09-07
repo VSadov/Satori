@@ -126,9 +126,6 @@ public:
             &m_lastEphemeralGcInfo;
     };
 
-    // TODO: VS needs to be public?
-    bool IsBlockingPhase();
-
 private:
     SatoriHeap* m_heap;
 
@@ -308,6 +305,7 @@ private:
     void BlockingCollect1();
     void BlockingCollect2();
     void BlockingCollectImpl();
+    bool IsBlockingPhase();
 
     void BlockingMark();
     void MarkNewReachable();
