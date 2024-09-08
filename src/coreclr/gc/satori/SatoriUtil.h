@@ -169,9 +169,9 @@ public:
         // we can also support PAGE_SIZE_GRANULARITY
         size_t result = 1024 * 32;
 
-        result = Satori::REGION_SIZE_GRANULARITY;
+        // result = Satori::REGION_SIZE_GRANULARITY;
 
-        // result = Satori::PAGE_SIZE_GRANULARITY;
+        result = Satori::PAGE_SIZE_GRANULARITY;
 
 #if defined(TARGET_LINUX) && defined(TARGET_ARM64)
         result = max(result, GCToOSInterface::GetPageSize());
