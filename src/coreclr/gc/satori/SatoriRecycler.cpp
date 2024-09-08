@@ -307,13 +307,13 @@ size_t SatoriRecycler::RegionCount()
 
 SatoriRegion* SatoriRecycler::TryGetReusable()
 {
-    SatoriRegion* reusable = m_reusableRegions->TryPop();
+    SatoriRegion* reusable = m_reusableRegions->TryPopWithTryEnter();
     if (reusable)
     {
         reusable->OccupancyAtReuse() = reusable->Occupancy();
     }
 
-    return  reusable;
+    return reusable;
 }
 
 SatoriRegion* SatoriRecycler::TryGetReusableForLarge()
