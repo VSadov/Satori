@@ -157,6 +157,48 @@ public:
         return result;
     }
 
+    T* TryPopWithTryEnter()
+    {
+        if (IsEmpty())
+        {
+            return nullptr;
+        }
+
+        T* result;
+        {
+            if (!m_lock.TryEnter())
+            {
+                return nullptr;
+            }
+
+            result = m_head;
+            if (result == nullptr)
+            {
+                m_lock.Leave();
+                return nullptr;
+            }
+
+            m_count--;
+            result->m_containingQueue = nullptr;
+            m_head = result->m_next;
+            if (m_head == nullptr)
+            {
+                m_tail = nullptr;
+            }
+            else
+            {
+                m_head->m_prev = nullptr;
+            }
+
+            m_lock.Leave();
+        }
+
+        _ASSERTE(result->m_prev == nullptr);
+        result->m_next = nullptr;
+
+        return result;
+    }
+
     void Enqueue(T* item)
     {
         _ASSERTE(item->m_next == nullptr);
