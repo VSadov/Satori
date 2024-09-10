@@ -221,6 +221,7 @@ private:
     SatoriGate* m_helperGate;
 
     volatile int m_gateSignaled;
+    volatile int m_helperWoken;
     volatile int m_activeHelpers;
     volatile int m_totalHelpers;
     volatile bool maySpinAtGate;
