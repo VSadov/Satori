@@ -90,6 +90,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
     m_helperGate = new (nothrow) SatoriGate();
     m_gateSignaled = 0;
+    m_helperWoken = 0;
     m_activeHelpers= 0;
     m_totalHelpers = 0;
     maySpinAtGate = false;
@@ -235,6 +236,9 @@ void SatoriRecycler::HelperThreadFn(void* param)
                 Interlocked::Decrement(&recycler->m_totalHelpers);
                 return;
             }
+
+            // consume a wake
+            Interlocked::And(&recycler->m_helperWoken, 0);
         }
 
     released:
@@ -803,6 +807,13 @@ void SatoriRecycler::MaybeAskForHelp()
 
 void SatoriRecycler::AskForHelp()
 {
+    Interlocked::Or(&m_gateSignaled, 1);
+
+    if (!m_helperWoken && Interlocked::CompareExchange(&m_helperWoken, 1, 0) == 0)
+    {
+        m_helperGate->WakeOne();
+    }
+
     int totalHelpers = m_totalHelpers;
     if (m_activeHelpers >= totalHelpers &&
         totalHelpers < MaxHelpers() &&
@@ -813,11 +824,6 @@ void SatoriRecycler::AskForHelp()
             Interlocked::Decrement(&m_totalHelpers);
             return;
         }
-    }
-
-    if (!m_gateSignaled && Interlocked::CompareExchange(&m_gateSignaled, 1, 0) == 0)
-    {
-        m_helperGate->WakeOne();
     }
 }
 
