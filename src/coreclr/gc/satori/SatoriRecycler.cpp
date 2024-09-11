@@ -192,7 +192,8 @@ void SatoriRecycler::HelperThreadFn(void* param)
         Interlocked::Decrement(&recycler->m_activeHelpers);
 
         for (;;)
-        {   if (recycler->m_gateSignaled &&
+        {
+            if (recycler->m_gateSignaled &&
                Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
             {
                 goto released;
@@ -233,16 +234,21 @@ void SatoriRecycler::HelperThreadFn(void* param)
             // Wait returns true if was woken up.
             if (!recycler->m_helperGate->TimedWait(10000))
             {
+                // we timed out (very rare case)
                 Interlocked::Decrement(&recycler->m_totalHelpers);
+
+                // if there is a wake, clear it as it may no longer wake anything
+                Interlocked::And(&recycler->m_helperWoken, 0);
                 return;
             }
 
-            // consume a wake
+            // if there is a wake, clear it as it may no longer wake anything
             Interlocked::And(&recycler->m_helperWoken, 0);
         }
 
     released:
         Interlocked::Increment(&recycler->m_activeHelpers);
+
         auto activeHelper = recycler->m_activeHelperFn;
         if (activeHelper)
         {
@@ -799,7 +805,7 @@ int SatoriRecycler::MaxHelpers()
 
 void SatoriRecycler::MaybeAskForHelp()
 {
-    if (m_activeHelperFn && m_activeHelpers < MaxHelpers())
+    if (m_activeHelperFn)
     {
         AskForHelp();
     }
@@ -807,22 +813,29 @@ void SatoriRecycler::MaybeAskForHelp()
 
 void SatoriRecycler::AskForHelp()
 {
-    Interlocked::Or(&m_gateSignaled, 1);
+    if (!m_gateSignaled)
+    {
+        Interlocked::Or(&m_gateSignaled, 1);
+    }
 
     if (!m_helperWoken && Interlocked::CompareExchange(&m_helperWoken, 1, 0) == 0)
     {
+        // wake is never lost, but can fold with other wakes.
+        // something will wake up either way, so setting m_helperWoken tells us that we are not waiting for a wake
+        // but once it is set something will wake up (unless it times out waiting and exits, which is very rare)
         m_helperGate->WakeOne();
-    }
 
-    int totalHelpers = m_totalHelpers;
-    if (m_activeHelpers >= totalHelpers &&
-        totalHelpers < MaxHelpers() &&
-        Interlocked::CompareExchange(&m_totalHelpers, totalHelpers + 1, totalHelpers) == totalHelpers)
-    {
-        if (!GCToEEInterface::CreateThread(HelperThreadFn, this, false, "Satori GC Helper Thread"))
+        // if we are here because all helpers are busy, make another one, if permitted.
+        int totalHelpers = m_totalHelpers;
+        if (m_activeHelpers >= totalHelpers &&
+            totalHelpers < MaxHelpers() &&
+            Interlocked::CompareExchange(&m_totalHelpers, totalHelpers + 1, totalHelpers) == totalHelpers)
         {
-            Interlocked::Decrement(&m_totalHelpers);
-            return;
+            if (!GCToEEInterface::CreateThread(HelperThreadFn, this, false, "Satori GC Helper Thread"))
+            {
+                Interlocked::Decrement(&m_totalHelpers);
+                return;
+            }
         }
     }
 }
