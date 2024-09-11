@@ -235,10 +235,8 @@ void SatoriRecycler::HelperThreadFn(void* param)
             if (!recycler->m_helperGate->TimedWait(10000))
             {
                 // we timed out (very rare case)
+                // we did not consume the wake, but there could be no more helpers sleeping.
                 Interlocked::Decrement(&recycler->m_totalHelpers);
-
-                // if there is a wake, clear it as it may no longer wake anything
-                Interlocked::And(&recycler->m_helperWoken, 0);
                 return;
             }
 
@@ -813,29 +811,29 @@ void SatoriRecycler::MaybeAskForHelp()
 
 void SatoriRecycler::AskForHelp()
 {
-    if (!m_gateSignaled)
+    if (!m_gateSignaled && Interlocked::CompareExchange(&m_gateSignaled, 1, 0) == 0)
     {
-        Interlocked::Or(&m_gateSignaled, 1);
+        // we signaled the gate, but need to make sure a helper will see it, even if all helpers have gone to sleep.
+        // if there is no pending wake, lets wake one thread.
+        if (!m_helperWoken && Interlocked::CompareExchange(&m_helperWoken, 1, 0) == 0)
+        {
+            // wake can fold with other wakes, but the presence of wake ensures that something will wake up and check for work.
+            // except if helper times out and exits, which is very rare, then we may have noone to wake.
+            m_helperGate->WakeOne();
+        }
     }
 
-    if (!m_helperWoken && Interlocked::CompareExchange(&m_helperWoken, 1, 0) == 0)
+    // if all helpers are busy, make another one, up to a limit.
+    // if helpers are spining/sleeping, we will not add more helpers.
+    int totalHelpers = m_totalHelpers;
+    if (m_activeHelpers >= totalHelpers &&
+        totalHelpers < MaxHelpers() &&
+        Interlocked::CompareExchange(&m_totalHelpers, totalHelpers + 1, totalHelpers) == totalHelpers)
     {
-        // wake is never lost, but can fold with other wakes.
-        // something will wake up either way, so setting m_helperWoken tells us that we are not waiting for a wake
-        // but once it is set something will wake up (unless it times out waiting and exits, which is very rare)
-        m_helperGate->WakeOne();
-
-        // if we are here because all helpers are busy, make another one, if permitted.
-        int totalHelpers = m_totalHelpers;
-        if (m_activeHelpers >= totalHelpers &&
-            totalHelpers < MaxHelpers() &&
-            Interlocked::CompareExchange(&m_totalHelpers, totalHelpers + 1, totalHelpers) == totalHelpers)
+        if (!GCToEEInterface::CreateThread(HelperThreadFn, this, false, "Satori GC Helper Thread"))
         {
-            if (!GCToEEInterface::CreateThread(HelperThreadFn, this, false, "Satori GC Helper Thread"))
-            {
-                Interlocked::Decrement(&m_totalHelpers);
-                return;
-            }
+            Interlocked::Decrement(&m_totalHelpers);
+            return;
         }
     }
 }
