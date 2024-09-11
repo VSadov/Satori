@@ -338,8 +338,14 @@ bool SatoriGate::TimedWait(int timeout)
     // woken, not blocking, interrupted, timeout
     assert(waitResult == 0 || errno == EAGAIN || errno == ETIMEDOUT || errno == EINTR);
 
-    m_state = s_blocking;
-    return waitResult == 0 || errno != ETIMEDOUT;
+    bool woken = waitResult == 0 || errno != ETIMEDOUT;
+    if (woken)
+    {
+        // consume the wake
+        m_state = s_blocking;
+    }
+
+    return woken;
 }
 
 void SatoriGate::Wait()
@@ -406,8 +412,14 @@ bool SatoriGate::TimedWait(int timeout)
     pthread_mutex_unlock(m_cs);
     assert(waitResult == 0 || waitResult == ETIMEDOUT);
 
-    m_state = s_blocking;
-    return waitResult == 0;
+    bool woken = waitResult == 0;
+    if (woken)
+    {
+        // consume the wake
+        m_state = s_blocking;
+    }
+
+    return woken;
 }
 
 void SatoriGate::Wait()

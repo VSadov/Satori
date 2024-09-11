@@ -54,9 +54,15 @@ bool SatoriGate::TimedWait(int timeout)
     uint32_t blocking = s_blocking;
     BOOL result = WaitOnAddress(&m_state, &blocking, sizeof(uint32_t), timeout);
     _ASSERTE(result == TRUE || GetLastError() == ERROR_TIMEOUT);
-    m_state = s_blocking;
 
-    return result == TRUE;
+    bool woken = result == TRUE;
+    if (woken)
+    {
+        // consume the wake
+        m_state = s_blocking;
+    }
+
+    return woken;
 }
 
 // After this call at least one thread will go through the gate, either by waking up,
