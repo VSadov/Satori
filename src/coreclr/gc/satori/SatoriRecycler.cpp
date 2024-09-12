@@ -544,13 +544,6 @@ bool SatoriRecycler::HelpOnceCore()
         MarkOwnStackOrDrainQueuesConcurrent(deadline);
     }
 
-    // if stacks are not marked yet, start suspending EE
-    if (m_ccStackMarkState == CC_MARK_STATE_NONE)
-    {
-        // only one thread will win and drive this stage, others may help.
-        BlockingMarkForConcurrent();
-    }
-
     if (m_ccStackMarkState == CC_MARK_STATE_SUSPENDING_EE && !IsHelperThread())
     {
         // this is a mutator thread and we are suspending them, leave and suspend.
@@ -587,11 +580,11 @@ bool SatoriRecycler::HelpOnceCore()
         }
     }
 
-    if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
+    // if stacks are not marked yet, start suspending EE
+    if (m_ccStackMarkState == CC_MARK_STATE_NONE)
     {
-        _ASSERTE(IsHelperThread());
-        // do not leave, come back and help
-        return true;
+        // only one thread will win and drive this stage, others may help.
+        BlockingMarkForConcurrent();
     }
 
     // if queues are empty we see no more work
@@ -710,6 +703,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
 
         // signal to everybody to start marking roots
         VolatileStore((int*)&m_ccStackMarkState, CC_MARK_STATE_MARKING);
+        MaybeAskForHelp();
         m_helperGate->WakeAll();
 
         // mark demoted regions if any attached to thread contexts
