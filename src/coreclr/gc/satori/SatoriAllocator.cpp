@@ -127,7 +127,7 @@ tryAgain:
     {
         // Reserving a regular-sized Page.
         // We will often come here on multiple threads and we do not want all threads to reserve a page.
-        // If someone alse is reserving, we will allow 1 msec of retrying before reserving a page eagerly.
+        // If someone else is reserving, we will allow 1 msec of retrying before reserving a page eagerly.
         if (newPageDeadline == 0)
         {
             newPageDeadline = GCToOSInterface::QueryPerformanceCounter() + GCToOSInterface::QueryPerformanceFrequency() / 1000;
