@@ -42,6 +42,8 @@ public:
     SatoriRegion* TryPopWithSize(size_t regionSize, SatoriRegion* &putBack);
     SatoriRegion* TryRemoveWithSize(size_t regionSize, SatoriRegion*& putBack);
     SatoriRegion* TryDequeueIfHasFreeSpaceInTopBucket();
+
+    static SatoriRegionQueue* AllocAligned(QueueKind kind);
 };
 
 #endif

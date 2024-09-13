@@ -43,6 +43,18 @@ public:
         m_lock.Initialize();
     }
 
+    static SatoriWorkList* AllocAligned()
+    {
+        const size_t align = 64;
+#ifdef _MSC_VER
+        void* buffer = _aligned_malloc(sizeof(SatoriWorkList), align);
+#else
+        void* buffer = malloc(sizeof(SatoriWorkList) + align);
+        buffer = (void*)ALIGN_UP((size_t)buffer, align);
+#endif
+        return new(buffer)SatoriWorkList();
+    }
+
     bool IsEmpty()
     {
         return m_head == nullptr;

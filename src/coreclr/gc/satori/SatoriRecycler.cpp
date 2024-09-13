@@ -74,18 +74,6 @@ void ToggleWriteBarrier(bool concurrent, bool skipCards, bool eeSuspended)
     GCToEEInterface::StompWriteBarrier(&args);
 }
 
-static SatoriRegionQueue* AllocQueue(QueueKind kind)
-{
-    const size_t align = 64;
-#ifdef _MSC_VER
-    void* buffer = _aligned_malloc(sizeof(SatoriRegionQueue), align);
-#else
-    void* buffer = malloc(sizeof(SatoriRegionQueue) + align);
-    buffer = (void*)ALIGN_UP((size_t)buffer, align);
-#endif
-    return new(buffer)SatoriRegionQueue(kind);
-}
-
 void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
     m_helperGate = new (nothrow) SatoriGate();
@@ -103,31 +91,31 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_heap = heap;
     m_trimmer = new (nothrow) SatoriTrimmer(heap);
 
-    m_ephemeralRegions = AllocQueue(QueueKind::RecyclerEphemeral);
-    m_ephemeralFinalizationTrackingRegions = AllocQueue(QueueKind::RecyclerEphemeralFinalizationTracking);
-    m_tenuredRegions = AllocQueue(QueueKind::RecyclerTenured);
-    m_tenuredFinalizationTrackingRegions = AllocQueue(QueueKind::RecyclerTenuredFinalizationTracking);
+    m_ephemeralRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerEphemeral);
+    m_ephemeralFinalizationTrackingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerEphemeralFinalizationTracking);
+    m_tenuredRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerTenured);
+    m_tenuredFinalizationTrackingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerTenuredFinalizationTracking);
 
-    m_finalizationPendingRegions = AllocQueue(QueueKind::RecyclerFinalizationPending);
+    m_finalizationPendingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerFinalizationPending);
 
-    m_stayingRegions = AllocQueue(QueueKind::RecyclerStaying);
-    m_relocatingRegions = AllocQueue(QueueKind::RecyclerRelocating);
-    m_relocatedRegions = AllocQueue(QueueKind::RecyclerRelocated);
-    m_relocatedToHigherGenRegions = AllocQueue(QueueKind::RecyclerRelocatedToHigherGen);
+    m_stayingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerStaying);
+    m_relocatingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerRelocating);
+    m_relocatedRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerRelocated);
+    m_relocatedToHigherGenRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerRelocatedToHigherGen);
 
     for (int i = 0; i < Satori::FREELIST_COUNT; i++)
     {
-        m_relocationTargets[i] = AllocQueue(QueueKind::RecyclerRelocationTarget);
+        m_relocationTargets[i] = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerRelocationTarget);
     }
 
-    m_deferredSweepRegions = AllocQueue(QueueKind::RecyclerDeferredSweep);
+    m_deferredSweepRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerDeferredSweep);
     m_deferredSweepCount = 0;
     m_gen1AddedSinceLastCollection = 0;
     m_gen2AddedSinceLastCollection = 0;
 
-    m_reusableRegions = AllocQueue(QueueKind::RecyclerReusable);
-    m_ephemeralWithUnmarkedDemoted = AllocQueue(QueueKind::RecyclerDemoted);
-    m_reusableRegionsAlternate = AllocQueue(QueueKind::RecyclerReusable);
+    m_reusableRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerReusable);
+    m_ephemeralWithUnmarkedDemoted = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerDemoted);
+    m_reusableRegionsAlternate = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerReusable);
 
     m_workList = new (nothrow) SatoriWorkList();
     m_gcState = GC_STATE_NONE;
