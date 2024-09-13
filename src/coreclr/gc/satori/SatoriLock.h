@@ -133,7 +133,7 @@ private:
 
     // We will use exponential backoff in rare cases when we need to change state atomically and cannot
     // make progress due to concurrent state changes by other threads.
-    // While we cannot know the ideal amount of wait needed before making a successfull attempt,
+    // While we cannot know the ideal amount of wait needed before making a successful attempt,
     // the exponential backoff will generally be not more than 2X worse than the perfect guess and
     // will do a lot less attempts than an simple retry. On multiprocessor machine fruitless attempts
     // will cause unnecessary sharing of the contended state which may make modifying the state more expensive.
