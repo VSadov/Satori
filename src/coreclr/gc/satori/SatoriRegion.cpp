@@ -140,10 +140,6 @@ void SatoriRegion::ResetCardsForEphemeral()
 
 void SatoriRegion::MakeBlank()
 {
-    _ASSERTE(!m_hasPendingFinalizables);
-    _ASSERTE(!m_finalizableTrackers);
-    _ASSERTE(!m_acceptedPromotedObjects);
-    _ASSERTE(!m_gen2Objects);
     _ASSERTE(NothingMarked());
 
     if (m_generation == 2)
@@ -151,26 +147,56 @@ void SatoriRegion::MakeBlank()
         this->ResetCardsForEphemeral();
     }
 
-    m_generation = -1;
     m_ownerThreadTag = 0;
     m_escapeFunc = EscapeFn;
+    m_generation = -1;
+    m_occupancyAtReuse = 0;
+
+    // m_end                    stays the same
+    // m_containingPage         stays the same
+
+    m_reusableFor = ReuseLevel::None;
+    _ASSERT(!m_allocatingOwnerAttachmentPoint);
+    _ASSERTE(!m_gen2Objects);
+
     m_allocStart = (size_t)&m_firstObject;
     m_allocEnd = End();
-    m_occupancy = m_allocEnd - m_allocStart;
-    m_occupancyAtReuse = 0;
-    m_sweepsSinceLastAllocation = 0;
-    m_unfinishedAllocationCount = 0;
-    m_markStack = 0;
+
+    // m_used                    stays the same
+    // m_committed               stays the same
+
     m_escapedSize = 0;
-    m_objCount = 0;
+    _ASSERTE(!m_markStack);
+
     m_allocBytesAtCollect = 0;
 
-    m_hasFinalizables = false;
+    _ASSERTE(!m_finalizableTrackers);
+    _ASSERTE(!m_finalizableTrackersLock);
+
+    m_sweepsSinceLastAllocation = 0;
+
+    // m_prev
+    // m_next
+    // m_containingQueue        all stay the same
+
+    // assume all space reserved to allocations will be used
+    // (we will revert what will be unused)
+    m_occupancy = m_allocEnd - m_allocStart;
+    m_objCount = 0;
+
+    m_unfinishedAllocationCount = 0;
+
     m_hasPinnedObjects = false;
-    m_hasMarksSet = false;
+    m_hasFinalizables = false;
+    _ASSERTE(!m_hasPendingFinalizables);
     m_doNotSweep = false;
-    m_reusableFor = ReuseLevel::None;
-    m_hasUnmarkedDemotedObjects = false;
+    _ASSERTE(!m_acceptedPromotedObjects);
+    _ASSERTE(!m_individuallyPromoted);
+    _ASSERTE(!m_hasUnmarkedDemotedObjects);
+
+#if _DEBUG
+    m_hasMarksSet = false;
+#endif
 
     //clear index and free list
     ClearFreeLists();
@@ -249,38 +275,94 @@ bool SatoriRegion::ValidateIndexEmpty()
 
 static const int FREE_LIST_NEXT_OFFSET = sizeof(ArrayBase);
 
+// prefers leftmost bucket that fits to improve locality, possibly at cost to fragmentation
 size_t SatoriRegion::StartAllocating(size_t minAllocSize)
 {
     _ASSERTE(!IsAllocating());
 
+    // skip buckets that certainly will not fit.
     DWORD bucket;
     BitScanReverse64(&bucket, minAllocSize);
-
-    // when minAllocSize is not a power of two we could search through the current bucket,
-    // which may have a large enough obj,
-    // but we will just use the next bucket, which guarantees it fits
-    if (minAllocSize & (minAllocSize - 1))
-    {
-        bucket++;
-    }
-
     bucket = bucket > Satori::MIN_FREELIST_SIZE_BITS ?
         bucket - Satori::MIN_FREELIST_SIZE_BITS :
         0;
+
+    // we will check the first free obj in the bucket, but will not dig through the rest.
+    // if the first obj does not fit, we will switch to the next bucket where everything will fit.
+    size_t minFreeObjSize = minAllocSize + Satori::MIN_FREE_SIZE;
+
+    DWORD selectedBucket = Satori::FREELIST_COUNT;
+    SatoriObject* freeObj = m_freeLists[bucket];
+    if (freeObj)
+    {
+        if (freeObj->FreeObjSize() >= minFreeObjSize)
+        {
+            selectedBucket = bucket;
+        }
+    }
+
+    // in higher buckets everything will fit
+    // prefer free objects that start earlier
+    bucket++;
+    for (; bucket < Satori::FREELIST_COUNT; bucket++)
+    {
+        SatoriObject* freeObjCandidate = m_freeLists[bucket];
+        if (freeObjCandidate &&
+            (selectedBucket == Satori::FREELIST_COUNT || freeObjCandidate->Start() < freeObj->Start()))
+        {
+            selectedBucket = bucket;
+            freeObj = freeObjCandidate;
+        }
+    }
+
+    if (selectedBucket < Satori::FREELIST_COUNT)
+    {
+        m_freeLists[selectedBucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
+        m_allocStart = freeObj->Start();
+        m_allocEnd = m_allocStart + freeObj->FreeObjSize();
+        SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
+        ClearIndicesForAllocRange();
+        _ASSERTE(GetAllocRemaining() >= minAllocSize);
+        m_sweepsSinceLastAllocation = 0;
+        return m_allocStart;
+    }
+
+    return 0;
+}
+
+// prefers smallest bucket that fits to reduce fragmentation, possibly at cost to locality
+size_t SatoriRegion::StartAllocatingBestFit(size_t minAllocSize)
+{
+    _ASSERTE(!IsAllocating());
+
+    // skip buckets that certainly will not fit.
+    DWORD bucket;
+    BitScanReverse64(&bucket, minAllocSize);
+    bucket = bucket > Satori::MIN_FREELIST_SIZE_BITS ?
+        bucket - Satori::MIN_FREELIST_SIZE_BITS :
+        0;
+
+    // we will check the first free obj in the bucket, but will not dig through the rest.
+    // if the first obj does not fit, we will switch to the next bucket where everything will fit.
+    size_t minFreeObjSize = minAllocSize + Satori::MIN_FREE_SIZE;
 
     for (; bucket < Satori::FREELIST_COUNT; bucket++)
     {
         SatoriObject* freeObj = m_freeLists[bucket];
         if (freeObj)
         {
-            m_freeLists[bucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
-            m_allocStart = freeObj->Start();
-            m_allocEnd = freeObj->End();
-            SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
-            ClearIndicesForAllocRange();
-            _ASSERTE(GetAllocRemaining() >= minAllocSize);
-            m_sweepsSinceLastAllocation = 0;
-            return m_allocStart;
+            size_t size = freeObj->FreeObjSize();
+            if (size >= minFreeObjSize)
+            {
+                m_freeLists[bucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
+                m_allocStart = freeObj->Start();
+                m_allocEnd = m_allocStart + size;
+                SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
+                ClearIndicesForAllocRange();
+                _ASSERTE(GetAllocRemaining() >= minAllocSize);
+                m_sweepsSinceLastAllocation = 0;
+                return m_allocStart;
+            }
         }
     }
 
@@ -300,7 +382,7 @@ void SatoriRegion::StopAllocating(size_t allocPtr)
         _ASSERTE(m_occupancy >= unused);
         SetOccupancy(m_occupancy - unused);
         SatoriObject* freeObj = SatoriObject::FormatAsFree(allocPtr, unused);
-        AddFreeSpace(freeObj, unused);
+        ReturnFreeSpace(freeObj, unused);
     }
 
     m_allocStart = m_allocEnd = 0;
@@ -328,10 +410,47 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
     _ASSERTE(bucket >= 0);
     _ASSERTE(bucket < Satori::FREELIST_COUNT);
 
-    *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET) = m_freeLists[bucket];
-    m_freeLists[bucket] = freeObj;
+    // insert at the tail
+    *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET) = nullptr;
+    if (m_freeLists[bucket] == nullptr)
+    {
+        m_freeLists[bucket] = m_freeListTails[bucket] = freeObj;
+        return;
+    }
+
+    SatoriObject* tailObj = m_freeListTails[bucket];
+    _ASSERTE(tailObj);
+    *(SatoriObject**)(tailObj->Start() + FREE_LIST_NEXT_OFFSET) = freeObj;
+    m_freeListTails[bucket] = freeObj;
 }
 
+void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
+{
+    _ASSERTE(freeObj->Size() == size);
+    // allocSize is smaller than size to make sure the span can always be made parseable
+    // after allocating objects in it.
+    ptrdiff_t allocSize = size - Satori::MIN_FREE_SIZE;
+    if (allocSize < Satori::MIN_FREELIST_SIZE)
+    {
+        return;
+    }
+
+    DWORD bucket;
+    BitScanReverse64(&bucket, allocSize);
+    bucket -= (Satori::MIN_FREELIST_SIZE_BITS);
+    _ASSERTE(bucket >= 0);
+    _ASSERTE(bucket < Satori::FREELIST_COUNT);
+
+    // insert at the head, since we are returning what we recently took.
+    *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET) = m_freeLists[bucket];
+
+    if (m_freeLists[bucket] == nullptr)
+    {
+        m_freeListTails[bucket] = freeObj;
+    }
+
+    m_freeLists[bucket] = freeObj;
+}
 
 bool SatoriRegion::HasFreeSpaceInTopBucket()
 {
@@ -843,7 +962,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
     }
 
     SetEscaped(o);
-    m_escapedSize += o->Size();
+    m_escapedSize += (int32_t)o->Size();
 
     // now recursively mark all the objects reachable from escaped object.
     do
@@ -864,7 +983,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
                 if (child->SameRegion(this) && !IsEscaped(child))
                 {
                     SetEscaped(child);
-                    m_escapedSize += child->Size();
+                    m_escapedSize += (int32_t)child->Size();
                     PushToMarkStackIfHasPointers(child);
                 }
             }
@@ -899,7 +1018,7 @@ void SatoriRegion::EscapeShallow(SatoriObject* o)
     //    typically objects have died and we have fewer escapes than before the GC,
     //    so we do not bother to check
     SetEscaped(o);
-    m_escapedSize += o->Size();
+    m_escapedSize += (int32_t)o->Size();
 
     o->ForEachObjectRef(
         [&](SatoriObject** ref)
@@ -914,7 +1033,7 @@ void SatoriRegion::EscapeShallow(SatoriObject* o)
     );
 }
 
-void SatoriRegion::SetOccupancy(size_t occupancy, size_t objCount)
+void SatoriRegion::SetOccupancy(size_t occupancy, int32_t objCount)
 {
     _ASSERTE(objCount == 0 || occupancy != 0);
     _ASSERTE(occupancy <= (Size() - offsetof(SatoriRegion, m_firstObject)));
@@ -996,9 +1115,8 @@ void SatoriRegion::ThreadLocalMark()
             m_bitmap[bitmapIndex + (markBitOffset >> 6)] |= ((size_t)1 << (markBitOffset & 63));
 
             SatoriObject* o = ObjectForMarkBit(bitmapIndex, markBitOffset);
-            o->Validate();
-
 #ifdef _DEBUG
+            o->Validate();
             escaped += o->Size();
 #endif
 
@@ -1130,7 +1248,7 @@ void SatoriRegion::ThreadLocalPlan()
 
     // stats
     size_t occupancy = 0;
-    size_t objCount = 0;
+    int32_t objCount = 0;
 
     // moveable: starts at first movable and reachable, as long as there is any free space to slide in
     size_t lastMarkedEnd = FirstObject()->Start();
@@ -1410,6 +1528,7 @@ void SatoriRegion::ThreadLocalCompact()
             {
                 size_t freeSpace = d2->Start() - d1->Start();
                 SatoriObject* freeObj = SatoriObject::FormatAsFree(d1->Start(), freeSpace);
+                SetIndicesForObject(freeObj, d2->Start());
                 AddFreeSpace(freeObj, freeSpace);
                 foundFree += freeSpace;
 
@@ -1939,7 +2058,8 @@ void SatoriRegion::ClearIndex()
 
 void SatoriRegion::ClearFreeLists()
 {
-    memset(m_freeLists, 0, sizeof(m_freeLists));
+    // clear free lists and free list tails
+    memset(m_freeLists, 0, sizeof(m_freeLists) * 2);
 }
 
 void SatoriRegion::Verify(bool allowMarked)

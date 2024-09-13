@@ -74,18 +74,6 @@ void ToggleWriteBarrier(bool concurrent, bool skipCards, bool eeSuspended)
     GCToEEInterface::StompWriteBarrier(&args);
 }
 
-static SatoriRegionQueue* AllocQueue(QueueKind kind)
-{
-    const size_t align = 64;
-#ifdef _MSC_VER
-    void* buffer = _aligned_malloc(sizeof(SatoriRegionQueue), align);
-#else
-    void* buffer = malloc(sizeof(SatoriRegionQueue) + align);
-    buffer = (void*)ALIGN_UP((size_t)buffer, align);
-#endif
-    return new(buffer)SatoriRegionQueue(kind);
-}
-
 void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
     m_helperGate = new (nothrow) SatoriGate();
@@ -103,33 +91,33 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_heap = heap;
     m_trimmer = new (nothrow) SatoriTrimmer(heap);
 
-    m_ephemeralRegions = AllocQueue(QueueKind::RecyclerEphemeral);
-    m_ephemeralFinalizationTrackingRegions = AllocQueue(QueueKind::RecyclerEphemeralFinalizationTracking);
-    m_tenuredRegions = AllocQueue(QueueKind::RecyclerTenured);
-    m_tenuredFinalizationTrackingRegions = AllocQueue(QueueKind::RecyclerTenuredFinalizationTracking);
+    m_ephemeralRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerEphemeral);
+    m_ephemeralFinalizationTrackingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerEphemeralFinalizationTracking);
+    m_tenuredRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerTenured);
+    m_tenuredFinalizationTrackingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerTenuredFinalizationTracking);
 
-    m_finalizationPendingRegions = AllocQueue(QueueKind::RecyclerFinalizationPending);
+    m_finalizationPendingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerFinalizationPending);
 
-    m_stayingRegions = AllocQueue(QueueKind::RecyclerStaying);
-    m_relocatingRegions = AllocQueue(QueueKind::RecyclerRelocating);
-    m_relocatedRegions = AllocQueue(QueueKind::RecyclerRelocated);
-    m_relocatedToHigherGenRegions = AllocQueue(QueueKind::RecyclerRelocatedToHigherGen);
+    m_stayingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerStaying);
+    m_relocatingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerRelocating);
+    m_relocatedRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerRelocated);
+    m_relocatedToHigherGenRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerRelocatedToHigherGen);
 
     for (int i = 0; i < Satori::FREELIST_COUNT; i++)
     {
-        m_relocationTargets[i] = AllocQueue(QueueKind::RecyclerRelocationTarget);
+        m_relocationTargets[i] = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerRelocationTarget);
     }
 
-    m_deferredSweepRegions = AllocQueue(QueueKind::RecyclerDeferredSweep);
+    m_deferredSweepRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerDeferredSweep);
     m_deferredSweepCount = 0;
     m_gen1AddedSinceLastCollection = 0;
     m_gen2AddedSinceLastCollection = 0;
 
-    m_reusableRegions = AllocQueue(QueueKind::RecyclerReusable);
-    m_ephemeralWithUnmarkedDemoted = AllocQueue(QueueKind::RecyclerDemoted);
-    m_reusableRegionsAlternate = AllocQueue(QueueKind::RecyclerReusable);
+    m_reusableRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerReusable);
+    m_ephemeralWithUnmarkedDemoted = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerDemoted);
+    m_reusableRegionsAlternate = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerReusable);
 
-    m_workList = new (nothrow) SatoriWorkList();
+    m_workList = SatoriWorkList::AllocAligned();
     m_gcState = GC_STATE_NONE;
     m_isBarrierConcurrent = false;
 
@@ -318,7 +306,9 @@ SatoriRegion* SatoriRecycler::TryGetReusable()
     SatoriRegion* reusable = m_reusableRegions->TryPopWithTryEnter();
     if (reusable)
     {
-        reusable->OccupancyAtReuse() = reusable->Occupancy();
+        size_t occupancy = reusable->Occupancy();
+        _ASSERTE(occupancy < Satori::REGION_SIZE_GRANULARITY);
+        reusable->OccupancyAtReuse() = (int32_t)occupancy;
     }
 
     return reusable;
@@ -329,7 +319,9 @@ SatoriRegion* SatoriRecycler::TryGetReusableForLarge()
     SatoriRegion* reusable = m_reusableRegions->TryDequeueIfHasFreeSpaceInTopBucket();
     if (reusable)
     {
-        reusable->OccupancyAtReuse() = reusable->Occupancy();
+        size_t occupancy = reusable->Occupancy();
+        _ASSERTE(occupancy < Satori::REGION_SIZE_GRANULARITY);
+        reusable->OccupancyAtReuse() = (int32_t)occupancy;
     }
 
     return  reusable;
@@ -410,7 +402,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 #ifdef DEBUG
     if (!region->MaybeAllocatingAcquire())
     {
-        region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrent());
+        region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrentEnabled());
     }
 #endif
 }
@@ -423,7 +415,7 @@ void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
     _ASSERTE(!region->HasMarksSet());
     _ASSERTE(!region->DoNotSweep());
 
-    region->Verify(/* allowMarked */ SatoriUtil::IsConcurrent() && SatoriUtil::IsConservativeMode());
+    region->Verify(/* allowMarked */ SatoriUtil::IsConcurrentEnabled() && SatoriUtil::IsConservativeMode());
     PushToTenuredQueues(region);
     _ASSERTE(region->Generation() == 2);
     Interlocked::ExchangeAdd64(&m_gen2AddedSinceLastCollection, region->Occupancy());
@@ -436,11 +428,50 @@ size_t SatoriRecycler::GetNowMillis()
     return (size_t)(t / m_perfCounterTicksPerMilli);
 }
 
+size_t SatoriRecycler::GetNowUsecs()
+{
+    int64_t t = GCToOSInterface::QueryPerformanceCounter();
+    return (size_t)(t / m_perfCounterTicksPerMilli);
+}
+
 size_t SatoriRecycler::IncrementGen0Count()
 {
     // duration of Gen0 is typically << msec, so we will not record that.
     m_gcStartMillis[0] = GetNowMillis();
     return Interlocked::Increment((size_t*)&m_gcCount[0]);
+}
+
+// if generation is too small we do not bother with concurrent marking.
+// the extra costs of concurrent marking may not justify using it with tiny heaps
+#if _DEBUG
+static const int concMarkThreshold = 0;
+#else
+static const int concMarkThreshold = 8 * 1024  * 1024;
+#endif
+
+static const int bgPauseThreshold = 1000; // microseconds
+
+bool SatoriRecycler::ShouldDoConcurrent(int generation)
+{
+    size_t epthOccupancy = this->m_occupancy[1]  + this->m_occupancy[0];
+    if (generation == 2)
+    {
+        if ((this->m_occupancy[2] + epthOccupancy < concMarkThreshold) &&
+            m_lastTenuredGcInfo.m_pauseDurations[0] < bgPauseThreshold)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        if ((epthOccupancy < concMarkThreshold) &&
+            m_lastEphemeralGcInfo.m_pauseDurations[0] < bgPauseThreshold)
+        {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
@@ -450,13 +481,16 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
         generation = 2;
     }
 
-    int newState = SatoriUtil::IsConcurrent() ? GC_STATE_CONCURRENT : GC_STATE_BLOCKING;
+    int newState = SatoriUtil::IsConcurrentEnabled() && ShouldDoConcurrent(generation)?
+        GC_STATE_CONCURRENT :
+        GC_STATE_BLOCKING;
+
     if (m_gcState == GC_STATE_NONE &&
         Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
     {
         m_CurrentGcInfo = generation == 2 ? &m_lastTenuredGcInfo :&m_lastEphemeralGcInfo;
         m_CurrentGcInfo->m_condemnedGeneration = (uint8_t)generation;
-        m_CurrentGcInfo->m_concurrent = SatoriUtil::IsConcurrent();
+        m_CurrentGcInfo->m_concurrent = m_gcState == GC_STATE_CONCURRENT;
 
         FIRE_EVENT(GCTriggered, (uint32_t)reason);
 
@@ -587,6 +621,13 @@ bool SatoriRecycler::HelpOnceCore()
         BlockingMarkForConcurrent();
     }
 
+    if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
+    {
+        _ASSERTE(IsHelperThread());
+        // do not leave (and start blocking gc), come back and help
+        return true;
+    }
+
     // if queues are empty we see no more work
     return DrainMarkQueuesConcurrent(nullptr, deadline);
 }
@@ -661,32 +702,13 @@ void SatoriRecycler::ConcurrentPhasePrepFn(gc_alloc_context* gcContext, void* pa
     }
 }
 
-// if generation is too small or the pause to collect it is too short
-// we do not bother with stopping the world for thread pre-marking
-static const int bgMarkThreshold = 8 * 1024  * 1024;
-static const int bgPauseThreshold = 1000; // microseconds
-
 void SatoriRecycler::BlockingMarkForConcurrent()
 {
-    int targetState = CC_MARK_STATE_SUSPENDING_EE;
-    if (m_condemnedGeneration == 2)
-    {
-        if ((this->m_occupancy[2] < bgMarkThreshold) &&
-            m_lastTenuredGcInfo.m_pauseDurations[0] < bgPauseThreshold)
-        {
-            targetState = CC_MARK_STATE_DONE;
-        }
-    }
-    else
-    {
-        if ((this->m_occupancy[1] < bgMarkThreshold) &&
-            m_lastEphemeralGcInfo.m_pauseDurations[0] < bgPauseThreshold)
-        {
-            targetState = CC_MARK_STATE_DONE;
-        }
-    }
+    // TODO: VS can we have a generation large enough for concurrent, but not enough for concurrent stacks?
+    //       in such case we could just go to CC_MARK_STATE_DONE
 
-    if (Interlocked::CompareExchange(&m_ccStackMarkState, targetState, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
+    int targetState = CC_MARK_STATE_SUSPENDING_EE;
+    if (Interlocked::CompareExchange(&m_ccStackMarkState, CC_MARK_STATE_SUSPENDING_EE, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
     {
         if (targetState == CC_MARK_STATE_DONE)
             return;
@@ -917,8 +939,8 @@ size_t GetAvailableMemory()
     uint64_t total;
     GCToOSInterface::GetMemoryStatus(0, nullptr, &available, &total);
 
-    // we will not use the last 10% of physical memory
-    uint64_t reserve = total * 10 / 100;
+    // we will not use the last 5% of physical memory
+    uint64_t reserve = total * 5 / 100;
     if (available > reserve)
     {
         return available - reserve;
@@ -959,15 +981,15 @@ void SatoriRecycler::AdjustHeuristics()
     // TUNING: using exponential smoothing with alpha == 1/2. is it a good smooth/lag balance?
     m_gen1Budget = (m_gen1Budget + newGen1Budget) / 2;
 
-    // if the heap size will definitely be over the limit at next GC, make the next GC a full GC
-    m_nextGcIsFullGc = occupancy + m_gen1Budget > m_totalLimit;
-
+    // limit budget to available memory
     size_t available = GetAvailableMemory();
     if (available < m_gen1Budget)
     {
         m_gen1Budget = available;
-        m_nextGcIsFullGc = true;
     }
+
+    // if the heap size will definitely be over the limit at next GC, make the next GC a full GC
+    m_nextGcIsFullGc = occupancy + m_gen1Budget > m_totalLimit;
 
     // now figure if we will promote
     m_promoteAllRegions = false;
@@ -981,6 +1003,12 @@ void SatoriRecycler::AdjustHeuristics()
     }
     else
     {
+        // ensure that sometimes we do gen2
+        if ((int)m_gcCount[1] - m_gen1CountAtLastGen2 > 64)
+        {
+           m_nextGcIsFullGc = true;
+        }
+
         if (promotionEstimate > Gen1RegionCount() / 2)
         {
             // will promote too many, just promote all
@@ -1173,7 +1201,7 @@ void SatoriRecycler::BlockingCollectImpl()
     m_gcState = GC_STATE_NONE;
     m_gen1AddedSinceLastCollection = 0;
 
-    if (SatoriUtil::IsConcurrent() && !m_deferredSweepRegions->IsEmpty())
+    if (SatoriUtil::IsConcurrentEnabled() && !m_deferredSweepRegions->IsEmpty())
     {
         m_deferredSweepCount = m_deferredSweepRegions->Count();
         m_activeHelperFn = &SatoriRecycler::DrainDeferredSweepQueueHelp;
@@ -2836,7 +2864,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                             }
 
                                             if (child->ContainingRegion()->Generation() < 2)
-                                            {
+                                             {
                                                 page->SetCardForAddressOnly((size_t)ppObject);
                                             }
                                         }
@@ -3200,7 +3228,7 @@ void SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker()
     FreeRelocatedRegionsWorker();
 }
 
-void SatoriRecycler::FreeRelocatedRegion(SatoriRegion* curRegion)
+void SatoriRecycler::FreeRelocatedRegion(SatoriRegion* curRegion, bool noLock)
 {
     _ASSERTE(!curRegion->HasPinnedObjects());
     curRegion->ClearMarks();
@@ -3211,21 +3239,15 @@ void SatoriRecycler::FreeRelocatedRegion(SatoriRegion* curRegion)
         curRegion->DetachFromAlocatingOwnerRelease();
     }
 
-    // return nursery regions eagerly
-    // there should be a modest number of those, but we may need them soon
-    // defer blanking of others
-    if (SatoriUtil::IsConcurrent() && !isNurseryRegion)
+    // blank and return regions eagerly.
+    // we are zeroing a few kb - that might be comparable with costs of deferring.
+    curRegion->MakeBlank();
+    if (noLock)
     {
-#if _DEBUG
-        curRegion->HasMarksSet() = false;
-#endif
-        curRegion->DoNotSweep() = true;
-        curRegion->SetOccupancy(0, 0);
-        m_deferredSweepRegions->Enqueue(curRegion);
+        m_heap->Allocator()->ReturnRegionNoLock(curRegion);
     }
     else
     {
-        curRegion->MakeBlank();
         m_heap->Allocator()->ReturnRegion(curRegion);
     }
 }
@@ -3238,7 +3260,7 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
         MaybeAskForHelp();
         do
         {
-            FreeRelocatedRegion(curRegion);
+            FreeRelocatedRegion(curRegion, /* noLock */ true);
         } while ((curRegion = m_relocatedRegions->TryPop()));
     }
 }
@@ -3438,7 +3460,7 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool exis
                 SatoriRegion* region = queue->TryPop();
                 if (region)
                 {
-                    size_t allocStart = region->StartAllocating(allocSize);
+                    size_t allocStart = region->StartAllocatingBestFit(allocSize);
                     _ASSERTE(allocStart);
                     return region;
                 }
@@ -3557,7 +3579,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     bool needToCopyMarks = !(relocationIsPromotion || relocationTarget->DoNotSweep());
     _ASSERTE(relocationTarget->HasMarksSet() == needToCopyMarks);
 
-    size_t objectsRelocated = 0;
+    int32_t objectsRelocated = 0;
     do
     {
         o = relocationSource->SkipUnmarked(o);
@@ -3581,6 +3603,8 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         {
             ((SatoriObject*)dst)->SetMarked();
         }
+
+        relocationTarget->SetIndicesForObject((SatoriObject*)dst, dst + size);
 
         dst += size;
         objectsRelocated++;
@@ -3614,7 +3638,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     }
     else
     {
-        FreeRelocatedRegion(relocationSource);
+        FreeRelocatedRegion(relocationSource, /* noLock */ false);
     }
 }
 
@@ -3843,21 +3867,10 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                             curRegion->DetachFromAlocatingOwnerRelease();
                         }
 
-                        // return nursery regions eagerly
-                        // there should be a modest number of those, but we may need them soon
-                        // defer blanking of others
-                        if (SatoriUtil::IsConcurrent() && !isNurseryRegion)
-                        {
-                            m_deferredSweepRegions->Enqueue(curRegion);
-                        }
-                        else
-                        {
-                            curRegion->MakeBlank();
-                            // TODO: VS use ReturnRegionNoLock in more places? (or less?)
-                            //       what about work chunk queue? that be lock-free.
-                            m_heap->Allocator()->ReturnRegionNoLock(curRegion);
-                        }
-
+                        // blank and return regions eagerly.
+                        // we are zeroing a few kb - that might be comparable with costs of deferring.
+                        curRegion->MakeBlank();
+                        m_heap->Allocator()->ReturnRegionNoLock(curRegion);
                         continue;
                     }
                 }
@@ -3897,7 +3910,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
             }
 
             // make sure the region is swept and returned now, or later
-            if (!SatoriUtil::IsConcurrent())
+            if (!SatoriUtil::IsConcurrentEnabled())
             {
                 SweepAndReturnRegion(curRegion);
                 continue;
@@ -3926,6 +3939,9 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
 
 // ideally, we just reuse the region for allocations.
 // the region must have enough free space and not be very fragmented
+// TUNING: heuristic for reuse could be more aggressive, consider pinning, etc...
+//         the cost here is inability to trace byrefs concurrently, not huge,
+//         byref is rarely the only ref.
 bool SatoriRecycler::IsReuseCandidate(SatoriRegion* region)
 {
     if (!region->HasFreeSpaceInTopNBuckets(Satori::REUSABLE_BUCKETS))
@@ -3943,9 +3959,6 @@ bool SatoriRecycler::IsReuseCandidate(SatoriRegion* region)
 
 // we relocate regions if that would improve their reuse quality.
 // compaction might also improve mutator locality, somewhat.
-// TUNING: heuristic for reuse could be more aggressive, consider pinning, etc...
-//         the cost here is inability to trace byrefs concurrently, not huge,
-//         byref is rarely the only ref.
 bool SatoriRecycler::IsRelocationCandidate(SatoriRegion* region)
 {
     if (region->HasPinnedObjects())

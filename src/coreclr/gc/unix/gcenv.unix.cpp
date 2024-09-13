@@ -585,10 +585,16 @@ void* GCToOSInterface::VirtualReserve(void* location, size_t size)
         return NULL;
     }
 
+// TODO: VS remove
+//#ifdef TARGET_LINUX
+//    madvise(pRetVal, size, MADV_HUGEPAGE);
+//#endif
+
 #ifdef MADV_DONTDUMP
         // Do not include reserved memory in coredump.
         madvise(pRetVal, size, MADV_DONTDUMP);
 #endif
+
     return pRetVal;
 }
 

@@ -279,7 +279,7 @@ bool SatoriRegion::Sweep()
     m_escapedSize = 0;
     bool cannotRecycle = this->IsAttachedToAllocatingOwner();
     size_t occupancy = 0;
-    size_t objCount = 0;
+    int32_t objCount = 0;
     bool hasFinalizables = false;
     SatoriObject* o = FirstObject();
     do
@@ -373,13 +373,13 @@ inline size_t SatoriRegion::Occupancy()
     return m_occupancy;
 }
 
-inline size_t &SatoriRegion::OccupancyAtReuse()
+inline int32_t &SatoriRegion::OccupancyAtReuse()
 {
     _ASSERTE(!IsAllocating());
     return m_occupancyAtReuse;
 }
 
-inline size_t SatoriRegion::ObjCount()
+inline int32_t SatoriRegion::ObjCount()
 {
     return m_objCount;
 }
@@ -411,7 +411,7 @@ inline bool& SatoriRegion::IndividuallyPromoted()
     return m_individuallyPromoted;
 }
 
-inline size_t SatoriRegion::SweepsSinceLastAllocation()
+inline uint32_t SatoriRegion::SweepsSinceLastAllocation()
 {
     return m_sweepsSinceLastAllocation;
 }

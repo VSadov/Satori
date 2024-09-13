@@ -57,7 +57,9 @@ public:
     void AddEphemeralRegion(SatoriRegion* region);
     void AddTenuredRegion(SatoriRegion* region);
 
+    // TODO: VS should live in heap?
     size_t GetNowMillis();
+    size_t GetNowUsecs();
 
     bool& IsLowLatencyMode();
 
@@ -70,7 +72,9 @@ public:
     void TryStartGC(int generation, gc_reason reason);
     void HelpOnce();
     void MaybeTriggerGC(gc_reason reason);
+    bool IsBlockingPhase();
 
+    bool ShouldDoConcurrent(int generation);
     void ConcurrentHelp();
     void ShutDown();
 
@@ -306,7 +310,6 @@ private:
     void BlockingCollect1();
     void BlockingCollect2();
     void BlockingCollectImpl();
-    bool IsBlockingPhase();
 
     void BlockingMark();
     void MarkNewReachable();
@@ -325,7 +328,7 @@ private:
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);
-    void FreeRelocatedRegion(SatoriRegion* curRegion);
+    void FreeRelocatedRegion(SatoriRegion* curRegion, bool noLock);
     void FreeRelocatedRegionsWorker();
 
     void PromoteHandlesAndFreeRelocatedRegions();

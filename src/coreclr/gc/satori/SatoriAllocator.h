@@ -73,24 +73,36 @@ private:
     SatoriRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
     SatoriWorkList* m_workChunks;
 
-    SatoriRegion* m_immortalRegion;
-    SatoriLock m_immortalAlocLock;
-
-    SatoriRegion* m_pinnedRegion;
-    SatoriLock m_pinnedAlocLock;
-
-    SatoriRegion* m_largeRegion;
-    SatoriLock m_largeAlocLock;
-
     SatoriRegion* m_regularRegion;
-    SatoriLock m_regularAlocLock;
+    SatoriRegion* m_largeRegion;
+    SatoriRegion* m_pinnedRegion;
+    SatoriRegion* m_immortalRegion;
 
-    volatile int32_t m_singePageAdders;
+    DECLSPEC_ALIGN(64)
+    SatoriLock m_regularAllocLock;
+
+    DECLSPEC_ALIGN(64)
+    SatoriLock m_immortalAllocLock;
+
+    DECLSPEC_ALIGN(64)
+    SatoriLock m_largeAllocLock;
+
+    DECLSPEC_ALIGN(64)
+    SatoriLock m_pinnedAllocLock;
 
     // for event trace
-    size_t m_smallAllocTickAmount;
+    DECLSPEC_ALIGN(64)
     size_t m_largeAllocTickAmount;
+
+    DECLSPEC_ALIGN(64)
     size_t m_pinnedAllocTickAmount;
+
+    DECLSPEC_ALIGN(64)
+    size_t m_smallAllocTickAmount;
+
+private:
+    DECLSPEC_ALIGN(64)
+    volatile int32_t m_singePageAdders;
 
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocRegularShared(SatoriAllocationContext* context, size_t size, uint32_t flags);

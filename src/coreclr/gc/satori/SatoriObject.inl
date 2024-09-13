@@ -48,6 +48,15 @@ FORCEINLINE size_t SatoriObject::Size()
     return size;
 }
 
+FORCEINLINE size_t SatoriObject::FreeObjSize()
+{
+    _ASSERTE(IsFree());
+    size_t size = Satori::MIN_FREE_SIZE;
+    size += (size_t)((ArrayBase*)this)->GetNumComponents();
+    size = ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
+    return size;
+}
+
 inline size_t SatoriObject::Start()
 {
     return (size_t)this;

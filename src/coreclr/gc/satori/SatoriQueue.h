@@ -98,9 +98,8 @@ public:
         _ASSERTE(item->m_prev == nullptr);
         _ASSERTE(item->m_containingQueue == nullptr);
 
-#ifdef _DEBUG
         size_t oldCount = m_count;
-#endif
+        Interlocked::Increment(&m_count);
 
         T* head = Interlocked::ExchangePointer(&m_head, item);
         if (head == nullptr)
@@ -115,11 +114,7 @@ public:
         }
 
         item->m_containingQueue = this;
-        _ASSERTE(m_count >= oldCount);
-
-#ifdef _DEBUG
-        Interlocked::Increment(&m_count);
-#endif
+        _ASSERTE(m_count > oldCount);
     }
 
     T* TryPop()
@@ -138,16 +133,17 @@ public:
                 return nullptr;
             }
 
+            T* next = result->m_next;
             m_count--;
+            m_head = next;
             result->m_containingQueue = nullptr;
-            m_head = result->m_next;
-            if (m_head == nullptr)
+            if (next == nullptr)
             {
                 m_tail = nullptr;
             }
             else
             {
-                m_head->m_prev = nullptr;
+                next->m_prev = nullptr;
             }
         }
 
@@ -178,16 +174,17 @@ public:
                 return nullptr;
             }
 
+            T* next = result->m_next;
             m_count--;
+            m_head = next;
             result->m_containingQueue = nullptr;
-            m_head = result->m_next;
-            if (m_head == nullptr)
+            if (next == nullptr)
             {
                 m_tail = nullptr;
             }
             else
             {
-                m_head->m_prev = nullptr;
+                next->m_prev = nullptr;
             }
 
             m_lock.Leave();

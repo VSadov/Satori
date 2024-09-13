@@ -54,6 +54,7 @@ public:
     SatoriObject* Next();
 
     size_t Size();
+    size_t FreeObjSize();
     bool SameRegion(SatoriRegion* otherRegion);
     bool IsFree();
     bool IsExternal();
