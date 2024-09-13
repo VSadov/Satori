@@ -117,7 +117,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_ephemeralWithUnmarkedDemoted = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerDemoted);
     m_reusableRegionsAlternate = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerReusable);
 
-    m_workList = new (nothrow) SatoriWorkList();
+    m_workList = SatoriWorkList::AllocAligned();
     m_gcState = GC_STATE_NONE;
     m_isBarrierConcurrent = false;
 
