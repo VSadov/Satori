@@ -996,9 +996,8 @@ void SatoriRegion::ThreadLocalMark()
             m_bitmap[bitmapIndex + (markBitOffset >> 6)] |= ((size_t)1 << (markBitOffset & 63));
 
             SatoriObject* o = ObjectForMarkBit(bitmapIndex, markBitOffset);
-            o->Validate();
-
 #ifdef _DEBUG
+            o->Validate();
             escaped += o->Size();
 #endif
 
