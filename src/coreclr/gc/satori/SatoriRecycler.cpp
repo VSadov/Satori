@@ -575,6 +575,13 @@ bool SatoriRecycler::HelpOnceCore()
         BlockingMarkForConcurrent();
     }
 
+    if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
+    {
+        _ASSERTE(IsHelperThread());
+        // do not leave (and start blocking gc), come back and help
+        return true;
+    }
+
     // if queues are empty we see no more work
     return DrainMarkQueuesConcurrent(nullptr, deadline);
 }
