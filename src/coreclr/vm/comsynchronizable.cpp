@@ -1061,7 +1061,7 @@ FCIMPL1(void, ThreadNative::SpinWait, int iterations)
     // spinning for less than that number of cycles, then switching to preemptive
     // mode won't help a GC start any faster.
     //
-    if (iterations <= 100000)
+    if (iterations <= 1024)
     {
         YieldProcessorNormalized(iterations);
         return;
@@ -1073,7 +1073,28 @@ FCIMPL1(void, ThreadNative::SpinWait, int iterations)
     HELPER_METHOD_FRAME_BEGIN_NOPOLL();
     GCX_PREEMP();
 
-    YieldProcessorNormalized(iterations);
+    // rough estimate of wait in nanoseconds
+    int nsecs = iterations * 35;
+#if defined(TARGET_LINUX)
+    if (nsecs > 25000 && nsecs < 1000000000)
+    {
+        PAL_nanosleep(nsecs);
+        return;
+    }
+    else
+    {
+        YieldProcessorNormalized(iterations);
+    }
+#else
+    if (nsecs > 1000000)
+    {
+        SleepEx(nsecs / 1000000, false);
+    }
+    else
+    {
+        YieldProcessorNormalized(iterations);
+    }
+#endif
 
     HELPER_METHOD_FRAME_END();
 }
