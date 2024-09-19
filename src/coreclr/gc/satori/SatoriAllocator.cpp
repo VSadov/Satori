@@ -255,6 +255,11 @@ void SatoriAllocator::AllocationTickIncrement(AllocationTickKind allocationTickK
 
 void SatoriAllocator::AllocationTickDecrement(size_t totalUnused)
 {
+    if (!EVENT_ENABLED(GCAllocationTick_V4))
+    {
+        return;
+    }
+
     Interlocked::ExchangeAdd64(&m_smallAllocTickAmount, (size_t)(-(int64_t)totalUnused));
 }
 
@@ -305,6 +310,15 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
     return nullptr;
 }
 
+thread_local
+size_t lastSharedRegularAllocUsec;
+
+#ifdef _DEBUG
+const size_t minSharedAllocDelay = 1024;
+#else
+const size_t minSharedAllocDelay = 128;
+#endif
+
 SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
 
@@ -315,17 +329,23 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
         SatoriObject* freeObj = context->alloc_ptr != 0 ? context->FinishAllocFromShared() : nullptr;
 
-        //m_regularAllocLock.Enter();
-        if (m_regularAllocLock.TryEnter())
+        size_t usecNow = m_heap->Recycler()->GetNowUsecs();
+        if (usecNow - lastSharedRegularAllocUsec > 128)
         {
-            if (freeObj && freeObj->ContainingRegion() == m_regularRegion)
-            {
-                size_t size = freeObj->Size();
-                m_regularRegion->SetOccupancy(m_regularRegion->Occupancy() - size);
-                m_regularRegion->AddFreeSpace(freeObj, size);
-            }
+            lastSharedRegularAllocUsec = usecNow;
 
-            return AllocRegularShared(context, size, flags);
+            //m_regularAllocLock.Enter();
+            if (m_regularAllocLock.TryEnter())
+            {
+                if (freeObj && freeObj->ContainingRegion() == m_regularRegion)
+                {
+                    size_t size = freeObj->Size();
+                    m_regularRegion->SetOccupancy(m_regularRegion->Occupancy() - size);
+                    m_regularRegion->AddFreeSpace(freeObj, size);
+                }
+
+                return AllocRegularShared(context, size, flags);
+            }
         }
     }
     else
@@ -427,9 +447,10 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             region->DetachFromAlocatingOwnerRelease();
             m_heap->Recycler()->AddEphemeralRegion(region);
 
-            // if we got this far with region not detached, get another one
             // TUNING: we could force trying to allocate from shared based on some heuristic
             //  goto tryAgain;
+
+            // if we got this far with region not detached, get another one
         }
 
         TryGetRegularRegion(region);

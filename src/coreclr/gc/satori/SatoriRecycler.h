@@ -57,7 +57,9 @@ public:
     void AddEphemeralRegion(SatoriRegion* region);
     void AddTenuredRegion(SatoriRegion* region);
 
+    // TODO: VS should live in heap?
     size_t GetNowMillis();
+    size_t GetNowUsecs();
 
     bool& IsLowLatencyMode();
 

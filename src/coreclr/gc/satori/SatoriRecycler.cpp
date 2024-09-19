@@ -424,6 +424,12 @@ size_t SatoriRecycler::GetNowMillis()
     return (size_t)(t / m_perfCounterTicksPerMilli);
 }
 
+size_t SatoriRecycler::GetNowUsecs()
+{
+    int64_t t = GCToOSInterface::QueryPerformanceCounter();
+    return (size_t)(t / m_perfCounterTicksPerMilli);
+}
+
 size_t SatoriRecycler::IncrementGen0Count()
 {
     // duration of Gen0 is typically << msec, so we will not record that.
