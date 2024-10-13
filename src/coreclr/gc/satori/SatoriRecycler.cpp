@@ -3201,7 +3201,7 @@ void SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker()
     FreeRelocatedRegionsWorker();
 }
 
-void SatoriRecycler::FreeRelocatedRegion(SatoriRegion* curRegion)
+void SatoriRecycler::FreeRelocatedRegion(SatoriRegion* curRegion, bool noLock)
 {
     _ASSERTE(!curRegion->HasPinnedObjects());
     curRegion->ClearMarks();
@@ -3212,21 +3212,15 @@ void SatoriRecycler::FreeRelocatedRegion(SatoriRegion* curRegion)
         curRegion->DetachFromAlocatingOwnerRelease();
     }
 
-    // return nursery regions eagerly
-    // there should be a modest number of those, but we may need them soon
-    // defer blanking of others
-    if (SatoriUtil::IsConcurrent() && !isNurseryRegion)
+    // blank and return regions eagerly.
+    // we are zeroing a few kb - that might be comparable with costs of deferring.
+    curRegion->MakeBlank();
+    if (noLock)
     {
-#if _DEBUG
-        curRegion->HasMarksSet() = false;
-#endif
-        curRegion->DoNotSweep() = true;
-        curRegion->SetOccupancy(0, 0);
-        m_deferredSweepRegions->Enqueue(curRegion);
+        m_heap->Allocator()->ReturnRegionNoLock(curRegion);
     }
     else
     {
-        curRegion->MakeBlank();
         m_heap->Allocator()->ReturnRegion(curRegion);
     }
 }
@@ -3239,7 +3233,7 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
         MaybeAskForHelp();
         do
         {
-            FreeRelocatedRegion(curRegion);
+            FreeRelocatedRegion(curRegion, /* noLock */ true);
         } while ((curRegion = m_relocatedRegions->TryPop()));
     }
 }
@@ -3615,7 +3609,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     }
     else
     {
-        FreeRelocatedRegion(relocationSource);
+        FreeRelocatedRegion(relocationSource, /* noLock */ false);
     }
 }
 
@@ -3844,21 +3838,10 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                             curRegion->DetachFromAlocatingOwnerRelease();
                         }
 
-                        // return nursery regions eagerly
-                        // there should be a modest number of those, but we may need them soon
-                        // defer blanking of others
-                        if (SatoriUtil::IsConcurrent() && !isNurseryRegion)
-                        {
-                            m_deferredSweepRegions->Enqueue(curRegion);
-                        }
-                        else
-                        {
-                            curRegion->MakeBlank();
-                            // TODO: VS use ReturnRegionNoLock in more places? (or less?)
-                            //       what about work chunk queue? that be lock-free.
-                            m_heap->Allocator()->ReturnRegionNoLock(curRegion);
-                        }
-
+                        // blank and return regions eagerly.
+                        // we are zeroing a few kb - that might be comparable with costs of deferring.
+                        curRegion->MakeBlank();
+                        m_heap->Allocator()->ReturnRegionNoLock(curRegion);
                         continue;
                     }
                 }
