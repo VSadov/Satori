@@ -169,7 +169,9 @@ public:
         // we can also support PAGE_SIZE_GRANULARITY
         size_t result = 1024 * 32;
 
-        // result = Satori::REGION_SIZE_GRANULARITY;
+#if TARGET_LINUX
+        result = Satori::REGION_SIZE_GRANULARITY;
+#endif
 
         // result = Satori::PAGE_SIZE_GRANULARITY;
 
