@@ -256,31 +256,31 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
     DWORD bucket;
     BitScanReverse64(&bucket, minAllocSize);
 
-    // when minAllocSize is not a power of two we could search through the current bucket,
-    // which may have a large enough obj,
-    // but we will just use the next bucket, which guarantees it fits
-    if (minAllocSize & (minAllocSize - 1))
-    {
-        bucket++;
-    }
-
     bucket = bucket > Satori::MIN_FREELIST_SIZE_BITS ?
         bucket - Satori::MIN_FREELIST_SIZE_BITS :
         0;
+
+    // we will check the first free obj in the bucket, but will not dig through the rest.
+    // if the first obj does not fit, we will switch to larger bucket where everything will fit.
+    size_t minFreeObjSize = minAllocSize + Satori::MIN_FREE_SIZE;
 
     for (; bucket < Satori::FREELIST_COUNT; bucket++)
     {
         SatoriObject* freeObj = m_freeLists[bucket];
         if (freeObj)
         {
-            m_freeLists[bucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
-            m_allocStart = freeObj->Start();
-            m_allocEnd = freeObj->End();
-            SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
-            ClearIndicesForAllocRange();
-            _ASSERTE(GetAllocRemaining() >= minAllocSize);
-            m_sweepsSinceLastAllocation = 0;
-            return m_allocStart;
+            size_t size = freeObj->Size();
+            if (size >= minFreeObjSize)
+            {
+                m_freeLists[bucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
+                m_allocStart = freeObj->Start();
+                m_allocEnd = m_allocStart + size;
+                SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
+                ClearIndicesForAllocRange();
+                _ASSERTE(GetAllocRemaining() >= minAllocSize);
+                m_sweepsSinceLastAllocation = 0;
+                return m_allocStart;
+            }
         }
     }
 
