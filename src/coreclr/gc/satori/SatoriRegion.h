@@ -76,11 +76,13 @@ public:
     size_t AllocateHuge(size_t size, bool zeroInitialize);
 
     size_t StartAllocating(size_t minSize);
+    size_t StartAllocatingBestFit(size_t minAllocSize);
     void StopAllocating(size_t allocPtr);
     void StopAllocating();
     bool IsAllocating();
 
     void AddFreeSpace(SatoriObject* freeObj, size_t size);
+    void ReturnFreeSpace(SatoriObject * freeObj, size_t size);
 
     bool HasFreeSpaceInTopBucket();
     bool HasFreeSpaceInTopNBuckets(int n);
@@ -280,6 +282,7 @@ private:
             SatoriWorkChunk* m_gen2Objects;
 
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
+            SatoriObject* m_freeListTails[Satori::FREELIST_COUNT];
         };
     };
 

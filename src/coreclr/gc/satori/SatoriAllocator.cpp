@@ -339,9 +339,9 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             {
                 if (freeObj && freeObj->ContainingRegion() == m_regularRegion)
                 {
-                    size_t size = freeObj->Size();
+                    size_t size = freeObj->FreeObjSize();
                     m_regularRegion->SetOccupancy(m_regularRegion->Occupancy() - size);
-                    m_regularRegion->AddFreeSpace(freeObj, size);
+                    m_regularRegion->ReturnFreeSpace(freeObj, size);
                 }
 
                 return AllocRegularShared(context, size, flags);
@@ -722,7 +722,7 @@ tryAgain:
             }
 
             // try get from the free list
-            if (region->StartAllocating(size))
+            if (region->StartAllocatingBestFit(size))
             {
                 // we have enough free space in the region to continue
                 continue;
@@ -819,7 +819,7 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
             }
 
             // try get from the free list
-            if (region->StartAllocating(size))
+            if (region->StartAllocatingBestFit(size))
             {
                 // we have enough free space in the region to continue
                 continue;

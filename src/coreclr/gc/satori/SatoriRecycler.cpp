@@ -3433,7 +3433,7 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool exis
                 SatoriRegion* region = queue->TryPop();
                 if (region)
                 {
-                    size_t allocStart = region->StartAllocating(allocSize);
+                    size_t allocStart = region->StartAllocatingBestFit(allocSize);
                     _ASSERTE(allocStart);
                     return region;
                 }
