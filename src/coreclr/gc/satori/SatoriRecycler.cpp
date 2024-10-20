@@ -963,6 +963,12 @@ void SatoriRecycler::AdjustHeuristics()
     // if the heap size will definitely be over the limit at next GC, make the next GC a full GC
     m_nextGcIsFullGc = occupancy + m_gen1Budget > m_totalLimit;
 
+    // TODO: VS do we really want this?
+    //if ((int)m_gcCount[1] - m_gen1CountAtLastGen2 > 64)
+    //{
+    //    m_nextGcIsFullGc = true;
+    //}
+
     size_t available = GetAvailableMemory();
     if (available < m_gen1Budget)
     {
