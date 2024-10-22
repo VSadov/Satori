@@ -398,7 +398,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 #ifdef DEBUG
     if (!region->MaybeAllocatingAcquire())
     {
-        region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrent());
+        region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrentEnabled());
     }
 #endif
 }
@@ -411,7 +411,7 @@ void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
     _ASSERTE(!region->HasMarksSet());
     _ASSERTE(!region->DoNotSweep());
 
-    region->Verify(/* allowMarked */ SatoriUtil::IsConcurrent() && SatoriUtil::IsConservativeMode());
+    region->Verify(/* allowMarked */ SatoriUtil::IsConcurrentEnabled() && SatoriUtil::IsConservativeMode());
     PushToTenuredQueues(region);
     _ASSERTE(region->Generation() == 2);
     Interlocked::ExchangeAdd64(&m_gen2AddedSinceLastCollection, region->Occupancy());
@@ -437,6 +437,40 @@ size_t SatoriRecycler::IncrementGen0Count()
     return Interlocked::Increment((size_t*)&m_gcCount[0]);
 }
 
+// TODO: VS can use feedback here - after blocking collections estimate byte/msec
+//       throughput. Can assume linear model.
+//       500 usec for XX bytes -> (XX * 1000 / 500) is the throughput. Do some smoothing.
+//       Assuming a target of 1 msec, the throughput is the threshold.
+//       Have a minimum throughput (like 8Mb) to avoid anomalies after log pauses.
+// 
+// if generation is too small and last pause to collect it was short
+// we do not bother with concurrent marking
+static const int bgMarkThreshold = 8 * 1024  * 1024;
+static const int bgPauseThreshold = 1000; // microseconds
+
+bool SatoriRecycler::ShouldDoConcurrent()
+{
+    size_t epthOccupancy = this->m_occupancy[1]  + this->m_occupancy[0];
+    if (m_condemnedGeneration == 2)
+    {
+        if ((this->m_occupancy[2] + epthOccupancy < bgMarkThreshold) &&
+            m_lastTenuredGcInfo.m_pauseDurations[0] < bgPauseThreshold)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        if ((epthOccupancy < bgMarkThreshold) &&
+            m_lastEphemeralGcInfo.m_pauseDurations[0] < bgPauseThreshold)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
 {
     if (m_nextGcIsFullGc)
@@ -444,13 +478,16 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
         generation = 2;
     }
 
-    int newState = SatoriUtil::IsConcurrent() ? GC_STATE_CONCURRENT : GC_STATE_BLOCKING;
+    int newState = SatoriUtil::IsConcurrentEnabled() && ShouldDoConcurrent()?
+        GC_STATE_CONCURRENT :
+        GC_STATE_BLOCKING;
+
     if (m_gcState == GC_STATE_NONE &&
         Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
     {
         m_CurrentGcInfo = generation == 2 ? &m_lastTenuredGcInfo :&m_lastEphemeralGcInfo;
         m_CurrentGcInfo->m_condemnedGeneration = (uint8_t)generation;
-        m_CurrentGcInfo->m_concurrent = SatoriUtil::IsConcurrent();
+        m_CurrentGcInfo->m_concurrent = m_gcState == GC_STATE_CONCURRENT;
 
         FIRE_EVENT(GCTriggered, (uint32_t)reason);
 
@@ -662,32 +699,13 @@ void SatoriRecycler::ConcurrentPhasePrepFn(gc_alloc_context* gcContext, void* pa
     }
 }
 
-// if generation is too small or the pause to collect it is too short
-// we do not bother with stopping the world for thread pre-marking
-static const int bgMarkThreshold = 8 * 1024  * 1024;
-static const int bgPauseThreshold = 1000; // microseconds
-
 void SatoriRecycler::BlockingMarkForConcurrent()
 {
-    int targetState = CC_MARK_STATE_SUSPENDING_EE;
-    if (m_condemnedGeneration == 2)
-    {
-        if ((this->m_occupancy[2] < bgMarkThreshold) &&
-            m_lastTenuredGcInfo.m_pauseDurations[0] < bgPauseThreshold)
-        {
-            targetState = CC_MARK_STATE_DONE;
-        }
-    }
-    else
-    {
-        if ((this->m_occupancy[1] < bgMarkThreshold) &&
-            m_lastEphemeralGcInfo.m_pauseDurations[0] < bgPauseThreshold)
-        {
-            targetState = CC_MARK_STATE_DONE;
-        }
-    }
+    // TODO: VS can we have a generation large enough for concurrent, but not enough for concurrent stacks?
+    //       in such case we could just go to CC_MARK_STATE_DONE
 
-    if (Interlocked::CompareExchange(&m_ccStackMarkState, targetState, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
+    int targetState = CC_MARK_STATE_SUSPENDING_EE;
+    if (Interlocked::CompareExchange(&m_ccStackMarkState, CC_MARK_STATE_SUSPENDING_EE, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
     {
         if (targetState == CC_MARK_STATE_DONE)
             return;
@@ -918,8 +936,8 @@ size_t GetAvailableMemory()
     uint64_t total;
     GCToOSInterface::GetMemoryStatus(0, nullptr, &available, &total);
 
-    // we will not use the last 10% of physical memory
-    uint64_t reserve = total * 10 / 100;
+    // we will not use the last 5% of physical memory
+    uint64_t reserve = total * 5 / 100;
     if (available > reserve)
     {
         return available - reserve;
@@ -960,21 +978,15 @@ void SatoriRecycler::AdjustHeuristics()
     // TUNING: using exponential smoothing with alpha == 1/2. is it a good smooth/lag balance?
     m_gen1Budget = (m_gen1Budget + newGen1Budget) / 2;
 
-    // if the heap size will definitely be over the limit at next GC, make the next GC a full GC
-    m_nextGcIsFullGc = occupancy + m_gen1Budget > m_totalLimit;
-
-    // TODO: VS do we really want this?
-    //if ((int)m_gcCount[1] - m_gen1CountAtLastGen2 > 64)
-    //{
-    //    m_nextGcIsFullGc = true;
-    //}
-
+    // limit budget to available memory
     size_t available = GetAvailableMemory();
     if (available < m_gen1Budget)
     {
         m_gen1Budget = available;
-        m_nextGcIsFullGc = true;
     }
+
+    // if the heap size will definitely be over the limit at next GC, make the next GC a full GC
+    m_nextGcIsFullGc = occupancy + m_gen1Budget > m_totalLimit;
 
     // now figure if we will promote
     m_promoteAllRegions = false;
@@ -988,6 +1000,12 @@ void SatoriRecycler::AdjustHeuristics()
     }
     else
     {
+        // ensure that sometimes we do gen2
+        if ((int)m_gcCount[1] - m_gen1CountAtLastGen2 > 64)
+        {
+           m_nextGcIsFullGc = true;
+        }
+
         if (promotionEstimate > Gen1RegionCount() / 2)
         {
             // will promote too many, just promote all
@@ -1180,7 +1198,7 @@ void SatoriRecycler::BlockingCollectImpl()
     m_gcState = GC_STATE_NONE;
     m_gen1AddedSinceLastCollection = 0;
 
-    if (SatoriUtil::IsConcurrent() && !m_deferredSweepRegions->IsEmpty())
+    if (SatoriUtil::IsConcurrentEnabled() && !m_deferredSweepRegions->IsEmpty())
     {
         m_deferredSweepCount = m_deferredSweepRegions->Count();
         m_activeHelperFn = &SatoriRecycler::DrainDeferredSweepQueueHelp;
@@ -2843,7 +2861,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                             }
 
                                             if (child->ContainingRegion()->Generation() < 2)
-                                            {
+                                             {
                                                 page->SetCardForAddressOnly((size_t)ppObject);
                                             }
                                         }
@@ -3887,7 +3905,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
             }
 
             // make sure the region is swept and returned now, or later
-            if (!SatoriUtil::IsConcurrent())
+            if (!SatoriUtil::IsConcurrentEnabled())
             {
                 SweepAndReturnRegion(curRegion);
                 continue;
@@ -3916,6 +3934,9 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
 
 // ideally, we just reuse the region for allocations.
 // the region must have enough free space and not be very fragmented
+// TUNING: heuristic for reuse could be more aggressive, consider pinning, etc...
+//         the cost here is inability to trace byrefs concurrently, not huge,
+//         byref is rarely the only ref.
 bool SatoriRecycler::IsReuseCandidate(SatoriRegion* region)
 {
     if (!region->HasFreeSpaceInTopNBuckets(Satori::REUSABLE_BUCKETS))
@@ -3933,9 +3954,6 @@ bool SatoriRecycler::IsReuseCandidate(SatoriRegion* region)
 
 // we relocate regions if that would improve their reuse quality.
 // compaction might also improve mutator locality, somewhat.
-// TUNING: heuristic for reuse could be more aggressive, consider pinning, etc...
-//         the cost here is inability to trace byrefs concurrently, not huge,
-//         byref is rarely the only ref.
 bool SatoriRecycler::IsRelocationCandidate(SatoriRegion* region)
 {
     if (region->HasPinnedObjects())

@@ -74,6 +74,7 @@ public:
     void MaybeTriggerGC(gc_reason reason);
     bool IsBlockingPhase();
 
+    bool ShouldDoConcurrent();
     void ConcurrentHelp();
     void ShutDown();
 

@@ -196,7 +196,7 @@ public:
     }
 
     // DOTNET_gcConcurrent
-    static bool IsConcurrent()
+    static bool IsConcurrentEnabled()
     {
         return (GCConfig::GetConcurrentGC());
     }
