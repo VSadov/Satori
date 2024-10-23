@@ -437,15 +437,14 @@ size_t SatoriRecycler::IncrementGen0Count()
     return Interlocked::Increment((size_t*)&m_gcCount[0]);
 }
 
-// TODO: VS can use feedback here - after blocking collections estimate byte/msec
-//       throughput. Can assume linear model.
-//       500 usec for XX bytes -> (XX * 1000 / 500) is the throughput. Do some smoothing.
-//       Assuming a target of 1 msec, the throughput is the threshold.
-//       Have a minimum throughput (like 8Mb) to avoid anomalies after log pauses.
-// 
-// if generation is too small and last pause to collect it was short
-// we do not bother with concurrent marking
-static const int bgMarkThreshold = 8 * 1024  * 1024;
+// if generation is too small we do not bother with concurrent marking.
+// the extra costs of concurrent marking may not justify using it with tiny heaps
+#if _DEBUG
+static const int concMarkThreshold = 0;
+#else
+static const int concMarkThreshold = 8 * 1024  * 1024;
+#endif
+
 static const int bgPauseThreshold = 1000; // microseconds
 
 bool SatoriRecycler::ShouldDoConcurrent()
@@ -453,7 +452,7 @@ bool SatoriRecycler::ShouldDoConcurrent()
     size_t epthOccupancy = this->m_occupancy[1]  + this->m_occupancy[0];
     if (m_condemnedGeneration == 2)
     {
-        if ((this->m_occupancy[2] + epthOccupancy < bgMarkThreshold) &&
+        if ((this->m_occupancy[2] + epthOccupancy < concMarkThreshold) &&
             m_lastTenuredGcInfo.m_pauseDurations[0] < bgPauseThreshold)
         {
             return false;
@@ -461,7 +460,7 @@ bool SatoriRecycler::ShouldDoConcurrent()
     }
     else
     {
-        if ((epthOccupancy < bgMarkThreshold) &&
+        if ((epthOccupancy < concMarkThreshold) &&
             m_lastEphemeralGcInfo.m_pauseDurations[0] < bgPauseThreshold)
         {
             return false;
