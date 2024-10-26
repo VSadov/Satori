@@ -306,7 +306,9 @@ SatoriRegion* SatoriRecycler::TryGetReusable()
     SatoriRegion* reusable = m_reusableRegions->TryPopWithTryEnter();
     if (reusable)
     {
-        reusable->OccupancyAtReuse() = reusable->Occupancy();
+        size_t occupancy = reusable->Occupancy();
+        _ASSERTE(occupancy < Satori::REGION_SIZE_GRANULARITY);
+        reusable->OccupancyAtReuse() = (int32_t)occupancy;
     }
 
     return reusable;
@@ -317,7 +319,9 @@ SatoriRegion* SatoriRecycler::TryGetReusableForLarge()
     SatoriRegion* reusable = m_reusableRegions->TryDequeueIfHasFreeSpaceInTopBucket();
     if (reusable)
     {
-        reusable->OccupancyAtReuse() = reusable->Occupancy();
+        size_t occupancy = reusable->Occupancy();
+        _ASSERTE(occupancy < Satori::REGION_SIZE_GRANULARITY);
+        reusable->OccupancyAtReuse() = (int32_t)occupancy;
     }
 
     return  reusable;
@@ -3575,7 +3579,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     bool needToCopyMarks = !(relocationIsPromotion || relocationTarget->DoNotSweep());
     _ASSERTE(relocationTarget->HasMarksSet() == needToCopyMarks);
 
-    size_t objectsRelocated = 0;
+    int32_t objectsRelocated = 0;
     do
     {
         o = relocationSource->SkipUnmarked(o);

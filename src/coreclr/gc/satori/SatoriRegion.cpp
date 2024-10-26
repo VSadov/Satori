@@ -140,10 +140,6 @@ void SatoriRegion::ResetCardsForEphemeral()
 
 void SatoriRegion::MakeBlank()
 {
-    _ASSERTE(!m_hasPendingFinalizables);
-    _ASSERTE(!m_finalizableTrackers);
-    _ASSERTE(!m_acceptedPromotedObjects);
-    _ASSERTE(!m_gen2Objects);
     _ASSERTE(NothingMarked());
 
     if (m_generation == 2)
@@ -151,26 +147,56 @@ void SatoriRegion::MakeBlank()
         this->ResetCardsForEphemeral();
     }
 
-    m_generation = -1;
     m_ownerThreadTag = 0;
     m_escapeFunc = EscapeFn;
+    m_generation = -1;
+    m_occupancyAtReuse = 0;
+
+    // m_end                    stays the same
+    // m_containingPage         stays the same
+
+    m_reusableFor = ReuseLevel::None;
+    _ASSERT(!m_allocatingOwnerAttachmentPoint);
+    _ASSERTE(!m_gen2Objects);
+
     m_allocStart = (size_t)&m_firstObject;
     m_allocEnd = End();
-    m_occupancy = m_allocEnd - m_allocStart;
-    m_occupancyAtReuse = 0;
-    m_sweepsSinceLastAllocation = 0;
-    m_unfinishedAllocationCount = 0;
-    m_markStack = 0;
+
+    // m_used                    stays the same
+    // m_committed               stays the same
+
     m_escapedSize = 0;
-    m_objCount = 0;
+    _ASSERTE(!m_markStack);
+
     m_allocBytesAtCollect = 0;
 
-    m_hasFinalizables = false;
+    _ASSERTE(!m_finalizableTrackers);
+    _ASSERTE(!m_finalizableTrackersLock);
+
+    m_sweepsSinceLastAllocation = 0;
+
+    // m_prev
+    // m_next
+    // m_containingQueue        all stay the same
+
+    // assume all space reserved to allocations will be used
+    // (we will revert what will be unused)
+    m_occupancy = m_allocEnd - m_allocStart;
+    m_objCount = 0;
+
+    m_unfinishedAllocationCount = 0;
+
     m_hasPinnedObjects = false;
-    m_hasMarksSet = false;
+    m_hasFinalizables = false;
+    _ASSERTE(!m_hasPendingFinalizables);
     m_doNotSweep = false;
-    m_reusableFor = ReuseLevel::None;
-    m_hasUnmarkedDemotedObjects = false;
+    _ASSERTE(!m_acceptedPromotedObjects);
+    _ASSERTE(!m_individuallyPromoted);
+    _ASSERTE(!m_hasUnmarkedDemotedObjects);
+
+#if _DEBUG
+    m_hasMarksSet = false;
+#endif
 
     //clear index and free list
     ClearFreeLists();
@@ -936,7 +962,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
     }
 
     SetEscaped(o);
-    m_escapedSize += o->Size();
+    m_escapedSize += (int32_t)o->Size();
 
     // now recursively mark all the objects reachable from escaped object.
     do
@@ -957,7 +983,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
                 if (child->SameRegion(this) && !IsEscaped(child))
                 {
                     SetEscaped(child);
-                    m_escapedSize += child->Size();
+                    m_escapedSize += (int32_t)child->Size();
                     PushToMarkStackIfHasPointers(child);
                 }
             }
@@ -992,7 +1018,7 @@ void SatoriRegion::EscapeShallow(SatoriObject* o)
     //    typically objects have died and we have fewer escapes than before the GC,
     //    so we do not bother to check
     SetEscaped(o);
-    m_escapedSize += o->Size();
+    m_escapedSize += (int32_t)o->Size();
 
     o->ForEachObjectRef(
         [&](SatoriObject** ref)
@@ -1007,7 +1033,7 @@ void SatoriRegion::EscapeShallow(SatoriObject* o)
     );
 }
 
-void SatoriRegion::SetOccupancy(size_t occupancy, size_t objCount)
+void SatoriRegion::SetOccupancy(size_t occupancy, int32_t objCount)
 {
     _ASSERTE(objCount == 0 || occupancy != 0);
     _ASSERTE(occupancy <= (Size() - offsetof(SatoriRegion, m_firstObject)));
@@ -1222,7 +1248,7 @@ void SatoriRegion::ThreadLocalPlan()
 
     // stats
     size_t occupancy = 0;
-    size_t objCount = 0;
+    int32_t objCount = 0;
 
     // moveable: starts at first movable and reachable, as long as there is any free space to slide in
     size_t lastMarkedEnd = FirstObject()->Start();
