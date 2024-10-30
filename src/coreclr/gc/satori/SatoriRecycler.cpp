@@ -451,10 +451,10 @@ static const int concMarkThreshold = 8 * 1024  * 1024;
 
 static const int bgPauseThreshold = 1000; // microseconds
 
-bool SatoriRecycler::ShouldDoConcurrent()
+bool SatoriRecycler::ShouldDoConcurrent(int generation)
 {
     size_t epthOccupancy = this->m_occupancy[1]  + this->m_occupancy[0];
-    if (m_condemnedGeneration == 2)
+    if (generation == 2)
     {
         if ((this->m_occupancy[2] + epthOccupancy < concMarkThreshold) &&
             m_lastTenuredGcInfo.m_pauseDurations[0] < bgPauseThreshold)
@@ -481,7 +481,7 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
         generation = 2;
     }
 
-    int newState = SatoriUtil::IsConcurrentEnabled() && ShouldDoConcurrent()?
+    int newState = SatoriUtil::IsConcurrentEnabled() && ShouldDoConcurrent(generation)?
         GC_STATE_CONCURRENT :
         GC_STATE_BLOCKING;
 

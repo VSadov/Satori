@@ -330,7 +330,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
         SatoriObject* freeObj = context->alloc_ptr != 0 ? context->FinishAllocFromShared() : nullptr;
 
         size_t usecNow = m_heap->Recycler()->GetNowUsecs();
-        if (usecNow - lastSharedRegularAllocUsec > 128)
+        if (usecNow - lastSharedRegularAllocUsec > minSharedAllocDelay)
         {
             lastSharedRegularAllocUsec = usecNow;
 
