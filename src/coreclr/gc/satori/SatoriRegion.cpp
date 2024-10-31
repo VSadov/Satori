@@ -2048,7 +2048,7 @@ bool SatoriRegion::NothingMarked()
 void SatoriRegion::ClearMarks()
 {
     _ASSERTE(this->HasUnmarkedDemotedObjects() == false);
-    memset(&m_bitmap[BITMAP_START], 0, (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
+    memset((void*)&m_bitmap[BITMAP_START], 0, (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
 }
 
 void SatoriRegion::ClearIndex()

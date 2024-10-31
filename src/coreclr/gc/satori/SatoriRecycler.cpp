@@ -474,6 +474,8 @@ bool SatoriRecycler::ShouldDoConcurrent(int generation)
     return true;
 }
 
+static int helpCount = 0;
+
 void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
 {
     if (m_nextGcIsFullGc)
@@ -510,6 +512,8 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
             m_concurrentHandlesDone = false;
             SatoriHandlePartitioner::StartNextScan();
             m_activeHelperFn = &SatoriRecycler::ConcurrentHelp;
+
+            helpCount = 0;
         }
 
         IncrementCardScanTicket();
@@ -534,7 +538,8 @@ bool IsHelperThread()
 
 int64_t SatoriRecycler::HelpQuantum()
 {
-    return m_perfCounterTicksPerMilli / 8;  // 1/8 msec
+//    return IsHelperThread() ? m_perfCounterTicksPerMilli / 8 : 0;  // 1/8 msec
+        return m_perfCounterTicksPerMilli / 8;  // 1/8 msec
 }
 
 bool SatoriRecycler::HelpOnceCore()
@@ -704,15 +709,9 @@ void SatoriRecycler::ConcurrentPhasePrepFn(gc_alloc_context* gcContext, void* pa
 
 void SatoriRecycler::BlockingMarkForConcurrent()
 {
-    // TODO: VS can we have a generation large enough for concurrent, but not enough for concurrent stacks?
-    //       in such case we could just go to CC_MARK_STATE_DONE
-
     int targetState = CC_MARK_STATE_SUSPENDING_EE;
     if (Interlocked::CompareExchange(&m_ccStackMarkState, CC_MARK_STATE_SUSPENDING_EE, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
     {
-        if (targetState == CC_MARK_STATE_DONE)
-            return;
-
         size_t blockingStart = GCToOSInterface::QueryPerformanceCounter();
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
 
@@ -726,7 +725,9 @@ void SatoriRecycler::BlockingMarkForConcurrent()
         // signal to everybody to start marking roots
         VolatileStore((int*)&m_ccStackMarkState, CC_MARK_STATE_MARKING);
         MaybeAskForHelp();
-        m_helperGate->WakeAll();
+
+        // TODO: VS can this help with going through the pause?
+        // m_helperGate->WakeAll();
 
         // mark demoted regions if any attached to thread contexts
         MarkContext c(this);
@@ -765,17 +766,36 @@ void SatoriRecycler::HelpOnce()
     {
         if (m_gcState == GC_STATE_CONCURRENT)
         {
-            bool moreWork = HelpOnceCore();
-            int64_t time = GCToOSInterface::QueryPerformanceCounter();
+            // bool moreWork = HelpOnceCore();
 
+            bool moreWork = m_ccStackMarkState != CC_MARK_STATE_DONE ||
+                m_condemnedGeneration == 0 ||
+                m_activeHelpers > 0;
+
+            // TODO: VS no need for this when do HelpOnceCore
+            if (m_ccStackMarkState == CC_MARK_STATE_NONE)
+            {
+                MaybeAskForHelp();
+            }
+
+            int64_t time = GCToOSInterface::QueryPerformanceCounter();
             if (moreWork)
             {
+                HelpOnceCore();
+
                 m_noWorkSince = time;
+                helpCount++;
+
+                int64_t deadline = time + m_perfCounterTicksPerMilli / 16 ;
+                while (GCToOSInterface::QueryPerformanceCounter() < deadline &&
+                    m_ccStackMarkState != CC_MARK_STATE_SUSPENDING_EE)
+                {
+                    YieldProcessor();
+                }
             }
             else
             {
-                if (!m_activeHelpers &&
-                    (time - m_noWorkSince) > HelpQuantum() * 4) // 4 help quantums without work returned
+                if (time - m_noWorkSince > HelpQuantum() * 4) // 4 help quantums without work returned
                 {
                     // we see no concurrent work, initiate blocking stage
                     if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
@@ -814,12 +834,14 @@ int SatoriRecycler::MaxHelpers()
         helperCount = cpuCount - 1;
     }
 
+    helperCount = IsBlockingPhase() ? 31 : helperCount;
+
     return helperCount;
 }
 
 void SatoriRecycler::MaybeAskForHelp()
 {
-    if (m_activeHelperFn)
+    if (m_activeHelperFn && m_activeHelpers < MaxHelpers())
     {
         AskForHelp();
     }
@@ -989,7 +1011,7 @@ void SatoriRecycler::AdjustHeuristics()
     }
 
     // if the heap size will definitely be over the limit at next GC, make the next GC a full GC
-    m_nextGcIsFullGc = occupancy + m_gen1Budget > m_totalLimit;
+    m_nextGcIsFullGc = true; //occupancy + m_gen1Budget > m_totalLimit;
 
     // now figure if we will promote
     m_promoteAllRegions = false;
@@ -1302,7 +1324,8 @@ void SatoriRecycler::MarkStrongReferences()
     IncrementRootScanTicket();
     SatoriHandlePartitioner::StartNextScan();
 
-    m_helperGate->WakeAll();
+    // TODO: VS consider if not concurrent? (we do not expect a lot of marking in concurrent)
+    // m_helperGate->WakeAll();
     RunWithHelp(&SatoriRecycler::MarkStrongReferencesWorker);
 }
 
@@ -1822,6 +1845,20 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
     }
 }
 
+void SatoriRecycler::PushOrReturnWorkChunk(SatoriWorkChunk * chunk)
+{
+    if (chunk->Count() > 0)
+    {
+        m_workList->Push(chunk);
+    }
+    else
+    {
+        m_heap->Allocator()->ReturnWorkChunk(chunk);
+    }
+}
+
+static const int SHARE_WORK_THRESHOLD = 4;
+
 bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_t deadline)
 {
     if (!srcChunk)
@@ -1885,6 +1922,21 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         }
         else
         {
+            // share half of work if work list is empty
+            if (srcChunk->Count() > SHARE_WORK_THRESHOLD * 2 &&
+                m_workList->IsEmpty())
+            {
+                size_t half = srcChunk->Count() / 2;
+                if (dstChunk || (dstChunk = m_heap->Allocator()->TryGetWorkChunk()))
+                {
+                    dstChunk->TakeFrom(srcChunk, half);
+                    m_workList->Push(srcChunk);
+                    MaybeAskForHelp();
+                    srcChunk = dstChunk;
+                    dstChunk = nullptr;
+                }
+            }
+
             objectCount += srcChunk->Count();
             // drain srcChunk to dst chunk
             while (srcChunk->Count() > 0)
@@ -1917,10 +1969,10 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         {
             if ((GCToOSInterface::QueryPerformanceCounter() - deadline) > 0)
             {
-                m_workList->Push(srcChunk);
+                m_heap->Allocator()->ReturnWorkChunk(srcChunk);
                 if (dstChunk)
                 {
-                    m_workList->Push(dstChunk);
+                    PushOrReturnWorkChunk(dstChunk);
                 }
                 return true;
             }
@@ -2052,6 +2104,21 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         }
         else
         {
+            // share half of work if work list is empty
+            if (srcChunk->Count() > SHARE_WORK_THRESHOLD * 2 &&
+                m_workList->IsEmpty())
+            {
+                size_t half = srcChunk->Count() / 2;
+                if (dstChunk || (dstChunk = m_heap->Allocator()->TryGetWorkChunk()))
+                {
+                    dstChunk->TakeFrom(srcChunk, half);
+                    m_workList->Push(srcChunk);
+                    MaybeAskForHelp();
+                    srcChunk = dstChunk;
+                    dstChunk = nullptr;
+                }
+            }
+
             // mark objects in the chunk
             while (srcChunk->Count() > 0)
             {

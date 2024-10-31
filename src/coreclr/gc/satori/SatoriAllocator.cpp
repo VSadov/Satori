@@ -378,12 +378,14 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
                 if (zeroInitialize)
                 {
-                    if (moreSpace < SatoriUtil::MinZeroInitSize())
+                    // " - sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
+                    // to improve chances that the object that is allocated here will be indexed
+                    if (moreSpace < SatoriUtil::MinZeroInitSize() - sizeof(size_t))
                     {
-                        moreSpace = min(allocRemaining, SatoriUtil::MinZeroInitSize());
+                        moreSpace = min(allocRemaining, SatoriUtil::MinZeroInitSize() - sizeof(size_t));
                     }
 
-                    size_t alignedOnIndexEnd = ALIGN_UP(region->GetAllocStart() + moreSpace, Satori::INDEX_GRANULARITY);
+                    size_t alignedOnIndexEnd = ALIGN_UP(region->GetAllocStart() + moreSpace, Satori::INDEX_GRANULARITY) - sizeof(size_t);
                     size_t alignedSpace = alignedOnIndexEnd - region->GetAllocStart();
                     if (alignedSpace <= allocRemaining)
                     {
@@ -523,12 +525,14 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
                 if (zeroInitialize)
                 {
-                    if (moreSpace < SatoriUtil::MinZeroInitSize())
+                    // " - sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
+                    // to improve chances that the object that is allocated here will be indexed
+                    if (moreSpace < SatoriUtil::MinZeroInitSize() - sizeof(size_t))
                     {
-                        moreSpace = min(allocRemaining, SatoriUtil::MinZeroInitSize());
+                        moreSpace = min(allocRemaining, SatoriUtil::MinZeroInitSize() - sizeof(size_t));
                     }
 
-                    size_t alignedOnIndexEnd = ALIGN_UP(region->GetAllocStart() + moreSpace, Satori::INDEX_GRANULARITY);
+                    size_t alignedOnIndexEnd = ALIGN_UP(region->GetAllocStart() + moreSpace, Satori::INDEX_GRANULARITY) - sizeof(size_t);
                     size_t alignedSpace = alignedOnIndexEnd - region->GetAllocStart();
                     if (alignedSpace <= allocRemaining)
                     {
