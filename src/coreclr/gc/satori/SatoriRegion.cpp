@@ -1528,6 +1528,7 @@ void SatoriRegion::ThreadLocalCompact()
             {
                 size_t freeSpace = d2->Start() - d1->Start();
                 SatoriObject* freeObj = SatoriObject::FormatAsFree(d1->Start(), freeSpace);
+                SetIndicesForObject(freeObj, d2->Start());
                 AddFreeSpace(freeObj, freeSpace);
                 foundFree += freeSpace;
 

@@ -376,9 +376,19 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             if (moreSpace <= allocRemaining)
             {
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
-                if (zeroInitialize && moreSpace < SatoriUtil::MinZeroInitSize())
+                if (zeroInitialize)
                 {
-                    moreSpace = min(allocRemaining, SatoriUtil::MinZeroInitSize());
+                    if (moreSpace < SatoriUtil::MinZeroInitSize())
+                    {
+                        moreSpace = min(allocRemaining, SatoriUtil::MinZeroInitSize());
+                    }
+
+                    size_t alignedOnIndexEnd = ALIGN_UP(region->GetAllocStart() + moreSpace, Satori::INDEX_GRANULARITY);
+                    size_t alignedSpace = alignedOnIndexEnd - region->GetAllocStart();
+                    if (alignedSpace <= allocRemaining)
+                    {
+                        moreSpace = alignedSpace;
+                    }
                 }
 
                 if (region->Allocate(moreSpace, zeroInitialize))
@@ -511,9 +521,19 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
             {
                 // we have enough free space in the region to continue
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
-                if (zeroInitialize && moreSpace < SatoriUtil::MinZeroInitSize())
+                if (zeroInitialize)
                 {
-                    moreSpace = min(allocRemaining, SatoriUtil::MinZeroInitSize());
+                    if (moreSpace < SatoriUtil::MinZeroInitSize())
+                    {
+                        moreSpace = min(allocRemaining, SatoriUtil::MinZeroInitSize());
+                    }
+
+                    size_t alignedOnIndexEnd = ALIGN_UP(region->GetAllocStart() + moreSpace, Satori::INDEX_GRANULARITY);
+                    size_t alignedSpace = alignedOnIndexEnd - region->GetAllocStart();
+                    if (alignedSpace <= allocRemaining)
+                    {
+                        moreSpace = alignedSpace;
+                    }
                 }
 
                 // do not zero-initialize just yet, we will do that after leaving the lock.
@@ -555,6 +575,7 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
                 context->alloc_limit = (uint8_t*)result + moreSpace;
 
                 result->CleanSyncBlock();
+                region->SetIndicesForObject(result, result->Start() + size);
                 if (zeroInitialize)
                 {
                     memset((uint8_t*)result + sizeof(size_t), 0, moreSpace - 2 * sizeof(size_t));
@@ -804,6 +825,7 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
 
                 context->alloc_bytes_uoh += size;
                 result->CleanSyncBlockAndSetUnfinished();
+                region->SetIndicesForObject(result, result->Start() + size);
                 if (!(flags & GC_ALLOC_ZEROING_OPTIONAL))
                 {
                     memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));
@@ -884,6 +906,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     }
 
     result->CleanSyncBlock();
+    hugeRegion->SetIndicesForObject(result, hugeRegion->Start() + Satori::REGION_SIZE_GRANULARITY);
 
     // huge regions are not attached to contexts and in gen0+ would appear parseable,
     // but this one is not parseable yet since the new object has no MethodTable
@@ -956,6 +979,7 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
 
                 context->alloc_bytes_uoh += size;
                 result->CleanSyncBlockAndSetUnfinished();
+                region->SetIndicesForObject(result, result->Start() + size);
                 if (!(flags & GC_ALLOC_ZEROING_OPTIONAL))
                 {
                     memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));
