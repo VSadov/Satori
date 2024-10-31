@@ -3648,6 +3648,8 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
             ((SatoriObject*)dst)->SetMarked();
         }
 
+        relocationTarget->SetIndicesForObject((SatoriObject*)dst, dst + size);
+
         dst += size;
         objectsRelocated++;
         o = (SatoriObject*)(o->Start() + size);
