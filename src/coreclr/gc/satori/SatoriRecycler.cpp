@@ -573,15 +573,9 @@ bool SatoriRecycler::HelpOnceCore()
         m_isBarrierConcurrent = true;
     }
 
-    if (m_ccStackMarkState != CC_MARK_STATE_DONE)
+    if (m_ccStackMarkState < CC_MARK_STATE_DONE)
     {
         MarkOwnStackOrDrainQueuesConcurrent(deadline);
-    }
-
-    if (m_ccStackMarkState == CC_MARK_STATE_SUSPENDING_EE && !IsHelperThread())
-    {
-        // this is a mutator thread and we are suspending them, leave and suspend.
-        return true;
     }
 
     if (MarkDemotedAndDrainQueuesConcurrent(deadline))
@@ -600,6 +594,26 @@ bool SatoriRecycler::HelpOnceCore()
         return true;
     }
 
+    // if stack marking has not started, start suspending EE
+    if (m_ccStackMarkState == CC_MARK_STATE_NONE)
+    {
+        // only one thread will win and drive this stage, others may help.
+        BlockingMarkForConcurrent();
+    }
+
+    if (m_ccStackMarkState == CC_MARK_STATE_SUSPENDING_EE && !IsHelperThread())
+    {
+        // this is a mutator thread and we are suspending them, leave and suspend.
+        return true;
+    }
+
+    if (m_ccStackMarkState <= CC_MARK_STATE_MARKING)
+    {
+        _ASSERTE(IsHelperThread());
+        // do cards a bit later, but do not leave just yet, come back and help
+        return true;
+    }
+
     if (!m_concurrentCardsDone)
     {
         if (m_condemnedGeneration == 1 ?
@@ -612,20 +626,6 @@ bool SatoriRecycler::HelpOnceCore()
         {
             m_concurrentCardsDone = true;
         }
-    }
-
-    // if stacks are not marked yet, start suspending EE
-    if (m_ccStackMarkState == CC_MARK_STATE_NONE)
-    {
-        // only one thread will win and drive this stage, others may help.
-        BlockingMarkForConcurrent();
-    }
-
-    if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
-    {
-        _ASSERTE(IsHelperThread());
-        // do not leave (and start blocking gc), come back and help
-        return true;
     }
 
     // if queues are empty we see no more work
@@ -704,15 +704,9 @@ void SatoriRecycler::ConcurrentPhasePrepFn(gc_alloc_context* gcContext, void* pa
 
 void SatoriRecycler::BlockingMarkForConcurrent()
 {
-    // TODO: VS can we have a generation large enough for concurrent, but not enough for concurrent stacks?
-    //       in such case we could just go to CC_MARK_STATE_DONE
-
     int targetState = CC_MARK_STATE_SUSPENDING_EE;
     if (Interlocked::CompareExchange(&m_ccStackMarkState, CC_MARK_STATE_SUSPENDING_EE, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
     {
-        if (targetState == CC_MARK_STATE_DONE)
-            return;
-
         size_t blockingStart = GCToOSInterface::QueryPerformanceCounter();
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
 
@@ -757,6 +751,8 @@ void SatoriRecycler::BlockingMarkForConcurrent()
     }
 }
 
+static int32_t m_h = 0;
+
 void SatoriRecycler::HelpOnce()
 {
     _ASSERTE(!IsHelperThread());
@@ -765,7 +761,10 @@ void SatoriRecycler::HelpOnce()
     {
         if (m_gcState == GC_STATE_CONCURRENT)
         {
+            Interlocked::Increment(&m_h);
             bool moreWork = HelpOnceCore();
+            int32_t h = Interlocked::Decrement(&m_h);
+
             int64_t time = GCToOSInterface::QueryPerformanceCounter();
 
             if (moreWork)
@@ -774,8 +773,9 @@ void SatoriRecycler::HelpOnce()
             }
             else
             {
-                if (!m_activeHelpers &&
-                    (time - m_noWorkSince) > HelpQuantum() * 4) // 4 help quantums without work returned
+                //if (!m_activeHelpers &&
+                //    ((h == 0) || 
+                //     (time - m_noWorkSince) > HelpQuantum() * 4)) // 4 help quantums without work returned
                 {
                     // we see no concurrent work, initiate blocking stage
                     if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
@@ -1822,6 +1822,18 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
     }
 }
 
+void SatoriRecycler::PushOrReturnWorkChunk(SatoriWorkChunk * chunk)
+{
+    if (chunk->Count() > 0)
+    {
+        m_workList->Push(chunk);
+    }
+    else
+    {
+        m_heap->Allocator()->ReturnWorkChunk(chunk);
+    }
+}
+
 bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_t deadline)
 {
     if (!srcChunk)
@@ -1917,10 +1929,10 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         {
             if ((GCToOSInterface::QueryPerformanceCounter() - deadline) > 0)
             {
-                m_workList->Push(srcChunk);
+                PushOrReturnWorkChunk(srcChunk);
                 if (dstChunk)
                 {
-                    m_workList->Push(dstChunk);
+                    PushOrReturnWorkChunk(dstChunk);
                 }
                 return true;
             }
@@ -1933,9 +1945,24 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         // swap src and dst and continue
         if (dstChunk && dstChunk->Count() > 0)
         {
-            SatoriWorkChunk* tmp = srcChunk;
-            srcChunk = dstChunk;
-            dstChunk = tmp;
+            size_t half = dstChunk->Count() / 2;
+            if (half > 8 && m_workList->IsEmpty())
+            {
+                for (size_t i = 0; i < half; i++)
+                {
+                    srcChunk->Push(dstChunk->Pop());
+                }
+
+                m_workList->Push(dstChunk);
+                dstChunk = nullptr;
+                MaybeAskForHelp();
+            }
+            else
+            {
+                SatoriWorkChunk* tmp = srcChunk;
+                srcChunk = dstChunk;
+                dstChunk = tmp;
+            }
         }
         else
         {
@@ -2080,9 +2107,24 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         // swap src and dst and continue
         if (dstChunk && dstChunk->Count() > 0)
         {
-            SatoriWorkChunk* tmp = srcChunk;
-            srcChunk = dstChunk;
-            dstChunk = tmp;
+            size_t half = dstChunk->Count() / 2;
+            if (half > 8 && m_workList->IsEmpty())
+            {
+                for (size_t i = 0; i < half; i++)
+                {
+                    srcChunk->Push(dstChunk->Pop());
+                }
+
+                m_workList->Push(dstChunk);
+                dstChunk = nullptr;
+                MaybeAskForHelp();
+            }
+            else
+            {
+                SatoriWorkChunk* tmp = srcChunk;
+                srcChunk = dstChunk;
+                dstChunk = tmp;
+            }
         }
         else
         {
@@ -2417,6 +2459,8 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
 
                             size_t end = page->LocationForCard(&cards[j]);
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
+                            // TODO: VS we could go left until a mark or index is set,
+                            //       then either marked is our obj or skip right till first marked.
                             SatoriObject* o = region->FindObject(start);
 
                             // read marks after cleaning cards
