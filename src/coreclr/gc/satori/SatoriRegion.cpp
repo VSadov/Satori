@@ -852,6 +852,49 @@ SatoriObject* SatoriRegion::FindObject(size_t location)
     return o;
 }
 
+// TODO: VS useful? remove?
+// When object containing "location" is not marked, returns (SatoriObject*)location
+SatoriObject* SatoriRegion::FindMarkedObject(size_t location)
+{
+    _ASSERTE(m_generation >= 0 && location >= Start() && location < End());
+    _ASSERTE(m_unfinishedAllocationCount == 0);
+    _ASSERTE(!IsAllocating());
+
+    location = min(location, Start() + Satori::REGION_SIZE_GRANULARITY);
+
+    // as a last resort we start at the first obj, but we should find something indexed that is closer.
+    SatoriObject* o = FirstObject();
+    size_t limit = LocationToIndex(o->Start());
+    for (size_t current = LocationToIndex(location); current > limit; current--)
+    {
+        int offset = m_index[current];
+        if (offset)
+        {
+            o = (SatoriObject*)(Start() + offset);
+            break;
+        }
+    }
+
+    // now walk, while skipping unmarked
+    while (true)
+    {
+        o = SkipUnmarked(o, location);
+        if (o->Start() == location)
+        {
+            return o;
+        }
+
+        SatoriObject* next = o->Next();
+        if (next->Start() > location)
+        {
+            return o;
+        }
+
+        SetIndicesForObject(o, next->Start());
+        o = next;
+    }
+}
+
 template <bool isConservative>
 void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
 {
@@ -2048,7 +2091,7 @@ bool SatoriRegion::NothingMarked()
 void SatoriRegion::ClearMarks()
 {
     _ASSERTE(this->HasUnmarkedDemotedObjects() == false);
-    memset(&m_bitmap[BITMAP_START], 0, (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
+    memset((void*)&m_bitmap[BITMAP_START], 0, (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
 }
 
 void SatoriRegion::ClearIndex()

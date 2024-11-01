@@ -118,6 +118,7 @@ public:
 
     SatoriObject* FirstObject();
     SatoriObject* FindObject(size_t location);
+    SatoriObject* FindMarkedObject(size_t location);
     size_t LocationToIndex(size_t location);
     void SetIndicesForObject(SatoriObject* o, size_t end);
     void SetIndicesForObjectCore(size_t start, size_t end);
@@ -224,7 +225,7 @@ private:
         // we will overlap the map and the header for simplicity of map operations.
         // it is ok because the first BITMAP_START elements of the map cover the header/map itself and thus will not be used.
         // +1 to include End(), it will always be 0, but it is convenient to make it legal map index.
-        size_t m_bitmap[BITMAP_LENGTH + 1];
+        volatile size_t m_bitmap[BITMAP_LENGTH + 1];
 
         // Header.(can be up to 72 size_t)
         struct

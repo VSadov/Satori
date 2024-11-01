@@ -773,9 +773,9 @@ void SatoriRecycler::HelpOnce()
             }
             else
             {
-                //if (!m_activeHelpers &&
-                //    ((h == 0) || 
-                //     (time - m_noWorkSince) > HelpQuantum() * 4)) // 4 help quantums without work returned
+                if (!m_activeHelpers &&
+                    ((h == 0) || 
+                     (time - m_noWorkSince) > HelpQuantum() * 4)) // 4 help quantums without work returned
                 {
                     // we see no concurrent work, initiate blocking stage
                     if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
@@ -2459,6 +2459,7 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
 
                             size_t end = page->LocationForCard(&cards[j]);
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
+                            // SatoriObject* o = region->FindMarkedObject(start);
                             // TODO: VS we could go left until a mark or index is set,
                             //       then either marked is our obj or skip right till first marked.
                             SatoriObject* o = region->FindObject(start);
@@ -2762,6 +2763,10 @@ void SatoriRecycler::CleanCards()
 
                             size_t end = page->LocationForCard(&cards[j]);
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
+                            //SatoriObject* o = considerAllMarked ?
+                            //    region->FindObject(start) :
+                            //    region->FindMarkedObject(start);
+
                             SatoriObject* o = region->FindObject(start);
 
                             // do not allow card cleaning to delay until after checking IsMarked
