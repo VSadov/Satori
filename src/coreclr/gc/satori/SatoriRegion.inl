@@ -550,7 +550,7 @@ inline bool SatoriRegion::CheckAndClearMarked(SatoriObject* o)
     size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
     size_t mask = (size_t)1 << ((word >> 3) & 63);
 
-    size_t& bitmapWord = m_bitmap[bitmapIndex];
+    volatile size_t& bitmapWord = m_bitmap[bitmapIndex];
     bool wasMarked = bitmapWord & mask;
     bitmapWord &= ~mask;
     return wasMarked;
