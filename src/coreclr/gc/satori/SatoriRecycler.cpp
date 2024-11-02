@@ -1822,6 +1822,20 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
     }
 }
 
+void SatoriRecycler::PushOrReturnWorkChunk(SatoriWorkChunk * chunk)
+{
+    if (chunk->Count() > 0)
+    {
+        m_workList->Push(chunk);
+    }
+    else
+    {
+        m_heap->Allocator()->ReturnWorkChunk(chunk);
+    }
+}
+
+static const int SHARE_WORK_THRESHOLD = 8;
+
 bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_t deadline)
 {
     if (!srcChunk)
@@ -1917,10 +1931,10 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         {
             if ((GCToOSInterface::QueryPerformanceCounter() - deadline) > 0)
             {
-                m_workList->Push(srcChunk);
+                PushOrReturnWorkChunk(srcChunk);
                 if (dstChunk)
                 {
-                    m_workList->Push(dstChunk);
+                    PushOrReturnWorkChunk(dstChunk);
                 }
                 return true;
             }
@@ -1931,11 +1945,26 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         // done with srcChunk       
         // if we have nonempty dstChunk (i.e. produced more work),
         // swap src and dst and continue
+        // also share half of work if work list is empty
         if (dstChunk && dstChunk->Count() > 0)
         {
+            if (!dstChunk->IsRange() &&
+                dstChunk->Count() > SHARE_WORK_THRESHOLD * 2 &&
+                m_workList->IsEmpty())
+            {
+                size_t half = dstChunk->Count() / 2;
+                srcChunk->TakeFrom(dstChunk, half);
+
+                m_workList->Push(dstChunk);
+                dstChunk = nullptr;
+                MaybeAskForHelp();
+            }
+            else
+            {
             SatoriWorkChunk* tmp = srcChunk;
             srcChunk = dstChunk;
             dstChunk = tmp;
+        }
         }
         else
         {
@@ -2078,11 +2107,26 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         // done with srcChunk
         // if we have nonempty dstChunk (i.e. produced more work),
         // swap src and dst and continue
+        // also share half of work if work list is empty
         if (dstChunk && dstChunk->Count() > 0)
         {
+            if (!dstChunk->IsRange() &&
+                dstChunk->Count() > SHARE_WORK_THRESHOLD * 2 &&
+                m_workList->IsEmpty())
+            {
+                size_t half = dstChunk->Count() / 2;
+                srcChunk->TakeFrom(dstChunk, half);
+
+                m_workList->Push(dstChunk);
+                dstChunk = nullptr;
+                MaybeAskForHelp();
+            }
+            else
+            {
             SatoriWorkChunk* tmp = srcChunk;
             srcChunk = dstChunk;
             dstChunk = tmp;
+        }
         }
         else
         {
