@@ -1834,7 +1834,7 @@ void SatoriRecycler::PushOrReturnWorkChunk(SatoriWorkChunk * chunk)
     }
 }
 
-static const int SHARE_WORK_THRESHOLD = 8;
+static const int SHARE_WORK_THRESHOLD = 4;
 
 bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_t deadline)
 {
