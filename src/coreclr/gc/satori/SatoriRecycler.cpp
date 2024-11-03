@@ -704,15 +704,9 @@ void SatoriRecycler::ConcurrentPhasePrepFn(gc_alloc_context* gcContext, void* pa
 
 void SatoriRecycler::BlockingMarkForConcurrent()
 {
-    // TODO: VS can we have a generation large enough for concurrent, but not enough for concurrent stacks?
-    //       in such case we could just go to CC_MARK_STATE_DONE
-
     int targetState = CC_MARK_STATE_SUSPENDING_EE;
     if (Interlocked::CompareExchange(&m_ccStackMarkState, CC_MARK_STATE_SUSPENDING_EE, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
     {
-        if (targetState == CC_MARK_STATE_DONE)
-            return;
-
         size_t blockingStart = GCToOSInterface::QueryPerformanceCounter();
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
 
