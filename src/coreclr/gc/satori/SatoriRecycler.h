@@ -119,7 +119,7 @@ public:
             return &m_lastEphemeralGcInfo;
 
         if (kind == gc_kind_full_blocking)
-            return GetLastGcInfo(gc_kind_any); // no concept of blocking GC, every GC has blocking part.
+            return &m_lastTenuredGcInfo; // no concept of background GC, every GC has blocking part.
 
         if (kind == gc_kind_background)
             return GetLastGcInfo(gc_kind_any); // no concept of background GC, cant have 2 GCs at a time.
