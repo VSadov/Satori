@@ -443,6 +443,7 @@ size_t SatoriRecycler::IncrementGen0Count()
 
 // if generation is too small we do not bother with concurrent marking.
 // the extra costs of concurrent marking may not justify using it with tiny heaps
+// unless we run in low-latency mode, then we always prefer concurrent.
 #if _DEBUG
 static const int concMarkThreshold = 0;
 #else
@@ -453,10 +454,15 @@ static const int bgPauseThreshold = 1000; // microseconds
 
 bool SatoriRecycler::ShouldDoConcurrent(int generation)
 {
-    size_t epthOccupancy = this->m_occupancy[1]  + this->m_occupancy[0];
+    if (IsLowLatencyMode())
+    {
+        return true;
+    }
+
+    size_t ethOccupancy = this->m_occupancy[1]  + this->m_occupancy[0];
     if (generation == 2)
     {
-        if ((this->m_occupancy[2] + epthOccupancy < concMarkThreshold) &&
+        if ((this->m_occupancy[2] + ethOccupancy < concMarkThreshold) &&
             m_lastTenuredGcInfo.m_pauseDurations[0] < bgPauseThreshold)
         {
             return false;
@@ -464,7 +470,7 @@ bool SatoriRecycler::ShouldDoConcurrent(int generation)
     }
     else
     {
-        if ((epthOccupancy < concMarkThreshold) &&
+        if ((ethOccupancy < concMarkThreshold) &&
             m_lastEphemeralGcInfo.m_pauseDurations[0] < bgPauseThreshold)
         {
             return false;
