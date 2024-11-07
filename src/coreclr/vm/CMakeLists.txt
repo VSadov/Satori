@@ -502,6 +502,7 @@ set(GC_SOURCES_WKS
     ../gc/satori/SatoriAllocationContext.cpp
     ../gc/satori/SatoriUtil.cpp
     ../gc/satori/SatoriLock.cpp
+    ../gc/satori/SatoriWorkList.cpp
     ../gc/satori/SatoriGate.cpp
     )
 

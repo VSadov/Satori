@@ -39,6 +39,7 @@ set(GC_SOURCES
   satori/SatoriAllocationContext.cpp
   satori/SatoriUtil.cpp
   satori/SatoriLock.cpp
+  satori/SatoriWorkList.cpp
   satori/SatoriGate.cpp
 )
 

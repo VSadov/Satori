@@ -134,8 +134,8 @@ public:
     void IndividuallyPromote();
     void UpdateFinalizableTrackers();
     void UpdatePointers();
-    void UpdatePointersInObject(SatoriObject* o);
-    void SetCardsForObject(SatoriObject* o);
+    void UpdatePointersInObject(SatoriObject* o, size_t size);
+    void SetCardsForObject(SatoriObject* o, size_t size);
 
     template <bool promotingAllRegions>
     void UpdatePointersInPromotedObjects();
@@ -147,7 +147,7 @@ public:
     bool AnyExposed(size_t from, size_t length);
     void EscapeRecursively(SatoriObject* obj);
     void EscsapeAll();
-    void EscapeShallow(SatoriObject* o);
+    void EscapeShallow(SatoriObject* o, size_t size);
 
     template <typename F>
     void ForEachFinalizable(F lambda);
