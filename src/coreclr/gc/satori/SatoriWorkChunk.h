@@ -31,6 +31,7 @@
 #include "../gc.h"
 #include "SatoriUtil.h"
 #include "SatoriQueue.h"
+#include "SatoriObject.h"
 
 class SatoriWorkChunk
 {

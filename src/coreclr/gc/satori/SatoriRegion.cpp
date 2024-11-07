@@ -156,7 +156,7 @@ void SatoriRegion::MakeBlank()
     // m_containingPage         stays the same
 
     m_reusableFor = ReuseLevel::None;
-    _ASSERT(!m_allocatingOwnerAttachmentPoint);
+    _ASSERTE(!m_allocatingOwnerAttachmentPoint);
     _ASSERTE(!m_gen2Objects);
 
     m_allocStart = (size_t)&m_firstObject;

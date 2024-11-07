@@ -208,13 +208,6 @@ public:
         AwakeWaiterIfNeeded();
     }
 
-private:
-
-    static uint16_t GetTickCount()
-    {
-        return (uint16_t)GCToOSInterface::GetLowPrecisionTimeStamp();
-    }
-
     static void CollisionBackoff(uint32_t collisions)
     {
         _ASSERTE(collisions > 0);
@@ -226,6 +219,13 @@ private:
         {
             YieldProcessor();
         }
+    }
+
+private:
+
+    static uint16_t GetTickCount()
+    {
+        return (uint16_t)GCToOSInterface::GetLowPrecisionTimeStamp();
     }
 
     // same idea as in CollisionBackoff, but with guaranteed minimum wait

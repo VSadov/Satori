@@ -66,6 +66,7 @@ set(COMMON_RUNTIME_SOURCES
     ${GC_DIR}/satori/SatoriAllocationContext.cpp
     ${GC_DIR}/satori/SatoriUtil.cpp
     ${GC_DIR}/satori/SatoriLock.cpp
+    ${GC_DIR}/satori/SatoriWorkList.cpp
     ${GC_DIR}/satori/SatoriGate.cpp
 )
 
