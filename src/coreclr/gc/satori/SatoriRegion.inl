@@ -323,6 +323,7 @@ bool SatoriRegion::Sweep()
             hasFinalizables = true;
         }
 
+        // TODO: VS could pass size to all the above
         size_t size = o->Size();
         objCount++; 
         occupancy += size;
@@ -683,6 +684,8 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
         _ASSERTE(!relocated->IsFree());
 
         SatoriPage* page = relocated->ContainingRegion()->ContainingPage();
+        // TODO: VS could fetch and pass size here, and use below in Next
+        // size_t size = relocated->Size();
         relocated->ForEachObjectRef(
             [&](SatoriObject** ppObject)
             {
@@ -710,6 +713,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
             }
         );
 
+        // o = (SatoriObject*)(o->Start() + size);
         o = o->Next();
     } while (o->Start() < objLimit);
 }

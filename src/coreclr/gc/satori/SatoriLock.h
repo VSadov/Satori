@@ -157,6 +157,9 @@ public:
         _gate = new (nothrow) SatoriGate();
     }
 
+    //TODO: VS TryEnterNoBlock (with spin, but return null when need to block)
+    //      the one below is TryEnterOneShot
+
     FORCEINLINE
     bool TryEnter()
     {

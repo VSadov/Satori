@@ -33,8 +33,6 @@
 NOINLINE
 void SatoriWorkList::PushSlow(SatoriWorkChunk* item)
 {
-    _ASSERTE(item->m_next == nullptr);
-
     uint32_t collisions = 1;
     while (true)
     {

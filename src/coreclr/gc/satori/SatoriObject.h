@@ -97,6 +97,9 @@ public:
     void ForEachObjectRef(F lambda, bool includeCollectibleAllocator = false);
 
     template <typename F>
+    void ForEachObjectRef(F lambda, size_t size, bool includeCollectibleAllocator = false);
+
+    template <typename F>
     void ForEachObjectRef(F lambda, size_t start, size_t end);
 
 private:

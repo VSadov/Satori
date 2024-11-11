@@ -1018,7 +1018,9 @@ void SatoriRegion::EscapeShallow(SatoriObject* o)
     //    typically objects have died and we have fewer escapes than before the GC,
     //    so we do not bother to check
     SetEscaped(o);
-    m_escapedSize += (int32_t)o->Size();
+    // TODO: VS could pass size below
+    size_t size = o->Size();
+    m_escapedSize += (int32_t)size;
 
     o->ForEachObjectRef(
         [&](SatoriObject** ref)
