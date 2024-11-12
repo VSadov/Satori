@@ -996,18 +996,21 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
 void SatoriRegion::EscsapeAll()
 {
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
-    for (SatoriObject* o = FirstObject(); o->Start() < objLimit; o = o->Next())
+    for (SatoriObject* o = FirstObject(); o->Start() < objLimit;)
     {
+        size_t size = o->Size();
         if (!o->IsFree())
         {
-            EscapeShallow(o);
+            EscapeShallow(o, size);
         }
+
+        o = (SatoriObject*)(o->Start() + size);
     }
 }
 
 // do not recurse into children
 // used when escaping all objects in the region anyways
-void SatoriRegion::EscapeShallow(SatoriObject* o)
+void SatoriRegion::EscapeShallow(SatoriObject* o, size_t size)
 {
     _ASSERTE(o->SameRegion(this));
     _ASSERTE(!IsEscaped(o));
@@ -1018,8 +1021,6 @@ void SatoriRegion::EscapeShallow(SatoriObject* o)
     //    typically objects have died and we have fewer escapes than before the GC,
     //    so we do not bother to check
     SetEscaped(o);
-    // TODO: VS could pass size below
-    size_t size = o->Size();
     m_escapedSize += (int32_t)size;
 
     o->ForEachObjectRef(
@@ -1031,7 +1032,8 @@ void SatoriRegion::EscapeShallow(SatoriObject* o)
 
             // mark ref location as exposed
             SetExposed(ref);
-        }
+        },
+        size
     );
 }
 
@@ -1898,7 +1900,7 @@ void SatoriRegion::UpdateFinalizableTrackers()
     }
 }
 
-void SatoriRegion::UpdatePointersInObject(SatoriObject* o)
+void SatoriRegion::UpdatePointersInObject(SatoriObject* o, size_t size)
 {
     // if the containing region is large, do not engage with the entire object,
     // schedule update of separate ranges.
@@ -1918,7 +1920,8 @@ void SatoriRegion::UpdatePointersInObject(SatoriObject* o)
                         *ppObject = (SatoriObject*)-ptr;
                     }
                 }
-            }
+            },
+            size
         );
     }
 }
@@ -1931,8 +1934,9 @@ void SatoriRegion::UpdatePointers()
     SatoriObject* o = FirstObject();
     do
     {
-        UpdatePointersInObject(o);
-        o = o->Next();
+        size_t size = o->Size();
+        UpdatePointersInObject(o, size);
+        o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);
 }
 

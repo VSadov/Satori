@@ -162,7 +162,7 @@ inline void SatoriRegion::StopEscapeTracking()
 }
 
 // Used to simulate writes when containing region is individually promoted.
-inline void SatoriRegion::SetCardsForObject(SatoriObject* o)
+inline void SatoriRegion::SetCardsForObject(SatoriObject* o, size_t size)
 {
     _ASSERTE(this->Size() == Satori::REGION_SIZE_GRANULARITY);
 
@@ -180,7 +180,8 @@ inline void SatoriRegion::SetCardsForObject(SatoriObject* o)
                 // for simplicity and call a concurrent helper.
                 ContainingPage()->DirtyCardForAddressConcurrent((size_t)ppObject);
             }
-        }
+        },
+        size
     );
 }
 
@@ -303,19 +304,20 @@ bool SatoriRegion::Sweep()
         _ASSERTE(!o->IsFree());
         cannotRecycle = true;
 
+        size_t size = o->Size();
         if (isEscapeTracking)
         { 
-            this->EscapeShallow(o);
+            this->EscapeShallow(o, size);
         }
 
         if (updatePointers)
         {
-            UpdatePointersInObject(o);
+            UpdatePointersInObject(o, size);
         }
 
         if (individuallyPromoted)
         {
-            SetCardsForObject(o);
+            SetCardsForObject(o, size);
         }
 
         if (!hasFinalizables && o->RawGetMethodTable()->HasFinalizer())
@@ -323,8 +325,6 @@ bool SatoriRegion::Sweep()
             hasFinalizables = true;
         }
 
-        // TODO: VS could pass size to all the above
-        size_t size = o->Size();
         objCount++; 
         occupancy += size;
         o = (SatoriObject*)(o->Start() + size);
@@ -684,8 +684,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
         _ASSERTE(!relocated->IsFree());
 
         SatoriPage* page = relocated->ContainingRegion()->ContainingPage();
-        // TODO: VS could fetch and pass size here, and use below in Next
-        // size_t size = relocated->Size();
+        size_t size = relocated->Size();
         relocated->ForEachObjectRef(
             [&](SatoriObject** ppObject)
             {
@@ -710,11 +709,11 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
                         }
                     }
                 }
-            }
+            },
+            size
         );
 
-        // o = (SatoriObject*)(o->Start() + size);
-        o = o->Next();
+        o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);
 }
 

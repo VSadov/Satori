@@ -786,11 +786,16 @@ void SatoriRecycler::HelpOnce()
                 HelpOnceCore();
                 m_noWorkSince = GCToOSInterface::QueryPerformanceCounter();
 
-                int64_t deadline = start + HelpQuantum();
-                while (GCToOSInterface::QueryPerformanceCounter() < deadline &&
-                    m_ccStackMarkState != CC_MARK_STATE_SUSPENDING_EE)
+                // if we did not use all the quantum,
+                // consume it here in Low Latency mode for pacing reasons.
+                if (IsLowLatencyMode())
                 {
-                    YieldProcessor();
+                    int64_t deadline = start + HelpQuantum();
+                    while (GCToOSInterface::QueryPerformanceCounter() < deadline &&
+                        m_ccStackMarkState != CC_MARK_STATE_SUSPENDING_EE)
+                    {
+                        YieldProcessor();
+                    }
                 }
             }
             else
