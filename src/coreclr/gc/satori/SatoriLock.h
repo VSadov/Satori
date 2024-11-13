@@ -157,11 +157,8 @@ public:
         _gate = new (nothrow) SatoriGate();
     }
 
-    //TODO: VS TryEnterNoBlock (with spin, but return null when need to block)
-    //      the one below is TryEnterOneShot
-
     FORCEINLINE
-    bool TryEnter()
+    bool TryEnterOneShot()
     {
         uint32_t origState = _state;
         if ((origState & (YieldToWaiters | Locked)) == 0)
@@ -179,11 +176,19 @@ public:
     }
 
     FORCEINLINE
+    bool TryEnter()
+    {
+        return TryEnterOneShot() ||
+            EnterSlow(/*noBlock*/true);
+    }
+
+    FORCEINLINE
     void Enter()
     {
-        if (!TryEnter())
+        if (!TryEnterOneShot())
         {
-            EnterSlow();
+            bool entered = EnterSlow();
+            _ASSERTE(entered);
         }
     }
 
@@ -248,7 +253,7 @@ private:
     }
 
     NOINLINE
-    void EnterSlow();
+    bool EnterSlow(bool noBlock = false);
 
     NOINLINE
     void AwakeWaiterIfNeeded();
