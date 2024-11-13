@@ -31,7 +31,7 @@
 #include "SatoriLock.h"
 
 NOINLINE
-void SatoriLock::EnterSlow()
+bool SatoriLock::EnterSlow(bool noBlock)
 {
     bool hasWaited = false;
     // we will retry after waking up
@@ -101,7 +101,7 @@ void SatoriLock::EnterSlow()
                         _spinCount = (uint16_t)(spinLimit + 1);
                     }
 
-                    return;
+                    return true;
                 }
             }
 
@@ -128,6 +128,9 @@ void SatoriLock::EnterSlow()
             else if (!canAcquire)
             {
                 // We reached our spin limit, and need to wait.
+
+                if (noBlock)
+                    return false;
 
                 // If waiter was awaken spuriously, it may acquire the lock before wake watchdog is set.
                 // If there are no more waiters for a long time, the watchdog could hang around for a while too.
