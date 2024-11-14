@@ -52,7 +52,7 @@ public:
 
     static size_t Capacity()
     {
-        return (Satori::MARK_CHUNK_SIZE - sizeof(SatoriWorkChunk)) / sizeof(SatoriObject*);
+        return Satori::MARK_CHUNK_SIZE / sizeof(SatoriObject*) - /* m_top, m_next*/ 2;
     }
 
     size_t Count()
