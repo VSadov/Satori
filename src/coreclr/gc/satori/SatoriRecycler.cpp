@@ -1970,7 +1970,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
                 // the objectCount number here is to
                 // - amortize cost of QueryPerformanceCounter() and
                 // - establish the minimum amount of work per help quant
-                if (objectCount++ > 1024)
+                if (objectCount++ > Satori::MARK_CHUNK_COUNT)
                 {
                     goto deadlineCheck;
                 }

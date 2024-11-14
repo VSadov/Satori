@@ -64,15 +64,17 @@ namespace Satori
     // we use a trivial array object to fill holes, thus this is the size of a shortest array object.
     static const size_t MIN_FREE_SIZE = 3 * sizeof(size_t);
 
-    // ~512 items for now, we can fiddle with size a bit later
-    const static size_t MARK_CHUNK_SIZE = 512 * sizeof(size_t);
+    // If a single mark takes very roughly ~50ns (5-20 for CAS + some extra), then 1k objects marks in 50us
+    // we set the chunk to roughly 1/2k to expect it mark in under 20us or so
+    const static size_t MARK_CHUNK_COUNT = 512;
+
+    // this includes header, so the number of objects is slightly less (by -2)
+    const static size_t MARK_CHUNK_SIZE = MARK_CHUNK_COUNT * sizeof(size_t);
 
     // objects that are bigger are chunked into ranges when marking.
-    // If a single mark takes 100ns, then in an extreme case, 1k object[] marks in 10us
-    // NB: this may seem as a 2x byte chunk representing 1x bytes range.
-    //    however, assuming there are object children, the same capacity may be needed
-    //    once the array is grayed
-    const static size_t MARK_RANGE_THRESHOLD = 2 * 1024;
+    // the threshold is slightly less than MARK_CHUNK_SIZE, so that object in the range
+    // could fit into same chunk
+    const static size_t MARK_RANGE_THRESHOLD = MARK_CHUNK_SIZE - 2 * sizeof(size_t);
 
     // if we have more than twice this much and work list is empty we can share half
     const static int SHARE_WORK_THRESHOLD = 4;
