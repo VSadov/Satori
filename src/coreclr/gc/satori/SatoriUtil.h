@@ -83,7 +83,8 @@ namespace Satori
     const static size_t FINALIZATION_PENDING = 1;
 
     static const int BYTES_PER_CARD_BYTE = 512;
-    static const int CARD_BYTES_IN_CARD_GROUP = Satori::REGION_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;
+    static const int BYTES_PER_CARD_GROUP = REGION_SIZE_GRANULARITY / 2;
+    static const int CARD_BYTES_IN_CARD_GROUP = Satori::BYTES_PER_CARD_GROUP / BYTES_PER_CARD_BYTE;
 
     namespace CardState
     {

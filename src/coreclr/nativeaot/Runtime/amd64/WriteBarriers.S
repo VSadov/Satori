@@ -458,8 +458,8 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         sub     rdx, rax   // offset in page
         mov     r8,  rdx
         shr     rdx, 9     // card offset
-        shr     r8,  21   // group offset
-        lea     r8,  [rax + r8 * 2 + 0x80]
+        shr     r8,  20    // group index
+        lea     r8,  [rax + r8 * 2 + 0x80] // group offset
 
      // check if concurrent marking is in progress
         cmp     r11, 0
@@ -658,8 +658,8 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         sub     rdx, r11   // offset in page
         mov     rsi,rdx
         shr     rdx, 9     // card offset
-        shr     rsi, 21   // group offset
-        lea     rsi, [r11 + rsi * 2 + 0x80]
+        shr     rsi, 20    // group index
+        lea     rsi, [r11 + rsi * 2 + 0x80] // group offset
 
      // check if concurrent marking is in progress
         cmp     r10, 0
@@ -827,8 +827,8 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         sub     rdx, r11   // offset in page
         mov     rsi,rdx
         shr     rdx, 9     // card offset
-        shr     rsi, 21   // group offset
-        lea     rsi, [r11 + rsi * 2 + 0x80]
+        shr     rsi, 20    // group index
+        lea     rsi, [r11 + rsi * 2 + 0x80] // group offset
 
      // check if concurrent marking is in progress
         cmp     r10, 0
