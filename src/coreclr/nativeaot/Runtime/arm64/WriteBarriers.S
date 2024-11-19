@@ -553,7 +553,7 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         lsr     x16, x14, #30
         ldr     x16, [x12, x16, lsl #3]              // page
         sub     x2,  x14, x16   // offset in page
-        lsr     x15, x2,  #21   // group index
+        lsr     x15, x2,  #20   // group index
         lsr     x2,  x2,  #9    // card offset
         lsl     x15, x15, #1    // group offset (index * 2)
 
@@ -786,7 +786,7 @@ LOCAL_LABEL(DoCardsCmpXchg):
         lsr     x16, x14, #30
         ldr     x16, [x12, x16, lsl #3]              // page
         sub     x2,  x14, x16   // offset in page
-        lsr     x15, x2,  #21   // group index
+        lsr     x15, x2,  #20   // group index
         lsr     x2,  x2,  #9    // card offset
         lsl     x15, x15, #1    // group offset (index * 2)
 
@@ -989,7 +989,7 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation2
         lsr     x16, x14, #30
         ldr     x16, [x12, x16, lsl #3]              // page
         sub     x2,  x14, x16   // offset in page
-        lsr     x15, x2,  #21   // group index
+        lsr     x15, x2,  #20   // group index
         lsr     x2,  x2,  #9    // card offset
         lsl     x15, x15, #1    // group offset (index * 2)
 

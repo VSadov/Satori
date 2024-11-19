@@ -596,8 +596,8 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         sub     rdx, rax   // offset in page
         mov     r8,  rdx
         shr     rdx, 9     // card offset
-        shr     r8,  21   // group offset
-        lea     r8,  [rax + r8 * 2 + 0x80]
+        shr     r8,  20    // group index
+        lea     r8,  [rax + r8 * 2 + 0x80] // group offset
 
      // check if concurrent marking is in progress
         cmp     r11, 0
