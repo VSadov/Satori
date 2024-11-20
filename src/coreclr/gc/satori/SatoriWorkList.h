@@ -82,7 +82,7 @@ public:
 
         SatoriWorkList orig = *this;
         item->m_next = orig.m_head;
-        if (Cas128((int64_t*)&m_head, orig.m_aba + 1, (int64_t)item, (int64_t*)&orig))
+        if (Cas128((int64_t*)this, orig.m_aba + 1, (int64_t)item, (int64_t*)&orig))
         {
 #ifdef _DEBUG
             Interlocked::Increment(&m_count);
@@ -102,7 +102,7 @@ public:
             return nullptr;
         }
 
-        if (Cas128((int64_t*)&m_head, orig.m_aba + 1, (int64_t)orig.m_head->m_next, (int64_t*)&orig))
+        if (Cas128((int64_t*)this, orig.m_aba + 1, (int64_t)orig.m_head->m_next, (int64_t*)&orig))
         {
     #ifdef _DEBUG
             Interlocked::Decrement(&m_count);
