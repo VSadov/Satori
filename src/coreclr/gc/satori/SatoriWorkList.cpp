@@ -38,7 +38,7 @@ void SatoriWorkList::PushSlow(SatoriWorkChunk* item)
     {
         SatoriWorkList orig = *this;
         item->m_next = orig.m_head;
-        if (Cas128((int64_t*)&m_head, orig.m_aba + 1, (int64_t)item, (int64_t*)&orig))
+        if (Cas128((int64_t*)this, orig.m_aba + 1, (int64_t)item, (int64_t*)&orig))
             break;
 
         SatoriLock::CollisionBackoff(collisions++);
@@ -62,7 +62,7 @@ SatoriWorkChunk* SatoriWorkList::TryPopSlow()
             return nullptr;
         }
 
-        if (Cas128((int64_t*)&m_head, orig.m_aba + 1, (int64_t)orig.m_head->m_next, (int64_t*)&orig))
+        if (Cas128((int64_t*)this, orig.m_aba + 1, (int64_t)orig.m_head->m_next, (int64_t*)&orig))
             break;
 
         SatoriLock::CollisionBackoff(collisions++);

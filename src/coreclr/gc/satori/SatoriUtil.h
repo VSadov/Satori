@@ -88,7 +88,7 @@ namespace Satori
 
     namespace CardState
     {
-        static const int8_t EPHEMERAL = -128; // 0b10000000
+        static const int8_t EPHEMERAL = -128; // 0b10000000 only used in cards (not groups or higher)
         static const int8_t BLANK = 0;
         static const int8_t REMEMBERED = 1;
         static const int8_t PROCESSING = 2;

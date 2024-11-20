@@ -57,7 +57,7 @@ public:
     void AddEphemeralRegion(SatoriRegion* region);
     void AddTenuredRegion(SatoriRegion* region);
 
-    // TODO: VS should live in heap?
+    // TODO: VS should be moved to Heap?
     size_t GetNowMillis();
     size_t GetNowUsecs();
 
@@ -176,6 +176,11 @@ private:
     static const int CC_MARK_STATE_MARKING = 2;
     static const int CC_MARK_STATE_DONE = 3;
 
+    static const int CC_CLEAN_STATE_NOT_READY = 0;
+    static const int CC_CLEAN_STATE_SETTING_UP = 1;
+    static const int CC_CLEAN_STATE_CLEANING = 2;
+    static const int CC_CLEAN_STATE_DONE = 3;
+
     volatile int m_ccStackMarkState;
     volatile int m_ccStackMarkingThreadsNum;
 
@@ -185,6 +190,7 @@ private:
 
     bool m_concurrentCardsDone;
     bool m_concurrentHandlesDone;
+    volatile int m_concurrentCleaningState;
 
     bool m_isRelocating;
     bool m_isLowLatencyMode;
@@ -228,7 +234,6 @@ private:
     volatile int m_helperWoken;
     volatile int m_activeHelpers;
     volatile int m_totalHelpers;
-    volatile bool maySpinAtGate;
 
     void(SatoriRecycler::* volatile m_activeHelperFn)();
 
@@ -287,7 +292,7 @@ private:
     bool DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk = nullptr, int64_t deadline = 0);
 
     bool HasDirtyCards();
-    bool ScanDirtyCardsConcurrent(int64_t deadline);
+    bool CleanCardsConcurrent(int64_t deadline);
     void CleanCards();
     bool MarkHandles(int64_t deadline = 0);
     void ShortWeakPtrScan();

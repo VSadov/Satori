@@ -585,7 +585,7 @@ void* GCToOSInterface::VirtualReserve(void* location, size_t size)
         return NULL;
     }
 
-// TODO: VS make conditional on a switch?
+// TODO: VS make this conditional on a switch
 //#ifdef TARGET_LINUX
 //    madvise(pRetVal, size, MADV_HUGEPAGE);
 //#endif

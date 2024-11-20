@@ -113,7 +113,7 @@ SatoriRecycler* SatoriRegion::Recycler()
 void SatoriRegion::RearmCardsForTenured()
 {
     _ASSERTE(Generation() == 2);
-    m_containingPage->WipeCardsForRange(Start(), End(), /* tenured */ true);
+    m_containingPage->ResetCardsForRange(Start(), End(), /* tenured */ true);
     HasUnmarkedDemotedObjects() = false;
 
     FreeDemotedTrackers();
@@ -135,7 +135,7 @@ void SatoriRegion::FreeDemotedTrackers()
 void SatoriRegion::ResetCardsForEphemeral()
 {
     _ASSERTE(Generation() == 2);
-    m_containingPage->WipeCardsForRange(Start(), End(), /* tenured */ false);
+    m_containingPage->ResetCardsForRange(Start(), End(), /* tenured */ false);
 }
 
 void SatoriRegion::MakeBlank()
@@ -145,6 +145,10 @@ void SatoriRegion::MakeBlank()
     if (m_generation == 2)
     {
         this->ResetCardsForEphemeral();
+    }
+    else
+    {
+        m_containingPage->WipeGroupsForRange(Start(), End());
     }
 
     m_ownerThreadTag = 0;
@@ -808,7 +812,9 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
 //         can give refs pointing to Free. (because of card granularity)
 SatoriObject* SatoriRegion::FindObject(size_t location)
 {
-    _ASSERTE(m_generation >= 0 && location >= Start() && location < End());
+    _ASSERTE(m_generation >= 0);
+    _ASSERTE(location >= Start());
+    _ASSERTE(location < End());
     _ASSERTE(m_unfinishedAllocationCount == 0);
 
     location = min(location, Start() + Satori::REGION_SIZE_GRANULARITY);
