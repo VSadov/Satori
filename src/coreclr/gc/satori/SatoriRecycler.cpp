@@ -2341,6 +2341,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                             continue;
                         }
 
+                        // TODO: VS only holds for gen2
                         _ASSERTE(groupTicket == 0 || currentScanTicket - groupTicket <= 2);
                         const int8_t resetValue = Satori::CardState::REMEMBERED;
                         int8_t* cards = page->CardsForGroup(i);
@@ -2446,8 +2447,6 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
 
 bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
 {
-    _ASSERTE(m_condemnedGeneration == 2);
-
     SatoriWorkChunk* dstChunk = nullptr;
     bool revisit = false;
 
@@ -2520,12 +2519,17 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                             continue;
                         }
 
+                        _ASSERTE(Satori::CardState::EPHEMERAL == (int8_t)0x80);
+                        const size_t unsetValue = region->Generation() >= 2 ?
+                            Satori::CardState::BLANK :
+                            0x8080808080808080;
+
                         int8_t* cards = page->CardsForGroup(i);
 
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
                         {
-                            // cards are often sparsely set, if j is aligned, check the entire size_t for 0
-                            if (((j & (sizeof(size_t) - 1)) == 0) && *((size_t*)&cards[j]) == 0)
+                            // cards are often sparsely set, if j is aligned, check the entire size_t for unset value
+                            if (((j & (sizeof(size_t) - 1)) == 0) && *((size_t*)&cards[j]) == unsetValue)
                             {
                                 j += sizeof(size_t) - 1;
                                 continue;
@@ -2540,15 +2544,15 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                             size_t start = page->LocationForCard(&cards[j]);
                             do
                             {
-                                cards[j] = resetValue;
-                            } while (++j < Satori::CARD_BYTES_IN_CARD_GROUP &&
-                                cards[j] == Satori::CardState::DIRTY);
+                                // clean the card since it is going to be visited and marked through.
+                                cards[j++] = resetValue;
+                            } while (j < Satori::CARD_BYTES_IN_CARD_GROUP && cards[j] == Satori::CardState::DIRTY);
 
                             size_t end = page->LocationForCard(&cards[j]);
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
                             SatoriObject* o = region->FindObject(start);
 
-                            // read marks after cleaning cards
+                            // do not allow card cleaning to delay until after checking IsMarked
                             MemoryBarrier();
 
                             do
@@ -2565,7 +2569,8 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                                         [&](SatoriObject** ref)
                                         {
                                             SatoriObject* child = VolatileLoadWithoutBarrier(ref);
-                                            if (child && !child->IsExternal())
+                                            if (child &&
+                                                !child->IsExternal())
                                             {
                                                 SatoriRegion* childRegion = child->ContainingRegion();
                                                 if (!childRegion->MaybeEscapeTrackingAcquire())
@@ -2613,7 +2618,7 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                 // All groups/cards are accounted in this page - either visited or claimed.
                 // No marking work is left here, set the ticket to indicate that.
                 page->ScanTicket() = currentScanTicket;
-            }
+}
 
             // not a timeout, continue iterating
             return false;
@@ -2833,6 +2838,7 @@ void SatoriRecycler::CleanCards()
                                 continue;
                             }
 
+                            // skip nondirty
                             if (cards[j] != Satori::CardState::DIRTY)
                             {
                                 continue;
