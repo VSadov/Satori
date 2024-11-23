@@ -1017,7 +1017,7 @@ void SatoriRecycler::AdjustHeuristics()
     }
 
     // if the heap size will definitely be over the limit at next GC, make the next GC a full GC
-    m_nextGcIsFullGc = occupancy + m_gen1Budget > m_totalLimit;
+    m_nextGcIsFullGc = true; //occupancy + m_gen1Budget > m_totalLimit;
 
     // now figure if we will promote
     m_promoteAllRegions = false;
@@ -2502,9 +2502,6 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                             continue;
                         }
 
-                        // claim the group as complete, now it is ours
-                        page->CardGroupScanTicket(i) = currentScanTicket;
-
                         //NB: It is safe to get a region even if region map may be changing because
                         //    a region with dirty marks must be there and cannot be destroyed.
                         SatoriRegion* region = page->RegionForCardGroup(i);
@@ -2516,6 +2513,9 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                         // allocating region is not parseable.
                         if (region->MaybeAllocatingAcquire())
                         {
+                            // TODO: VS do we care? or every thread should retry?
+                            // claim the group as complete
+                            page->CardGroupScanTicket(i) = currentScanTicket;
                             continue;
                         }
 
@@ -2542,18 +2542,20 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                             }
 
                             size_t start = page->LocationForCard(&cards[j]);
-                            do
-                            {
-                                // clean the card since it is going to be visited and marked through.
-                                cards[j++] = resetValue;
-                            } while (j < Satori::CARD_BYTES_IN_CARD_GROUP && cards[j] == Satori::CardState::DIRTY);
 
-                            size_t end = page->LocationForCard(&cards[j]);
+                            //TODO: VS consider grabbing a bunch of 8/4/2 cards?
+
+                            // clean the card since it is going to be visited and marked through.
+                            // do not allow card cleaning to delay until after checking IsMarked
+                            if (Interlocked::CompareExchange(&cards[j], resetValue, Satori::CardState::DIRTY) != Satori::CardState::DIRTY)
+                            {
+                                // someone else cleaned the card
+                                continue;
+                            }
+
+                            size_t end = start + Satori::BYTES_PER_CARD_BYTE;
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
                             SatoriObject* o = region->FindObject(start);
-
-                            // do not allow card cleaning to delay until after checking IsMarked
-                            MemoryBarrier();
 
                             do
                             {
@@ -2603,8 +2605,13 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                                 }
                                 o = o->Next();
                             } while (o->Start() < objLimit);
+
                         }
 
+                        // claim the group as complete
+                        page->CardGroupScanTicket(i) = currentScanTicket;
+
+                        // TODO: VS check after each card? (would leave group unfinished? perhaps ok)
                         _ASSERTE(deadline != 0);
                         if (GCToOSInterface::QueryPerformanceCounter() - deadline > 0)
                         {
