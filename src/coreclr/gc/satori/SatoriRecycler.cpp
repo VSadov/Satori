@@ -618,7 +618,7 @@ bool SatoriRecycler::HelpOnceCore()
         {
             if (m_condemnedGeneration == 1 ?
                 MarkThroughCardsConcurrent(deadline) :
-                ScanDirtyCardsConcurrent(deadline))
+                CleanCardsConcurrent(deadline))
             {
                 return true;
             }
@@ -1017,7 +1017,7 @@ void SatoriRecycler::AdjustHeuristics()
     }
 
     // if the heap size will definitely be over the limit at next GC, make the next GC a full GC
-    m_nextGcIsFullGc = true; //occupancy + m_gen1Budget > m_totalLimit;
+    m_nextGcIsFullGc = occupancy + m_gen1Budget > m_totalLimit;
 
     // now figure if we will promote
     m_promoteAllRegions = false;
@@ -2324,39 +2324,42 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                         // we should not be marking when there could be dead objects
                         _ASSERTE(!region->HasMarksSet());
 
-                        // sometimes we set cards without checking dst generation, but REMEMBERED only has meaning in tenured
+                        // invariant check: gen2 remset stays remset, thus should be marked through on every GC
+                        // and should not fall far behind the tickets
+                        _ASSERTE(region->Generation() != 2 || groupTicket == 0 || currentScanTicket - groupTicket <= 2);
+
+                        int8_t resetValue = Satori::CardState::REMEMBERED;
+                        size_t unsetValue = Satori::CardState::BLANK;
                         if (region->Generation() < 2)
                         {
-                            // This is optimization. Not needed for correctness.
-                            // If not dirty, we wipe the group, to not look at this again in the next scans.
-                            // It must use interlocked, even if not concurrent - in case it gets dirty by parallel mark (it can since it is gen1)
-                            // wiping actual cards does not matter, we will look at them only if group is dirty,
-                            // and then cleaner will reset them appropriately.
-                            // there is no marking work in this region, so ticket is also irrelevant. it will be wiped if region gets promoted
-                            if (groupState == Satori::CardState::REMEMBERED)
+                            // allocating region is not parseable.
+                            if (region->MaybeAllocatingAcquire())
                             {
-                                Interlocked::CompareExchange(&page->CardGroupState(i), Satori::CardState::BLANK, Satori::CardState::REMEMBERED);
+                                // TODO: VS do we care? or every thread should retry?
+                                // claim the group as complete
+                                page->CardGroupScanTicket(i) = currentScanTicket;
+                                continue;
                             }
 
-                            continue;
+                            resetValue = Satori::CardState::EPHEMERAL;
+                            _ASSERTE(Satori::CardState::EPHEMERAL == (int8_t)0x80);
+                            unsetValue = 0x8080808080808080;
                         }
 
-                        // TODO: VS only holds for gen2
-                        _ASSERTE(groupTicket == 0 || currentScanTicket - groupTicket <= 2);
-                        const int8_t resetValue = Satori::CardState::REMEMBERED;
-                        int8_t* cards = page->CardsForGroup(i);
+                        bool considerAllMarked = region->Generation() > m_condemnedGeneration;
 
+                        int8_t* cards = page->CardsForGroup(i);
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
                         {
                             // cards are often sparsely set, if j is aligned, check the entire size_t for 0
-                            if (((j & (sizeof(size_t) - 1)) == 0) && *((size_t*)&cards[j]) == 0)
+                            if (((j & (sizeof(size_t) - 1)) == 0) && *((size_t*)&cards[j]) == unsetValue)
                             {
                                 j += sizeof(size_t) - 1;
                                 continue;
                             }
 
                             // skip empty cards
-                            if (!cards[j])
+                            if (cards[j] <= Satori::CardState::BLANK)
                             {
                                 continue;
                             }
@@ -2371,14 +2374,26 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
                             SatoriObject* o = region->FindObject(start);
 
-                            // NOTE: We could do this only if we cleaned any of the cards, but it does not seem worth checking that.
-                            //       Most likely we cleaned something.
-                            // read marks after cleaning cards
-                            MemoryBarrier();
+                            // do not allow card cleaning to delay until after checking IsMarked
+                            if (!considerAllMarked)
+                            {
+                                MemoryBarrier();
+                            }
 
                             do
                             {
-                                o->ForEachObjectRef(
+                                if (!considerAllMarked)
+                                {
+                                    o = region->SkipUnmarked(o, objLimit);
+                                    if (o->Start() == objLimit)
+                                    {
+                                        break;
+                                    }
+                                }
+
+                                // if (considerAllMarked || o->IsMarked())
+                                {
+                                    o->ForEachObjectRef(
                                     [&](SatoriObject** ref)
                                     {
                                         SatoriObject* child = VolatileLoadWithoutBarrier(ref);
@@ -2411,6 +2426,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                                             parentRegion->ContainingPage()->DirtyCardForAddressConcurrent((size_t)ref);
                                         }
                                     }, start, end);
+                                }
                                 o = o->Next();
                             } while (o->Start() < objLimit);
                         }
@@ -2445,7 +2461,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
     return revisit;
 }
 
-bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
+bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
 {
     SatoriWorkChunk* dstChunk = nullptr;
     bool revisit = false;
@@ -2508,21 +2524,23 @@ bool SatoriRecycler::ScanDirtyCardsConcurrent(int64_t deadline)
                         // we should not be marking when there could be dead objects
                         _ASSERTE(!region->HasMarksSet());
 
-                        const int8_t resetValue = region->Generation() >= 2 ? Satori::CardState::REMEMBERED : Satori::CardState::EPHEMERAL;
-
-                        // allocating region is not parseable.
-                        if (region->MaybeAllocatingAcquire())
+                        int8_t resetValue = Satori::CardState::REMEMBERED;
+                        size_t unsetValue = Satori::CardState::BLANK;
+                        if (region->Generation() < 2)
                         {
-                            // TODO: VS do we care? or every thread should retry?
-                            // claim the group as complete
-                            page->CardGroupScanTicket(i) = currentScanTicket;
-                            continue;
-                        }
+                            // allocating region is not parseable.
+                            if (region->MaybeAllocatingAcquire())
+                            {
+                                // TODO: VS do we care? or every thread should retry?
+                                // claim the group as complete
+                                page->CardGroupScanTicket(i) = currentScanTicket;
+                                continue;
+                            }
 
-                        _ASSERTE(Satori::CardState::EPHEMERAL == (int8_t)0x80);
-                        const size_t unsetValue = region->Generation() >= 2 ?
-                            Satori::CardState::BLANK :
-                            0x8080808080808080;
+                            resetValue = Satori::CardState::EPHEMERAL;
+                            _ASSERTE(Satori::CardState::EPHEMERAL == (int8_t)0x80);
+                            unsetValue = 0x8080808080808080;
+                        }
 
                         int8_t* cards = page->CardsForGroup(i);
 
@@ -2828,12 +2846,12 @@ void SatoriRecycler::CleanCards()
                             continue;
                         }
 
-                        bool considerAllMarked = region->Generation() > m_condemnedGeneration;
-
                         _ASSERTE(Satori::CardState::EPHEMERAL == (int8_t)0x80);
                         const size_t unsetValue = region->Generation() >= 2 ?
                             Satori::CardState::BLANK :
                             0x8080808080808080;
+
+                        bool considerAllMarked = region->Generation() > m_condemnedGeneration;
 
                         int8_t* cards = page->CardsForGroup(i);
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
