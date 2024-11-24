@@ -2309,9 +2309,6 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                             continue;
                         }
 
-                        // claim the group as complete
-                        page->CardGroupScanTicket(i) = currentScanTicket;
-
                         // now we have to finish, since we have clamed the group
                         // NB: two threads may claim the same group and do overlapping work
                         //     that is correct, but redundant. We could claim using interlocked operation
@@ -2332,7 +2329,9 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                         size_t unsetValue = Satori::CardState::BLANK;
                         if (region->Generation() < 2)
                         {
-                            // allocating region is not parseable.
+                            // continue;
+
+                                // allocating region is not parseable.
                             if (region->MaybeAllocatingAcquire())
                             {
                                 // TODO: VS do we care? or every thread should retry?
@@ -2344,6 +2343,12 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                             resetValue = Satori::CardState::EPHEMERAL;
                             _ASSERTE(Satori::CardState::EPHEMERAL == (int8_t)0x80);
                             unsetValue = 0x8080808080808080;
+                        }
+                        else
+                        {
+                            // claim the group as complete early
+                            // there can be remembered cards, which we will not clear, so we do not want to share/revisit
+                            page->CardGroupScanTicket(i) = currentScanTicket;
                         }
 
                         bool considerAllMarked = region->Generation() > m_condemnedGeneration;
@@ -2359,26 +2364,27 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                             }
 
                             // skip empty cards
-                            if (cards[j] <= Satori::CardState::BLANK)
+                            int8_t origValue = cards[j];
+                            if (origValue <= Satori::CardState::BLANK)
                             {
                                 continue;
                             }
 
                             size_t start = page->LocationForCard(&cards[j]);
-                            do
+                            if (origValue == Satori::CardState::DIRTY)
                             {
-                                cards[j] = resetValue;
-                            } while (++j < Satori::CARD_BYTES_IN_CARD_GROUP && cards[j]);
+                                // clean the card since it is going to be visited and marked through.
+                                // do not allow card cleaning to delay until after checking IsMarked
+                                if (Interlocked::CompareExchange(&cards[j], resetValue, origValue) != origValue)
+                                {
+                                    // someone else cleaned the card
+                                    continue;
+                                }
+                            }
 
-                            size_t end = page->LocationForCard(&cards[j]);
+                            size_t end = start + Satori::BYTES_PER_CARD_BYTE;
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
                             SatoriObject* o = region->FindObject(start);
-
-                            // do not allow card cleaning to delay until after checking IsMarked
-                            if (!considerAllMarked)
-                            {
-                                MemoryBarrier();
-                            }
 
                             do
                             {
@@ -2430,6 +2436,9 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                                 o = o->Next();
                             } while (o->Start() < objLimit);
                         }
+
+                        // claim the group as complete
+                        page->CardGroupScanTicket(i) = currentScanTicket;
 
                         _ASSERTE(deadline != 0);
                         if (GCToOSInterface::QueryPerformanceCounter() - deadline > 0)
@@ -2560,8 +2569,6 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                             }
 
                             size_t start = page->LocationForCard(&cards[j]);
-
-                            //TODO: VS consider grabbing a bunch of 8/4/2 cards?
 
                             // clean the card since it is going to be visited and marked through.
                             // do not allow card cleaning to delay until after checking IsMarked
