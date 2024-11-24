@@ -287,7 +287,7 @@ private:
     bool DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk = nullptr, int64_t deadline = 0);
 
     bool HasDirtyCards();
-    bool ScanDirtyCardsConcurrent(int64_t deadline);
+    bool CleanCardsConcurrent(int64_t deadline);
     void CleanCards();
     bool MarkHandles(int64_t deadline = 0);
     void ShortWeakPtrScan();
