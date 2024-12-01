@@ -150,6 +150,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_rootScanTicket = 0;
     m_cardScanTicket = 0;
     m_concurrentCardsDone = false;
+    m_concurrentCleaningState = CC_CLEAN_STATE_NOT_READY;
     m_concurrentHandlesDone = false;
     m_ccStackMarkingThreadsNum = 0;
 
@@ -513,13 +514,17 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
         {
             m_ccStackMarkState = CC_MARK_STATE_NONE;
             IncrementRootScanTicket();
-            m_concurrentCardsDone = false;
+            m_concurrentCardsDone = (m_condemnedGeneration == 2);
+            m_concurrentCleaningState = CC_CLEAN_STATE_NOT_READY;
             m_concurrentHandlesDone = false;
             SatoriHandlePartitioner::StartNextScan();
             m_activeHelperFn = &SatoriRecycler::ConcurrentHelp;
         }
 
-        IncrementCardScanTicket();
+        if (m_condemnedGeneration != 2)
+        {
+            IncrementCardScanTicket();
+        }
 
         // publishing condemned generation will enable helping.
         // it should happen after the writes above.
@@ -613,12 +618,10 @@ bool SatoriRecycler::HelpOnceCore()
     if (!m_concurrentCardsDone)
     {
         // doing cards could be chunky (region granularity).
-        // If there are helpers, just say more work is needed.
+        // prefer that helpers do that
         if (IsHelperThread() || m_activeHelpers == 0)
         {
-            if (m_condemnedGeneration == 1 ?
-                MarkThroughCardsConcurrent(deadline) :
-                CleanCardsConcurrent(deadline))
+            if (m_condemnedGeneration == 1 && MarkThroughCardsConcurrent(deadline))
             {
                 return true;
             }
@@ -641,6 +644,25 @@ bool SatoriRecycler::HelpOnceCore()
         _ASSERTE(IsHelperThread());
         // do not leave (and start blocking gc), come back and help
         return true;
+    }
+
+    if (m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING)
+    {
+        // doing cards could be chunky (region granularity).
+        // prefer that helpers do that
+        if (IsHelperThread() || m_activeHelpers == 0)
+        {
+            if (m_condemnedGeneration == 1 ?
+                MarkThroughCardsConcurrent(deadline) :
+                CleanCardsConcurrent(deadline))
+            {
+                return true;
+            }
+            else
+            {
+                 m_concurrentCleaningState = CC_CLEAN_STATE_DONE;
+            }
+        }
     }
 
     // if queues are empty we see no more work
@@ -776,7 +798,11 @@ void SatoriRecycler::HelpOnce()
     {
         if (m_gcState == GC_STATE_CONCURRENT)
         {
+tryAgain:
+            // TODO: VS reorder and rationalize checks. What matters here?
             bool moreWork = m_ccStackMarkState != CC_MARK_STATE_DONE ||
+                !m_concurrentCardsDone ||
+                m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING ||
                 m_condemnedGeneration == 0 ||
                 m_activeHelpers > 0;
 
@@ -801,10 +827,20 @@ void SatoriRecycler::HelpOnce()
             else
             {
                 // 4 help quantums without work or pacers returned
+                // we see evidence of no concurrent work
                 if (start - m_noWorkSince > HelpQuantum() * 4)
                 {
-                    // we see evidence of no concurrent work, initiate blocking stage
-                    if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
+                    if (m_concurrentCleaningState != CC_CLEAN_STATE_DONE)
+                    {
+                        if (m_concurrentCleaningState == CC_CLEAN_STATE_NOT_READY &&
+                            Interlocked::CompareExchange(&m_concurrentCleaningState, CC_CLEAN_STATE_SETTING_UP, CC_CLEAN_STATE_NOT_READY) == CC_CLEAN_STATE_NOT_READY)
+                        {
+                            IncrementCardScanTicket();
+                            m_concurrentCleaningState = CC_CLEAN_STATE_CLEANING;
+                            goto tryAgain;
+                        }
+                    }
+                    else if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
                     {
                         m_activeHelperFn = nullptr;
                         BlockingCollect();
@@ -2318,7 +2354,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                         //     and avoid that, but such collisions appear to be too rare to worry about.
                         //     It may be worth watching this in the future though.
 
-                        //NB: It is safe to get a region even if region map may be changing because
+                        // NB: It is safe to get a region even if region map may be changing because
                         //    a region with remembered/dirty marks must be there and cannot be destroyed.
                         SatoriRegion* region = page->RegionForCardGroup(i);
                         // we should not be marking when there could be dead objects
@@ -2332,7 +2368,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                         size_t unsetValue = Satori::CardState::BLANK;
                         if (region->Generation() < 2)
                         {
-                                // allocating region is not parseable.
+                            // allocating region is not parseable.
                             if (region->MaybeAllocatingAcquire())
                             {
                                 continue;
@@ -2341,12 +2377,6 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                             resetValue = Satori::CardState::EPHEMERAL;
                             _ASSERTE(Satori::CardState::EPHEMERAL == (int8_t)0x80);
                             unsetValue = 0x8080808080808080;
-                        }
-                        else
-                        {
-                            // claim the group as complete early
-                            // there can be remembered cards, which we will not clear, so we do not want to share/revisit
-                            page->CardGroupScanTicket(i) = currentScanTicket;
                         }
 
                         bool considerAllMarked = region->Generation() > m_condemnedGeneration;

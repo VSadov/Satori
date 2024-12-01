@@ -176,6 +176,11 @@ private:
     static const int CC_MARK_STATE_MARKING = 2;
     static const int CC_MARK_STATE_DONE = 3;
 
+    static const int CC_CLEAN_STATE_NOT_READY = 0;
+    static const int CC_CLEAN_STATE_SETTING_UP = 1;
+    static const int CC_CLEAN_STATE_CLEANING = 2;
+    static const int CC_CLEAN_STATE_DONE = 3;
+
     volatile int m_ccStackMarkState;
     volatile int m_ccStackMarkingThreadsNum;
 
@@ -185,6 +190,7 @@ private:
 
     bool m_concurrentCardsDone;
     bool m_concurrentHandlesDone;
+    volatile int m_concurrentCleaningState;
 
     bool m_isRelocating;
     bool m_isLowLatencyMode;
