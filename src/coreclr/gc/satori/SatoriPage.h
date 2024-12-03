@@ -117,7 +117,8 @@ public:
     void DirtyCardsForRange(size_t start, size_t length);
     void DirtyCardsForRangeConcurrent(size_t start, size_t end);
 
-    void WipeCardsForRange(size_t start, size_t end, bool isTenured);
+    void WipeGroupsForRange(size_t start, size_t end);
+    void ResetCardsForRange(size_t start, size_t end, bool isTenured);
 
     volatile int8_t& CardState();
     volatile int8_t& ScanTicket();
