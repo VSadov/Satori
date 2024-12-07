@@ -1653,7 +1653,7 @@ bool SatoriRecycler::MarkDemotedAndDrainQueuesConcurrent(int64_t deadline)
 
     // Going through demoted could be contentious.
     // If there are helpers, let helpers do that.
-    if (IsHelperThread() || m_activeHelpers > 0)
+    if (IsHelperThread() || m_activeHelpers == 0)
     {
         // in blocking case we go through demoted together with marking all stacks
         // in concurrent case we do it here, since going through demoted does not need EE stopped.
