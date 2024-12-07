@@ -814,21 +814,20 @@ tryAgain:
             }
             else
             {
-                // 4 help quantums without work or pacers returned
-                // we see evidence of no concurrent work
-                if (start - m_noWorkSince > HelpQuantum() * 4)
+                if (m_concurrentCleaningState != CC_CLEAN_STATE_DONE)
                 {
-                    if (m_concurrentCleaningState != CC_CLEAN_STATE_DONE)
+                    if (m_concurrentCleaningState == CC_CLEAN_STATE_NOT_READY &&
+                        Interlocked::CompareExchange(&m_concurrentCleaningState, CC_CLEAN_STATE_SETTING_UP, CC_CLEAN_STATE_NOT_READY) == CC_CLEAN_STATE_NOT_READY)
                     {
-                        if (m_concurrentCleaningState == CC_CLEAN_STATE_NOT_READY &&
-                            Interlocked::CompareExchange(&m_concurrentCleaningState, CC_CLEAN_STATE_SETTING_UP, CC_CLEAN_STATE_NOT_READY) == CC_CLEAN_STATE_NOT_READY)
-                        {
-                            IncrementCardScanTicket();
-                            m_concurrentCleaningState = CC_CLEAN_STATE_CLEANING;
-                            goto tryAgain;
-                        }
+                        IncrementCardScanTicket();
+                        m_concurrentCleaningState = CC_CLEAN_STATE_CLEANING;
+                        goto tryAgain;
                     }
-                    else if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
+                }
+                else if (start - m_noWorkSince > HelpQuantum() * 4)
+                {
+                    // 4 help quantums without work, seems like we are done
+                    if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
                     {
                         m_activeHelperFn = nullptr;
                         BlockingCollect();
