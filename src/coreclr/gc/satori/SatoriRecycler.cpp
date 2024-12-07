@@ -746,9 +746,6 @@ void SatoriRecycler::BlockingMarkForConcurrent()
         VolatileStore((int*)&m_ccStackMarkState, CC_MARK_STATE_MARKING);
         MaybeAskForHelp();
 
-        // TODO: VS can this help with going through the pause?
-        // m_helperGate->WakeAll();
-
         // mark demoted regions if any attached to thread contexts
         MarkContext c(this);
         GCToEEInterface::GcEnumAllocContexts(ConcurrentPhasePrepFn, &c);
@@ -787,12 +784,11 @@ void SatoriRecycler::HelpOnce()
         if (m_gcState == GC_STATE_CONCURRENT)
         {
 tryAgain:
-            // TODO: VS reorder and rationalize checks. What matters here?
-            bool moreWork = m_ccStackMarkState != CC_MARK_STATE_DONE ||
+            bool moreWork = m_activeHelpers > 0 ||
                 !m_concurrentCardsDone ||
+                m_ccStackMarkState != CC_MARK_STATE_DONE ||
                 m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING ||
-                m_condemnedGeneration == 0 ||
-                m_activeHelpers > 0;
+                m_condemnedGeneration == 0;
 
             int64_t start = GCToOSInterface::QueryPerformanceCounter();
             if (moreWork)
@@ -1349,8 +1345,6 @@ void SatoriRecycler::MarkStrongReferences()
     IncrementRootScanTicket();
     SatoriHandlePartitioner::StartNextScan();
 
-    // TODO: VS consider if not concurrent? (we do not expect a lot of marking in concurrent)
-    // m_helperGate->WakeAll();
     RunWithHelp(&SatoriRecycler::MarkStrongReferencesWorker);
 }
 
