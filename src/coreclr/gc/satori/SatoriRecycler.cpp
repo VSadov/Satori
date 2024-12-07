@@ -81,8 +81,6 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_helperWoken = 0;
     m_activeHelpers= 0;
     m_totalHelpers = 0;
-    // TODO: VS remove?
-    maySpinAtGate = false;
 
     m_noWorkSince = 0;
 
@@ -189,38 +187,29 @@ void SatoriRecycler::HelperThreadFn(void* param)
                 goto released;
             }
 
-            if (recycler->maySpinAtGate)
+            // spin for ~10 microseconds (GcSpin)
+            int64_t limit = GCToOSInterface::QueryPerformanceCounter() +
+                recycler->m_perfCounterTicksPerMicro * SatoriUtil::GcSpin();
+
+            int i = 0;
+            do
             {
-                // spin for ~10 microseconds (GcSpin)
-                int64_t limit = GCToOSInterface::QueryPerformanceCounter() +
-                    recycler->m_perfCounterTicksPerMicro * SatoriUtil::GcSpin();
-
-                int i = 0;
-                do
+                i++;
+                i = min(30, i);
+                int j = (1 << i);
+                while (--j > 0)
                 {
-                    i++;
-                    i = min(30, i);
-                    int j = (1 << i);
-                    while (--j > 0)
+                    YieldProcessor();
+
+                    if (recycler->m_gateSignaled &&
+                        Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
                     {
-                        YieldProcessor();
-
-                        if (recycler->m_gateSignaled &&
-                            Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
-                        {
-                            goto released;
-                        }
-
-                        if (!recycler->maySpinAtGate)
-                        {
-                            goto wait;
-                        }
+                        goto released;
                     }
                 }
-                while(GCToOSInterface::QueryPerformanceCounter() < limit);
             }
+            while(GCToOSInterface::QueryPerformanceCounter() < limit);
 
-        wait:
             // Wait returns true if was woken up.
             if (!recycler->m_helperGate->TimedWait(10000))
             {
@@ -1134,8 +1123,6 @@ void SatoriRecycler::BlockingCollectImpl()
 {
     _ASSERTE(!m_nextGcIsFullGc || m_condemnedGeneration ==2);
 
-    maySpinAtGate = true;
-
     FIRE_EVENT(GCStart_V2, (uint32_t)GlobalGcIndex() + 1, (uint32_t)m_condemnedGeneration, (uint32_t)reason_empty, (uint32_t)gc_etw_type_ngc);
     m_gcStartMillis[m_condemnedGeneration] = GetNowMillis();
 
@@ -1204,8 +1191,6 @@ void SatoriRecycler::BlockingCollectImpl()
     Plan();
     Relocate();
     Update();
-
-    maySpinAtGate = true;
 
     m_gcCount[0]++;
     m_gcCount[1]++;

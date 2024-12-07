@@ -57,7 +57,7 @@ public:
     void AddEphemeralRegion(SatoriRegion* region);
     void AddTenuredRegion(SatoriRegion* region);
 
-    // TODO: VS should live in heap?
+    // TODO: VS should be moved to Heap?
     size_t GetNowMillis();
     size_t GetNowUsecs();
 
@@ -234,7 +234,6 @@ private:
     volatile int m_helperWoken;
     volatile int m_activeHelpers;
     volatile int m_totalHelpers;
-    volatile bool maySpinAtGate;
 
     void(SatoriRecycler::* volatile m_activeHelperFn)();
 
