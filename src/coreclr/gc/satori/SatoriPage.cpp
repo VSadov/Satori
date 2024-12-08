@@ -39,7 +39,7 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 {
     _ASSERTE(pageSize % Satori::PAGE_SIZE_GRANULARITY == 0);
 
-    SatoriPage* result = (SatoriPage*)GCToOSInterface::VirtualReserve((void*)address, pageSize);
+    SatoriPage* result = (SatoriPage*)GCToOSInterface::VirtualReserve((void*)address, pageSize, SatoriUtil::UseTHP());
     if (result == nullptr)
     {
         return result;
