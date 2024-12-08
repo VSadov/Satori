@@ -1037,6 +1037,10 @@ void SatoriRecycler::AdjustHeuristics()
 
     // if the heap size will definitely be over the limit at next GC, make the next GC a full GC
     m_nextGcIsFullGc = occupancy + m_gen1Budget > m_totalLimit;
+    if (!SatoriUtil::IsGen1Enabled())
+    {
+        m_nextGcIsFullGc = true;
+    }
 
     // now figure if we will promote
     m_promoteAllRegions = false;
@@ -4243,7 +4247,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
 #endif
             // we can't mark through gen0 candidates concurrently, so we would not put demoted there
             // it would work, but could reduce concurrent gen2 efficiency.
-            if (!SatoriUtil::IsThreadLocalGCEnabled() || curRegion->IsDemoted())
+            if (!SatoriUtil::IsGen0Enabled() || curRegion->IsDemoted())
             {
                 curRegion->ReusableFor() = SatoriRegion::ReuseLevel::Gen1;
             }

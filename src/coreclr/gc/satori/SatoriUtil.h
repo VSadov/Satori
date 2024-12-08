@@ -226,10 +226,16 @@ public:
         return (GCConfig::GetRelocatingInGen2());
     }
 
-    // DOTNET_gcThreadLocal
-    static bool IsThreadLocalGCEnabled()
+    // DOTNET_gcGen0
+    static bool IsGen0Enabled()
     {
-        return (GCConfig::GetThreadLocalGC());
+        return (GCConfig::GetGen0GC());
+    }
+
+    // DOTNET_gcGen1
+    static bool IsGen1Enabled()
+    {
+        return (GCConfig::GetGen1GC());
     }
 
     // DOTNET_gcTrim

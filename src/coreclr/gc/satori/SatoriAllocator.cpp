@@ -482,7 +482,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
         // 4) (optional: clear escape tag) Detach       
 
         region->AttachToAllocatingOwner(&context->RegularRegion());
-        if (SatoriUtil::IsThreadLocalGCEnabled())
+        if (SatoriUtil::IsGen0Enabled())
         {
             switch (region->ReusableFor())
             {
