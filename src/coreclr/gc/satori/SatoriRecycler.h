@@ -265,7 +265,7 @@ private:
     int64_t HelpQuantum();
     void AskForHelp();
     void RunWithHelp(void(SatoriRecycler::* method)());
-    bool HelpOnceCore();
+    bool HelpOnceCore(bool minQuantum);
 
     void PushToEphemeralQueues(SatoriRegion* region);
     void PushToTenuredQueues(SatoriRegion* region);

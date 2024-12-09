@@ -541,7 +541,7 @@ int64_t SatoriRecycler::HelpQuantum()
                 64); // 15 usec
 }
 
-bool SatoriRecycler::HelpOnceCore()
+bool SatoriRecycler::HelpOnceCore(bool minQuantum)
 {
     if (m_condemnedGeneration == 0)
     {
@@ -557,7 +557,7 @@ bool SatoriRecycler::HelpOnceCore()
     }
 
     int64_t timeStamp = GCToOSInterface::QueryPerformanceCounter();
-    int64_t deadline = timeStamp + HelpQuantum();
+    int64_t deadline = timeStamp + (minQuantum ? 0: HelpQuantum());
 
     // this should be done before scanning stacks or cards
     // since the regions must be swept before we can use FindObject
@@ -762,7 +762,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
         while (m_ccStackMarkingThreadsNum)
         {
             // since we are waiting anyways, try helping
-            if (!HelpOnceCore())
+            if (!HelpOnceCore(/*minQuantum*/ true))
             {
                 YieldProcessor();
             }
@@ -793,7 +793,7 @@ tryAgain:
             int64_t start = GCToOSInterface::QueryPerformanceCounter();
             if (moreWork)
             {
-                HelpOnceCore();
+                HelpOnceCore(/*minQuantum*/ false);
                 m_noWorkSince = GCToOSInterface::QueryPerformanceCounter();
 
                 // if we did not use all the quantum,
@@ -845,7 +845,7 @@ tryAgain:
 void SatoriRecycler::ConcurrentHelp()
 {
     // helpers have deadline too, just to come here and check the stage.
-    while ((m_gcState == GC_STATE_CONCURRENT) && HelpOnceCore());
+    while ((m_gcState == GC_STATE_CONCURRENT) && HelpOnceCore(/*minQuantum*/ false));
 }
 
 int SatoriRecycler::MaxHelpers()
@@ -1134,7 +1134,7 @@ void SatoriRecycler::BlockingCollectImpl()
     while (m_activeHelpers > 0)
     {
         // since we are waiting for concurrent helpers to stop, we could as well try helping
-        if (!HelpOnceCore())
+        if (!HelpOnceCore(/*minQuantum*/ true))
         {
             YieldProcessor();
         }
