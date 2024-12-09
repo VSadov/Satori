@@ -3040,8 +3040,8 @@ void SatoriRecycler::UpdatePointersThroughCards()
                         // but, since we do that, we expect that it is done by now.
                         _ASSERTE(region->Generation() >= 2);
 
-                        // invariant check: when marking through cards the gen2 remset stays remset, thus should be marked through on every GC
-                        // and should not fall far behind the tickets
+                        // invariant check: when marking/updating through cards the gen2 remset stays remset,
+                        // thus should be marked through on every GC and should not fall far behind the tickets
                         _ASSERTE(groupTicket == 0 || currentScanTicket - groupTicket <= 2);
                         int8_t* cards = page->CardsForGroup(i);
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
@@ -3090,7 +3090,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                             }
 
                                             if (child->ContainingRegion()->Generation() < 2)
-                                             {
+                                            {
                                                 page->SetCardForAddressOnly((size_t)ppObject);
                                             }
                                         }
