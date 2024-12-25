@@ -477,7 +477,8 @@ WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
         ldr     x16, LOCAL_LABEL(wbs_card_bundle_table)
         lsr     x17, x14, #30                       // dst page index
         ldrb    w12, [x16, x17]
-        cbnz    x12, LOCAL_LABEL(CheckedEntry)
+        cbz     x12 , LOCAL_LABEL(NotInHeap)
+        b       C_FUNC(CheckedEntry)
 
     LOCAL_LABEL(NotInHeap):
         str  x15, [x14], #8
@@ -501,12 +502,12 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     // 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         ldr     x16, LOCAL_LABEL(wbs_card_bundle_table)
-    LOCAL_LABEL(CheckedEntry):
+    C_FUNC(CheckedEntry):
         lsr     x17, x15, #30                   // source page index
         ldrb    w12, [x16, x17]
         cbz     x12, LOCAL_LABEL(JustAssign)    // null or external (immutable) object
 #else
-    LOCAL_LABEL(CheckedEntry):
+    C_FUNC(CheckedEntry):
         cbz     x15, LOCAL_LABEL(JustAssign)    // assigning null
 #endif
         and     x16,  x15, #0xFFFFFFFFFFE00000  // source region

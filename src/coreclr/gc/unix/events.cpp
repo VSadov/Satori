@@ -367,8 +367,8 @@ void SatoriGate::WakeOne()
 #else
 SatoriGate::SatoriGate()
 {
-    m_cs = new pthread_mutex_t();
-    m_cv = new pthread_cond_t();
+    m_cs = new (nothrow) pthread_mutex_t();
+    m_cv = new (nothrow) pthread_cond_t();
 
     pthread_mutex_init(m_cs, NULL);
     pthread_condattr_t attrs;

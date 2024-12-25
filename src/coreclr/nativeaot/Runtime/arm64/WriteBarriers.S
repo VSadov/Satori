@@ -450,7 +450,8 @@ LEAF_ENTRY RhpCheckedAssignRefArm64, _TEXT
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
         lsr     x17, x14, #30                       // dst page index
         ldrb    w12, [x16, x17]
-        cbnz    x12, C_FUNC(CheckedEntry)
+        cbz     x12 , LOCAL_LABEL(NotInHeap)
+        b       C_FUNC(CheckedEntry)
 
     LOCAL_LABEL(NotInHeap):
     ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
