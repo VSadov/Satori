@@ -260,7 +260,7 @@ int SatoriRecycler::GetRootScanTicket()
     return m_rootScanTicket;
 }
 
-uint8_t SatoriRecycler::GetCardScanTicket()
+int8_t SatoriRecycler::GetCardScanTicket()
 {
     return m_cardScanTicket;
 }

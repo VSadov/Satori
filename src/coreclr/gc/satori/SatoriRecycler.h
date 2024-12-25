@@ -134,7 +134,7 @@ private:
     SatoriHeap* m_heap;
 
     int m_rootScanTicket;
-    uint8_t m_cardScanTicket;
+    int8_t m_cardScanTicket;
 
     SatoriWorkList* m_workList;
     SatoriTrimmer* m_trimmer;
@@ -275,7 +275,7 @@ private:
 
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();
-    uint8_t GetCardScanTicket();
+    int8_t GetCardScanTicket();
 
     void MarkOwnStack(gc_alloc_context* aContext, MarkContext* markContext);
     void MarkThroughCards();
