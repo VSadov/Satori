@@ -857,9 +857,11 @@ int SatoriRecycler::MaxHelpers()
 
         // TUNING: should this be more dynamic? check CPU load and such.
         helperCount = cpuCount - 1;
+        if (!IsBlockingPhase() && IsLowLatencyMode())
+        {
+            helperCount = cpuCount / 2;
+        }
     }
-
-    helperCount = IsBlockingPhase() ? 31 : helperCount;
 
     return helperCount;
 }
