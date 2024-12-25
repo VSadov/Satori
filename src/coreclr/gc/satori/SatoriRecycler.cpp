@@ -859,7 +859,7 @@ int SatoriRecycler::MaxHelpers()
         helperCount = cpuCount - 1;
         if (!IsBlockingPhase() && IsLowLatencyMode())
         {
-            helperCount = cpuCount / 2;
+            helperCount = (cpuCount + 1) / 2;
         }
     }
 
