@@ -75,10 +75,10 @@ public:
     bool IsBlockingPhase();
 
     bool ShouldDoConcurrent(int generation);
-    void ConcurrentHelp();
+    void ConcurrentWorkerFn();
     void ShutDown();
 
-    void BlockingMarkForConcurrentHelper();
+    void BlockingMarkForConcurrentImpl();
     void BlockingMarkForConcurrent();
     void MaybeAskForHelp();
 
@@ -228,14 +228,14 @@ private:
     int64_t m_perfCounterTicksPerMilli;
     int64_t m_perfCounterTicksPerMicro;
 
-    SatoriGate* m_helperGate;
+    SatoriGate* m_workerGate;
 
     volatile int m_gateSignaled;
-    volatile int m_helperWoken;
-    volatile int m_activeHelpers;
-    volatile int m_totalHelpers;
+    volatile int m_workerWoken;
+    volatile int m_activeWorkers;
+    volatile int m_totalWorkers;
 
-    void(SatoriRecycler::* volatile m_activeHelperFn)();
+    void(SatoriRecycler::* volatile m_activeWorkerFn)();
 
     int64_t m_noWorkSince;
 
@@ -260,8 +260,8 @@ private:
     template <bool isConservative>
     static void MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 
-    static void HelperThreadFn(void* param);
-    int MaxHelpers();
+    static void WorkerThreadMainLoop(void* param);
+    int MaxWorkers();
     int64_t HelpQuantum();
     void AskForHelp();
     void RunWithHelp(void(SatoriRecycler::* method)());
@@ -351,7 +351,7 @@ private:
     void KeepRegion(SatoriRegion* curRegion);
     void DrainDeferredSweepQueue();
     bool DrainDeferredSweepQueueConcurrent(int64_t deadline = 0);
-    void DrainDeferredSweepQueueHelp();
+    void DrainDeferredSweepQueueWorkerFn();
     void SweepAndReturnRegion(SatoriRegion* curRegion);
 
     void ASSERT_NO_WORK();

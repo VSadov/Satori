@@ -76,11 +76,11 @@ void ToggleWriteBarrier(bool concurrent, bool skipCards, bool eeSuspended)
 
 void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
-    m_helperGate = new (nothrow) SatoriGate();
+    m_workerGate = new (nothrow) SatoriGate();
     m_gateSignaled = 0;
-    m_helperWoken = 0;
-    m_activeHelpers= 0;
-    m_totalHelpers = 0;
+    m_workerWoken = 0;
+    m_activeWorkers= 0;
+    m_totalWorkers = 0;
 
     m_noWorkSince = 0;
 
@@ -144,7 +144,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_prevCondemnedGeneration = 2;
     m_gcNextTimeTarget = 0;
 
-    m_activeHelperFn = nullptr;
+    m_activeWorkerFn = nullptr;
     m_rootScanTicket = 0;
     m_cardScanTicket = 0;
     m_concurrentCardsDone = true;
@@ -166,18 +166,18 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
 void SatoriRecycler::ShutDown()
 {
-    m_activeHelperFn = nullptr;
+    m_activeWorkerFn = nullptr;
 }
 
 /* static */
-void SatoriRecycler::HelperThreadFn(void* param)
+void SatoriRecycler::WorkerThreadMainLoop(void* param)
 {
     SatoriRecycler* recycler = (SatoriRecycler*)param;
-    Interlocked::Increment(&recycler->m_activeHelpers);
+    Interlocked::Increment(&recycler->m_activeWorkers);
 
     for (;;)
     {
-        Interlocked::Decrement(&recycler->m_activeHelpers);
+        Interlocked::Decrement(&recycler->m_activeWorkers);
 
         for (;;)
         {
@@ -211,25 +211,25 @@ void SatoriRecycler::HelperThreadFn(void* param)
             while(GCToOSInterface::QueryPerformanceCounter() < limit);
 
             // Wait returns true if was woken up.
-            if (!recycler->m_helperGate->TimedWait(10000))
+            if (!recycler->m_workerGate->TimedWait(10000))
             {
                 // we timed out (very rare case)
-                // we did not consume the wake, but there could be no more helpers sleeping.
-                Interlocked::Decrement(&recycler->m_totalHelpers);
+                // we did not consume the wake, but there could be no more workers sleeping.
+                Interlocked::Decrement(&recycler->m_totalWorkers);
                 return;
             }
 
             // if there is a wake, clear it as it may no longer wake anything
-            Interlocked::And(&recycler->m_helperWoken, 0);
+            Interlocked::And(&recycler->m_workerWoken, 0);
         }
 
     released:
-        Interlocked::Increment(&recycler->m_activeHelpers);
+        Interlocked::Increment(&recycler->m_activeWorkers);
 
-        auto activeHelper = recycler->m_activeHelperFn;
-        if (activeHelper)
+        auto activeWorkerFn = recycler->m_activeWorkerFn;
+        if (activeWorkerFn)
         {
-            (recycler->*activeHelper)();
+            (recycler->*activeWorkerFn)();
         }
     }
 }
@@ -507,7 +507,7 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
             m_concurrentCleaningState = CC_CLEAN_STATE_NOT_READY;
             m_concurrentHandlesDone = false;
             SatoriHandlePartitioner::StartNextScan();
-            m_activeHelperFn = &SatoriRecycler::ConcurrentHelp;
+            m_activeWorkerFn = &SatoriRecycler::ConcurrentWorkerFn;
         }
 
         if (generation != 2)
@@ -528,7 +528,7 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
     }
 }
 
-bool IsHelperThread()
+bool IsWorkerThread()
 {
     return GCToEEInterface::WasCurrentThreadCreatedByGC();
 }
@@ -536,7 +536,7 @@ bool IsHelperThread()
 int64_t SatoriRecycler::HelpQuantum()
 {
         return m_perfCounterTicksPerMilli /
-            (IsHelperThread() ?
+            (IsWorkerThread() ?
                 8:  // 125 usec
                 64); // 15 usec
 }
@@ -553,7 +553,7 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
     {
         _ASSERTE(m_isBarrierConcurrent);
         // help with marking stacks and f-queue, this is urgent since EE is stopped for this.
-        BlockingMarkForConcurrentHelper();
+        BlockingMarkForConcurrentImpl();
     }
 
     int64_t timeStamp = GCToOSInterface::QueryPerformanceCounter();
@@ -582,7 +582,7 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
         MarkOwnStackOrDrainQueuesConcurrent(deadline);
     }
 
-    if (m_ccStackMarkState == CC_MARK_STATE_SUSPENDING_EE && !IsHelperThread())
+    if (m_ccStackMarkState == CC_MARK_STATE_SUSPENDING_EE && !IsWorkerThread())
     {
         // this is a mutator thread and we are suspending them, leave and suspend.
         return true;
@@ -607,8 +607,8 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
     if (!m_concurrentCardsDone)
     {
         // doing cards could be chunky (region granularity).
-        // prefer that helpers do that
-        if (IsHelperThread() || m_activeHelpers == 0)
+        // prefer that it is done by workers
+        if (IsWorkerThread() || m_activeWorkers == 0)
         {
             _ASSERTE(m_condemnedGeneration != 2);
             if (MarkThroughCardsConcurrent(deadline))
@@ -631,7 +631,7 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
 
     if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
     {
-        _ASSERTE(IsHelperThread());
+        _ASSERTE(IsWorkerThread());
         // do not leave (and start blocking gc), come back and help
         return true;
     }
@@ -639,8 +639,8 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
     if (m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING)
     {
         // doing cards could be chunky (region granularity).
-        // prefer that helpers do that
-        if (IsHelperThread() || m_activeHelpers == 0)
+        // prefer that it is done by workers
+        if (IsWorkerThread() || m_activeWorkers == 0)
         {
             if (CleanCardsConcurrent(deadline))
             {
@@ -687,7 +687,7 @@ private:
     SatoriRecycler* m_recycler;
 };
 
-void SatoriRecycler::BlockingMarkForConcurrentHelper()
+void SatoriRecycler::BlockingMarkForConcurrentImpl()
 {
     Interlocked::Increment(&m_ccStackMarkingThreadsNum);
     // check state again it could have changed if there were no marking threads
@@ -777,14 +777,14 @@ void SatoriRecycler::BlockingMarkForConcurrent()
 
 void SatoriRecycler::HelpOnce()
 {
-    _ASSERTE(!IsHelperThread());
+    _ASSERTE(!IsWorkerThread());
 
     if (m_gcState != GC_STATE_NONE)
     {
         if (m_gcState == GC_STATE_CONCURRENT)
         {
 tryAgain:
-            bool moreWork = m_activeHelpers > 0 ||
+            bool moreWork = m_activeWorkers > 0 ||
                 !m_concurrentCardsDone ||
                 m_ccStackMarkState != CC_MARK_STATE_DONE ||
                 m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING ||
@@ -825,7 +825,7 @@ tryAgain:
                     // 4 help quantums without work, seems like we are done
                     if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
                     {
-                        m_activeHelperFn = nullptr;
+                        m_activeWorkerFn = nullptr;
                         BlockingCollect();
                     }
                 }
@@ -842,33 +842,33 @@ tryAgain:
     }
 }
 
-void SatoriRecycler::ConcurrentHelp()
+void SatoriRecycler::ConcurrentWorkerFn()
 {
-    // helpers have deadline too, just to come here and check the stage.
+    // workers have deadline too, just to come here and check the stage.
     while ((m_gcState == GC_STATE_CONCURRENT) && HelpOnceCore(/*minQuantum*/ false));
 }
 
-int SatoriRecycler::MaxHelpers()
+int SatoriRecycler::MaxWorkers()
 {
-    int helperCount = SatoriUtil::MaxHelpersCount();
-    if (helperCount < 0)
+    int workerCount = SatoriUtil::MaxWorkersCount();
+    if (workerCount < 0)
     {
         int cpuCount = GCToOSInterface::GetTotalProcessorCount();
 
         // TUNING: should this be more dynamic? check CPU load and such.
-        helperCount = cpuCount - 1;
+        workerCount = cpuCount - 1;
         if (!IsBlockingPhase() && IsLowLatencyMode())
         {
-            helperCount = (cpuCount + 1) / 2;
+            workerCount = (cpuCount + 1) / 2;
         }
     }
 
-    return helperCount;
+    return workerCount;
 }
 
 void SatoriRecycler::MaybeAskForHelp()
 {
-    if (m_activeHelperFn && m_activeHelpers < MaxHelpers())
+    if (m_activeWorkerFn && m_activeWorkers < MaxWorkers())
     {
         AskForHelp();
     }
@@ -878,26 +878,26 @@ void SatoriRecycler::AskForHelp()
 {
     if (!m_gateSignaled && Interlocked::CompareExchange(&m_gateSignaled, 1, 0) == 0)
     {
-        // we signaled the gate, but need to make sure a helper will see it, even if all helpers have gone to sleep.
+        // we signaled the gate, but need to make sure a worker will see it, even if all workers have gone to sleep.
         // if there is no pending wake, lets wake one thread.
-        if (!m_helperWoken && Interlocked::CompareExchange(&m_helperWoken, 1, 0) == 0)
+        if (!m_workerWoken && Interlocked::CompareExchange(&m_workerWoken, 1, 0) == 0)
         {
             // wake can fold with other wakes, but the presence of wake ensures that something will wake up and check for work.
-            // except if helper times out and exits, which is very rare, then we may have noone to wake.
-            m_helperGate->WakeOne();
+            // except if a worker times out and exits, which is very rare, then we may have noone to wake.
+            m_workerGate->WakeOne();
         }
     }
 
-    // if all helpers are busy, make another one, up to a limit.
-    // if helpers are spining/sleeping, we will not add more helpers.
-    int totalHelpers = m_totalHelpers;
-    if (m_activeHelpers >= totalHelpers &&
-        totalHelpers < MaxHelpers() &&
-        Interlocked::CompareExchange(&m_totalHelpers, totalHelpers + 1, totalHelpers) == totalHelpers)
+    // if all workers are busy, make another one, up to a limit.
+    // if workers are spining/sleeping, we will not add more workers.
+    int totalWorkers = m_totalWorkers;
+    if (m_activeWorkers >= totalWorkers &&
+        totalWorkers < MaxWorkers() &&
+        Interlocked::CompareExchange(&m_totalWorkers, totalWorkers + 1, totalWorkers) == totalWorkers)
     {
-        if (!GCToEEInterface::CreateThread(HelperThreadFn, this, false, "Satori GC Helper Thread"))
+        if (!GCToEEInterface::CreateThread(WorkerThreadMainLoop, this, false, "Satori GC Worker Thread"))
         {
-            Interlocked::Decrement(&m_totalHelpers);
+            Interlocked::Decrement(&m_totalWorkers);
             return;
         }
     }
@@ -1133,9 +1133,9 @@ void SatoriRecycler::BlockingCollectImpl()
 
     // we should not normally have active workers here.
     // just in case we support forcing blocking stage for Collect or OOM situations
-    while (m_activeHelpers > 0)
+    while (m_activeWorkers > 0)
     {
-        // since we are waiting for concurrent helpers to stop, we could as well try helping
+        // since we are waiting for concurrent workers to stop, we could as well try helping
         if (!HelpOnceCore(/*minQuantum*/ true))
         {
             YieldProcessor();
@@ -1253,7 +1253,7 @@ void SatoriRecycler::BlockingCollectImpl()
     if (SatoriUtil::IsConcurrentEnabled() && !m_deferredSweepRegions->IsEmpty())
     {
         m_deferredSweepCount = m_deferredSweepRegions->Count();
-        m_activeHelperFn = &SatoriRecycler::DrainDeferredSweepQueueHelp;
+        m_activeWorkerFn = &SatoriRecycler::DrainDeferredSweepQueueWorkerFn;
         MaybeAskForHelp();
     }
     else
@@ -1273,17 +1273,17 @@ void SatoriRecycler::BlockingCollectImpl()
 
 void SatoriRecycler::RunWithHelp(void(SatoriRecycler::* method)())
 {
-    m_activeHelperFn = method;
+    m_activeWorkerFn = method;
     do
     {
         (this->*method)();
         YieldProcessor();
-    } while (m_activeHelpers > 0);
+    } while (m_activeWorkers > 0);
 
-    m_activeHelperFn = nullptr;
-    // make sure everyone sees the new Fn before waiting for helpers to drain.
+    m_activeWorkerFn = nullptr;
+    // make sure everyone sees the new Fn before waiting for workers to drain.
     MemoryBarrier();
-    while (m_activeHelpers > 0)
+    while (m_activeWorkers > 0)
     {
         // TUNING: are we wasting too many cycles here?
         //         should we find something more useful to do than mmpause,
@@ -1358,7 +1358,7 @@ void SatoriRecycler::MarkStrongReferencesWorker()
 {
     // in concurrent case the current stack is unlikely to have anything unmarked
     // it is still preferred to look at own stack on the same thread.
-    // this will also ask for helpers.
+    // this will also ask for help.
     MarkOwnStackAndDrainQueues();
     MarkHandles();
     MarkAllStacksFinalizationAndDemotedRoots();
@@ -1636,8 +1636,8 @@ bool SatoriRecycler::MarkDemotedAndDrainQueuesConcurrent(int64_t deadline)
     MarkContext markContext = MarkContext(this);
 
     // Going through demoted could be contentious.
-    // If there are helpers, let helpers do that.
-    if (IsHelperThread() || m_activeHelpers == 0)
+    // If there are workers, let workers do that.
+    if (IsWorkerThread() || m_activeWorkers == 0)
     {
         // in blocking case we go through demoted together with marking all stacks
         // in concurrent case we do it here, since going through demoted does not need EE stopped.
@@ -1671,7 +1671,7 @@ void SatoriRecycler::MarkOwnStackAndDrainQueues()
 {
     MarkContext markContext = MarkContext(this);
 
-    if (!IsHelperThread())
+    if (!IsWorkerThread())
     {
         gc_alloc_context* aContext = GCToEEInterface::GetAllocContext();
         int threadScanTicket = VolatileLoadWithoutBarrier(&aContext->alloc_count);
@@ -1705,7 +1705,7 @@ void SatoriRecycler::MarkOwnStackOrDrainQueuesConcurrent(int64_t deadline)
 {
     MarkContext markContext = MarkContext(this);
 
-    if (!IsHelperThread())
+    if (!IsWorkerThread())
     {
         gc_alloc_context* aContext = GCToEEInterface::GetAllocContext();
         int threadScanTicket = VolatileLoadWithoutBarrier(&aContext->alloc_count);
@@ -3887,7 +3887,7 @@ void SatoriRecycler::Update()
             IncrementCardScanTicket();
         }
 
-        m_helperGate->WakeAll();
+        m_workerGate->WakeAll();
     }
 
     RunWithHelp(&SatoriRecycler::UpdateRootsWorker);
@@ -4320,11 +4320,11 @@ void SatoriRecycler::DrainDeferredSweepQueue()
 
 bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
 {
-    bool isHelperGCThread = IsHelperThread();
-    if (!isHelperGCThread && m_activeHelpers > 0)
+    bool isWorkerGCThread = IsWorkerThread();
+    if (!isWorkerGCThread && m_activeWorkers > 0)
     {
         // Sweeping and returning could be chunky or contentious.
-        // If there are helpers, just say more work is needed.
+        // If there are workers, just say more work is needed.
         return true;
     }
 
@@ -4337,8 +4337,8 @@ bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
             SweepAndReturnRegion(curRegion);
             Interlocked::Decrement(&m_deferredSweepCount);
 
-            // ignore deadline on helper threads, we can't do anything else anyways.
-            if (!isHelperGCThread && deadline && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
+            // ignore deadline on worker threads, we can't do anything else anyways.
+            if (!isWorkerGCThread && deadline && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
             {
                 break;
             }
@@ -4353,7 +4353,7 @@ bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
         (SatoriUtil::IsConservativeMode() && m_trimmer->IsActive()))
     {
         // user threads should not wait, just say we have more work
-        if (!isHelperGCThread)
+        if (!isWorkerGCThread)
         {
             return true;
         }
@@ -4371,9 +4371,9 @@ bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
     return false;
 }
 
-void SatoriRecycler::DrainDeferredSweepQueueHelp()
+void SatoriRecycler::DrainDeferredSweepQueueWorkerFn()
 {
-    _ASSERTE(IsHelperThread());
+    _ASSERTE(IsWorkerThread());
 
     SatoriRegion* curRegion = m_deferredSweepRegions->TryPop();
     if (curRegion)

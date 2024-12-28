@@ -251,7 +251,7 @@ public:
     }
 
     // DOTNET_gcParallel
-    static int MaxHelpersCount()
+    static int MaxWorkersCount()
     {
         return (int)GCConfig::GetParallelGC();
     }
