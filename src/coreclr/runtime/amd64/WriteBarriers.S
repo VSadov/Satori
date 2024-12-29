@@ -352,13 +352,12 @@ LEAF_END RhpByRefAssignRef, _TEXT
 //   rsi - object
 //
 LEAF_ENTRY RhpCheckedAssignRef, _TEXT
-
-        // See if this is in GCHeap
-        mov     rax, rdi
-        shr     rax, 30                    // round to page size ( >> PAGE_BITS )
-        add     rax, [C_VAR(g_card_bundle_table)] // fetch the page byte map
-        cmp     byte ptr [rax], 0
-        jne     C_FUNC(RhpAssignRef)
+        // See if dst is in GCHeap
+        mov     rax, [C_VAR(g_card_bundle_table)] // fetch the page byte map
+        mov     r8, rdi
+        shr     r8,  30                           // dst page index
+        cmp     byte ptr [rax + r8], 0
+        jne     C_FUNC(CheckedEntry)
 
 NotInHeap:
 ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
@@ -370,19 +369,23 @@ LEAF_END RhpCheckedAssignRef, _TEXT
 //   rdi - dest address 
 //   rsi - object
 //
-.balign 16
 LEAF_ENTRY RhpAssignRef, _TEXT
-    // check for escaping assignment
-    // 1) check if we own the source region
 
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
-        mov     rax, rsi
-        shr     rax, 30                 // round to page size ( >> PAGE_BITS )
-        add     rax, [C_VAR(g_card_bundle_table)] // fetch the page byte map
-        cmp     byte ptr [rax], 0
-        je      JustAssign              // src not in heap
+    // check if src is in heap
+        mov     rax, [C_VAR(g_card_bundle_table)] // fetch the page byte map
+
+    ALTERNATE_ENTRY CheckedEntry
+        mov     r8,  rsi
+        shr     r8,  30                           // src page index
+        cmp     byte ptr [rax + r8], 0
+        je      JustAssign                        // src not in heap
+#else
+    ALTERNATE_ENTRY CheckedEntry
 #endif
 
+    // check for escaping assignment
+    // 1) check if we own the source region
         mov     rdx, rsi
         and     rdx, 0xFFFFFFFFFFE00000  // source region
 
@@ -423,76 +426,86 @@ ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
 ALTERNATE_ENTRY RhpAssignRefAVLocation
         mov     [rdi], rsi
 
+        // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+        //         needs to suspend EE, not sure if skipping mode check would worth that much.
+        mov     r11, [C_VAR(g_write_watch_table)]
+
         // set rdi per contract with JIT_ByRefWriteBarrier
         mov     rax, rdi
         add     rdi, 8
 
-        xor     rsi, rdi
-        shr     rsi, 21
-
+        // check the barrier state. this must be done after the assignment (in program order)
+        // if state == 2 we do not set or dirty cards.
+        cmp     r11, 2
+        jne     DoCards
         // set rsi per contract with JIT_ByRefWriteBarrier
         mov     rsi, r10
+    Exit:
+        ret
 
+    DoCards:
+    // if same region, just check if barrier is not concurrent
+        xor     rsi, rax
+        shr     rsi, 21
+        // set rsi per contract with JIT_ByRefWriteBarrier
+        mov     rsi, r10
         jz      CheckConcurrent         // same region, just check if barrier is not concurrent
-
 
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [rdx + 16], 2
         jl      MarkCards
 
     CheckConcurrent:
-        cmp     byte ptr [C_VAR(g_sw_ww_enabled_for_gc_heap)], 0
-        jne     MarkCards
-        ret
+    // if concurrent, load card location
+        cmp     r11, 0
+        je      Exit
 
     MarkCards:
-    // fetch card location for rax  (saved rdi)
         mov     r9 , [C_VAR(g_card_table)]     // fetch the page map
-        mov     rdx,  rax
+        mov     rdx, rax
         shr     rax, 30
         mov     rax, qword ptr [r9 + rax * 8] // page
         sub     rdx, rax   // offset in page
-        mov     r8 ,rdx
+        mov     r8,  rdx
         shr     rdx, 9     // card offset
-        shr     r8 , 21   // group offset
+        shr     r8,  20    // group index
+        lea     r8,  [rax + r8 * 2 + 0x80] // group offset
 
-    // check if concurrent marking is in progress
-        cmp     byte ptr [C_VAR(g_sw_ww_enabled_for_gc_heap)], 0
+     // check if concurrent marking is in progress
+        cmp     r11, 0
         jne     DirtyCard
 
-    // SETTING CARD
+     // SETTING CARD
      SetCard:
         cmp     byte ptr [rax + rdx], 0
-        jne     CardSet
+        jne     Exit
         mov     byte ptr [rax + rdx], 1
      SetGroup:
-        cmp     byte ptr [rax + r8 * 2 + 0x80], 0
+        cmp     byte ptr [r8], 0
         jne     CardSet
-        mov     byte ptr [rax + r8 * 2 + 0x80], 1
+        mov     byte ptr [r8], 1
      SetPage:
         cmp     byte ptr [rax], 0
         jne     CardSet
         mov     byte ptr [rax], 1
 
      CardSet:
-    // check if concurrent marking is still not in progress
-        cmp     byte ptr [C_VAR(g_sw_ww_enabled_for_gc_heap)], 0
+     // check if concurrent marking is still not in progress
+        cmp     qword ptr [C_VAR(g_write_watch_table)], 0
         jne     DirtyCard
         ret
 
-    // DIRTYING CARD
+     // DIRTYING CARD
      DirtyCard:
         mov     byte ptr [rax + rdx], 4
      DirtyGroup:
-        cmp     byte ptr [rax + r8 * 2 + 0x80], 4
+        cmp     byte ptr [r8], 4
         je      Exit
-        mov     byte ptr [rax + r8 * 2 + 0x80], 4
+        mov     byte ptr [r8], 4
      DirtyPage:
         cmp     byte ptr [rax], 4
         je      Exit
         mov     byte ptr [rax], 4
-
-    Exit:
         ret
 
     // this is expected to be rare.
@@ -500,12 +513,19 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
 
         // 4) check if the source is escaped
         mov     rax, rsi
+        add     rax, 8                             // escape bit is MT + 1
         and     rax, 0x1FFFFF
         shr     rax, 3
         bt      qword ptr [rdx], rax
         jb      AssignAndMarkCards            // source is already escaped.
 
-        // save rdi, rsi, rdx and r10 (possibly preadjusted rsi)
+        // Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+        sub  rsp, 8
+
+        // save rsp, rdi, rsi, rdx and r10 (possibly preadjusted rsi)
+        push r9
         push rdi
         push rsi
         push rdx
@@ -518,6 +538,7 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         pop     rdx
         pop     rsi
         pop     rdi
+        pop     rsp
         jmp     AssignAndMarkCards
 LEAF_END RhpAssignRef, _TEXT
 
@@ -537,14 +558,13 @@ LEAF_ENTRY RhpByRefAssignRef, _TEXT
 ALTERNATE_ENTRY RhpByRefAssignRefAVLocation1
         mov     rsi, [rsi]
 
-        // See if assignment is into heap
-        mov     rax, rdi
-        shr     rax, 30                    // round to page size ( >> PAGE_BITS )
-        add     rax, [C_VAR(g_card_bundle_table)] // fetch the page byte map
-        cmp     byte ptr [rax], 0
-        jne     C_FUNC(RhpAssignRef)
+        // See if dst is in GCHeap
+        mov     rax, [C_VAR(g_card_bundle_table)] // fetch the page byte map
+        mov     r8,  rdi
+        shr     r8,  30                           // dst page index
+        cmp     byte ptr [rax + r8], 0
+        jne     C_FUNC(CheckedEntry)
 
-    .balign 16
     NotInHeap_RhpByRefAssignRef:
 ALTERNATE_ENTRY RhpByRefAssignRefAVLocation2
         mov     [rdi], rsi
@@ -556,13 +576,13 @@ LEAF_END RhpByRefAssignRef, _TEXT
 LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
     // Setup rax with the new object for the exchange, that way it will automatically hold the correct result
     // afterwards and we can leave rsi unaltered ready for the GC write barrier below.
-    mov             rax, rdx
+        mov     rax, rdx
+        mov     r11, [C_VAR(g_card_bundle_table)] // fetch the page byte map
 
     // check if dst is in heap
         mov     rdx, rdi
         shr     rdx, 30                    // round to page size ( >> PAGE_BITS )
-        add     rdx, [C_VAR(g_card_bundle_table)] // fetch the page byte map
-        cmp     byte ptr [rdx], 0
+        cmp     byte ptr [r11 + rdx], 0
         je      JustAssign_CmpXchg              // dst not in heap
 
     // check for escaping assignment
@@ -570,8 +590,7 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         mov     rdx, rsi
         shr     rdx, 30                  // round to page size ( >> PAGE_BITS )
-        add     rdx, [C_VAR(g_card_bundle_table)] // fetch the page byte map
-        cmp     byte ptr [rdx], 0
+        cmp     byte ptr [r11 + rdx], 0
         je      JustAssign_CmpXchg              // src not in heap
 #endif
 
@@ -613,19 +632,30 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         lock cmpxchg    [rdi], rsi
         jne             Exit_CmpXchg
 
+        // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+        //         needs to suspend EE, not sure if skipping mode check would worth that much.
+        mov     r10, [C_VAR(g_write_watch_table)]
+
+        // check the barrier state. this must be done after the assignment (in program order)
+        // if state == 2 we do not set or dirty cards.
+        cmp     r10, 2
+        jne     DoCards_CmpXchg
+    Exit_CmpXchg:
+        ret
+
+    DoCards_CmpXchg:
+    // if same region, just check if barrier is not concurrent
         xor     rsi, rdi
         shr     rsi, 21
         jz      CheckConcurrent_CmpXchg         // same region, just check if barrier is not concurrent
-
-    // TUNING: nonconcurrent and concurrent barriers could be separate pieces of code, but to switch 
-    //         need to suspend EE, not sure if skipping concurrent check would worth that much.
 
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [rdx + 16], 2
         jl      MarkCards_CmpXchg
 
     CheckConcurrent_CmpXchg:
-        cmp     byte ptr [C_VAR(g_sw_ww_enabled_for_gc_heap)], 0
+    // if concurrent, load card location
+        cmp     r10, 0
         jne     MarkCards_CmpXchg
         ret
 
@@ -638,29 +668,30 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         sub     rdx, r11   // offset in page
         mov     rsi,rdx
         shr     rdx, 9     // card offset
-        shr     rsi, 21   // group offset
+        shr     rsi, 20    // group index
+        lea     rsi, [r11 + rsi * 2 + 0x80] // group offset
 
-    // check if concurrent marking is in progress
-        cmp     byte ptr [C_VAR(g_sw_ww_enabled_for_gc_heap)], 0
+     // check if concurrent marking is in progress
+        cmp     r10, 0
         jne     DirtyCard_CmpXchg
 
     // SETTING CARD FOR rdi
      SetCard_CmpXchg:
         cmp     byte ptr [r11 + rdx], 0
-        jne     CardSet_CmpXchg
+        jne     Exit_CmpXchg
         mov     byte ptr [r11 + rdx], 1
      SetGroup_CmpXchg:
-        cmp     byte ptr [r11 + rsi * 2 + 0x80], 0
+        cmp     byte ptr [rsi], 0
         jne     CardSet_CmpXchg
-        mov     byte ptr [r11 + rsi * 2 + 0x80], 1
+        mov     byte ptr [rsi], 1
      SetPage_CmpXchg:
         cmp     byte ptr [r11], 0
         jne     CardSet_CmpXchg
         mov     byte ptr [r11], 1
 
      CardSet_CmpXchg:
-    // check if concurrent marking is still not in progress
-        cmp     byte ptr [C_VAR(g_sw_ww_enabled_for_gc_heap)], 0
+     // check if concurrent marking is still not in progress
+        cmp     qword ptr [C_VAR(g_write_watch_table)], 0
         jne     DirtyCard_CmpXchg
         ret
 
@@ -670,15 +701,13 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         je      Exit_CmpXchg
         mov     byte ptr [r11 + rdx], 4
      DirtyGroup_CmpXchg:
-        cmp     byte ptr [r11 + rsi * 2 + 0x80], 4
+        cmp     byte ptr [rsi], 4
         je      Exit_CmpXchg
-        mov     byte ptr [r11 + rsi * 2 + 0x80], 4
+        mov     byte ptr [rsi], 4
      DirtyPage_CmpXchg:
         cmp     byte ptr [r11], 4
         je      Exit_CmpXchg
         mov     byte ptr [r11], 4
-
-    Exit_CmpXchg:
         ret
 
     // this is expected to be rare.
@@ -686,39 +715,45 @@ ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
 
         // 4) check if the source is escaped
         mov     r11, rsi
+        add     r11, 8                             // escape bit is MT + 1
         and     r11, 0x1FFFFF
         shr     r11, 3
         bt      qword ptr [rdx], r11
         jb      AssignAndMarkCards_CmpXchg            // source is already escaped.
 
-        // save rax, rdi, rsi, rdx and have enough stack for the callee
+        // Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+        sub  rsp, 8
+
+        // save rsp, rax, rdi, rsi, rdx and have enough stack for the callee
+        push r9
         push rax
         push rdi
         push rsi
         push rdx
-        sub  rsp, 0x20
 
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         call    qword ptr [rdx + 8]
 
-        add     rsp, 0x20
         pop     rdx
         pop     rsi
         pop     rdi
         pop     rax
+        pop     rsp
         jmp     AssignAndMarkCards_CmpXchg
 LEAF_END RhpCheckedLockCmpXchg, _TEXT
 
 LEAF_ENTRY RhpCheckedXchg, _TEXT
     // Setup rax with the new object for the exchange, that way it will automatically hold the correct result
     // afterwards and we can leave rsi unaltered ready for the GC write barrier below.
-    mov             rax, rsi
+        mov         rax, rsi
+        mov         r11, [C_VAR(g_card_bundle_table)] // fetch the page byte map
 
         // check if dst is in heap
         mov     rdx, rdi
         shr     rdx, 30                    // round to page size ( >> PAGE_BITS )
-        add     rdx, [C_VAR(g_card_bundle_table)] // fetch the page byte map
-        cmp     byte ptr [rdx], 0
+        cmp     byte ptr [r11 + rdx], 0
         je      JustAssign_Xchg              // dst not in heap
 
     // check for escaping assignment
@@ -726,8 +761,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         mov     rdx, rsi
         shr     rdx, 30                 // round to page size ( >> PAGE_BITS )
-        add     rdx, [C_VAR(g_card_bundle_table)] // fetch the page byte map
-        cmp     byte ptr [rdx], 0
+        cmp     byte ptr [r11 + rdx], 0
         je      JustAssign_Xchg              // src not in heap
 #endif
 
@@ -767,19 +801,30 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocationNotHeap
 ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         xchg    [rdi], rax
 
+        // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+        //         needs to suspend EE, not sure if skipping mode check would worth that much.
+        mov     r10, [C_VAR(g_write_watch_table)]
+
+        // check the barrier state. this must be done after the assignment (in program order)
+        // if state == 2 we do not set or dirty cards.
+        cmp     r10, 2
+        jne     DoCards_Xchg
+    Exit_Xchg:
+        ret
+
+    DoCards_Xchg:
+    // if same region, just check if barrier is not concurrent
         xor     rsi, rdi
         shr     rsi, 21
         jz      CheckConcurrent_Xchg         // same region, just check if barrier is not concurrent
-
-    // TUNING: nonconcurrent and concurrent barriers could be separate pieces of code, but to switch 
-    //         need to suspend EE, not sure if skipping concurrent check would worth that much.
 
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [rdx + 16], 2
         jl      MarkCards_Xchg
 
     CheckConcurrent_Xchg:
-        cmp     byte ptr [C_VAR(g_sw_ww_enabled_for_gc_heap)], 0
+    // if concurrent, load card location
+        cmp     r10, 0
         jne     MarkCards_Xchg
         ret
 
@@ -792,29 +837,30 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         sub     rdx, r11   // offset in page
         mov     rsi,rdx
         shr     rdx, 9     // card offset
-        shr     rsi, 21   // group offset
+        shr     rsi, 20    // group index
+        lea     rsi, [r11 + rsi * 2 + 0x80] // group offset
 
-    // check if concurrent marking is in progress
-        cmp     byte ptr [C_VAR(g_sw_ww_enabled_for_gc_heap)], 0
+     // check if concurrent marking is in progress
+        cmp     r10, 0
         jne     DirtyCard_Xchg
 
     // SETTING CARD FOR rdi
      SetCard_Xchg:
         cmp     byte ptr [r11 + rdx], 0
-        jne     CardSet_Xchg
+        jne     Exit_Xchg
         mov     byte ptr [r11 + rdx], 1
      SetGroup_Xchg:
-        cmp     byte ptr [r11 + rsi * 2 + 0x80], 0
+        cmp     byte ptr [rsi], 0
         jne     CardSet_Xchg
-        mov     byte ptr [r11 + rsi * 2 + 0x80], 1
+        mov     byte ptr [rsi], 1
      SetPage_Xchg:
         cmp     byte ptr [r11], 0
         jne     CardSet_Xchg
         mov     byte ptr [r11], 1
 
      CardSet_Xchg:
-    // check if concurrent marking is still not in progress
-        cmp     byte ptr [C_VAR(g_sw_ww_enabled_for_gc_heap)], 0
+     // check if concurrent marking is still not in progress
+        cmp     qword ptr [C_VAR(g_write_watch_table)], 0
         jne     DirtyCard_Xchg
         ret
 
@@ -824,15 +870,13 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         je      Exit_Xchg
         mov     byte ptr [r11 + rdx], 4
      DirtyGroup_Xchg:
-        cmp     byte ptr [r11 + rsi * 2 + 0x80], 4
+        cmp     byte ptr [rsi], 4
         je      Exit_Xchg
-        mov     byte ptr [r11 + rsi * 2 + 0x80], 4
+        mov     byte ptr [rsi], 4
      DirtyPage_Xchg:
         cmp     byte ptr [r11], 4
         je      Exit_Xchg
         mov     byte ptr [r11], 4
-
-    Exit_Xchg:
         ret
 
     // this is expected to be rare.
@@ -840,26 +884,32 @@ ALTERNATE_ENTRY RhpCheckedXchgAVLocation
 
         // 4) check if the source is escaped
         mov     r11, rsi
+        add     r11, 8                             // escape bit is MT + 1
         and     r11, 0x1FFFFF
         shr     r11, 3
         bt      qword ptr [rdx], r11
         jb      AssignAndMarkCards_Xchg            // source is already escaped.
 
-        // save rax, rdi, rsi, rdx and have enough stack for the callee
+        // Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+        sub  rsp, 8
+
+        // save rsp, rax, rdi, rsi, rdx and have enough stack for the callee
+        push r9
         push rax
         push rdi
         push rsi
         push rdx
-        sub  rsp, 0x20
 
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         call    qword ptr [rdx + 8]
 
-        add     rsp, 0x20
         pop     rdx
         pop     rsi
         pop     rdi
         pop     rax
+        pop     rsp
         jmp     AssignAndMarkCards_Xchg
 LEAF_END RhpCheckedXchg, _TEXT
 

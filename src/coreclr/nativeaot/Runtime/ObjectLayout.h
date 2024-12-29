@@ -44,12 +44,18 @@ class Object
 public:
     MethodTable * GetMethodTable() const
         { return m_pEEType; }
-    MethodTable * GetGCSafeMethodTable() const
+    MethodTable* GetGCSafeMethodTable() const
+#if !defined(FEATURE_SATORI_GC)
 #ifdef TARGET_64BIT
         { return dac_cast<PTR_EEType>((dac_cast<TADDR>(m_pEEType)) & ~((uintptr_t)7)); }
 #else
         { return dac_cast<PTR_EEType>((dac_cast<TADDR>(m_pEEType)) & ~((uintptr_t)3)); }
 #endif
+#else
+        // Satori does not mess up MT pointers.
+        { return get_EEType(); }
+#endif
+
     ObjHeader * GetHeader() { return dac_cast<DPTR(ObjHeader)>(dac_cast<TADDR>(this) - SYNC_BLOCK_SKEW); }
 #ifndef DACCESS_COMPILE
     void SetMethodTable(MethodTable * pEEType)

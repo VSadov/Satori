@@ -113,6 +113,7 @@ if(CLR_CMAKE_TARGET_WIN32)
         version.lib
         shlwapi.lib
         bcrypt.lib
+        Synchronization.lib
     )
 endif(CLR_CMAKE_TARGET_WIN32)
 

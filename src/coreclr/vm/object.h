@@ -357,6 +357,7 @@ class Object
         LIMITED_METHOD_CONTRACT;
         SUPPORTS_DAC;
 
+#if !defined(FEATURE_SATORI_GC)
         // lose GC marking bit and the reserved bit
         // A method table pointer should always be aligned.  During GC we set the least
         // significant bit for marked objects, and the second to least significant
@@ -367,6 +368,11 @@ class Object
 #else
         return dac_cast<PTR_MethodTable>((dac_cast<TADDR>(m_pMethTab)) & ~((UINT_PTR)3));
 #endif //TARGET_64BIT
+#else
+        // Satori does not mess up MT pointers.
+        _ASSERTE((dac_cast<TADDR>(m_pMethTab) & 7) == 0);
+        return dac_cast<PTR_MethodTable>((dac_cast<TADDR>(m_pMethTab)));
+#endif
     }
 
     // There are some cases where it is unsafe to get the type handle during a GC.

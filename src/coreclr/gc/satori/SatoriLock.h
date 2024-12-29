@@ -30,125 +30,251 @@
 #include "common.h"
 #include "../gc.h"
 #include "SatoriUtil.h"
+#include "SatoriGate.h"
+
+#if defined(TARGET_OSX)
+#include <time.h>
+#endif
 
 class SatoriLock
 {
 private:
-    CLRCriticalSection m_cs;
+    // m_state layout:
+    //
+    // bit 0: True if the lock is held, false otherwise.
+    //
+    // bit 1: True if nonwaiters must not get ahead of waiters when acquiring a contended lock.
+    //
+    // sign bit: True if we've set the event to wake a waiting thread.  The waiter resets this to false when it
+    //        wakes up.  This avoids the overhead of setting the event multiple times.
+    //
+    // everything else: A count of the number of threads waiting on the event.
+    static const uint32_t Unlocked = 0;
+    static const uint32_t Locked = 1;
+    static const uint32_t YieldToWaiters = 2;
+    static const uint32_t WaiterCountIncrement = 4;
+    static const uint32_t WaiterWoken = 1u << 31;
 
-public:
-    void Initialize()
-    {
-        m_cs.Initialize();
-    }
+    volatile uint32_t _state;
+    volatile uint16_t _spinCount;
+    volatile uint16_t _wakeWatchDog;
+    volatile size_t _owningThreadId;
 
-    void Destroy()
-    {
-        m_cs.Destroy();
-    }
-
-    void Enter()
-    {
-        m_cs.Enter();
-    }
-
-    void Leave()
-    {
-        m_cs.Leave();
-    }
-};
-
-class SatoriSpinLock
-{
-private:
-    int m_backoff;
-
-public:
-    void Initialize()
-    {
-        m_backoff = 0;
-    }
-
-    void Enter()
-    {
-        if (!CompareExchangeAcq(&m_backoff, 1, 0))
-        {
-            EnterSpin();
-        }
-    }
-
-    bool TryEnter()
-    {
-        return CompareExchangeAcq(&m_backoff, 1, 0);
-    }
-
-    void Leave()
-    {
-        _ASSERTE(m_backoff);
-        VolatileStore(&m_backoff, 0);
-    }
+    SatoriGate* _gate;
 
 private:
-
-    NOINLINE
-    void EnterSpin()
-    {
-        int localBackoff = 0;
-        while (VolatileLoadWithoutBarrier(&m_backoff) ||
-            !CompareExchangeAcq(&m_backoff, 1, 0))
-        {
-            localBackoff = Backoff(localBackoff);
-        }
-    }
-
-    int Backoff(int backoff)
-    {
-        // TUNING: do we care about 1-proc machines?
-
-        for (int i = 0; i < backoff; i++)
-        {
-            YieldProcessor();
-
-            if ((i & 0x3FF) == 0x3FF)
-            {
-                GCToOSInterface::YieldThread(0);
-            }
-        }
-
-        return (backoff * 2 + 1) & 0x3FFF;
-    }
-
-    static bool CompareExchangeAcq(int volatile* destination, int exchange, int comparand)
+    FORCEINLINE
+    static bool CompareExchangeAcq(uint32_t volatile* destination, uint32_t exchange, uint32_t comparand)
     {
 #ifdef _MSC_VER
 #if defined(TARGET_AMD64)
-        return _InterlockedCompareExchange((long*)destination, exchange, comparand) == comparand;
+        return _InterlockedCompareExchange((long*)destination, exchange, comparand) == (long)comparand;
 #else
-        return _InterlockedCompareExchange_acq((long*)destination, exchange, comparand) == comparand;
+        return _InterlockedCompareExchange_acq((long*)destination, exchange, comparand) == (long)comparand;
 #endif
 #else
         return __atomic_compare_exchange_n(destination, &comparand, exchange, true, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
 #endif
     }
+
+    FORCEINLINE
+    static uint32_t InterlockedDecRel(volatile uint32_t* arg)
+    {
+#ifdef _MSC_VER
+#if defined(TARGET_AMD64)
+        return (uint32_t)_InterlockedDecrement((long*)arg);
+#else
+        return (uint32_t)_InterlockedDecrement_rel((long*)arg);
+#endif
+#else
+        return __atomic_sub_fetch(arg, 1, __ATOMIC_RELEASE);
+#endif
+    }
+
+    FORCEINLINE
+    static int64_t GetCheapTimeStamp()
+    {
+#if defined(TARGET_AMD64)
+#ifdef _MSC_VER
+        return __rdtsc();
+#else
+        ptrdiff_t cycles;
+        ptrdiff_t cyclesHi;
+        __asm__ __volatile__
+        ("rdtsc":"=a" (cycles), "=d" (cyclesHi));
+        return (cyclesHi << 32) | cycles;
+#endif
+#elif defined(TARGET_ARM64)
+        // On arm64 just read timer register instead
+#ifdef _MSC_VER
+#define ARM64_CNTVCT_EL0 ARM64_SYSREG(3,3,14,0,2)
+        return _ReadStatusReg(ARM64_CNTVCT_EL0);
+#elif defined(TARGET_LINUX) || defined(TARGET_OSX)
+        int64_t timerTicks;
+        asm volatile("mrs %0, cntvct_el0" : "=r"(timerTicks));
+        return timerTicks;
+#else
+        Unsupported platform?
+#endif
+#else
+        Unsupported architecture?
+#endif
+    }
+
+    static const uint16_t SpinCountNotInitialized = INT16_MIN;
+
+    // While spinning is parameterized in terms of iterations,
+    // the internal tuning operates with spin count at a finer scale.
+    // One iteration is mapped to 64 spin count units.
+    static const int SpinCountScaleShift = 6;
+
+    static const uint16_t DefaultMaxSpinCount = 22 << SpinCountScaleShift;
+    static const uint16_t DefaultMinSpinCount = 1 << SpinCountScaleShift;
+
+    // We will use exponential backoff in rare cases when we need to change state atomically and cannot
+    // make progress due to concurrent state changes by other threads.
+    // While we cannot know the ideal amount of wait needed before making a successful attempt,
+    // the exponential backoff will generally be not more than 2X worse than the perfect guess and
+    // will do a lot less attempts than an simple retry. On multiprocessor machine fruitless attempts
+    // will cause unnecessary sharing of the contended state which may make modifying the state more expensive.
+    // To protect against degenerate cases we will cap the per-iteration wait to 1024 spinwaits.
+    static const uint32_t MaxExponentialBackoffBits = 10;
+
+    // This lock is unfair and permits acquiring a contended lock by a nonwaiter in the presence of waiters.
+    // It is possible for one thread to keep holding the lock long enough that waiters go to sleep and
+    // then release and reacquire fast enough that waiters have no chance to get the lock.
+    // In extreme cases one thread could keep retaking the lock starving everybody else.
+    // If we see woken waiters not able to take the lock for too long we will ask nonwaiters to wait.
+    static const uint32_t WaiterWatchdogTicks = 60;
+
+public:
+    void Initialize()
+    {
+        _state = 0;
+        _spinCount = DefaultMinSpinCount;
+        _wakeWatchDog = 0;
+        _owningThreadId = 0;
+        _gate = new (nothrow) SatoriGate();
+    }
+
+    FORCEINLINE
+    bool TryEnterOneShot()
+    {
+        uint32_t origState = _state;
+        if ((origState & (YieldToWaiters | Locked)) == 0)
+        {
+            uint32_t newState = origState + Locked;
+            if (CompareExchangeAcq(&_state, newState, origState))
+            {
+                _ASSERTE(_owningThreadId == 0);
+                _owningThreadId = SatoriUtil::GetCurrentThreadTag();
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    FORCEINLINE
+    bool TryEnter()
+    {
+        return TryEnterOneShot() ||
+            EnterSlow(/*noBlock*/true);
+    }
+
+    FORCEINLINE
+    void Enter()
+    {
+        if (!TryEnterOneShot())
+        {
+            bool entered = EnterSlow();
+            _ASSERTE(entered);
+        }
+    }
+
+    bool IsLocked()
+    {
+        return (_state & Locked) != 0;
+    }
+
+    FORCEINLINE
+    void Leave()
+    {
+        _ASSERTE(IsLocked());
+        _ASSERTE(_owningThreadId == SatoriUtil::GetCurrentThreadTag());
+
+        _owningThreadId = 0;
+        uint32_t state = InterlockedDecRel(&_state);
+        if ((int32_t)state < (int32_t)WaiterCountIncrement) // true if have no waiters or WaiterWoken is set
+        {
+            return;
+        }
+
+        //
+        // We have waiters; take the slow path.
+        //
+        AwakeWaiterIfNeeded();
+    }
+
+    static void CollisionBackoff(uint32_t collisions)
+    {
+        _ASSERTE(collisions > 0);
+
+        // no need for much randomness here, we will just hash the stack location and a timestamp.
+        uint32_t rand = ((uint32_t)(size_t)&collisions + (uint32_t)GetCheapTimeStamp()) * 2654435769u;
+        uint32_t spins = rand >> (uint8_t)((uint32_t)32 - min(collisions, MaxExponentialBackoffBits));
+        for (int i = 0; i < (int)spins; i++)
+        {
+            YieldProcessor();
+        }
+    }
+
+private:
+
+    static uint16_t GetTickCount()
+    {
+        return (uint16_t)GCToOSInterface::GetLowPrecisionTimeStamp();
+    }
+
+    // same idea as in CollisionBackoff, but with guaranteed minimum wait
+    static void IterationBackoff(int iteration)
+    {
+        _ASSERTE(iteration > 0 && iteration < MaxExponentialBackoffBits);
+
+        uint32_t rand = ((uint32_t)(size_t)&iteration + (uint32_t)GetCheapTimeStamp()) * 2654435769u;
+        // set the highmost bit to ensure minimum number of spins is exponentialy increasing
+        // it basically guarantees that we spin at least 1, 2, 4, 8, 16, times, and so on
+        rand |= (1u << 31);
+        uint32_t spins = rand >> (uint8_t)(32 - iteration);
+        for (int i = 0; i < (int)spins; i++)
+        {
+            YieldProcessor();
+        }
+    }
+
+    NOINLINE
+    bool EnterSlow(bool noBlock = false);
+
+    NOINLINE
+    void AwakeWaiterIfNeeded();
 };
 
-template <typename T>
 class SatoriLockHolder : public Satori::StackOnly {
 private:
-    T* const m_lock;
+    SatoriLock* const m_lock;
 
 public:
     // Disallow copying
     SatoriLockHolder& operator=(const SatoriLockHolder&) = delete;
     SatoriLockHolder(const SatoriLockHolder&) = delete;
 
-    SatoriLockHolder(T* lock)
+    SatoriLockHolder(SatoriLock* lock)
         : m_lock(lock)
     {
         m_lock->Enter();
     }
 
-    SatoriLockHolder(T* lock, bool isLocked)
+    SatoriLockHolder(SatoriLock* lock, bool isLocked)
         : m_lock(lock)
     {
         if (!isLocked)

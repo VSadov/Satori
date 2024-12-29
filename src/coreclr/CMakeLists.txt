@@ -228,6 +228,11 @@ if(CLR_CMAKE_HOST_UNIX)
   add_compile_options($<$<COMPILE_LANG_AND_ID:CXX,GNU>:-Wno-conversion-null>)
   add_compile_options($<$<COMPILE_LANG_AND_ID:CXX,GNU>:-Wno-pointer-arith>)
 
+  if(CLR_CMAKE_TARGET_ARCH_AMD64 OR CLR_CMAKE_TARGET_ARCH_I386 OR CLR_CMAKE_TARGET_ARCH_ARM64)
+    # Allow 16 byte compare-exchange
+    add_compile_options(-mcx16)
+  endif(CLR_CMAKE_TARGET_ARCH_AMD64 OR CLR_CMAKE_TARGET_ARCH_I386 OR CLR_CMAKE_TARGET_ARCH_ARM64)
+
   set (NATIVE_RESOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/nativeresources)
   include_directories(${NATIVE_RESOURCE_DIR})
 

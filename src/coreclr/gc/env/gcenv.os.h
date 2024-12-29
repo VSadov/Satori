@@ -266,7 +266,7 @@ public:
     //  granularity.
     static void* VirtualReserve(size_t size, size_t alignment, uint32_t flags, uint16_t node = NUMA_NODE_UNDEFINED);
 
-    static void* VirtualReserve(void* location, size_t size);
+    static void* VirtualReserve(void* location, size_t size, bool useTHP = false);
 
     // Release virtual memory range previously reserved using VirtualReserve
     // Parameters:

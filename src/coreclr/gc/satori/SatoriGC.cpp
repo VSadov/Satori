@@ -653,17 +653,20 @@ size_t SatoriGC::GetPromotedBytes(int heap_index)
     return 0;
 }
 
+static uint64_t g_totalLimit;
+
 void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* totalAvailableMemoryBytes, uint64_t* lastRecordedMemLoadBytes, uint64_t* lastRecordedHeapSizeBytes, uint64_t* lastRecordedFragmentationBytes, uint64_t* totalCommittedBytes, uint64_t* promotedBytes, uint64_t* pinnedObjectCount, uint64_t* finalizationPendingCount, uint64_t* index, uint32_t* generation, uint32_t* pauseTimePct, bool* isCompaction, bool* isConcurrent, uint64_t* genInfoRaw, uint64_t* pauseInfoRaw, int kind)
 {
     LastRecordedGcInfo* lastGcInfo = m_heap->Recycler()->GetLastGcInfo((gc_kind)kind);
 
-    uint64_t totalLimit = GCToOSInterface::GetPhysicalMemoryLimit();
+    if (g_totalLimit == 0)
+        g_totalLimit = GCToOSInterface::GetPhysicalMemoryLimit();
+
+    uint64_t totalLimit = g_totalLimit;
     *highMemLoadThresholdBytes = totalLimit * 99 / 100; // just say 99% for now
     *totalAvailableMemoryBytes = totalLimit;
 
-    uint32_t memLoad;
-    uint64_t availPhysical, availPage;
-    GCToOSInterface::GetMemoryStatus(totalLimit, &memLoad, &availPhysical, &availPage);
+    uint32_t memLoad = GetMemoryLoad();
     *lastRecordedMemLoadBytes = memLoad * totalLimit / 100;
 
     *lastRecordedHeapSizeBytes = GetTotalBytesInUse();
@@ -686,13 +689,22 @@ void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* tota
     }
 }
 
+static uint32_t g_memLoad;
+static size_t g_memLoadMsec;
+
 uint32_t SatoriGC::GetMemoryLoad()
 {
-    uint32_t memLoad;
-    uint64_t availPhysical, availPage;
-    GCToOSInterface::GetMemoryStatus(0, &memLoad, &availPhysical, &availPage);
+    size_t time = GetNow();
 
-    return memLoad;
+    // limit querying frequency to once per 16 msec.
+    if ((time >> 4) != (g_memLoadMsec >> 4))
+    {
+        uint64_t availPhysical, availPage;
+        GCToOSInterface::GetMemoryStatus(0, &g_memLoad, &availPhysical, &availPage);
+        g_memLoadMsec = time;
+    }
+
+    return g_memLoad;
 }
 
 void SatoriGC::DiagGetGCSettings(EtwGCSettingsInfo* etw_settings)
@@ -847,7 +859,8 @@ void SatoriGC::BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteC
     memmove(dst, src, byteCount);
 
     if (byteCount >= sizeof(size_t) &&
-       (!localAssignment || m_heap->Recycler()->IsBarrierConcurrent()))
+       (!(localAssignment || m_heap->Recycler()->IsNextGcFullGc()) ||
+           m_heap->Recycler()->IsBarrierConcurrent()))
     {
         SetCardsAfterBulkCopy((size_t)dst, (size_t)src, byteCount);
     }

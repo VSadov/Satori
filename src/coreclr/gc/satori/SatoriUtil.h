@@ -64,18 +64,31 @@ namespace Satori
     // we use a trivial array object to fill holes, thus this is the size of a shortest array object.
     static const size_t MIN_FREE_SIZE = 3 * sizeof(size_t);
 
-    // ~1024 items for now, we can fiddle with size a bit later
-    const static size_t MARK_CHUNK_SIZE = 1024 * sizeof(size_t);
+    // If a single mark takes very roughly ~50ns (5-20 for CAS + some extra), then 1k objects marks in 50us
+    // we set the chunk to roughly 1/2k to expect it mark in under 20us or so
+    const static size_t MARK_CHUNK_COUNT = 512;
+
+    // this includes header, so the number of objects is slightly less (by -2)
+    const static size_t MARK_CHUNK_SIZE = MARK_CHUNK_COUNT * sizeof(size_t);
+
+    // objects that are bigger are chunked into ranges when marking.
+    // the threshold is slightly less than MARK_CHUNK_SIZE, so that object in the range
+    // could fit into same chunk
+    const static size_t MARK_RANGE_THRESHOLD = MARK_CHUNK_SIZE - 2 * sizeof(size_t);
+
+    // if we have more than twice this much and work list is empty we can share half
+    const static int SHARE_WORK_THRESHOLD = 4;
 
     // address bits set to track finalizable that needs to be scheduled to F-queue
     const static size_t FINALIZATION_PENDING = 1;
 
     static const int BYTES_PER_CARD_BYTE = 512;
-    static const int CARD_BYTES_IN_CARD_GROUP = Satori::REGION_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;
+    static const int BYTES_PER_CARD_GROUP = REGION_SIZE_GRANULARITY / 2;
+    static const int CARD_BYTES_IN_CARD_GROUP = Satori::BYTES_PER_CARD_GROUP / BYTES_PER_CARD_BYTE;
 
     namespace CardState
     {
-        static const int8_t EPHEMERAL = -128; // 0b10000000
+        static const int8_t EPHEMERAL = -128; // 0b10000000 only used in cards (not groups or higher)
         static const int8_t BLANK = 0;
         static const int8_t REMEMBERED = 1;
         static const int8_t PROCESSING = 2;
@@ -163,23 +176,6 @@ public:
 #endif
     }
 
-    static size_t CommitGranularity()
-    {
-        // we can support sizes that are > OS page and binary fractions of REGION_SIZE_GRANULARITY.
-        // we can also support PAGE_SIZE_GRANULARITY
-        size_t result = 1024 * 32;
-
-        // result = Satori::REGION_SIZE_GRANULARITY;
-
-        // result = Satori::PAGE_SIZE_GRANULARITY;
-
-#if defined(TARGET_LINUX) && defined(TARGET_ARM64)
-        result = max(result, GCToOSInterface::GetPageSize());
-#endif
-
-        return result;
-    }
-
     // TUNING: Needs tuning?
     // When doing regular allocation we clean this much memory
     // if we do cleaning, and if available.
@@ -189,43 +185,55 @@ public:
         return 16 * 1024;
     }
 
-    // COMPlus_gcConservative
+    // DOTNET_gcConservative
     static bool IsConservativeMode()
     {
         return (GCConfig::GetConservativeGC());
     }
 
-    // COMPlus_gcConcurrent
-    static bool IsConcurrent()
+    // DOTNET_gcConcurrent
+    static bool IsConcurrentEnabled()
     {
         return (GCConfig::GetConcurrentGC());
     }
 
-    // COMPlus_gcRelocatingGen1
+    // DOTNET_gcRelocatingGen1
     static bool IsRelocatingInGen1()
     {
         return (GCConfig::GetRelocatingInGen1());
     }
 
-    // COMPlus_gcRelocatingGen2
+    // DOTNET_gcRelocatingGen2
     static bool IsRelocatingInGen2()
     {
         return (GCConfig::GetRelocatingInGen2());
     }
 
-    // COMPlus_gcThreadLocal
-    static bool IsThreadLocalGCEnabled()
+    // DOTNET_gcGen0
+    static bool IsGen0Enabled()
     {
-        return (GCConfig::GetThreadLocalGC());
+        return (GCConfig::GetGen0GC());
     }
 
-    // COMPlus_gcTrim
+    // DOTNET_gcGen1
+    static bool IsGen1Enabled()
+    {
+        return (GCConfig::GetGen1GC());
+    }
+
+    // DOTNET_gcTHP
+    static bool UseTHP()
+    {
+        return (GCConfig::GetUseTHP());
+    }
+
+    // DOTNET_gcTrim
     static bool IsTrimmingEnabled()
     {
         return (GCConfig::GetTrimmigGC());
     }
 
-    // COMPlus_GCLatencyMode
+    // DOTNET_GCLatencyMode
     static bool IsLowLatencyMode()
     {
         return (GCConfig::GetLatencyMode()) >= 2;
@@ -242,10 +250,64 @@ public:
         return partitionCount;
     }
 
-    // COMPlus_gcParallel
-    static int MaxHelpersCount()
+    // DOTNET_gcParallel
+    static int MaxWorkersCount()
     {
         return (int)GCConfig::GetParallelGC();
+    }
+
+    // DOTNET_gcRate
+    static int GcRate()
+    {
+        int gcRate = (int)GCConfig::GetGCRate();
+        if (gcRate == -1)
+        {
+#if _DEBUG
+            // minimum rate-limiting in debug
+            return 0;
+#else
+            return 3;
+#endif
+        }
+
+        return gcRate;
+    }
+    
+    // DOTNET_gcSpin
+    static int GcSpin()
+    {
+        int gcSpin = (int)GCConfig::GetGCSpin();
+        if (gcSpin == -1)
+        {
+            return 10;
+        }
+
+        return gcSpin;
+    }
+
+    static size_t CommitGranularity()
+    {
+        // we can support sizes that are > OS page and binary fractions of REGION_SIZE_GRANULARITY.
+        // we can also support PAGE_SIZE_GRANULARITY
+        size_t result = 1024 * 32;
+
+#if defined(TARGET_LINUX)
+
+#if defined(TARGET_ARM64)
+        result = max(result, GCToOSInterface::GetPageSize());
+#endif
+
+        if (UseTHP())
+        {
+            result = Satori::REGION_SIZE_GRANULARITY;
+        }
+#endif
+
+        // result = Satori::REGION_SIZE_GRANULARITY;
+
+        // result = Satori::PAGE_SIZE_GRANULARITY;
+
+        return result;
     }
 };
 

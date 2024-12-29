@@ -152,8 +152,12 @@ public:
     BOOL_CONFIG  (RelocatingInGen1,          "gcRelocatingGen1",          NULL,                                true,               "Specifies whether GC can relocate objects in Gen1 GC")                                   \
     BOOL_CONFIG  (RelocatingInGen2,          "gcRelocatingGen2",          NULL,                                true,               "Specifies whether GC can relocate objects in Gen2 GC")                                   \
     INT_CONFIG   (ParallelGC,                "gcParallel",                NULL,                                -1,                 "Specifies max number of addtional GC threads. 0 - no helpers, -1 - default")             \
-    BOOL_CONFIG  (ThreadLocalGC,             "gcThreadLocal",             NULL,                                true,               "Specifies whether thread-local GC can be performed")                                     \
+    BOOL_CONFIG  (Gen0GC,                    "gcGen0",                    NULL,                                true,               "Specifies whether Gen0 GC can be performed")                                             \
+    BOOL_CONFIG  (Gen1GC,                    "gcGen1",                    NULL,                                true,               "Specifies whether Gen1 GC can be performed")                                             \
+    BOOL_CONFIG  (UseTHP,                    "gcTHP",                     NULL,                                true,               "Specifies whether Transparent Huge Pages can be used. (Linux only)")                     \
     BOOL_CONFIG  (TrimmigGC,                 "gcTrim",                    NULL,                                true,               "Specifies whether background trimming is enabled")                                       \
+    INT_CONFIG   (GCRate,                    "gcRate",                    NULL,                                -1,                 "Specifies soft min limit for time between GCs in milliseconds. -1 - default")            \
+    INT_CONFIG   (GCSpin,                    "gcSpin",                    NULL,                                -1,                 "Spin")            \
 
 // This class is responsible for retreiving configuration information
 // for how the GC should operate.

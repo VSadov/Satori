@@ -332,13 +332,12 @@ LEAF_END JIT_PatchedCodeStart, _TEXT
 
 ; void JIT_CheckedWriteBarrier(Object** dst, Object* src)
 LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
-
-        ; See if this is in GCHeap
-        mov     rax, rcx
-        shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
-        add     rax, [g_card_bundle_table] ; fetch the page byte map
-        cmp     byte ptr [rax], 0
-        jne     JIT_WriteBarrier
+    ; See if dst is in GCHeap
+        mov     rax, [g_card_bundle_table] ; fetch the page byte map
+        mov     r8,  rcx
+        shr     r8,  30                    ; dst page index
+        cmp     byte ptr [rax + r8], 0
+        jne     CheckedEntry
 
     NotInHeap:
         ; See comment above about possible AV
@@ -346,23 +345,32 @@ LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
         ret
 LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
 
+ALTERNATE_ENTRY macro Name
+
+Name label proc
+PUBLIC Name
+        endm
+
 ;
 ;   rcx - dest address 
 ;   rdx - object
 ;
 LEAF_ENTRY JIT_WriteBarrier, _TEXT
-    align 16
-    ; check for escaping assignment
-    ; 1) check if we own the source region
 
 ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
-        mov     rax, rdx
-        shr     rax, 30                 ; round to page size ( >> PAGE_BITS )
-        add     rax, [g_card_bundle_table] ; fetch the page byte map
-        cmp     byte ptr [rax], 0
-        je      JustAssign              ; src not in heap
+    ; check if src is in heap
+        mov     rax, [g_card_bundle_table] ; fetch the page byte map
+    ALTERNATE_ENTRY CheckedEntry
+        mov     r8,  rdx
+        shr     r8,  30                    ; src page index
+        cmp     byte ptr [rax + r8], 0
+        je      JustAssign                 ; src not in heap
+else
+    ALTERNATE_ENTRY CheckedEntry
 endif
 
+    ; check for escaping assignment
+    ; 1) check if we own the source region
         mov     r8, rdx
         and     r8, 0FFFFFFFFFFE00000h  ; source region
 
@@ -394,21 +402,30 @@ endif
     AssignAndMarkCards:
         mov     [rcx], rdx
 
+    ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+    ;         needs to suspend EE, not sure if skipping mode check would worth that much.
+        mov     r11, qword ptr [g_sw_ww_table]
+
+    ; check the barrier state. this must be done after the assignment (in program order)
+    ; if state == 2 we do not set or dirty cards.
+        cmp     r11, 2h
+        jne     DoCards
+    Exit:
+        ret
+
+    DoCards:
+    ; if same region, just check if barrier is not concurrent
         xor     rdx, rcx
         shr     rdx, 21
-        jz      CheckConcurrent         ; same region, just check if barrier is not concurrent
-
-    ; TUNING: nonconcurrent and concurrent barriers could be separate pieces of code, but to switch 
-    ;         need to suspend EE, not sure if skipping concurrent check would worth that much.
+        jz      CheckConcurrent
 
     ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [r8 + 16], 2
         jl      MarkCards
 
     CheckConcurrent:
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
-        jne     MarkCards
-        ret
+        cmp     r11, 0h
+        je      Exit
 
     MarkCards:
     ; fetch card location for rcx
@@ -419,21 +436,22 @@ endif
         sub     r8, rax   ; offset in page
         mov     rdx,r8
         shr     r8, 9     ; card offset
-        shr     rdx, 21   ; group offset
+        shr     rdx, 20   ; group index
+        lea     rdx, [rax + rdx * 2 + 80h] ; group offset
 
     ; check if concurrent marking is in progress
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
+        cmp     r11, 0h
         jne     DirtyCard
 
     ; SETTING CARD FOR RCX
      SetCard:
         cmp     byte ptr [rax + r8], 0
-        jne     CardSet
+        jne     Exit
         mov     byte ptr [rax + r8], 1
      SetGroup:
-        cmp     byte ptr [rax + rdx * 2 + 80h], 0
+        cmp     byte ptr [rdx], 0
         jne     CardSet
-        mov     byte ptr [rax + rdx * 2 + 80h], 1
+        mov     byte ptr [rdx], 1
      SetPage:
         cmp     byte ptr [rax], 0
         jne     CardSet
@@ -441,7 +459,7 @@ endif
 
      CardSet:
     ; check if concurrent marking is still not in progress
-        cmp     byte ptr [g_sw_ww_enabled_for_gc_heap], 0h
+        cmp     qword ptr [g_sw_ww_table], 0h
         jne     DirtyCard
         ret
 
@@ -449,15 +467,13 @@ endif
      DirtyCard:
         mov     byte ptr [rax + r8], 4
      DirtyGroup:
-        cmp     byte ptr [rax + rdx * 2 + 80h], 4
+        cmp     byte ptr [rdx], 4
         je      Exit
-        mov     byte ptr [rax + rdx * 2 + 80h], 4
+        mov     byte ptr [rdx], 4
      DirtyPage:
         cmp     byte ptr [rax], 4
         je      Exit
         mov     byte ptr [rax], 4
-
-    Exit:
         ret
 
     ; this is expected to be rare.
@@ -465,12 +481,18 @@ endif
 
         ; 4) check if the source is escaped
         mov     rax, rdx
+        add     rax, 8                        ; escape bit is MT + 1
         and     rax, 01FFFFFh
         shr     rax, 3
         bt      qword ptr [r8], rax
         jb      AssignAndMarkCards            ; source is already escaped.
 
-        ; save rcx, rdx, r8 and have enough stack for the callee
+        ; Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+
+        ; save rsp, rcx, rdx, r8 and have enough stack for the callee
+        push r9
         push rcx
         push rdx
         push r8
@@ -483,6 +505,7 @@ endif
         pop     r8
         pop     rdx
         pop     rcx
+        pop     rsp
         jmp     AssignAndMarkCards
 LEAF_END_MARKED JIT_WriteBarrier, _TEXT
 
@@ -503,14 +526,13 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
         add     rdi, 8h
         add     rsi, 8h
 
-        ; See if assignment is into heap
-        mov     rax, rcx
-        shr     rax, 30                    ; round to page size ( >> PAGE_BITS )
-        add     rax, [g_card_bundle_table] ; fetch the page byte map
-        cmp     byte ptr [rax], 0
-        jne     JIT_WriteBarrier
+    ; See if dst is in GCHeap
+        mov     rax, [g_card_bundle_table] ; fetch the page byte map
+        mov     r8,  rcx
+        shr     r8,  30                    ; dst page index
+        cmp     byte ptr [rax + r8], 0
+        jne     CheckedEntry
 
-    align 16
     NotInHeap:
         mov     [rcx], rdx
         ret

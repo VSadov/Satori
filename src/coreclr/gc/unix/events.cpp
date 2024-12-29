@@ -306,3 +306,151 @@ bool GCEvent::CreateOSManualEventNoThrow(bool initialState)
     m_impl = event;
     return true;
 }
+
+#define _INC_PTHREADS
+#include "..\satori\SatoriGate.h"
+
+#if defined(TARGET_LINUX)
+
+#include <linux/futex.h>      /* Definition of FUTEX_* constants */
+#include <sys/syscall.h>      /* Definition of SYS_* constants */
+#include <unistd.h>
+
+#ifndef  INT_MAX
+#define INT_MAX 2147483647
+#endif
+
+SatoriGate::SatoriGate()
+{
+    m_state = s_blocking;
+}
+
+// returns true if was woken up. false if timed out
+bool SatoriGate::TimedWait(int timeout)
+{
+    timespec t;
+    uint64_t nanoseconds = (uint64_t)timeout * tccMilliSecondsToNanoSeconds;
+    t.tv_sec = nanoseconds / tccSecondsToNanoSeconds;
+    t.tv_nsec = nanoseconds % tccSecondsToNanoSeconds;
+
+    long waitResult = syscall(SYS_futex, &m_state, FUTEX_WAIT_PRIVATE, s_blocking, &t, NULL, 0);
+
+    // woken, not blocking, interrupted, timeout
+    assert(waitResult == 0 || errno == EAGAIN || errno == ETIMEDOUT || errno == EINTR);
+
+    bool woken = waitResult == 0 || errno != ETIMEDOUT;
+    if (woken)
+    {
+        // consume the wake
+        m_state = s_blocking;
+    }
+
+    return woken;
+}
+
+void SatoriGate::Wait()
+{
+    syscall(SYS_futex, &m_state, FUTEX_WAIT_PRIVATE, s_blocking, NULL, NULL, 0);
+}
+
+void SatoriGate::WakeAll()
+{
+    m_state = s_open;
+    syscall(SYS_futex, &m_state, FUTEX_WAKE_PRIVATE, s_blocking, INT_MAX , NULL, 0);
+}
+
+void SatoriGate::WakeOne()
+{
+    m_state = s_open;
+    syscall(SYS_futex, &m_state, FUTEX_WAKE_PRIVATE, s_blocking, 1, NULL, 0);
+}
+#else
+SatoriGate::SatoriGate()
+{
+    m_cs = new (nothrow) pthread_mutex_t();
+    m_cv = new (nothrow) pthread_cond_t();
+
+    pthread_mutex_init(m_cs, NULL);
+    pthread_condattr_t attrs;
+    pthread_condattr_init(&attrs);
+#if HAVE_PTHREAD_CONDATTR_SETCLOCK && !HAVE_CLOCK_GETTIME_NSEC_NP
+    // Ensure that the pthread_cond_timedwait will use CLOCK_MONOTONIC
+    pthread_condattr_setclock(&attrs, CLOCK_MONOTONIC);
+#endif // HAVE_PTHREAD_CONDATTR_SETCLOCK && !HAVE_CLOCK_GETTIME_NSEC_NP
+    pthread_cond_init(m_cv, &attrs);
+    pthread_condattr_destroy(&attrs);
+}
+
+// returns true if was woken up
+bool SatoriGate::TimedWait(int timeout)
+{
+    timespec endTime;
+#if HAVE_CLOCK_GETTIME_NSEC_NP
+    uint64_t endNanoseconds;
+    uint64_t nanoseconds = (uint64_t)timeout * tccMilliSecondsToNanoSeconds;
+    NanosecondsToTimeSpec(nanoseconds, &endTime);
+    endNanoseconds = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) + nanoseconds;
+#elif HAVE_PTHREAD_CONDATTR_SETCLOCK
+    clock_gettime(CLOCK_MONOTONIC, &endTime);
+    TimeSpecAdd(&endTime, timeout);
+#else
+#error "Don't know how to perform timed wait on this platform"
+#endif
+
+    int waitResult = 0;
+    pthread_mutex_lock(m_cs);
+#if HAVE_CLOCK_GETTIME_NSEC_NP
+    // Since OSX doesn't support CLOCK_MONOTONIC, we use relative variant of the timed wait.
+    waitResult = m_state == s_open ?
+        0 :
+        pthread_cond_timedwait_relative_np(m_cv, m_cs, &endTime);
+#else // HAVE_CLOCK_GETTIME_NSEC_NP
+    waitResult = m_state == SatoriGate::s_open ?
+        0 :
+        pthread_cond_timedwait(m_cv, m_cs, &endTime);
+#endif // HAVE_CLOCK_GETTIME_NSEC_NP
+    pthread_mutex_unlock(m_cs);
+    assert(waitResult == 0 || waitResult == ETIMEDOUT);
+
+    bool woken = waitResult == 0;
+    if (woken)
+    {
+        // consume the wake
+        m_state = s_blocking;
+    }
+
+    return woken;
+}
+
+void SatoriGate::Wait()
+{
+    int waitResult;
+    pthread_mutex_lock(m_cs);
+
+    waitResult = m_state == SatoriGate::s_open ?
+        0 :
+        pthread_cond_wait(m_cv, m_cs);
+
+    pthread_mutex_unlock(m_cs);
+    assert(waitResult == 0);
+
+    m_state = s_blocking;
+}
+
+void SatoriGate::WakeAll()
+{
+    m_state = SatoriGate::s_open;
+    pthread_mutex_lock(m_cs);
+    pthread_cond_broadcast(m_cv);
+    pthread_mutex_unlock(m_cs);
+}
+
+void SatoriGate::WakeOne()
+{
+    m_state = SatoriGate::s_open;
+    pthread_mutex_lock(m_cs);
+    pthread_cond_signal(m_cv);
+    pthread_mutex_unlock(m_cs);
+}
+#endif
+

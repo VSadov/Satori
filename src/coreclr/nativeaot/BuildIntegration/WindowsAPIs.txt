@@ -2371,3 +2371,10 @@ ucrtbase!memset
 ucrtbase!realloc
 ucrtbase!wmemcpy_s
 ucrtbase!wmemmove_s
+
+#
+# Synchronization.lib
+#
+Synchronization!WaitOnAddress
+Synchronization!WakeByAddressSingle
+Synchronization!WakeByAddressAll

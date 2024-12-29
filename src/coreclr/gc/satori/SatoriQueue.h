@@ -75,7 +75,7 @@ public:
         _ASSERTE(item->m_prev == nullptr);
         _ASSERTE(item->m_containingQueue == nullptr);
 
-        SatoriLockHolder<SatoriSpinLock> holder(&m_lock);
+        SatoriLockHolder holder(&m_lock);
         m_count++;
         item->m_containingQueue = this;
         if (m_head == nullptr)
@@ -92,6 +92,31 @@ public:
         m_head = item;
     }
 
+    void PushNoLock(T* item)
+    {
+        _ASSERTE(item->m_next == nullptr);
+        _ASSERTE(item->m_prev == nullptr);
+        _ASSERTE(item->m_containingQueue == nullptr);
+
+        size_t oldCount = m_count;
+        Interlocked::Increment(&m_count);
+
+        T* head = Interlocked::ExchangePointer(&m_head, item);
+        if (head == nullptr)
+        {
+            _ASSERTE(m_tail == nullptr);
+            m_tail = item;
+        }
+        else
+        {
+            item->m_next = head;
+            head->m_prev = item;
+        }
+
+        item->m_containingQueue = this;
+        _ASSERTE(m_count > oldCount);
+    }
+
     T* TryPop()
     {
         if (IsEmpty())
@@ -101,24 +126,68 @@ public:
 
         T* result;
         {
-            SatoriLockHolder<SatoriSpinLock> holder(&m_lock);
+            SatoriLockHolder holder(&m_lock);
             result = m_head;
             if (result == nullptr)
             {
                 return nullptr;
             }
 
+            T* next = result->m_next;
             m_count--;
+            m_head = next;
             result->m_containingQueue = nullptr;
-            m_head = result->m_next;
-            if (m_head == nullptr)
+            if (next == nullptr)
             {
                 m_tail = nullptr;
             }
             else
             {
-                m_head->m_prev = nullptr;
+                next->m_prev = nullptr;
             }
+        }
+
+        _ASSERTE(result->m_prev == nullptr);
+        result->m_next = nullptr;
+
+        return result;
+    }
+
+    T* TryPopWithTryEnter()
+    {
+        if (IsEmpty())
+        {
+            return nullptr;
+        }
+
+        T* result;
+        {
+            if (!m_lock.TryEnter())
+            {
+                return nullptr;
+            }
+
+            result = m_head;
+            if (result == nullptr)
+            {
+                m_lock.Leave();
+                return nullptr;
+            }
+
+            T* next = result->m_next;
+            m_count--;
+            m_head = next;
+            result->m_containingQueue = nullptr;
+            if (next == nullptr)
+            {
+                m_tail = nullptr;
+            }
+            else
+            {
+                next->m_prev = nullptr;
+            }
+
+            m_lock.Leave();
         }
 
         _ASSERTE(result->m_prev == nullptr);
@@ -133,7 +202,7 @@ public:
         _ASSERTE(item->m_prev == nullptr);
         _ASSERTE(item->m_containingQueue == nullptr);
 
-        SatoriLockHolder<SatoriSpinLock> holder(&m_lock);
+        SatoriLockHolder holder(&m_lock);
         m_count++;
         item->m_containingQueue = this;
         if (m_tail == nullptr)
@@ -181,7 +250,7 @@ public:
     bool TryRemove(T* item)
     {
         {
-            SatoriLockHolder<SatoriSpinLock> holder(&m_lock);
+            SatoriLockHolder holder(&m_lock);
             if (!Contains(item))
             {
                 return false;
@@ -246,7 +315,7 @@ public:
 
 protected:
     QueueKind m_kind;
-    SatoriSpinLock m_lock;
+    SatoriLock m_lock;
     T* m_head;
     T* m_tail;
     size_t m_count;
