@@ -76,11 +76,13 @@ public:
     size_t AllocateHuge(size_t size, bool zeroInitialize);
 
     size_t StartAllocating(size_t minSize);
+    size_t StartAllocatingBestFit(size_t minAllocSize);
     void StopAllocating(size_t allocPtr);
     void StopAllocating();
     bool IsAllocating();
 
     void AddFreeSpace(SatoriObject* freeObj, size_t size);
+    void ReturnFreeSpace(SatoriObject * freeObj, size_t size);
 
     bool HasFreeSpaceInTopBucket();
     bool HasFreeSpaceInTopNBuckets(int n);
@@ -132,8 +134,8 @@ public:
     void IndividuallyPromote();
     void UpdateFinalizableTrackers();
     void UpdatePointers();
-    void UpdatePointersInObject(SatoriObject* o);
-    void SetCardsForObject(SatoriObject* o);
+    void UpdatePointersInObject(SatoriObject* o, size_t size);
+    void SetCardsForObject(SatoriObject* o, size_t size);
 
     template <bool promotingAllRegions>
     void UpdatePointersInPromotedObjects();
@@ -145,7 +147,7 @@ public:
     bool AnyExposed(size_t from, size_t length);
     void EscapeRecursively(SatoriObject* obj);
     void EscsapeAll();
-    void EscapeShallow(SatoriObject* o);
+    void EscapeShallow(SatoriObject* o, size_t size);
 
     template <typename F>
     void ForEachFinalizable(F lambda);
@@ -161,18 +163,18 @@ public:
     bool HasFinalizables();
     bool& HasPendingFinalizables();
 
-    void SetOccupancy(size_t occupancy, size_t objCount);
+    void SetOccupancy(size_t occupancy, int32_t objCount);
     void SetOccupancy(size_t occupancy);
     size_t Occupancy();
-    size_t& OccupancyAtReuse();
-    size_t ObjCount();
+    int32_t& OccupancyAtReuse();
+    int32_t ObjCount();
 
     bool& HasPinnedObjects();
     bool& DoNotSweep();
     bool& AcceptedPromotedObjects();
     bool& IndividuallyPromoted();
 
-    size_t SweepsSinceLastAllocation();
+    uint32_t SweepsSinceLastAllocation();
 
     enum class ReuseLevel : uint8_t
     {
@@ -221,8 +223,8 @@ private:
         //
         // we will overlap the map and the header for simplicity of map operations.
         // it is ok because the first BITMAP_START elements of the map cover the header/map itself and thus will not be used.
-        // +1 to include End(), it will always be 0, but it is conveninet to make it legal map index.
-        size_t m_bitmap[BITMAP_LENGTH + 1];
+        // +1 to include End(), it will always be 0, but it is convenient to make it legal map index.
+        volatile size_t m_bitmap[BITMAP_LENGTH + 1];
 
         // Header.(can be up to 72 size_t)
         struct
@@ -232,54 +234,66 @@ private:
             size_t m_ownerThreadTag;
             void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
             int m_generation;
-            ReuseLevel m_reusableFor;
-            SatoriRegion** m_allocatingOwnerAttachmentPoint;
+            // above fields are accessed from asm helpers
 
+            // the following 5 fields change rarely or not at all.
             size_t m_end;
-            size_t m_committed;
-            size_t m_used;
             SatoriPage* m_containingPage;
 
-            SatoriRegion* m_prev;
-            SatoriRegion* m_next;
-            SatoriQueue<SatoriRegion>* m_containingQueue;
+            ReuseLevel m_reusableFor;
+            int32_t m_occupancyAtReuse;
+
+            SatoriRegion** m_allocatingOwnerAttachmentPoint;
+            SatoriWorkChunk* m_gen2Objects;
+
+            // ===== 64 bytes boundary
+
+            // Active allocation may happen in the following range.
+            // The range may not be parseable as sequence of objects
+            // The range is in terms of objects, there is embedded off-by-one error for syncblocks.
+            size_t m_allocStart;
+            size_t m_allocEnd;
+
+            // dirty and comitted watermarks
+            size_t m_used;
+            size_t m_committed;
+
+            // counting escaped objects
+            // when size goes too high, we stop escaping and do not do local GC.
+            int32_t m_escapedSize;
+            // misc uses in thread-local regions
+            int32_t m_markStack;
+            // alloc bytes at last threadlocal collect
+            size_t m_allocBytesAtCollect;
 
             SatoriWorkChunk* m_finalizableTrackers;
             int m_finalizableTrackersLock;
 
-            // active allocation may happen in the following range.
-            // the range may not be parseable as sequence of objects
-            // NB: the range is in terms of objects,
-            //     there is embedded off-by-one error for syncblocks
-            size_t m_allocStart;
-            size_t m_allocEnd;
+            uint32_t m_sweepsSinceLastAllocation;
 
-            int32_t m_markStack;
+            // ===== 128  bytes boundary
+            SatoriRegion* m_prev;
+            SatoriRegion* m_next;
+            SatoriQueue<SatoriRegion>* m_containingQueue;
 
-            // counting escaped objects
-            // when size goes too high, we stop escaping and do not do local GC.
-            size_t m_escapedSize;
-            size_t m_allocBytesAtCollect;
-            size_t m_objCount;
             size_t m_occupancy;
-            size_t m_occupancyAtReuse;
-            size_t m_sweepsSinceLastAllocation;
+            int32_t m_objCount;
 
-            size_t m_unfinishedAllocationCount;
+            int32_t m_unfinishedAllocationCount;
 
             bool m_hasPinnedObjects;
-            bool m_hasMarksSet;
-            bool m_doNotSweep;
             bool m_hasFinalizables;
             bool m_hasPendingFinalizables;
+            bool m_doNotSweep;
+
             bool m_acceptedPromotedObjects;
             bool m_individuallyPromoted;
             bool m_hasUnmarkedDemotedObjects;
-
-            // when demoted, we remember our gen2 objects here
-            SatoriWorkChunk* m_gen2Objects;
-
+#if _DEBUG
+            bool m_hasMarksSet;
+#endif
             SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
+            SatoriObject* m_freeListTails[Satori::FREELIST_COUNT];
         };
     };
 

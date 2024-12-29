@@ -132,7 +132,7 @@ private:
     size_t m_committedMapSize;
     size_t m_usedMapLength;
     size_t m_nextPageIndex;
-    SatoriSpinLock m_mapLock;
+    SatoriLock m_mapLock;
     SatoriPage* m_pageMap[1];
 
     static int8_t* s_pageByteMap;

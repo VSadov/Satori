@@ -501,6 +501,8 @@ set(GC_SOURCES_WKS
     ../gc/satori/SatoriAllocationContext.cpp
     ../gc/satori/SatoriUtil.cpp
     ../gc/satori/SatoriLock.cpp
+    ../gc/satori/SatoriWorkList.cpp
+    ../gc/satori/SatoriGate.cpp
     )
 
 set(GC_HEADERS_WKS
@@ -528,6 +530,7 @@ set(GC_HEADERS_WKS
     ../gc/satori/SatoriAllocationContext.h
     ../gc/satori/SatoriUtil.h
     ../gc/satori/SatoriLock.h
+    ../gc/satori/SatoriGate.h
     )
 
 if(FEATURE_EVENT_TRACE)
