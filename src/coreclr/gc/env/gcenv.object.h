@@ -171,11 +171,16 @@ public:
 
     MethodTable * GetGCSafeMethodTable() const
     {
+#if !defined(FEATURE_SATORI_GC)
 #ifdef HOST_64BIT
         return (MethodTable *)((uintptr_t)m_pMethTab & ~7);
 #else
         return (MethodTable *)((uintptr_t)m_pMethTab & ~3);
 #endif //HOST_64BIT
+#else
+        // Satori does not mess up MT pointers.
+        return RawGetMethodTable();
+#endif
     }
 
     void RawSetMethodTable(MethodTable * pMT)

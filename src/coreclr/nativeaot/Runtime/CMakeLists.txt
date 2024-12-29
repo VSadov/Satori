@@ -72,6 +72,8 @@ set(COMMON_RUNTIME_SOURCES
     ${GC_DIR}/satori/SatoriAllocationContext.cpp
     ${GC_DIR}/satori/SatoriUtil.cpp
     ${GC_DIR}/satori/SatoriLock.cpp
+    ${GC_DIR}/satori/SatoriWorkList.cpp
+    ${GC_DIR}/satori/SatoriGate.cpp
 )
 
 set(SERVER_GC_SOURCES
@@ -155,6 +157,7 @@ if (WIN32)
     ${GC_DIR}/satori/SatoriAllocationContext.h
     ${GC_DIR}/satori/SatoriUtil.h
     ${GC_DIR}/satori/SatoriLock.h
+    ${GC_DIR}/satori/SatoriGate.h
 )
 
   include_directories(windows)

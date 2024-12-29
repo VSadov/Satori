@@ -21,43 +21,58 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 // OTHER DEALINGS IN THE SOFTWARE.
 //
-// SatoriRecycler.h
+// SatoriWorkList.cpp
 //
 
-#ifndef __SATORI_TRIMMER_H__
-#define __SATORI_TRIMMER_H__
-
 #include "common.h"
-#include "../gc.h"
-#include "SatoriRegionQueue.h"
 
-class SatoriHeap;
+#include "gcenv.h"
+#include "../env/gcenv.os.h"
+#include "SatoriWorkList.h"
 
-class SatoriTrimmer
+NOINLINE
+void SatoriWorkList::PushSlow(SatoriWorkChunk* item)
 {
-public:
-    SatoriTrimmer(SatoriHeap* heap);
+    uint32_t collisions = 1;
+    while (true)
+    {
+        SatoriWorkList orig = *this;
+        item->m_next = orig.m_head;
+        if (Cas128((int64_t*)this, orig.m_aba + 1, (int64_t)item, (int64_t*)&orig))
+            break;
 
-    void SetStopSuggested();
-    void SetOkToRun();
-    void WaitForStop();
-    bool IsActive();
+        SatoriLock::CollisionBackoff(collisions++);
+    }
 
-private:
-    static const int TRIMMER_STATE_BLOCKED = -1;
-    static const int TRIMMER_STATE_STOPPED = 0;
-    static const int TRIMMER_STATE_STOP_SUGGESTED = 1;
-    static const int TRIMMER_STATE_OK_TO_RUN = 2;
-    static const int TRIMMER_STATE_RUNNING = 3;
-
-    SatoriHeap*  m_heap;
-    GCEvent*     m_event;
-    size_t       m_lastGen2Count;
-    volatile int m_state;
-
-    static void LoopFn(void* inst);
-    void Loop();
-    void StopAndWait();
-};
-
+#ifdef _DEBUG
+    Interlocked::Increment(&m_count);
 #endif
+}
+
+NOINLINE
+SatoriWorkChunk* SatoriWorkList::TryPopSlow()
+{
+    uint32_t collisions = 1;
+    SatoriWorkList orig;
+    while (true)
+    {
+        orig = *this;
+        if (orig.m_head == nullptr)
+        {
+            return nullptr;
+        }
+
+        if (Cas128((int64_t*)this, orig.m_aba + 1, (int64_t)orig.m_head->m_next, (int64_t*)&orig))
+            break;
+
+        SatoriLock::CollisionBackoff(collisions++);
+    }
+
+#ifdef _DEBUG
+    Interlocked::Decrement(&m_count);
+#endif
+
+    SatoriWorkChunk* result = orig.m_head;
+    result->m_next = nullptr;
+    return result;
+}

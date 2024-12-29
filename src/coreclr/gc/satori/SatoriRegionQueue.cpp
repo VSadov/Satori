@@ -208,3 +208,16 @@ SatoriRegion* SatoriRegionQueue::TryDequeueIfHasFreeSpaceInTopBucket()
     result->m_prev = nullptr;
     return result;
 }
+
+SatoriRegionQueue* SatoriRegionQueue::AllocAligned(QueueKind kind)
+{
+    const size_t align = 64;
+#ifdef _MSC_VER
+    void* buffer = _aligned_malloc(sizeof(SatoriRegionQueue), align);
+#else
+    void* buffer = malloc(sizeof(SatoriRegionQueue) + align);
+    buffer = (void*)ALIGN_UP((size_t)buffer, align);
+#endif
+    return new(buffer)SatoriRegionQueue(kind);
+}
+

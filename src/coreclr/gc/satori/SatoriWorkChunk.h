@@ -31,6 +31,7 @@
 #include "../gc.h"
 #include "SatoriUtil.h"
 #include "SatoriQueue.h"
+#include "SatoriObject.h"
 
 class SatoriWorkChunk
 {
@@ -51,11 +52,12 @@ public:
 
     static size_t Capacity()
     {
-        return (Satori::MARK_CHUNK_SIZE - sizeof(SatoriWorkChunk)) / sizeof(SatoriObject*);
+        return Satori::MARK_CHUNK_SIZE / sizeof(SatoriObject*) - /* m_top, m_next*/ 2;
     }
 
     size_t Count()
     {
+        _ASSERTE(!IsRange());
         return m_top;
     }
 
@@ -100,6 +102,21 @@ public:
         }
 
         return false;
+    }
+
+    void TakeFrom(SatoriWorkChunk* other, size_t count)
+    {
+        _ASSERTE(Count() == 0);
+        _ASSERTE(other->Count() >= count);
+
+        m_top = count;
+        other->m_top -= count;
+
+        size_t otherTop = other->m_top;
+        for (size_t i = 0; i < count; i++)
+        {
+            m_data[i] = other->m_data[otherTop + i];
+        }
     }
 
     void SetNext(SatoriWorkChunk* next)

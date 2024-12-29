@@ -54,6 +54,7 @@ public:
     SatoriObject* Next();
 
     size_t Size();
+    size_t FreeObjSize();
     bool SameRegion(SatoriRegion* otherRegion);
     bool IsFree();
     bool IsExternal();
@@ -94,6 +95,9 @@ public:
 
     template <typename F>
     void ForEachObjectRef(F lambda, bool includeCollectibleAllocator = false);
+
+    template <typename F>
+    void ForEachObjectRef(F lambda, size_t size, bool includeCollectibleAllocator = false);
 
     template <typename F>
     void ForEachObjectRef(F lambda, size_t start, size_t end);
