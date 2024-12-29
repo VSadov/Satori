@@ -48,6 +48,15 @@ FORCEINLINE size_t SatoriObject::Size()
     return size;
 }
 
+FORCEINLINE size_t SatoriObject::FreeObjSize()
+{
+    _ASSERTE(IsFree());
+    size_t size = Satori::MIN_FREE_SIZE;
+    size += (size_t)((ArrayBase*)this)->GetNumComponents();
+    size = ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
+    return size;
+}
+
 inline size_t SatoriObject::Start()
 {
     return (size_t)this;
@@ -269,6 +278,72 @@ inline void SatoriObject::ForEachObjectRef(F lambda, bool includeCollectibleAllo
         do
         {
             size_t refPtr = (size_t)this + cur->GetSeriesOffset();
+            size_t refPtrStop = refPtr + size + cur->GetSeriesSize();
+
+            // top check loop. this could be a zero-element array
+            while (refPtr < refPtrStop)
+            {
+                lambda((SatoriObject**)refPtr);
+                refPtr += sizeof(size_t);
+            }
+            cur--;
+        } while (cur >= last);
+    }
+    else
+    {
+        // repeating patern - an array
+        size_t refPtr = (size_t)this + cur->GetSeriesOffset();
+        uint32_t componentNum = ((ArrayBase*)this)->GetNumComponents();
+        while (componentNum-- > 0)
+        {
+            for (ptrdiff_t i = 0; i > numSeries; i--)
+            {
+                val_serie_item item = *(cur->val_serie + i);
+                size_t refPtrStop = refPtr + item.nptrs * sizeof(size_t);
+                do
+                {
+                    lambda((SatoriObject**)refPtr);
+                    refPtr += sizeof(size_t);
+                } while (refPtr < refPtrStop);
+
+                refPtr += item.skip;
+            }
+        }
+    }
+}
+
+template <typename F>
+inline void SatoriObject::ForEachObjectRef(F lambda, size_t size, bool includeCollectibleAllocator)
+{
+    MethodTable* mt = RawGetMethodTable();
+
+    if (includeCollectibleAllocator && mt->Collectible())
+    {
+        uint8_t* loaderAllocator = GCToEEInterface::GetLoaderAllocatorObjectForGC(this);
+        // NB: Allocator ref location is fake. The actual location is a handle).
+        //     For that same reason relocation callers should not care about the location.
+        lambda((SatoriObject**)&loaderAllocator);
+    }
+
+    if (!mt->ContainsPointers())
+    {
+        return;
+    }
+
+    CGCDesc* map = CGCDesc::GetCGCDescFromMT(mt);
+    CGCDescSeries* cur = map->GetHighestSeries();
+
+    // GetNumSeries is actually signed.
+    // Negative value means the pattern repeats componentNum times (struct arrays)
+    ptrdiff_t numSeries = (ptrdiff_t)map->GetNumSeries();
+    if (numSeries >= 0)
+    {
+        CGCDescSeries* last = map->GetLowestSeries();
+
+        do
+        {
+            size_t refPtr = (size_t)this + cur->GetSeriesOffset();
+            // series size is offset by the object size, so need to compensate for that.
             size_t refPtrStop = refPtr + size + cur->GetSeriesSize();
 
             // top check loop. this could be a zero-element array

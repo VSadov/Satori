@@ -541,10 +541,11 @@ Exit
 ;   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 ;
     WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
-        ldr     x12, wbs_card_bundle_table
-        add     x12, x12, x14, lsr #30
-        ldrb    w12, [x12]
-        cbnz    x12, JIT_WriteBarrier
+    ; See if dst is in GCHeap
+        ldr     x16, wbs_card_bundle_table
+        lsr     x17, x14, #30                       ; source page index
+        ldrb    w12, [x16, x17]
+        cbnz    x12, CheckedEntry
 
 NotInHeap
         str  x15, [x14], #8
@@ -560,136 +561,144 @@ NotInHeap
 ;   x12  : trashed
 ;   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
 ;   x15  : trashed
-;   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+;   x16  : trashed (ip0)
+;   x17  : trashed (ip1)
 ;
     WRITE_BARRIER_ENTRY JIT_WriteBarrier
     ; check for escaping assignment
     ; 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
-        ldr     x12, wbs_card_bundle_table
-        add     x12, x12, x15, lsr #30
-        ldrb    w12, [x12]
-        cbz     x12, JustAssign
+        ldr     x16, wbs_card_bundle_table
+CheckedEntry
+        lsr     x17, x15, #30                   ; source page index
+        ldrb    w12, [x16, x17]
+        cbz     x12, JustAssign                 ; null or external (immutable) object
 #else
+CheckedEntry
         cbz     x15, JustAssign                 ; assigning null
 #endif
-        and     x12,  x15, #0xFFFFFFFFFFE00000  ; source region
-        ldr     x12, [x12]                      ; region tag
+        and     x16,  x15, #0xFFFFFFFFFFE00000  ; source region
+        ldr     x12, [x16]                      ; region tag
         cmp     x12, x18                        ; x18 - TEB
         bne     AssignAndMarkCards              ; not local to this thread
 
     ; 2) check if the src and dst are from the same region
-        eor     x12, x14, x15
-        lsr     x12, x12, #21
-        cbnz    x12, RecordEscape               ; cross region assignment. definitely escaping
+        and     x12, x14, #0xFFFFFFFFFFE00000   ; target aligned to region
+        cmp     x12, x16
+        bne     RecordEscape                    ; cross region assignment. definitely escaping
 
     ; 3) check if the target is exposed
-        ubfx        x17, x14,#9,#12              ; word index = (dst >> 9) & 0x1FFFFF
-        and         x12, x15, #0xFFFFFFFFFFE00000  ; source region
-        ldr         x17, [x12, x17, lsl #3]      ; mark word = [region + index * 8]
-        lsr         x12, x14, #3                 ; bit = (dst >> 3) [& 63]
+        ubfx        x17, x14,#9,#12             ; word index = (dst >> 9) & 0x1FFFFF
+        ldr         x17, [x16, x17, lsl #3]     ; mark word = [region + index * 8]
+        lsr         x12, x14, #3                ; bit = (dst >> 3) [& 63]
         lsr         x17, x17, x12
-        tbnz        x17, #0, RecordEscape        ; target is exposed. record an escape.
+        tbnz        x17, #0, RecordEscape       ; target is exposed. record an escape.
 
-        str  x15, [x14], #8                      ; UNORDERED assignment of unescaped object
-        ret  lr
-
+    ; UNORDERED! assignment of unescaped, null or external (immutable) object
 JustAssign
-        stlr x15, [x14]                          ; no card marking, src is not a heap object
-        add  x14, x14, 8
+        str  x15, [x14], #8
         ret  lr
 
 AssignAndMarkCards
         stlr    x15, [x14]
 
-    ; need couple temps. Save before using.
-        stp     x2,  x3,  [sp, #-16]!
+    ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
+    ;         needs to suspend EE, not sure if skipping mode check would worth that much.
+        ldr     x17, wbs_sw_ww_table
+    ; check the barrier state. this must be done after the assignment (in program order
+    ; if state == 2 we do not set or dirty cards.
+        tbz     x17, #1, DoCards
 
-        eor     x12, x14, x15
-        lsr     x12, x12, #21
-        cbz     x12, CheckConcurrent             ; same region, just check if barrier is not concurrent
+ExitNoCards
+        add     x14, x14, 8
+        ret     lr
+
+DoCards
+    ; if same region, just check if barrier is not concurrent
+        and     x12, x14, #0xFFFFFFFFFFE00000   ; target aligned to region
+        cmp     x12, x16
+        beq     CheckConcurrent    ; same region, just check if barrier is not concurrent
 
     ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
-        and     x2,  x15, #0xFFFFFFFFFFE00000     ; source region
-        ldr     w12, [x2, 16]
+        ldr     w12, [x16, 16]                  ; source region + 16 -> generation
         tbz     x12, #1, MarkCards
 
 CheckConcurrent
-        ldr     x12, wbs_sw_ww_table              ; !wbs_sw_ww_table -> !concurrent
-        cbnz    x12, MarkCards
-        
-Exit
-        ldp  x2,  x3, [sp], 16
-        add  x14, x14, 8
-        ret  lr
+    ; if not concurrent, exit
+        cbz     x17, ExitNoCards
 
 MarkCards
+    ; need couple temps. Save before using.
+        stp     x2,  x3,  [sp, -16]!
+
     ; fetch card location for x14
-        ldr     x12, wbs_card_table              ; fetch the page map
-        lsr     x17, x14, #30
-        ldr     x17, [x12, x17, lsl #3]          ; page
-        sub     x2,  x14, x17   ; offset in page
-        lsr     x15, x2,  #21   ; group index
-        lsl     x15, x15, #1    ; group offset (index * 2)
+        ldr     x12, wbs_card_table                  ; fetch the page map
+        lsr     x16, x14, #30
+        ldr     x16, [x12, x16, lsl #3]              ; page
+        sub     x2,  x14, x16   ; offset in page
+        lsr     x15, x2,  #20   ; group index
         lsr     x2,  x2,  #9    ; card offset
+        lsl     x15, x15, #1    ; group offset (index * 2)
 
     ; check if concurrent marking is in progress
-        ldr     x12, wbs_sw_ww_table             ; !wbs_sw_ww_table -> !concurrent
-        cbnz    x12, DirtyCard
+        cbnz    x17, DirtyCard
 
     ; SETTING CARD FOR X14
 SetCard
-        ldrb    w3, [x17, x2]
-        cbnz    w3, CardSet
-        mov     w16, #1
-        strb    w16, [x17, x2]
+        ldrb    w3, [x16, x2]
+        cbnz    w3, Exit
+        mov     w17, #1
+        strb    w17, [x16, x2]
 SetGroup
-        add     x12, x17, #0x80
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
         cbnz    w3, CardSet
-        strb    w16, [x12, x15]
+        strb    w17, [x12, x15]
 SetPage
-        ldrb    w3, [x17]
+        ldrb    w3, [x16]
         cbnz    w3, CardSet
-        strb    w16, [x17]
+        strb    w17, [x16]
 
 CardSet
     ; check if concurrent marking is still not in progress
         ldr     x12, wbs_sw_ww_table            ; !wbs_sw_ww_table -> !concurrent
         cbnz    x12, DirtyCard
-        b       Exit
+
+Exit
+        ldp  x2,  x3, [sp], 16
+        add  x14, x14, 8
+        ret  lr
 
     ; DIRTYING CARD FOR X14
 DirtyCard
-        mov     w16, #4
-        add     x2, x2, x17
-        ;; must be after the field write to allow concurrent clean
-        stlrb    w16, [x2]
+        mov     w17, #4
+        add     x2, x2, x16
+        ; must be after the field write to allow concurrent clean
+        stlrb   w17, [x2]
 DirtyGroup
-        add     x12, x17, #0x80
+        add     x12, x16, #0x80
         ldrb    w3, [x12, x15]
         tbnz    w3, #2, Exit
-        strb    w16, [x12, x15]
+        strb    w17, [x12, x15]
 DirtyPage
-        ldrb    w3, [x17]
+        ldrb    w3, [x16]
         tbnz    w3, #2, Exit
-        strb    w16, [x17]
+        strb    w17, [x16]
         b       Exit
 
     ; this is expected to be rare.
 RecordEscape
 
-    ; 4) check if the source is escaped
-        and         x12, x15, #0xFFFFFFFFFFE00000  ; source region
-        add         x16, x15, #8                   ; escape bit is MT + 1
-        ubfx        x17, x16, #9,#12               ; word index = (dst >> 9) & 0x1FFFFF
-        ldr         x17, [x12, x17, lsl #3]        ; mark word = [region + index * 8]
-        lsr         x12, x16, #3                   ; bit = (dst >> 3) [& 63]
+    ; 4) check if the source is escaped (x16 has source region)
+        add         x12, x15, #8                   ; escape bit is MT + 1
+        ubfx        x17, x12, #9,#12               ; word index = (dst >> 9) & 0x1FFFFF
+        ldr         x17, [x16, x17, lsl #3]        ; mark word = [region + index * 8]
+        lsr         x12, x12, #3                   ; bit = (dst >> 3) [& 63]
         lsr         x17, x17, x12
         tbnz        x17, #0, AssignAndMarkCards    ; source is already escaped.
 
-    ; because of the barrier call convention
-    ; we need to preserve caller-saved x0 through x18 and x29/x30
+        ; because of the barrier call convention
+        ; we need to preserve caller-saved x0 through x15 and x29/x30
 
         stp     x29,x30, [sp, -16 * 9]!
         stp     x0, x1,  [sp, 16 * 1]
@@ -701,11 +710,11 @@ RecordEscape
         stp     x12,x13, [sp, 16 * 7]
         stp     x14,x15, [sp, 16 * 8]
 
-    ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
-    ; mov  x0, x14  EscapeFn does not use dst, it is just to avoid arg shuffle on x64
+        ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
+        ; mov  x0, x14  EscapeFn does not use dst, it is just to avoid arg shuffle on x64
         mov  x1, x15
-        and  x2, x15, #0xFFFFFFFFFFE00000  ; source region
-        ldr  x12, [x2, #8]                 ; EscapeFn address
+        mov  x2, x16                        ; source region
+        ldr  x12, [x16, #8]                 ; EscapeFn address
         blr  x12
 
         ldp     x0, x1,  [sp, 16 * 1]
@@ -718,6 +727,7 @@ RecordEscape
         ldp     x14,x15, [sp, 16 * 8]
         ldp     x29,x30, [sp], 16 * 9
 
+        and     x16, x15, #0xFFFFFFFFFFE00000  ; source region
         b       AssignAndMarkCards
     WRITE_BARRIER_END JIT_WriteBarrier
 

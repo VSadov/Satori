@@ -43,8 +43,8 @@ SatoriTrimmer::SatoriTrimmer(SatoriHeap* heap)
     m_heap  = heap;
     m_state = TRIMMER_STATE_STOPPED;
 
-    m_gate = new (nothrow) GCEvent;
-    m_gate->CreateAutoEventNoThrow(false);
+    m_event = new (nothrow) GCEvent;
+    m_event->CreateAutoEventNoThrow(false);
 
     if (SatoriUtil::IsTrimmingEnabled())
     {
@@ -60,18 +60,25 @@ void SatoriTrimmer::LoopFn(void* inst)
 
 void SatoriTrimmer::Loop()
 {
+    int64_t lastGen2 = m_heap->Recycler()->GetCollectionCount(2);
     while (true)
     {
-        int64_t curGen2 = m_heap->Recycler()->GetCollectionCount(2);
-
-        // limit the trim rate to once per 1 sec + 1 gen2 gc.
-        do
+        // limit the re-trim rate to once per 5 sec.
+        // we would also require that gen2 gc happened since the last round.
+        while (true)
         {
+            int64_t newGen2 = m_heap->Recycler()->GetCollectionCount(2);
+            if (lastGen2 != newGen2)
+            {
+                lastGen2 = newGen2;
+                break;
+            }
+
             Interlocked::CompareExchange(&m_state, TRIMMER_STATE_STOPPED, TRIMMER_STATE_RUNNING);
             // we are not running here, so we can sleep a bit before continuing.
-            GCToOSInterface::Sleep(1000);
+            GCToOSInterface::Sleep(5000);
             StopAndWait();
-        } while (curGen2 == m_heap->Recycler()->GetCollectionCount(2));
+        }
 
         m_heap->ForEachPage(
             [&](SatoriPage* page)
@@ -82,6 +89,8 @@ void SatoriTrimmer::Loop()
                 {
                     StopAndWait();
                 }
+
+                int64_t lastGen1 = m_heap->Recycler()->GetCollectionCount(1);
 
                 page->ForEachRegion(
                     [&](SatoriRegion* region)
@@ -106,11 +115,23 @@ void SatoriTrimmer::Loop()
 
                                     if (didSomeWork)
                                     {
-                                        // limit the decommit/coalesce rate to 1 region/msec.
-                                        GCToOSInterface::Sleep(1);
+                                        // limit the decommit/coalesce rate to 1 region/10 msec.
+                                        GCToOSInterface::Sleep(10);
                                     }
                                 }
                             }
+                        }
+
+                        // this is a low priority task, if something needs to run, yield
+                        GCToOSInterface::YieldThread(0);
+
+                        // also we will pause for 1 sec if there was a GC - to further reduce the churn
+                        // if the app is allocation-active.
+                        int64_t newGen1 = m_heap->Recycler()->GetCollectionCount(1);
+                        if (newGen1 != lastGen1)
+                        {
+                            lastGen1 = newGen1;
+                            GCToOSInterface::Sleep(1000);
                         }
 
                         if (m_state != TRIMMER_STATE_RUNNING)
@@ -129,6 +150,9 @@ void SatoriTrimmer::StopAndWait()
     while (true)
     {
         tryAgain:
+
+        // this is a low priority task, if something needs to run, yield
+        GCToOSInterface::YieldThread(0);
         int state = m_state;
         switch (state)
         {
@@ -150,7 +174,7 @@ void SatoriTrimmer::StopAndWait()
 
             if (Interlocked::CompareExchange(&m_state, TRIMMER_STATE_BLOCKED, state) == state)
             {
-                m_gate->Wait(INFINITE, false);
+                m_event->Wait(INFINITE, false);
             }
             continue;
         case TRIMMER_STATE_RUNNING:
@@ -170,7 +194,7 @@ void SatoriTrimmer::SetOkToRun()
     case TRIMMER_STATE_BLOCKED:
         // trimmer can't get out of BlOCKED by itself, ordinary assignment is ok
         m_state = TRIMMER_STATE_OK_TO_RUN;
-        m_gate->Set();
+        m_event->Set();
         break;
     case TRIMMER_STATE_STOPPED:
         Interlocked::CompareExchange(&m_state, TRIMMER_STATE_OK_TO_RUN, state);
