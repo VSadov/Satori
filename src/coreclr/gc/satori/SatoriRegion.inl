@@ -162,7 +162,7 @@ inline void SatoriRegion::StopEscapeTracking()
 }
 
 // Used to simulate writes when containing region is individually promoted.
-inline void SatoriRegion::SetCardsForObject(SatoriObject* o)
+inline void SatoriRegion::SetCardsForObject(SatoriObject* o, size_t size)
 {
     _ASSERTE(this->Size() == Satori::REGION_SIZE_GRANULARITY);
 
@@ -180,7 +180,8 @@ inline void SatoriRegion::SetCardsForObject(SatoriObject* o)
                 // for simplicity and call a concurrent helper.
                 ContainingPage()->DirtyCardForAddressConcurrent((size_t)ppObject);
             }
-        }
+        },
+        size
     );
 }
 
@@ -279,7 +280,7 @@ bool SatoriRegion::Sweep()
     m_escapedSize = 0;
     bool cannotRecycle = this->IsAttachedToAllocatingOwner();
     size_t occupancy = 0;
-    size_t objCount = 0;
+    int32_t objCount = 0;
     bool hasFinalizables = false;
     SatoriObject* o = FirstObject();
     do
@@ -303,19 +304,20 @@ bool SatoriRegion::Sweep()
         _ASSERTE(!o->IsFree());
         cannotRecycle = true;
 
+        size_t size = o->Size();
         if (isEscapeTracking)
         { 
-            this->EscapeShallow(o);
+            this->EscapeShallow(o, size);
         }
 
         if (updatePointers)
         {
-            UpdatePointersInObject(o);
+            UpdatePointersInObject(o, size);
         }
 
         if (individuallyPromoted)
         {
-            SetCardsForObject(o);
+            SetCardsForObject(o, size);
         }
 
         if (!hasFinalizables && o->RawGetMethodTable()->HasFinalizer())
@@ -323,7 +325,6 @@ bool SatoriRegion::Sweep()
             hasFinalizables = true;
         }
 
-        size_t size = o->Size();
         objCount++; 
         occupancy += size;
         o = (SatoriObject*)(o->Start() + size);
@@ -373,13 +374,13 @@ inline size_t SatoriRegion::Occupancy()
     return m_occupancy;
 }
 
-inline size_t &SatoriRegion::OccupancyAtReuse()
+inline int32_t &SatoriRegion::OccupancyAtReuse()
 {
     _ASSERTE(!IsAllocating());
     return m_occupancyAtReuse;
 }
 
-inline size_t SatoriRegion::ObjCount()
+inline int32_t SatoriRegion::ObjCount()
 {
     return m_objCount;
 }
@@ -411,7 +412,7 @@ inline bool& SatoriRegion::IndividuallyPromoted()
     return m_individuallyPromoted;
 }
 
-inline size_t SatoriRegion::SweepsSinceLastAllocation()
+inline uint32_t SatoriRegion::SweepsSinceLastAllocation()
 {
     return m_sweepsSinceLastAllocation;
 }
@@ -550,7 +551,7 @@ inline bool SatoriRegion::CheckAndClearMarked(SatoriObject* o)
     size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
     size_t mask = (size_t)1 << ((word >> 3) & 63);
 
-    size_t& bitmapWord = m_bitmap[bitmapIndex];
+    volatile size_t& bitmapWord = m_bitmap[bitmapIndex];
     bool wasMarked = bitmapWord & mask;
     bitmapWord &= ~mask;
     return wasMarked;
@@ -683,6 +684,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
         _ASSERTE(!relocated->IsFree());
 
         SatoriPage* page = relocated->ContainingRegion()->ContainingPage();
+        size_t size = relocated->Size();
         relocated->ForEachObjectRef(
             [&](SatoriObject** ppObject)
             {
@@ -707,10 +709,11 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
                         }
                     }
                 }
-            }
+            },
+            size
         );
 
-        o = o->Next();
+        o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);
 }
 

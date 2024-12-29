@@ -31,6 +31,7 @@
 #include "../gc.h"
 #include "SatoriRegionQueue.h"
 #include "SatoriWorkList.h"
+#include "SatoriGate.h"
 
 class SatoriHeap;
 class SatoriTrimmer;
@@ -56,7 +57,9 @@ public:
     void AddEphemeralRegion(SatoriRegion* region);
     void AddTenuredRegion(SatoriRegion* region);
 
+    // TODO: VS should be moved to Heap?
     size_t GetNowMillis();
+    size_t GetNowUsecs();
 
     bool& IsLowLatencyMode();
 
@@ -69,11 +72,13 @@ public:
     void TryStartGC(int generation, gc_reason reason);
     void HelpOnce();
     void MaybeTriggerGC(gc_reason reason);
+    bool IsBlockingPhase();
 
-    void ConcurrentHelp();
+    bool ShouldDoConcurrent(int generation);
+    void ConcurrentWorkerFn();
     void ShutDown();
 
-    void BlockingMarkForConcurrentHelper();
+    void BlockingMarkForConcurrentImpl();
     void BlockingMarkForConcurrent();
     void MaybeAskForHelp();
 
@@ -99,6 +104,11 @@ public:
         return m_isBarrierConcurrent;
     }
 
+    inline bool IsNextGcFullGc()
+    {
+        return m_nextGcIsFullGc;
+    }
+
     bool IsReuseCandidate(SatoriRegion* region);
     bool IsRelocationCandidate(SatoriRegion* region);
     bool IsPromotionCandidate(SatoriRegion* region);
@@ -109,7 +119,7 @@ public:
             return &m_lastEphemeralGcInfo;
 
         if (kind == gc_kind_full_blocking)
-            return GetLastGcInfo(gc_kind_any); // no concept of blocking GC, every GC has blocking part.
+            return &m_lastTenuredGcInfo; // no concept of background GC, every GC has blocking part.
 
         if (kind == gc_kind_background)
             return GetLastGcInfo(gc_kind_any); // no concept of background GC, cant have 2 GCs at a time.
@@ -124,7 +134,7 @@ private:
     SatoriHeap* m_heap;
 
     int m_rootScanTicket;
-    uint8_t m_cardScanTicket;
+    int8_t m_cardScanTicket;
 
     SatoriWorkList* m_workList;
     SatoriTrimmer* m_trimmer;
@@ -166,6 +176,11 @@ private:
     static const int CC_MARK_STATE_MARKING = 2;
     static const int CC_MARK_STATE_DONE = 3;
 
+    static const int CC_CLEAN_STATE_NOT_READY = 0;
+    static const int CC_CLEAN_STATE_SETTING_UP = 1;
+    static const int CC_CLEAN_STATE_CLEANING = 2;
+    static const int CC_CLEAN_STATE_DONE = 3;
+
     volatile int m_ccStackMarkState;
     volatile int m_ccStackMarkingThreadsNum;
 
@@ -175,6 +190,7 @@ private:
 
     bool m_concurrentCardsDone;
     bool m_concurrentHandlesDone;
+    volatile int m_concurrentCleaningState;
 
     bool m_isRelocating;
     bool m_isLowLatencyMode;
@@ -188,13 +204,15 @@ private:
     int64_t m_gcDurationMillis[3];
 
     size_t m_gen1Budget;
-    size_t m_totalBudget;
     size_t m_totalLimit;
+    size_t m_nextGcIsFullGc;
+
     size_t m_condemnedRegionsCount;
     size_t m_deferredSweepCount;
     size_t m_gen1AddedSinceLastCollection;
     size_t m_gen2AddedSinceLastCollection;
     size_t m_gen1CountAtLastGen2;
+    size_t m_gcNextTimeTarget;
 
     size_t m_occupancy[3];
     size_t m_occupancyAcc[3];
@@ -210,12 +228,14 @@ private:
     int64_t m_perfCounterTicksPerMilli;
     int64_t m_perfCounterTicksPerMicro;
 
-    GCEvent* m_helpersGate;
-    volatile int m_gateSignaled;
-    volatile int m_activeHelpers;
-    volatile int m_totalHelpers;
+    SatoriGate* m_workerGate;
 
-    void(SatoriRecycler::* volatile m_activeHelperFn)();
+    volatile int m_gateSignaled;
+    volatile int m_workerWoken;
+    volatile int m_activeWorkers;
+    volatile int m_totalWorkers;
+
+    void(SatoriRecycler::* volatile m_activeWorkerFn)();
 
     int64_t m_noWorkSince;
 
@@ -224,9 +244,6 @@ private:
     LastRecordedGcInfo* m_CurrentGcInfo;
 
 private:
-
-    bool IsBlockingPhase();
-
     size_t Gen1RegionCount();
     size_t Gen2RegionCount();
     size_t RegionCount();
@@ -243,12 +260,12 @@ private:
     template <bool isConservative>
     static void MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 
-    static void HelperThreadFn(void* param);
-    int MaxHelpers();
+    static void WorkerThreadMainLoop(void* param);
+    int MaxWorkers();
     int64_t HelpQuantum();
     void AskForHelp();
     void RunWithHelp(void(SatoriRecycler::* method)());
-    bool HelpOnceCore();
+    bool HelpOnceCore(bool minQuantum);
 
     void PushToEphemeralQueues(SatoriRegion* region);
     void PushToTenuredQueues(SatoriRegion* region);
@@ -258,7 +275,7 @@ private:
 
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();
-    uint8_t GetCardScanTicket();
+    int8_t GetCardScanTicket();
 
     void MarkOwnStack(gc_alloc_context* aContext, MarkContext* markContext);
     void MarkThroughCards();
@@ -271,10 +288,11 @@ private:
     void MarkOwnStackAndDrainQueues();
     void MarkOwnStackOrDrainQueuesConcurrent(int64_t deadline);
     bool MarkDemotedAndDrainQueuesConcurrent(int64_t deadline);
+    void PushOrReturnWorkChunk(SatoriWorkChunk * srcChunk);
     bool DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk = nullptr, int64_t deadline = 0);
 
     bool HasDirtyCards();
-    bool ScanDirtyCardsConcurrent(int64_t deadline);
+    bool CleanCardsConcurrent(int64_t deadline);
     void CleanCards();
     bool MarkHandles(int64_t deadline = 0);
     void ShortWeakPtrScan();
@@ -316,7 +334,7 @@ private:
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);
-    void FreeRelocatedRegion(SatoriRegion* curRegion);
+    void FreeRelocatedRegion(SatoriRegion* curRegion, bool noLock);
     void FreeRelocatedRegionsWorker();
 
     void PromoteHandlesAndFreeRelocatedRegions();
@@ -333,7 +351,7 @@ private:
     void KeepRegion(SatoriRegion* curRegion);
     void DrainDeferredSweepQueue();
     bool DrainDeferredSweepQueueConcurrent(int64_t deadline = 0);
-    void DrainDeferredSweepQueueHelp();
+    void DrainDeferredSweepQueueWorkerFn();
     void SweepAndReturnRegion(SatoriRegion* curRegion);
 
     void ASSERT_NO_WORK();

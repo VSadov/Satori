@@ -69,7 +69,7 @@ public:
         {
             m_cardTable[cardByteOffset] = Satori::CardState::REMEMBERED;
 
-            size_t cardGroup = offset / Satori::REGION_SIZE_GRANULARITY;
+            size_t cardGroup = offset / Satori::BYTES_PER_CARD_GROUP;
             if (!m_cardGroups[cardGroup * 2])
             {
                 m_cardGroups[cardGroup * 2] = Satori::CardState::REMEMBERED;
@@ -100,7 +100,7 @@ public:
 
         // we do not clean groups concurrently, so these can be conditional and unordered
         // only the eventual final state matters
-        size_t cardGroup = offset / Satori::REGION_SIZE_GRANULARITY;
+        size_t cardGroup = offset / Satori::BYTES_PER_CARD_GROUP;
         if (m_cardGroups[cardGroup * 2] != Satori::CardState::DIRTY)
         {
             m_cardGroups[cardGroup * 2] = Satori::CardState::DIRTY;
@@ -117,7 +117,8 @@ public:
     void DirtyCardsForRange(size_t start, size_t length);
     void DirtyCardsForRangeConcurrent(size_t start, size_t end);
 
-    void WipeCardsForRange(size_t start, size_t end, bool isTenured);
+    void WipeGroupsForRange(size_t start, size_t end);
+    void ResetCardsForRange(size_t start, size_t end, bool isTenured);
 
     volatile int8_t& CardState();
     volatile int8_t& ScanTicket();
@@ -162,14 +163,14 @@ private:
             // -----  we can have a few more fields above as long as m_cardGroups starts at offset 128.
             //        that can be adjusted if needed
 
-            // computed size,
+            // computed size, located after card groups
             // 1byte per region
             // 512 bytes per 1Gb
             uint8_t* m_regionMap;
 
             // computed size,
-            // 2byte per region
-            // 1024 bytes per 1Gb
+            // 2 byte per card group (4 per region granule)
+            // 2048 bytes per 1Gb
             DECLSPEC_ALIGN(128)
             int8_t m_cardGroups[1];
         };

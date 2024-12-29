@@ -82,7 +82,7 @@ inline volatile int8_t& SatoriPage::CardGroupScanTicket(size_t i)
 
 inline size_t SatoriPage::CardGroupCount()
 {
-    return (End() - Start()) >> Satori::REGION_BITS;
+    return (End() - Start()) / Satori::BYTES_PER_CARD_GROUP;
 }
 
 inline int8_t* SatoriPage::CardsForGroup(size_t i)

@@ -222,26 +222,38 @@ void ThreadStore::UnlockThreadStore()
     m_Lock.Leave();
 }
 
-// exponential spinwait with an approximate time limit for waiting in microsecond range.
-// when iteration == -1, only usecLimit is used
-void SpinWait(int iteration, int usecLimit)
+// spinwait with an approximate time limit for waiting in microsecond range.
+void SpinWait(int usecLimit)
 {
     int64_t startTicks = PalQueryPerformanceCounter();
     int64_t ticksPerSecond = PalQueryPerformanceFrequency();
     int64_t endTicks = startTicks + (usecLimit * ticksPerSecond) / 1000000;
 
-    int l = min((unsigned)iteration, 30);
-    for (int i = 0; i < l; i++)
+#ifdef TARGET_UNIX
+    if (usecLimit > 10)
     {
-        for (int j = 0; j < (1 << i); j++)
-        {
-            System_YieldProcessor();
-        }
+            struct timespec requested;
+            struct timespec remaining;
+            requested.tv_sec = 0;
+            requested.tv_nsec = usecLimit * 1000;
+            while (nanosleep(&requested, &remaining) == EINTR)
+            {
+                requested = remaining;
+            }
+    }
+#endif // TARGET_UNIX
 
+    for (int i = 0; i < 30; i++)
+    {
         int64_t currentTicks = PalQueryPerformanceCounter();
         if (currentTicks > endTicks)
         {
             break;
+        }
+
+        for (int j = 0; j < (1 << i); j++)
+        {
+            System_YieldProcessor();
         }
     }
 }
@@ -297,12 +309,12 @@ void ThreadStore::SuspendAllThreads(bool waitForGCEvent)
         if (remaining < prevRemaining || !observeOnly)
         {
             // 5 usec delay, then check for more progress
-            SpinWait(-1, 5);
+            SpinWait(5);
             observeOnly = true;
         }
         else
         {
-            SpinWait(retries++, 100);
+            SpinWait(min(1 << retries++, 100));
             observeOnly = false;
 
             // make sure our spining is not starving other threads, but not too often,
