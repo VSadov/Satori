@@ -110,9 +110,9 @@ private:
 #define ARM64_CNTVCT_EL0 ARM64_SYSREG(3,3,14,0,2)
         return 42; //_ReadStatusReg(ARM64_CNTVCT_EL0);
 #elif defined(TARGET_LINUX) || defined(TARGET_OSX)
-        int64_t timerTicks;
-        asm volatile("mrs %0, cntvct_el0" : "=r"(timerTicks));
-        return timerTicks;
+        // int64_t timerTicks;
+        // asm volatile("mrs %0, cntvct_el0" : "=r"(timerTicks));
+        return 42; //timerTicks;
 #else
         Unsupported platform?
 #endif
