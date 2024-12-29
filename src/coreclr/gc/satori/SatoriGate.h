@@ -21,43 +21,40 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 // OTHER DEALINGS IN THE SOFTWARE.
 //
-// SatoriRecycler.h
+// SatoriGate.h
 //
 
-#ifndef __SATORI_TRIMMER_H__
-#define __SATORI_TRIMMER_H__
+#ifndef __SATORI_GATE_H__
+#define __SATORI_GATE_H__
 
-#include "common.h"
-#include "../gc.h"
-#include "SatoriRegionQueue.h"
+#include <stdint.h>
 
-class SatoriHeap;
-
-class SatoriTrimmer
+class SatoriGate
 {
-public:
-    SatoriTrimmer(SatoriHeap* heap);
-
-    void SetStopSuggested();
-    void SetOkToRun();
-    void WaitForStop();
-    bool IsActive();
-
 private:
-    static const int TRIMMER_STATE_BLOCKED = -1;
-    static const int TRIMMER_STATE_STOPPED = 0;
-    static const int TRIMMER_STATE_STOP_SUGGESTED = 1;
-    static const int TRIMMER_STATE_OK_TO_RUN = 2;
-    static const int TRIMMER_STATE_RUNNING = 3;
+    static const uint32_t s_open = 1;
+    static const uint32_t s_blocking = 0;
 
-    SatoriHeap*  m_heap;
-    GCEvent*     m_event;
-    size_t       m_lastGen2Count;
-    volatile int m_state;
+    volatile uint32_t m_state;
 
-    static void LoopFn(void* inst);
-    void Loop();
-    void StopAndWait();
+#if defined(_INC_PTHREADS)
+    pthread_mutex_t* m_cs;
+    pthread_cond_t* m_cv;
+#else
+    size_t* dummy1;
+    size_t* dummy2;
+#endif
+
+public:
+    SatoriGate();
+
+    void Wait();
+
+    bool TimedWait(int timeout);
+
+    void WakeOne();
+
+    void WakeAll();
 };
 
 #endif

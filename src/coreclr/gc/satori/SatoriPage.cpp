@@ -39,7 +39,7 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 {
     _ASSERTE(pageSize % Satori::PAGE_SIZE_GRANULARITY == 0);
 
-    SatoriPage* result = (SatoriPage*)GCToOSInterface::VirtualReserve((void*)address, pageSize);
+    SatoriPage* result = (SatoriPage*)GCToOSInterface::VirtualReserve((void*)address, pageSize, SatoriUtil::UseTHP());
     if (result == nullptr)
     {
         return result;
@@ -70,16 +70,23 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     // conservatively assume the first useful card word to cover the start of the first region.
     size_t cardTableStart = (result->m_firstRegion - address) / Satori::BYTES_PER_CARD_BYTE;
     // this is also region map size
-    size_t regionNumber = pageSize >> Satori::REGION_BITS;
-    size_t cardGroupSize = regionNumber * 2;
+    size_t regionCount = pageSize >> Satori::REGION_BITS;
+    size_t cardGroupSize = pageSize / Satori::BYTES_PER_CARD_GROUP * 2;
 
-    // initializing to EPHEMERAL is optional. 0 is ok too.
+    // initializing cards to EPHEMERAL is optional. 0 is ok too.
     // for huge pages it is not as useful and may get expensive.
     // also if the huge obj contains references, its region will go to gen2 anyways
     if (pageSize == Satori::PAGE_SIZE_GRANULARITY)
     {
+#if _DEBUG
+        // in debug we initialize only half the cards, since it is optional...
+        memset(&result->m_cardTable[cardTableStart], Satori::CardState::EPHEMERAL, (cardTableSize - cardTableStart) / 2);
+#else
         memset(&result->m_cardTable[cardTableStart], Satori::CardState::EPHEMERAL, cardTableSize - cardTableStart);
-        memset(&result->m_cardGroups, Satori::CardState::EPHEMERAL, cardGroupSize);
+#endif
+        // We leave card groups blank as we do not want to look at them when they may not even be covered by regions.
+        // We maintain the invariant that groups are not set for allocator regions.
+        // We do not use EPHEMERAL for groups.
     }
 
     result->m_cardTableStart = cardTableStart;
@@ -90,7 +97,7 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     result->m_regionMap = (uint8_t*)(address + 128 + cardGroupSize);
 
     // make sure the first useful card word is beyond the header.
-    _ASSERTE(result->Start() + cardTableStart > (size_t)(result->m_regionMap) + regionNumber);
+    _ASSERTE(result->Start() + cardTableStart > (size_t)(result->m_regionMap) + regionCount);
     return result;
 }
 
@@ -157,7 +164,7 @@ SatoriRegion* SatoriPage::NextInPage(SatoriRegion* region)
 
 SatoriRegion* SatoriPage::RegionForCardGroup(size_t group)
 {
-    size_t mapIndex = group;
+    size_t mapIndex = group * Satori::BYTES_PER_CARD_GROUP / Satori::REGION_SIZE_GRANULARITY;
     while (RegionMap()[mapIndex] > 1)
     {
         mapIndex -= ((size_t)1 << (RegionMap()[mapIndex] - 2));
@@ -205,8 +212,8 @@ void SatoriPage::SetCardsForRange(size_t start, size_t end)
 
     memset((void*)(m_cardTable + firstCard), Satori::CardState::REMEMBERED, lastCard - firstCard + 1);
 
-    size_t firstGroup = firstByteOffset / Satori::REGION_SIZE_GRANULARITY;
-    size_t lastGroup = lastByteOffset / Satori::REGION_SIZE_GRANULARITY;
+    size_t firstGroup = firstByteOffset / Satori::BYTES_PER_CARD_GROUP;
+    size_t lastGroup = lastByteOffset / Satori::BYTES_PER_CARD_GROUP;
     for (size_t i = firstGroup; i <= lastGroup; i++)
     {
         if (!m_cardGroups[i * 2])
@@ -235,7 +242,7 @@ void SatoriPage::DirtyCardForAddress(size_t address)
     // so the card dirtying write can be unordered.
     m_cardTable[cardByteOffset] = Satori::CardState::DIRTY;
 
-    size_t cardGroup = offset / Satori::REGION_SIZE_GRANULARITY;
+    size_t cardGroup = offset / Satori::BYTES_PER_CARD_GROUP;
     VolatileStore(&this->m_cardGroups[cardGroup * 2], Satori::CardState::DIRTY);
     VolatileStore(&this->m_cardState, Satori::CardState::DIRTY);
 }
@@ -262,8 +269,8 @@ void SatoriPage::DirtyCardsForRange(size_t start, size_t end)
     // cleaning will read in the opposite order
     VolatileStoreBarrier();
 
-    size_t firstGroup = firstByteOffset / Satori::REGION_SIZE_GRANULARITY;
-    size_t lastGroup = lastByteOffset / Satori::REGION_SIZE_GRANULARITY;
+    size_t firstGroup = firstByteOffset / Satori::BYTES_PER_CARD_GROUP;
+    size_t lastGroup = lastByteOffset / Satori::BYTES_PER_CARD_GROUP;
     for (size_t i = firstGroup; i <= lastGroup; i++)
     {
         this->m_cardGroups[i * 2] = Satori::CardState::DIRTY;
@@ -294,8 +301,8 @@ void SatoriPage::DirtyCardsForRangeConcurrent(size_t start, size_t end)
 
     // we do not clean groups concurrently, so these can be conditional and unordered
     // only the eventual final state matters
-    size_t firstGroup = firstByteOffset / Satori::REGION_SIZE_GRANULARITY;
-    size_t lastGroup = lastByteOffset / Satori::REGION_SIZE_GRANULARITY;
+    size_t firstGroup = firstByteOffset / Satori::BYTES_PER_CARD_GROUP;
+    size_t lastGroup = lastByteOffset / Satori::BYTES_PER_CARD_GROUP;
     for (size_t i = firstGroup; i <= lastGroup; i++)
     {
         if (m_cardGroups[i * 2] != Satori::CardState::DIRTY)
@@ -310,7 +317,17 @@ void SatoriPage::DirtyCardsForRangeConcurrent(size_t start, size_t end)
     }
 }
 
-void SatoriPage::WipeCardsForRange(size_t start, size_t end, bool isTenured)
+void SatoriPage::WipeGroupsForRange(size_t start, size_t end)
+{
+    size_t firstByteOffset = start - Start();
+    size_t lastByteOffset = end - Start() - 1;
+
+    size_t firstGroup = firstByteOffset / Satori::BYTES_PER_CARD_GROUP;
+    size_t lastGroup = lastByteOffset / Satori::BYTES_PER_CARD_GROUP;
+    memset((void*)&m_cardGroups[firstGroup * 2], Satori::CardState::BLANK, (lastGroup - firstGroup + 1) * 2);
+}
+
+void SatoriPage::ResetCardsForRange(size_t start, size_t end, bool isTenured)
 {
     size_t firstByteOffset = start - Start();
     size_t lastByteOffset = end - Start() - 1;
@@ -325,7 +342,5 @@ void SatoriPage::WipeCardsForRange(size_t start, size_t end, bool isTenured)
     int8_t resetValue = isTenured ? Satori::CardState::BLANK : Satori::CardState::EPHEMERAL;
     memset((void*)(m_cardTable + firstCard), resetValue, lastCard - firstCard + 1);
 
-    size_t firstGroup = firstByteOffset / Satori::REGION_SIZE_GRANULARITY;
-    size_t lastGroup = lastByteOffset / Satori::REGION_SIZE_GRANULARITY;
-    memset((void*)&m_cardGroups[firstGroup * 2], resetValue, (lastGroup - firstGroup + 1) * 2);
+    WipeGroupsForRange(start, end);
 }

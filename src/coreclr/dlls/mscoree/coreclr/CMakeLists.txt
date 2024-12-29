@@ -133,6 +133,7 @@ if(CLR_CMAKE_TARGET_WIN32)
         bcrypt.lib
         RuntimeObject.lib
         delayimp.lib
+        Synchronization.lib
     )
 else()
     list(APPEND CORECLR_LIBRARIES

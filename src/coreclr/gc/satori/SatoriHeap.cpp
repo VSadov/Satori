@@ -116,7 +116,7 @@ bool SatoriHeap::CommitMoreMap(size_t currentCommittedMapSize)
     void* commitFrom = (void*)((size_t)&m_pageMap + currentCommittedMapSize);
     size_t commitSize = SatoriUtil::CommitGranularity();
 
-    SatoriLockHolder<SatoriSpinLock> holder(&m_mapLock);
+    SatoriLockHolder holder(&m_mapLock);
     if (currentCommittedMapSize <= m_committedMapSize)
     {
         if (GCToOSInterface::VirtualCommit(commitFrom, commitSize))
