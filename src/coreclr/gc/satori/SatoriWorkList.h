@@ -43,7 +43,7 @@ FORCEINLINE uint8_t Cas128(int64_t volatile *pDst, int64_t iValueHigh, int64_t i
 FORCEINLINE uint8_t Cas128(int64_t volatile *pDst, int64_t iValueHigh, int64_t iValueLow, int64_t *pComparandAndResult)
 {
     __int128_t iValue = ((__int128_t)iValueHigh << 64) + (uint64_t)iValueLow;
-    return __atomic_compare_exchange_n ((__int128_t*)pDst, (__int128_t*)pComparandAndResult, iValue, /*weak*/ true, /* success_memorder */ __ATOMIC_SEQ_CST, /* failure_memorder */ __ATOMIC_RELAXED);
+    return __atomic_compare_exchange_n ((__int128_t*)pDst, (__int128_t*)pComparandAndResult, iValue, /*weak*/ false, /* success_memorder */ __ATOMIC_SEQ_CST, /* failure_memorder */ __ATOMIC_SEQ_CST);
 }
 #pragma clang diagnostic pop
 #endif // HOST_AMD64
