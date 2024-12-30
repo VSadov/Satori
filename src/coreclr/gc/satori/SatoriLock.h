@@ -220,13 +220,13 @@ public:
     {
         _ASSERTE(collisions > 0);
 
-        // no need for much randomness here, we will just hash the stack location and a timestamp.
-        uint32_t rand = ((uint32_t)(size_t)&collisions + (uint32_t)GetCheapTimeStamp()) * 2654435769u;
-        uint32_t spins = rand >> (uint8_t)((uint32_t)32 - min(collisions, MaxExponentialBackoffBits));
-        for (int i = 0; i < (int)spins; i++)
-        {
-            YieldProcessor();
-        }
+        //// no need for much randomness here, we will just hash the stack location and a timestamp.
+        //uint32_t rand = ((uint32_t)(size_t)&collisions + (uint32_t)GetCheapTimeStamp()) * 2654435769u;
+        //uint32_t spins = rand >> (uint8_t)((uint32_t)32 - min(collisions, MaxExponentialBackoffBits));
+        //for (int i = 0; i < (int)spins; i++)
+        //{
+        //    YieldProcessor();
+        //}
     }
 
 private:
