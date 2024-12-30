@@ -3786,7 +3786,7 @@ YieldProcessor()
         "rep\n"
         "nop");
 #elif defined(HOST_ARM) || defined(HOST_ARM64)
-    __asm__ __volatile__( "dmb isb\n yield");
+    __asm__ __volatile__( "isb");
 #elif defined(HOST_LOONGARCH64)
     __asm__ volatile( "dbar 0;  \n");
 #elif defined(HOST_RISCV64)
