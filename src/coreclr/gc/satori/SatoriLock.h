@@ -138,7 +138,7 @@ private:
     // will do a lot less attempts than an simple retry. On multiprocessor machine fruitless attempts
     // will cause unnecessary sharing of the contended state which may make modifying the state more expensive.
     // To protect against degenerate cases we will cap the per-iteration wait to 1024 spinwaits.
-    static const uint32_t MaxExponentialBackoffBits = 8;
+    static const uint32_t MaxExponentialBackoffBits = 16;
 
     // This lock is unfair and permits acquiring a contended lock by a nonwaiter in the presence of waiters.
     // It is possible for one thread to keep holding the lock long enough that waiters go to sleep and
