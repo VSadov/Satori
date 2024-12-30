@@ -138,7 +138,7 @@ private:
     // will do a lot less attempts than an simple retry. On multiprocessor machine fruitless attempts
     // will cause unnecessary sharing of the contended state which may make modifying the state more expensive.
     // To protect against degenerate cases we will cap the per-iteration wait to 1024 spinwaits.
-    static const uint32_t MaxExponentialBackoffBits = 10;
+    static const uint32_t MaxExponentialBackoffBits = 8;
 
     // This lock is unfair and permits acquiring a contended lock by a nonwaiter in the presence of waiters.
     // It is possible for one thread to keep holding the lock long enough that waiters go to sleep and
@@ -220,13 +220,13 @@ public:
     {
         _ASSERTE(collisions > 0);
 
-        //// no need for much randomness here, we will just hash the stack location and a timestamp.
-        //uint32_t rand = ((uint32_t)(size_t)&collisions + (uint32_t)GetCheapTimeStamp()) * 2654435769u;
-        //uint32_t spins = rand >> (uint8_t)((uint32_t)32 - min(collisions, MaxExponentialBackoffBits));
-        //for (int i = 0; i < (int)spins; i++)
-        //{
-        //    YieldProcessor();
-        //}
+        // no need for much randomness here, we will just hash the stack location and a timestamp.
+        uint32_t rand = ((uint32_t)(size_t)&collisions + (uint32_t)GetCheapTimeStamp()) * 2654435769u;
+        uint32_t spins = rand >> (uint8_t)((uint32_t)32 - min(collisions, MaxExponentialBackoffBits));
+        for (int i = 0; i < (int)spins; i++)
+        {
+            YieldProcessor();
+        }
     }
 
 private:
