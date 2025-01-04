@@ -788,7 +788,8 @@ tryAgain:
                 !m_concurrentCardsDone ||
                 m_ccStackMarkState != CC_MARK_STATE_DONE ||
                 m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING ||
-                m_condemnedGeneration == 0;
+                m_condemnedGeneration == 0 ||
+                !m_workList->IsEmpty();
 
             int64_t start = GCToOSInterface::QueryPerformanceCounter();
             if (moreWork)
