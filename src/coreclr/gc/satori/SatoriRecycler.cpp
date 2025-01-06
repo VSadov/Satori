@@ -941,17 +941,15 @@ bool SatoriRecycler::IsBlockingPhase()
 }
 
 //TUNING: We use a very simplistic approach for GC triggering here.
+//        By default: 
+//          SatoriUtil::Gen2Target() triggers Gen2 GC when heap size doubles.
+//          SatoriUtil::Gen1Target() triggers Gen1 GC when ephemeral size quadruples.
+// 
 //        There could be a lot of room to improve in this area:
 //        - could consider current CPU/memory load and adjust accordingly
 //        - could collect and use past history of the program behavior
 //        - could consider user input as to favor latency or throughput
 //        - ??
-
-// we target 1/EPH_SURV_TARGET ephemeral survival rate
-#define EPH_SURV_TARGET 4
-
-// do gen2 when total doubles
-#define GEN2_SURV_TARGET 2
 
 void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 {
@@ -970,7 +968,7 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 
     // gen2 allocations are rare and do not count towards gen1 budget since gen1 will not help with that
     // they can be big though, so check if by any chance gen2 allocs alone pushed us over the limit
-    if (m_gen2AddedSinceLastCollection * GEN2_SURV_TARGET > m_totalLimit)
+    if (m_gen2AddedSinceLastCollection * SatoriUtil::Gen2Target() / 100 > m_totalLimit)
     {
         generation = 2;
     }
@@ -1015,11 +1013,11 @@ void SatoriRecycler::AdjustHeuristics()
 
     if (m_prevCondemnedGeneration == 2)
     {
-        m_totalLimit = occupancy * GEN2_SURV_TARGET;
+        m_totalLimit = occupancy * SatoriUtil::Gen2Target() / 100;
     }
 
-    // we look for 1 / EPH_SURV_TARGET ephemeral survivorship, thus budget is the diff
-    size_t newGen1Budget = max(MIN_GEN1_BUDGET, ephemeralOccupancy * (EPH_SURV_TARGET - 1));
+    // we trigger GC when ephemeral size grows to SatoriUtil::Gen1Target(), thus budget is the diff
+    size_t newGen1Budget = max(MIN_GEN1_BUDGET, ephemeralOccupancy * (SatoriUtil::Gen2Target() - 100) / 100);
 
     // alternatively we allow gen1 allocs up to 1/8 of total limit.
     size_t altNewGen1Budget = max(MIN_GEN1_BUDGET, m_totalLimit / 8);
