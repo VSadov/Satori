@@ -52,12 +52,16 @@ private:
 
     SatoriHeap*  m_heap;
     GCEvent*     m_event;
+    SatoriGate*  m_sleepGate;
     size_t       m_lastGen2Count;
     volatile int m_state;
+    volatile bool m_paused;
 
     static void LoopFn(void* inst);
     void Loop();
     void StopAndWait();
+    void Pause(int msec);
+    void Unpause();
 };
 
 #endif

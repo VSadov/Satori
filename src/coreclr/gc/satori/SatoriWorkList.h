@@ -33,34 +33,46 @@
 
 
 #if defined(TARGET_WINDOWS)
-FORCEINLINE uint8_t Cas128(int64_t volatile *pDst, int64_t iValueHigh, int64_t iValueLow, int64_t *pComparandAndResult)
+FORCEINLINE uint8_t Cas128(int64_t volatile *pDst, int64_t iValueHigh, int64_t iValueLow, int64_t *pComparand)
 {
-    return _InterlockedCompareExchange128(pDst, iValueHigh, iValueLow, pComparandAndResult);
+    return _InterlockedCompareExchange128(pDst, iValueHigh, iValueLow, pComparand);
 }
 #else
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Watomic-alignment"
-FORCEINLINE uint8_t Cas128(int64_t volatile *pDst, int64_t iValueHigh, int64_t iValueLow, int64_t *pComparandAndResult)
+FORCEINLINE uint8_t Cas128(int64_t volatile *pDst, int64_t iValueHigh, int64_t iValueLow, int64_t *pComparand)
 {
     __int128_t iValue = ((__int128_t)iValueHigh << 64) + (uint64_t)iValueLow;
-    return __atomic_compare_exchange_n ((__int128_t*)pDst, (__int128_t*)pComparandAndResult, iValue, /*weak*/ true, /* success_memorder */ __ATOMIC_SEQ_CST, /* failure_memorder */ __ATOMIC_RELAXED);
+    return __sync_bool_compare_and_swap_16((__int128_t*)pDst, *(__int128_t*)pComparand, iValue);
 }
 #pragma clang diagnostic pop
 #endif // HOST_AMD64
 
-class SatoriWorkList
+class DECLSPEC_ALIGN(128) SatoriWorkList
 {
 public:
     SatoriWorkList() :
-        m_head(), m_aba()
-#ifdef _DEBUG
-        , m_count()
-#endif
+        SatoriWorkList(nullptr, 0)
     {}
+
+    SatoriWorkList(SatoriWorkChunk* head, size_t aba)
+    {
+        m_head = head;
+        m_aba = aba;
+#ifdef _DEBUG
+        m_count = 0;
+#endif
+    }
 
     static SatoriWorkList* AllocAligned()
     {
-        const size_t align = 64;
+        const size_t align =
+#if defined(TARGET_AMD64)
+            64;
+#else
+            128;
+#endif
+
 #ifdef _MSC_VER
         void* buffer = _aligned_malloc(sizeof(SatoriWorkList), align);
 #else
@@ -80,9 +92,13 @@ public:
     {
         _ASSERTE(item->m_next == nullptr);
 
-        SatoriWorkList orig = *this;
-        item->m_next = orig.m_head;
-        if (Cas128((int64_t*)this, orig.m_aba + 1, (int64_t)item, (int64_t*)&orig))
+        SatoriWorkChunk* head = this->m_head;
+        size_t aba = this->m_aba;
+
+        item->m_next = head;
+
+        SatoriWorkList orig(head, aba);
+        if (Cas128((int64_t*)this, aba + 1, (int64_t)item, (int64_t*)&orig))
         {
 #ifdef _DEBUG
             Interlocked::Increment(&m_count);
@@ -96,20 +112,22 @@ public:
     FORCEINLINE
     SatoriWorkChunk* TryPop()
     {
-        SatoriWorkList orig = *this;
-        if (orig.m_head == nullptr)
+        SatoriWorkChunk* head  = this->m_head;
+        size_t aba = this->m_aba;
+
+        if (head == nullptr)
         {
             return nullptr;
         }
 
-        if (Cas128((int64_t*)this, orig.m_aba + 1, (int64_t)orig.m_head->m_next, (int64_t*)&orig))
+        SatoriWorkList orig(head, aba);
+        if (Cas128((int64_t*)this, aba + 1, (int64_t)head->m_next, (int64_t*)&orig))
         {
     #ifdef _DEBUG
             Interlocked::Decrement(&m_count);
     #endif
-            SatoriWorkChunk* result = orig.m_head;
-            result->m_next = nullptr;
-            return result;
+            head->m_next = nullptr;
+            return head;
         }
 
         return TryPopSlow();

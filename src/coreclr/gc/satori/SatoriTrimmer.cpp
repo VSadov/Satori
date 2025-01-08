@@ -46,10 +46,24 @@ SatoriTrimmer::SatoriTrimmer(SatoriHeap* heap)
     m_event = new (nothrow) GCEvent;
     m_event->CreateAutoEventNoThrow(false);
 
+    m_sleepGate = new (nothrow) SatoriGate();
+
     if (SatoriUtil::IsTrimmingEnabled())
     {
         GCToEEInterface::CreateThread(LoopFn, this, false, "Satori GC Trimmer Thread");
     }
+}
+
+void SatoriTrimmer::Pause(int msec)
+{
+    m_paused = true;
+    m_sleepGate->TimedWait(msec);
+    m_paused = false;
+}
+
+void SatoriTrimmer::Unpause()
+{
+    m_sleepGate->WakeOne();
 }
 
 void SatoriTrimmer::LoopFn(void* inst)
@@ -76,7 +90,7 @@ void SatoriTrimmer::Loop()
 
             Interlocked::CompareExchange(&m_state, TRIMMER_STATE_STOPPED, TRIMMER_STATE_RUNNING);
             // we are not running here, so we can sleep a bit before continuing.
-            GCToOSInterface::Sleep(5000);
+            Pause(5000);
             StopAndWait();
         }
 
@@ -84,7 +98,7 @@ void SatoriTrimmer::Loop()
             [&](SatoriPage* page)
             {
                 // limit the rate of scanning to 1 page/msec.
-                GCToOSInterface::Sleep(1);
+                Pause(1);
                 if (m_state != TRIMMER_STATE_RUNNING)
                 {
                     StopAndWait();
@@ -116,14 +130,15 @@ void SatoriTrimmer::Loop()
                                     if (didSomeWork)
                                     {
                                         // limit the decommit/coalesce rate to 1 region/10 msec.
-                                        GCToOSInterface::Sleep(10);
+                                        Pause(10);
+                                        if (m_state != TRIMMER_STATE_RUNNING)
+                                        {
+                                            StopAndWait();
+                                        }
                                     }
                                 }
                             }
                         }
-
-                        // this is a low priority task, if something needs to run, yield
-                        GCToOSInterface::YieldThread(0);
 
                         // also we will pause for 1 sec if there was a GC - to further reduce the churn
                         // if the app is allocation-active.
@@ -131,7 +146,7 @@ void SatoriTrimmer::Loop()
                         if (newGen1 != lastGen1)
                         {
                             lastGen1 = newGen1;
-                            GCToOSInterface::Sleep(1000);
+                            Pause(1000);
                         }
 
                         if (m_state != TRIMMER_STATE_RUNNING)
@@ -151,8 +166,6 @@ void SatoriTrimmer::StopAndWait()
     {
         tryAgain:
 
-        // this is a low priority task, if something needs to run, yield
-        GCToOSInterface::YieldThread(0);
         int state = m_state;
         switch (state)
         {
@@ -165,7 +178,7 @@ void SatoriTrimmer::StopAndWait()
         case TRIMMER_STATE_STOPPED:
             for (int i = 0; i < 10; i++)
             {
-                GCToOSInterface::Sleep(100);
+                Pause(100);
                 if (m_state != state)
                 {
                     goto tryAgain;
@@ -215,17 +228,20 @@ void SatoriTrimmer::SetStopSuggested()
         case TRIMMER_STATE_OK_TO_RUN:
             if (Interlocked::CompareExchange(&m_state, TRIMMER_STATE_STOPPED, state) == state)
             {
+                Unpause();
                 return;
             }
             break;
         case TRIMMER_STATE_RUNNING:
             if (Interlocked::CompareExchange(&m_state, TRIMMER_STATE_STOP_SUGGESTED, state) == state)
             {
+                Unpause();
                 return;
             }
             break;
         default:
             _ASSERTE(m_state <= TRIMMER_STATE_STOP_SUGGESTED);
+            Unpause();
             return;
         }
     }
@@ -238,8 +254,13 @@ void SatoriTrimmer::WaitForStop()
     int cycles = 0;
     while (m_state == TRIMMER_STATE_STOP_SUGGESTED)
     {
+        if (m_paused)
+        {
+            Unpause();
+        }
+
         YieldProcessor();
-        if ((++cycles % 127) == 0)
+        if ((++cycles & 127) == 0)
         {
             GCToOSInterface::YieldThread(0);
         }
