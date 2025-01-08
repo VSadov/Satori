@@ -292,7 +292,7 @@ public:
         if (target < 100)
         {
             // target must be > 100%
-            // if wee less, just default to triggering GC when heap doubles
+            // if wee see less, just default to triggering GC when heap doubles
             target = 200;
         }
 
@@ -306,7 +306,7 @@ public:
         if (target < 100)
         {
             // target must be > 100%
-            // if wee less, just default to triggering GC when ephemeral heap quadruples
+            // if wee see less, just default to triggering GC when ephemeral heap quadruples
             target = 400;
         }
 

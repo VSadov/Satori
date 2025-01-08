@@ -798,7 +798,7 @@ tryAgain:
                 m_noWorkSince = GCToOSInterface::QueryPerformanceCounter();
 
                 // if we did not use all the quantum in Low Latency mode,
-                // consume what roughly remains here for pacing reasons.
+                // consume what roughly remains for pacing reasons.
                 if (IsLowLatencyMode())
                 {
                     int64_t deadline = start + HelpQuantum() / 2;

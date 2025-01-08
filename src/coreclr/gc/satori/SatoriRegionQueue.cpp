@@ -215,7 +215,7 @@ SatoriRegionQueue* SatoriRegionQueue::AllocAligned(QueueKind kind)
 #if defined(TARGET_AMD64)
         64;
 #else
-            128;
+        128;
 #endif
 
 #ifdef _MSC_VER
