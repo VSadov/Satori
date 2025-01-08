@@ -41,6 +41,7 @@ bool SatoriLock::EnterSlow(bool noBlock)
 
         // We will count when we failed to change the state of the lock and increase pauses
         // so that bursts of activity are better tolerated. This should not happen often.
+        // after waking up we restart collision and iteration counters.
         int collisions = 0;
 
         // We will track the changes of ownership while we are trying to acquire the lock.
@@ -145,13 +146,18 @@ bool SatoriLock::EnterSlow(bool noBlock)
                 // Increment the waiter count.
                 // Note that we do not do any overflow checking on this increment.  In order to overflow,
                 // we'd need to have about 1 billion waiting threads, which is inconceivable anytime in the
-                // forseeable future.
+                // foreseeable future.
                 uint32_t newState = oldState + WaiterCountIncrement;
                 if (hasWaited)
                     newState = (newState - WaiterCountIncrement) & ~WaiterWoken;
 
                 if (Interlocked::CompareExchange(&_state, newState, oldState) == oldState)
                     break;
+            }
+            else
+            {
+                // We are over the iteration limit, but the lock was open, we tried and failed.
+                // It was a collision.
             }
 
             CollisionBackoff(++collisions);

@@ -157,7 +157,9 @@ public:
     BOOL_CONFIG  (UseTHP,                    "gcTHP",                     NULL,                                true,               "Specifies whether Transparent Huge Pages can be used. (Linux only)")                     \
     BOOL_CONFIG  (TrimmigGC,                 "gcTrim",                    NULL,                                true,               "Specifies whether background trimming is enabled")                                       \
     INT_CONFIG   (GCRate,                    "gcRate",                    NULL,                                -1,                 "Specifies soft min limit for time between GCs in milliseconds. -1 - default")            \
-    INT_CONFIG   (GCSpin,                    "gcSpin",                    NULL,                                -1,                 "Spin")            \
+    INT_CONFIG   (GCSpin,                    "gcSpin",                    NULL,                                -1,                 "Spin")                                                                                   \
+    INT_CONFIG   (Gen2Target,                "gcGen2Target",              NULL,                                200,                "Specifies target for Gen2 GC (in terms of % of the last known size)")                    \
+    INT_CONFIG   (Gen1Target,                "gcGen1Target",              NULL,                                400,                "Specifies target for Gen1 GC (in terms of % of the last known size)")                    \
 
 // This class is responsible for retreiving configuration information
 // for how the GC should operate.

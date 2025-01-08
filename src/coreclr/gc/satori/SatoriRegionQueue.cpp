@@ -211,7 +211,13 @@ SatoriRegion* SatoriRegionQueue::TryDequeueIfHasFreeSpaceInTopBucket()
 
 SatoriRegionQueue* SatoriRegionQueue::AllocAligned(QueueKind kind)
 {
-    const size_t align = 64;
+    const size_t align =
+#if defined(TARGET_AMD64)
+        64;
+#else
+        128;
+#endif
+
 #ifdef _MSC_VER
     void* buffer = _aligned_malloc(sizeof(SatoriRegionQueue), align);
 #else

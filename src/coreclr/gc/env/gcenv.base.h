@@ -177,7 +177,7 @@ typedef DWORD (WINAPI *PTHREAD_START_ROUTINE)(void* lpThreadParameter);
 #endif // defined(__i386__) || defined(__x86_64__)
 
 #if defined(__arm__) || defined(__aarch64__)
- #define YieldProcessor() asm volatile ("yield")
+ #define YieldProcessor() asm volatile ("dmb ishst\n" "yield")
  #define MemoryBarrier __sync_synchronize
 #endif // __arm__ || __aarch64__
 

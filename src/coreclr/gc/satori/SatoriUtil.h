@@ -285,6 +285,34 @@ public:
         return gcSpin;
     }
 
+    // DOTNET_gcGen2Target
+    static int Gen2Target()
+    {
+        int target = (int)GCConfig::GetGen2Target();
+        if (target < 100)
+        {
+            // target must be > 100%
+            // if wee see less, just default to triggering GC when heap doubles
+            target = 200;
+        }
+
+        return target;
+    }
+
+    // DOTNET_gcGen1Target
+    static int Gen1Target()
+    {
+        int target = (int)GCConfig::GetGen1Target();
+        if (target < 100)
+        {
+            // target must be > 100%
+            // if wee see less, just default to triggering GC when ephemeral heap quadruples
+            target = 400;
+        }
+
+        return target;
+    }
+
     static size_t CommitGranularity()
     {
         // we can support sizes that are > OS page and binary fractions of REGION_SIZE_GRANULARITY.

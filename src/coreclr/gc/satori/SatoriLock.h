@@ -73,7 +73,7 @@ private:
         return _InterlockedCompareExchange_acq((long*)destination, exchange, comparand) == (long)comparand;
 #endif
 #else
-        return __atomic_compare_exchange_n(destination, &comparand, exchange, true, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
+        return __atomic_compare_exchange_n(destination, &comparand, exchange, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
 #endif
     }
 
@@ -88,36 +88,6 @@ private:
 #endif
 #else
         return __atomic_sub_fetch(arg, 1, __ATOMIC_RELEASE);
-#endif
-    }
-
-    FORCEINLINE
-    static int64_t GetCheapTimeStamp()
-    {
-#if defined(TARGET_AMD64)
-#ifdef _MSC_VER
-        return __rdtsc();
-#else
-        ptrdiff_t cycles;
-        ptrdiff_t cyclesHi;
-        __asm__ __volatile__
-        ("rdtsc":"=a" (cycles), "=d" (cyclesHi));
-        return (cyclesHi << 32) | cycles;
-#endif
-#elif defined(TARGET_ARM64)
-        // On arm64 just read timer register instead
-#ifdef _MSC_VER
-#define ARM64_CNTVCT_EL0 ARM64_SYSREG(3,3,14,0,2)
-        return _ReadStatusReg(ARM64_CNTVCT_EL0);
-#elif defined(TARGET_LINUX) || defined(TARGET_OSX)
-        int64_t timerTicks;
-        asm volatile("mrs %0, cntvct_el0" : "=r"(timerTicks));
-        return timerTicks;
-#else
-        Unsupported platform?
-#endif
-#else
-        Unsupported architecture?
 #endif
     }
 
@@ -137,8 +107,8 @@ private:
     // the exponential backoff will generally be not more than 2X worse than the perfect guess and
     // will do a lot less attempts than an simple retry. On multiprocessor machine fruitless attempts
     // will cause unnecessary sharing of the contended state which may make modifying the state more expensive.
-    // To protect against degenerate cases we will cap the per-iteration wait to 1024 spinwaits.
-    static const uint32_t MaxExponentialBackoffBits = 10;
+    // To protect against degenerate cases we will cap the per-iteration wait to a few thousand spinwaits.
+    static const uint32_t MaxExponentialBackoffBits = 12;
 
     // This lock is unfair and permits acquiring a contended lock by a nonwaiter in the presence of waiters.
     // It is possible for one thread to keep holding the lock long enough that waiters go to sleep and
@@ -220,9 +190,16 @@ public:
     {
         _ASSERTE(collisions > 0);
 
-        // no need for much randomness here, we will just hash the stack location and a timestamp.
-        uint32_t rand = ((uint32_t)(size_t)&collisions + (uint32_t)GetCheapTimeStamp()) * 2654435769u;
-        uint32_t spins = rand >> (uint8_t)((uint32_t)32 - min(collisions, MaxExponentialBackoffBits));
+        collisions = min(collisions, MaxExponentialBackoffBits);
+        // we will backoff for some random number of iterations that roughly grows as collisions^2
+        // no need for much randomness here, randomness is "good to have", we could do without it,
+        // so we will just hash in the stack location.
+        uint32_t rand = (uint32_t)(size_t)&collisions * 2654435769u;
+        // set the highmost bit to ensure minimum number of spins is exponentialy increasing
+        // it basically guarantees that we spin at least 1, 2, 4, 8, 16, times, and so on
+        rand |= (1u << 31);
+        uint32_t spins = rand >> (uint8_t)(32 - collisions);
+
         for (int i = 0; i < (int)spins; i++)
         {
             YieldProcessor();
@@ -236,12 +213,12 @@ private:
         return (uint16_t)GCToOSInterface::GetLowPrecisionTimeStamp();
     }
 
-    // same idea as in CollisionBackoff, but with guaranteed minimum wait
+    // same idea as in CollisionBackoff, but with expected small range
     static void IterationBackoff(int iteration)
     {
         _ASSERTE(iteration > 0 && iteration < MaxExponentialBackoffBits);
 
-        uint32_t rand = ((uint32_t)(size_t)&iteration + (uint32_t)GetCheapTimeStamp()) * 2654435769u;
+        uint32_t rand = (uint32_t)(size_t)&iteration * 2654435769u;
         // set the highmost bit to ensure minimum number of spins is exponentialy increasing
         // it basically guarantees that we spin at least 1, 2, 4, 8, 16, times, and so on
         rand |= (1u << 31);
