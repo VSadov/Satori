@@ -797,15 +797,20 @@ tryAgain:
                 HelpOnceCore(/*minQuantum*/ false);
                 m_noWorkSince = GCToOSInterface::QueryPerformanceCounter();
 
-                // if we did not use all the quantum,
-                // consume it here in Low Latency mode for pacing reasons.
+                // if we did not use all the quantum in Low Latency mode,
+                // consume what roughly remains here for pacing reasons.
                 if (IsLowLatencyMode())
                 {
-                    int64_t deadline = start + HelpQuantum();
+                    int64_t deadline = start + HelpQuantum() / 2;
+                    int iters = 1;
                     while (GCToOSInterface::QueryPerformanceCounter() < deadline &&
                         m_ccStackMarkState != CC_MARK_STATE_SUSPENDING_EE)
                     {
-                        YieldProcessor();
+                        iters *= 2;
+                        for (int i = 0; i < iters; i++)
+                        {
+                            YieldProcessor();
+                        }
                     }
                 }
             }
@@ -4358,7 +4363,7 @@ bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
         }
 
         YieldProcessor();
-        if ((++cycles % 127) == 0)
+        if ((++cycles & 127) == 0)
         {
             GCToOSInterface::YieldThread(0);
         }
