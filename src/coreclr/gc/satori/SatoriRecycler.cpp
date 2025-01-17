@@ -799,7 +799,8 @@ tryAgain:
 
                 // if we did not use all the quantum in Low Latency mode,
                 // consume what roughly remains for pacing reasons.
-                if (IsLowLatencyMode())
+                if (IsLowLatencyMode() &&
+                    m_concurrentCleaningState >= CC_CLEAN_STATE_CLEANING)
                 {
                     int64_t deadline = start + HelpQuantum() / 2;
                     int iters = 1;
@@ -1022,7 +1023,7 @@ void SatoriRecycler::AdjustHeuristics()
     }
 
     // we trigger GC when ephemeral size grows to SatoriUtil::Gen1Target(), thus budget is the diff
-    size_t newGen1Budget = max(MIN_GEN1_BUDGET, ephemeralOccupancy * (SatoriUtil::Gen2Target() - 100) / 100);
+    size_t newGen1Budget = max(MIN_GEN1_BUDGET, ephemeralOccupancy * (SatoriUtil::Gen1Target() - 100) / 100);
 
     // alternatively we allow gen1 allocs up to 1/8 of total limit.
     size_t altNewGen1Budget = max(MIN_GEN1_BUDGET, m_totalLimit / 8);
@@ -1910,8 +1911,6 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         MaybeAskForHelp();
     }
 
-    // just a crude measure of work performed to remind us to check for the deadline
-    size_t objectCount = 0;
     SatoriWorkChunk* dstChunk = nullptr;
     SatoriObject* o = nullptr;
 
@@ -1920,7 +1919,6 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         SatoriObject* child = VolatileLoadWithoutBarrier(ref);
         if (child && !child->IsExternal())
         {
-            objectCount++;
             SatoriRegion* childRegion = child->ContainingRegion();
             if (!childRegion->MaybeEscapeTrackingAcquire())
             {
@@ -1972,7 +1970,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         else
         {
             // share half of work if work list is empty
-            if (srcChunk->Count() > Satori::SHARE_WORK_THRESHOLD * 2 &&
+            if (srcChunk->Count() > Satori::SHARE_WORK_THRESHOLD &&
                 m_workList->IsEmpty())
             {
                 size_t half = srcChunk->Count() / 2;
@@ -1989,17 +1987,8 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
             // drain srcChunk to dst chunk
             while (srcChunk->Count() > 0)
             {
-                // every once in a while check for the deadline
-                // the objectCount number here is to
-                // - amortize cost of QueryPerformanceCounter() and
-                // - establish the minimum amount of work per help quant
-                if (objectCount++ > Satori::MARK_CHUNK_COUNT)
-                {
-                    goto deadlineCheck;
-                }
-
                 o = srcChunk->Pop();
-                SatoriUtil::Prefetch(srcChunk->Peek());
+                srcChunk->Prefetch(1);
 
                 _ASSERTE(o->IsMarked());
                 if (o->IsUnmovable())
@@ -2019,18 +2008,17 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
             }
         }
 
-deadlineCheck:
+        _ASSERTE(srcChunk == nullptr || srcChunk->Count() == 0);
+
+        // every once in a while check for the deadline
+        // check after processing one chunk
+        // - amortize cost of QueryPerformanceCounter() and
+        // - establish the minimum amount of work per help quantum
         if ((GCToOSInterface::QueryPerformanceCounter() - deadline) > 0)
         {
             PushOrReturnWorkChunk(srcChunk);
             PushOrReturnWorkChunk(dstChunk);
             return true;
-        }
-
-        objectCount = 0;
-        if (srcChunk && srcChunk->Count() > 0)
-        {
-            continue;
         }
 
         // done with srcChunk
@@ -2183,7 +2171,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         else
         {
             // share half of work if work list is empty
-            if (srcChunk->Count() > Satori::SHARE_WORK_THRESHOLD * 2 &&
+            if (srcChunk->Count() > Satori::SHARE_WORK_THRESHOLD &&
                 m_workList->IsEmpty())
             {
                 size_t half = srcChunk->Count() / 2;
@@ -2201,7 +2189,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
             while (srcChunk->Count() > 0)
             {
                 SatoriObject* o = srcChunk->Pop();
-                SatoriUtil::Prefetch(srcChunk->Peek());
+                srcChunk->Prefetch(1);
 
                 _ASSERTE(o->IsMarked());
                 if (o->IsUnmovable())
@@ -3536,9 +3524,9 @@ void SatoriRecycler::Plan()
     // and then go through 100 regions and update pointers.
     //
     // TUNING: 
-    // As crude criteria, we will do relocations if at least 1/4
+    // As crude criteria, we will do relocations if at least 1/2
     // of condemned regions want to participate. And at least 2.
-    size_t desiredRelocating = m_condemnedRegionsCount / 4 + 2;
+    size_t desiredRelocating = m_condemnedRegionsCount / 2 + 2;
 
     if (m_isRelocating == false ||
         relocatableEstimate <= desiredRelocating)
