@@ -289,6 +289,7 @@ bool SatoriRegion::Sweep()
         {
             size_t lastMarkedEnd = o->Start();
             o = SkipUnmarkedAndClear(o);
+            SatoriUtil::Prefetch(o);
             size_t skipped = o->Start() - lastMarkedEnd;
             SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
             SetIndicesForObject(free, o->Start());
@@ -302,7 +303,6 @@ bool SatoriRegion::Sweep()
         }
 
         _ASSERTE(!o->IsFree());
-        cannotRecycle = true;
 
         size_t size = o->Size();
         if (isEscapeTracking)
@@ -343,6 +343,11 @@ bool SatoriRegion::Sweep()
     this->m_individuallyPromoted = false;
 
     SetOccupancy(occupancy, objCount);
+    if (objCount !=0)
+    {
+        cannotRecycle = true;
+    }
+
     return cannotRecycle;
 }
 

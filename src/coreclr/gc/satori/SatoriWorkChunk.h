@@ -93,6 +93,14 @@ public:
         return m_data[m_top - 1];
     }
 
+    void Prefetch(size_t i)
+    {
+        if (i <= m_top)
+        {
+            SatoriUtil::Prefetch(m_data[m_top - i]);
+        }
+    }
+
     bool TryPush(SatoriObject* obj)
     {
         if (HasSpace())

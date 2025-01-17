@@ -76,8 +76,8 @@ namespace Satori
     // could fit into same chunk
     const static size_t MARK_RANGE_THRESHOLD = MARK_CHUNK_SIZE - 2 * sizeof(size_t);
 
-    // if we have more than twice this much and work list is empty we can share half
-    const static int SHARE_WORK_THRESHOLD = 4;
+    // if we have more than this much and work list is empty we can share half
+    const static int SHARE_WORK_THRESHOLD = 8;
 
     // address bits set to track finalizable that needs to be scheduled to F-queue
     const static size_t FINALIZATION_PENDING = 1;
@@ -307,7 +307,7 @@ public:
         {
             // target must be > 100%
             // if wee see less, just default to triggering GC when ephemeral heap quadruples
-            target = 400;
+            target = Gen2Target() * 2;
         }
 
         return target;
