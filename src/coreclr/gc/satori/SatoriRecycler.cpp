@@ -3524,9 +3524,9 @@ void SatoriRecycler::Plan()
     // and then go through 100 regions and update pointers.
     //
     // TUNING: 
-    // As crude criteria, we will do relocations if at least 1/4
+    // As crude criteria, we will do relocations if at least 1/2
     // of condemned regions want to participate. And at least 2.
-    size_t desiredRelocating = m_condemnedRegionsCount / 4 + 2;
+    size_t desiredRelocating = m_condemnedRegionsCount / 2 + 2;
 
     if (m_isRelocating == false ||
         relocatableEstimate <= desiredRelocating)
