@@ -198,6 +198,14 @@ inline void SatoriObject::ClearMarkCompactStateForRelocation()
     r->ClearPinned(this);
 }
 
+inline SatoriObject* SatoriObject::RelocatedToUnchecked()
+{
+    _ASSERTE(this->ContainingRegion()->IsRelocated());
+    SatoriObject* newLocation = *((SatoriObject**)this - 1);
+    _ASSERTE(this->RawGetMethodTable() == newLocation->RawGetMethodTable());
+    return newLocation;
+}
+
 template <bool notExternal>
 FORCEINLINE bool SatoriObject::IsRelocatedTo(SatoriObject** newLocation)
 {
@@ -212,9 +220,7 @@ FORCEINLINE bool SatoriObject::IsRelocatedTo(SatoriObject** newLocation)
 
     if (this->ContainingRegion()->IsRelocated())
     {
-        SatoriObject* fwdPtr = *((SatoriObject**)this - 1);
-        _ASSERTE(this->RawGetMethodTable() == fwdPtr->RawGetMethodTable());
-        *newLocation = fwdPtr;
+        *newLocation = RelocatedToUnchecked();
         return true;
     }
 

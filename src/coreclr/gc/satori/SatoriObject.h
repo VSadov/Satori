@@ -72,6 +72,7 @@ public:
 
     template <bool notExternal = false>
     bool IsRelocatedTo(SatoriObject** newLocation);
+    SatoriObject * RelocatedToUnchecked();
 
     void CleanSyncBlockAndSetUnfinished();
     bool IsUnfinished();

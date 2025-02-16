@@ -1895,9 +1895,7 @@ void SatoriRegion::UpdateFinalizableTrackers()
             {
                 if (!finalizable->SameRegion(this))
                 {
-                    // TODO: VS RelocatedToUnchecked?
-                    bool relocated = finalizable->IsRelocatedTo</*notExternal*/true>(&finalizable);
-                    _ASSERTE(relocated);
+                    finalizable = finalizable->RelocatedToUnchecked();
                     _ASSERTE(finalizable->SameRegion(this));
                 }
 

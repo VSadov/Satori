@@ -687,10 +687,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
 
         _ASSERTE(IsMarked(o));
 
-        SatoriObject* promoted;
-        // TODO: VS unchecked
-        bool relocated = o->IsRelocatedTo</*notExternal*/true>(&promoted);
-        _ASSERTE(relocated);
+        SatoriObject* promoted = o->RelocatedToUnchecked();
         _ASSERTE(!promoted->IsFree());
 
         SatoriPage* page = promoted->ContainingRegion()->ContainingPage();
