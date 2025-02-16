@@ -70,6 +70,9 @@ public:
     void SetUnmovable();
     bool IsUnmovable();
 
+    template <bool notExternal = false>
+    bool IsRelocatedTo(SatoriObject** newLocation);
+
     void CleanSyncBlockAndSetUnfinished();
     bool IsUnfinished();
     void UnsetUnfinished();
