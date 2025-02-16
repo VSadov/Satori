@@ -351,7 +351,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
     else
     {
         size_t expectedAlloc = max(size, SatoriUtil::MinZeroInitSize());
-        if ((context->alloc_bytes ^ (context->alloc_bytes + expectedAlloc)) >> Satori::REGION_BITS)
+        if ((context->alloc_bytes ^ (context->alloc_bytes + expectedAlloc)) >= Satori::REGION_SIZE_GRANULARITY)
         {
             m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
         }
@@ -692,7 +692,7 @@ tryAgain:
     }
     else
     {
-        if ((context->alloc_bytes_uoh ^ (context->alloc_bytes_uoh + size)) >> Satori::REGION_BITS)
+        if ((context->alloc_bytes_uoh ^ (context->alloc_bytes_uoh + size)) >= Satori::REGION_SIZE_GRANULARITY)
         {
             m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
         }

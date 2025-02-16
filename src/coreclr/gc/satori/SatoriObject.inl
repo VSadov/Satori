@@ -94,7 +94,7 @@ inline SatoriRegion* SatoriObject::ContainingRegion()
 
 inline bool SatoriObject::SameRegion(SatoriRegion* otherRegion)
 {
-    return (((size_t)this ^ (size_t)otherRegion) >> Satori::REGION_BITS) == 0;
+    return ((size_t)this ^ (size_t)otherRegion) < Satori::REGION_SIZE_GRANULARITY;
 }
 
 inline bool SatoriObject::IsFree()

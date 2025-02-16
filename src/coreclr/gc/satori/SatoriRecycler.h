@@ -57,7 +57,6 @@ public:
     void AddEphemeralRegion(SatoriRegion* region);
     void AddTenuredRegion(SatoriRegion* region);
 
-    // TODO: VS should be moved to Heap?
     size_t GetNowMillis();
     size_t GetNowUsecs();
 
