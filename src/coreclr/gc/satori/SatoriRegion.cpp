@@ -1918,7 +1918,7 @@ void SatoriRegion::UpdatePointersInObject(SatoriObject* o, size_t size)
                 SatoriObject* child = *ppObject;
                 // ignore common cases - child is null or in the same region
                 if (child &&
-                    (((size_t)ppObject ^ (size_t)child) >> Satori::REGION_BITS) != 0)
+                    (((size_t)ppObject ^ (size_t)child) >= Satori::REGION_SIZE_GRANULARITY))
                 {
                     SatoriObject* newLocation;
                     if (child->IsRelocatedTo(&newLocation))
@@ -2031,21 +2031,14 @@ bool SatoriRegion::IsRelocationCandidate(bool assumePromotion)
         return false;
     }
 
-    // TODO: VS ???
-    //// two half empty may fit two in one, so always try relocating
-    //if (Occupancy() < Satori::REGION_SIZE_GRANULARITY / 2)
-    //{
-    //    return true;
-    //}
-
-    // region up to 3/4 will free 524K+ chunk, may compact if cannot reuse
+    // region up to 3/4 will free 524K+ chunk if compacted, so we may be worth compacting
     // otherwise this is too full.
     if (Occupancy() >= Satori::REGION_SIZE_GRANULARITY / 4 * 3)
     {
         return false;
     }
 
-    // not reusable, consider compacting
+    // not reusable, consider compacting, otherwise we'd rather reuse
     if (!IsReusable())
     {
         return true;

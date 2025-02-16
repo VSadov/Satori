@@ -3075,8 +3075,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                         SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
                                         // ignore common cases - child is null or in the same region, also skip externals
                                         if (child &&
-                                            // TODO: VS replace with unsigned cmp \w 0200000  (512 lsl 12)
-                                            (((size_t)ppObject ^ (size_t)child) >> Satori::REGION_BITS) != 0 &&
+                                            (((size_t)ppObject ^ (size_t)child) >= Satori::REGION_SIZE_GRANULARITY) &&
                                             !child->IsExternal())
                                         {
                                             SatoriObject* newLocation;
@@ -4018,7 +4017,7 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
                     SatoriObject* child = *ppObject;
                     // ignore common cases - child is null or in the same region
                     if (child &&
-                        (((size_t)ppObject ^ (size_t)child) >> Satori::REGION_BITS) != 0)
+                        (((size_t)ppObject ^ (size_t)child) >= Satori::REGION_SIZE_GRANULARITY))
                     {
                         SatoriObject* newLocation;
                         if (child->IsRelocatedTo(&newLocation))
