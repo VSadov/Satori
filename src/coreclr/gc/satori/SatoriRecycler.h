@@ -109,10 +109,6 @@ public:
         return m_nextGcIsFullGc;
     }
 
-    bool IsReuseCandidate(SatoriRegion* region);
-    bool IsRelocationCandidate(SatoriRegion* region);
-    bool IsPromotionCandidate(SatoriRegion* region);
-
     LastRecordedGcInfo* GetLastGcInfo(gc_kind kind)
     {
         if (kind == gc_kind_ephemeral)

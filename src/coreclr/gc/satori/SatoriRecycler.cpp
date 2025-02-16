@@ -45,7 +45,7 @@
 #include "SatoriFinalizationQueue.h"
 #include "../gcscan.h"
 
-//#pragma optimize("", off)
+// #pragma optimize("", off)
 
 #ifdef memcpy
 #undef memcpy
@@ -326,12 +326,13 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
     }
     else
     {
-        if (IsRelocationCandidate(region))
+        // conservatively assume that next GC may promotethe region
+        if (region->IsRelocationCandidate(/*assumePromotion*/true))
         {
             Interlocked::Increment(&m_relocatableEphemeralEstimate);
         }
 
-        if (IsPromotionCandidate(region))
+        if (region->IsPromotionCandidate())
         {
             Interlocked::Increment(&m_promotionEstimate);
         }
@@ -349,7 +350,7 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
 
 void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
 {
-    if (IsRelocationCandidate(region))
+    if (region->IsRelocationCandidate())
     {
         Interlocked::Increment(&m_relocatableTenuredEstimate);
     }
@@ -1534,17 +1535,16 @@ void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t
         }
     }
 
-    ptrdiff_t ptr = *((ptrdiff_t*)o - 1);
-    if (ptr < 0)
+    SatoriObject* newLocation;
+    if (o->IsRelocatedTo(&newLocation))
     {
-        ptr = -ptr;
         if (flags & GC_CALL_INTERIOR)
         {
-            *ppObject = (PTR_Object)(location + (ptr - o->Start()));
+            *ppObject = (PTR_Object)(location + ((size_t)newLocation - o->Start()));
         }
         else
         {
-            *ppObject = (PTR_Object)ptr;
+            *ppObject = (PTR_Object)newLocation;
         }
     }
 };
@@ -3073,14 +3073,16 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                     {
                                         // prevent re-reading o, someone else could be doing the same update.
                                         SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
-                                        if (child && !child->IsExternal())
+                                        // ignore common cases - child is null or in the same region, also skip externals
+                                        if (child &&
+                                            // TODO: VS replace with unsigned cmp \w 0200000  (512 lsl 12)
+                                            (((size_t)ppObject ^ (size_t)child) >> Satori::REGION_BITS) != 0 &&
+                                            !child->IsExternal())
                                         {
-                                            ptrdiff_t ptr = *((ptrdiff_t*)child - 1);
-                                            if (ptr < 0)
+                                            SatoriObject* newLocation;
+                                            if (child->IsRelocatedTo</*notExternal*/true>(&newLocation))
                                             {
-                                                _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
-                                                child = (SatoriObject*)-ptr;
-                                                VolatileStoreWithoutBarrier(ppObject, child);
+                                                VolatileStoreWithoutBarrier(ppObject, newLocation);
                                             }
 
                                             if (child->ContainingRegion()->Generation() < 2)
@@ -3523,7 +3525,6 @@ void SatoriRecycler::Plan()
     // At an extreme we do not want to relocate one region
     // and then go through 100 regions and update pointers.
     //
-    // TUNING: 
     // As crude criteria, we will do relocations if at least 1/2
     // of condemned regions want to participate. And at least 2.
     size_t desiredRelocating = m_condemnedRegionsCount / 2 + 2;
@@ -3538,9 +3539,9 @@ void SatoriRecycler::Plan()
     // plan relocations
     RunWithHelp(&SatoriRecycler::PlanWorker);
 
-    // the actual relocatable number could be less than the estimate due to pinning,
-    // which we know only after marking.
-    // check again if it we are still meeting the relocation criteria.
+    // The actual relocatable number could be less than the estimate due to pinning,
+    // which we know only after marking, or if this is gen1, which can reuse more.
+    // Check again if it we are still meeting the relocation criteria.
     size_t relocatableActual = m_relocatingRegions->Count();
     _ASSERTE(relocatableActual <= relocatableEstimate);
     if (relocatableActual <= desiredRelocating)
@@ -3599,7 +3600,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
             _ASSERTE(curRegion->Generation() <= m_condemnedGeneration);
 
             // select relocation candidates and relocation targets according to sizes.
-            if (IsRelocationCandidate(curRegion))
+            if (curRegion->IsRelocationCandidate(m_promoteAllRegions))
             {
                 // when relocating, we want to start with larger regions
                 if (curRegion->Occupancy() > Satori::REGION_SIZE_GRANULARITY * 2 / 5)
@@ -3816,8 +3817,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         size_t size = o->Size();
         memcpy((void*)(dst - sizeof(size_t)), (void*)(o->Start() - sizeof(size_t)), size);
         // record the new location of the object by storing it in the syncblock space.
-        // make it negative so it is different from a normal syncblock.
-        *((ptrdiff_t*)o - 1) = -(ptrdiff_t)dst;
+        *((size_t*)o - 1) = dst;
 
         if (needToCopyMarks)
         {
@@ -3846,6 +3846,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
 
     if (objectsRelocated > 0)
     {
+        relocationSource->IsRelocated() = true;
         if (relocationIsPromotion)
         {
             relocationTarget->AcceptedPromotedObjects() = true;
@@ -3957,11 +3958,10 @@ void SatoriRecycler::UpdateRootsWorker()
                 [&](SatoriObject** ppObject)
                 {
                     SatoriObject* o = *ppObject;
-                    ptrdiff_t ptr = *((ptrdiff_t*)o - 1);
-                    if (ptr < 0)
+                    SatoriObject* newLocation;
+                    if (o->IsRelocatedTo</*notExternal*/true>(&newLocation))
                     {
-                        _ASSERTE(o->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
-                        *ppObject = (SatoriObject*)-ptr;
+                        *ppObject = newLocation;
                     }
                 }
             );
@@ -4011,18 +4011,19 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
             srcChunk->Clear();
             m_heap->Allocator()->ReturnWorkChunk(srcChunk);
 
-            // mark children in the range
+            // update children in the range
             o->ForEachObjectRef(
                 [](SatoriObject** ppObject)
                 {
                     SatoriObject* child = *ppObject;
-                    if (child)
+                    // ignore common cases - child is null or in the same region
+                    if (child &&
+                        (((size_t)ppObject ^ (size_t)child) >> Satori::REGION_BITS) != 0)
                     {
-                        ptrdiff_t ptr = *((ptrdiff_t*)child - 1);
-                        if (ptr < 0)
+                        SatoriObject* newLocation;
+                        if (child->IsRelocatedTo(&newLocation))
                         {
-                            _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
-                            *ppObject = (SatoriObject*)-ptr;
+                            *ppObject = newLocation;
                         }
                     }
                 },
@@ -4053,7 +4054,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         MaybeAskForHelp();
         do
         {
-            if (!m_promoteAllRegions && IsPromotionCandidate(curRegion))
+            if (!m_promoteAllRegions && curRegion->IsPromotionCandidate())
             {
                 curRegion->IndividuallyPromote();
             }
@@ -4157,63 +4158,6 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
     }
 }
 
-// ideally, we just reuse the region for allocations.
-// the region must have enough free space and not be very fragmented
-// TUNING: heuristic for reuse could be more aggressive, consider pinning, etc...
-//         the cost here is inability to trace byrefs concurrently, not huge,
-//         byref is rarely the only ref.
-bool SatoriRecycler::IsReuseCandidate(SatoriRegion* region)
-{
-    if (!region->HasFreeSpaceInTopNBuckets(Satori::REUSABLE_BUCKETS))
-        return false;
-
-    // TUNING: here we are roughly estimating reuse goodness. A better idea?
-    //       i.e. 32k max chunk can be not more than 131K (1/16 full)
-    //            64k max chunk can be not more than 262K (1/8 full)
-    //           128k max chunk can be not more than 524K (1/4 full)
-    //           256k max chunk can be not more than   1M (1/2 full)
-    //           512k max chunk                    always acceptable
-    //             1M max chunk                    always acceptable
-    return region->GetMaxAllocEstimate() * 4 > region->Occupancy();
-}
-
-// we relocate regions if that would improve their reuse quality.
-// compaction might also improve mutator locality, somewhat.
-bool SatoriRecycler::IsRelocationCandidate(SatoriRegion* region)
-{
-    if (region->HasPinnedObjects())
-    {
-        return false;
-    }
-
-    // two half empty may fit two in one, so always try relocating
-    if (region->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 2)
-    {
-        return true;
-    }
-
-    // region up to 3/4 will free 524K+ chunk, compact if not reusable
-    if (region->Occupancy() < Satori::REGION_SIZE_GRANULARITY / 4 * 3 &&
-        !IsReuseCandidate(region))
-    {
-        return true;
-    }
-
-
-    return false;
-}
-
-// regions that were not reused or relocated for a while could be tenured.
-// unless it is a reuse candidate
-bool SatoriRecycler::IsPromotionCandidate(SatoriRegion* region)
-{
-    // TUNING: individual promoting heuristic
-    // if the region has not seen an allocation for 4 cycles, perhaps should tenure it
-    return region->Generation() == 1 &&
-        region->SweepsSinceLastAllocation() > 4 &&
-        !IsReuseCandidate(region);
-}
-
 void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
 {
     _ASSERTE(curRegion->Occupancy() > 0);
@@ -4221,7 +4165,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
 
     curRegion->DoNotSweep() = false;
     curRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
-    if (IsReuseCandidate(curRegion))
+    if (curRegion->IsReuseCandidate())
     {
         _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
         if ((curRegion->Generation() == 1) || curRegion->TryDemote())

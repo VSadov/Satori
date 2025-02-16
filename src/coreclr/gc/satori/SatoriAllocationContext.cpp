@@ -71,7 +71,7 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
         }
 
         if (detach ||
-            (region->SweepsSinceLastAllocation() > 2 && recycler->IsReuseCandidate(region)))
+            (region->SweepsSinceLastAllocation() > 2 && region->IsReuseCandidate()))
         {
             region->DetachFromAlocatingOwnerRelease();
         }
@@ -104,7 +104,7 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
         }
 
         if (detach ||
-            (region->SweepsSinceLastAllocation() > 2 && recycler->IsReuseCandidate(region)))
+            (region->SweepsSinceLastAllocation() > 2 && region->IsReuseCandidate()))
         {
             region->DetachFromAlocatingOwnerRelease();
         }

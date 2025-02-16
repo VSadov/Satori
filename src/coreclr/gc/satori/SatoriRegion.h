@@ -101,7 +101,12 @@ public:
 
     void ResetReusableForRelease();
 
-    bool TryDemote();
+    bool IsReuseCandidate();
+    bool IsDemotable();
+    bool IsPromotionCandidate();
+    bool IsRelocationCandidate(bool assumePromotion = false);
+
+bool TryDemote();
     bool IsDemoted();
     SatoriWorkChunk* &DemotedObjects();
     bool& HasUnmarkedDemotedObjects();
@@ -171,6 +176,7 @@ public:
 
     bool& HasPinnedObjects();
     bool& DoNotSweep();
+    bool& IsRelocated();
     bool& AcceptedPromotedObjects();
     bool& IndividuallyPromoted();
 
@@ -285,6 +291,7 @@ private:
             bool m_hasFinalizables;
             bool m_hasPendingFinalizables;
             bool m_doNotSweep;
+            bool m_isRelocated;
 
             bool m_acceptedPromotedObjects;
             bool m_individuallyPromoted;

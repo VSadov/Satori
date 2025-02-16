@@ -82,12 +82,7 @@ public:
         _ASSERTE((address & (sizeof(size_t) - 1)) == 0);
 
         size_t mapIndex = address >> Satori::PAGE_BITS;
-        if (s_pageByteMap[mapIndex] == 0)
-        {
-            return false;
-        }
-
-        return true;
+        return s_pageByteMap[mapIndex] != 0;
     }
 
     SatoriRegion* RegionForAddressChecked(size_t address);
