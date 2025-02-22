@@ -93,7 +93,7 @@ public:
         return m_data[m_top - 1];
     }
 
-    void Prefetch(size_t i)
+    void PrefetchNext(size_t i)
     {
         if (i <= m_top)
         {

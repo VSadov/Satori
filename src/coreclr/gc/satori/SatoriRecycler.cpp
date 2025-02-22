@@ -45,7 +45,7 @@
 #include "SatoriFinalizationQueue.h"
 #include "../gcscan.h"
 
-// #pragma optimize("", off)
+//#pragma optimize("", off)
 
 #ifdef memcpy
 #undef memcpy
@@ -326,7 +326,7 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
     }
     else
     {
-        // conservatively assume that next GC may promotethe region
+        // we do not know, so conservatively assume that the next GC may promote
         if (region->IsRelocationCandidate(/*assumePromotion*/true))
         {
             Interlocked::Increment(&m_relocatableEphemeralEstimate);
@@ -1023,7 +1023,8 @@ void SatoriRecycler::AdjustHeuristics()
         m_totalLimit = occupancy * SatoriUtil::Gen2Target() / 100;
     }
 
-    // we trigger GC when ephemeral size grows to SatoriUtil::Gen1Target(), thus budget is the diff
+    // we trigger GC when ephemeral size grows to SatoriUtil::Gen1Target(),
+    // the budget is the diff to reach that
     size_t newGen1Budget = max(MIN_GEN1_BUDGET, ephemeralOccupancy * (SatoriUtil::Gen1Target() - 100) / 100);
 
     // alternatively we allow gen1 allocs up to 1/8 of total limit.
@@ -1988,7 +1989,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
             while (srcChunk->Count() > 0)
             {
                 o = srcChunk->Pop();
-                srcChunk->Prefetch(1);
+                srcChunk->PrefetchNext(1);
 
                 _ASSERTE(o->IsMarked());
                 if (o->IsUnmovable())
@@ -2010,8 +2011,8 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
 
         _ASSERTE(srcChunk == nullptr || srcChunk->Count() == 0);
 
-        // every once in a while check for the deadline
-        // check after processing one chunk
+        // every once in a while check for the deadline.
+        // check after processing one chunk to:
         // - amortize cost of QueryPerformanceCounter() and
         // - establish the minimum amount of work per help quantum
         if ((GCToOSInterface::QueryPerformanceCounter() - deadline) > 0)
@@ -2189,7 +2190,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
             while (srcChunk->Count() > 0)
             {
                 SatoriObject* o = srcChunk->Pop();
-                srcChunk->Prefetch(1);
+                srcChunk->PrefetchNext(1);
 
                 _ASSERTE(o->IsMarked());
                 if (o->IsUnmovable())
@@ -3538,8 +3539,8 @@ void SatoriRecycler::Plan()
     // plan relocations
     RunWithHelp(&SatoriRecycler::PlanWorker);
 
-    // The actual relocatable number could be less than the estimate due to pinning,
-    // which we know only after marking, or if this is gen1, which can reuse more.
+    // The actual relocatable number could be less than the estimate due to pinning
+    // or if this is gen1, which can reuse more.
     // Check again if it we are still meeting the relocation criteria.
     size_t relocatableActual = m_relocatingRegions->Count();
     _ASSERTE(relocatableActual <= relocatableEstimate);

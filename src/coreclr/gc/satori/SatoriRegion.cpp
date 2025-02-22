@@ -1983,8 +1983,9 @@ void SatoriRegion::IndividuallyPromote()
 // ideally, we just reuse the region for allocations.
 // the region must have enough free space and not be very fragmented
 // TUNING: heuristic for reuse could be more aggressive, consider pinning, etc...
-//         the cost here is inability to trace byrefs concurrently, not huge,
-//         byref is rarely the only ref.
+//         the cost for being too aggressive is inability to trace byrefs concurrently,
+//         it is not huge, byref is rarely the only ref.
+//         In big quantities may hurt though.
 bool SatoriRegion::IsReuseCandidate()
 {
     if (!HasFreeSpaceInTopNBuckets(Satori::REUSABLE_BUCKETS))
@@ -2031,14 +2032,14 @@ bool SatoriRegion::IsRelocationCandidate(bool assumePromotion)
         return false;
     }
 
-    // region up to 3/4 will free 524K+ chunk if compacted, so we may be worth compacting
+    // region up to 3/4 will free 524K+ chunk if compacted, so it may be worth compacting
     // otherwise this is too full.
     if (Occupancy() >= Satori::REGION_SIZE_GRANULARITY / 4 * 3)
     {
         return false;
     }
 
-    // not reusable, consider compacting, otherwise we'd rather reuse
+    // not reusable, consider compacting, as if reusable we'd rather reuse
     if (!IsReusable())
     {
         return true;

@@ -306,7 +306,7 @@ public:
         if (target < 100)
         {
             // target must be > 100%
-            // if wee see less, just default to triggering GC when ephemeral heap quadruples
+            // if wee see less, just default to triggering GC when ephemeral heap quadruples in size
             target = Gen2Target() * 2;
         }
 
