@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Vladimir Sadov
+// Copyright (c) 2025 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -194,6 +194,7 @@ void SatoriRegion::MakeBlank()
     m_hasFinalizables = false;
     _ASSERTE(!m_hasPendingFinalizables);
     m_doNotSweep = false;
+    m_isRelocated = false;
     _ASSERTE(!m_acceptedPromotedObjects);
     _ASSERTE(!m_individuallyPromoted);
     _ASSERTE(!m_hasUnmarkedDemotedObjects);
@@ -1894,9 +1895,7 @@ void SatoriRegion::UpdateFinalizableTrackers()
             {
                 if (!finalizable->SameRegion(this))
                 {
-                    ptrdiff_t ptr = *((ptrdiff_t*)finalizable - 1);
-                    _ASSERTE(finalizable->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
-                    finalizable = (SatoriObject*)-ptr;
+                    finalizable = finalizable->RelocatedToUnchecked();
                     _ASSERTE(finalizable->SameRegion(this));
                 }
 
@@ -1917,13 +1916,14 @@ void SatoriRegion::UpdatePointersInObject(SatoriObject* o, size_t size)
             [](SatoriObject** ppObject)
             {
                 SatoriObject* child = *ppObject;
-                if (child)
+                // ignore common cases - child is null or in the same region
+                if (child &&
+                    (((size_t)ppObject ^ (size_t)child) >= Satori::REGION_SIZE_GRANULARITY))
                 {
-                    ptrdiff_t ptr = *((ptrdiff_t*)child - 1);
-                    if (ptr < 0)
+                    SatoriObject* newLocation;
+                    if (child->IsRelocatedTo(&newLocation))
                     {
-                        _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
-                        *ppObject = (SatoriObject*)-ptr;
+                        *ppObject = newLocation;
                     }
                 }
             },
@@ -1980,6 +1980,84 @@ void SatoriRegion::IndividuallyPromote()
     RearmCardsForTenured();
 }
 
+// ideally, we just reuse the region for allocations.
+// the region must have enough free space and not be very fragmented
+// TUNING: heuristic for reuse could be more aggressive, consider pinning, etc...
+//         the cost for being too aggressive is inability to trace byrefs concurrently,
+//         it is not huge, byref is rarely the only ref.
+//         In big quantities may hurt though.
+bool SatoriRegion::IsReuseCandidate()
+{
+    if (!HasFreeSpaceInTopNBuckets(Satori::REUSABLE_BUCKETS))
+        return false;
+
+    // TUNING: here we are roughly estimating reuse goodness. A better idea?
+    //       i.e. 32k max chunk can be not more than 131K (1/16 full)
+    //            64k max chunk can be not more than 262K (1/8 full)
+    //           128k max chunk can be not more than 524K (1/4 full)
+    //           256k max chunk can be not more than   1M (1/2 full)
+    //           512k max chunk                    always acceptable
+    //             1M max chunk                    always acceptable
+    return GetMaxAllocEstimate() * 4 > Occupancy();
+}
+
+bool SatoriRegion::IsDemotable()
+{
+    if (ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION ||
+        Occupancy() > Satori::REGION_SIZE_GRANULARITY / 8)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+// regions that were not reused or relocated for a while could be tenured.
+// unless it is a reuse candidate
+bool SatoriRegion::IsPromotionCandidate()
+{
+    // TUNING: individual promoting heuristic
+    // if the region has not seen an allocation for 4 cycles, perhaps should tenure it
+    return Generation() == 1 &&
+        SweepsSinceLastAllocation() > 4 &&
+        !IsReuseCandidate();
+}
+
+// we relocate regions if that would improve their reuse quality.
+// compaction might also improve mutator locality, somewhat.
+bool SatoriRegion::IsRelocationCandidate(bool assumePromotion)
+{
+    if (HasPinnedObjects())
+    {
+        return false;
+    }
+
+    // region up to 3/4 will free 524K+ chunk if compacted, so it may be worth compacting
+    // otherwise this is too full.
+    if (Occupancy() >= Satori::REGION_SIZE_GRANULARITY / 4 * 3)
+    {
+        return false;
+    }
+
+    // not reusable, consider compacting, as if reusable we'd rather reuse
+    if (!IsReusable())
+    {
+        return true;
+    }
+
+    // if gen2 and not demotable, then cannot reuse, consider compacting
+    if (Generation() == 2 || assumePromotion)
+    {
+        if (!IsDemotable())
+        {
+            return true;
+        }
+    }
+
+    // we may be able to reuse this, do not compact.
+    return false;
+}
+
 bool SatoriRegion::TryDemote()
 {
     _ASSERTE(!HasMarksSet());
@@ -1995,10 +2073,9 @@ bool SatoriRegion::TryDemote()
     //         the worst case is if this is a largest possible reusable region that is also
     //         pointer-dense. Thus we will limit the size, just in case.
 
-    if (ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION ||
-        Occupancy() > Satori::REGION_SIZE_GRANULARITY / 8)
+    if (!IsDemotable())
     {
-        return false;
+    return false;
     }
 
     SatoriWorkChunk* gen2Objects = Allocator()->TryGetWorkChunk();

@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Vladimir Sadov
+// Copyright (c) 2025 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -94,7 +94,7 @@ inline SatoriRegion* SatoriObject::ContainingRegion()
 
 inline bool SatoriObject::SameRegion(SatoriRegion* otherRegion)
 {
-    return (((size_t)this ^ (size_t)otherRegion) >> Satori::REGION_BITS) == 0;
+    return ((size_t)this ^ (size_t)otherRegion) < Satori::REGION_SIZE_GRANULARITY;
 }
 
 inline bool SatoriObject::IsFree()
@@ -196,6 +196,35 @@ inline void SatoriObject::ClearMarkCompactStateForRelocation()
     _ASSERTE(!r->IsEscaped(this));
     r->ClearMarked(this);
     r->ClearPinned(this);
+}
+
+inline SatoriObject* SatoriObject::RelocatedToUnchecked()
+{
+    _ASSERTE(this->ContainingRegion()->IsRelocated());
+    SatoriObject* newLocation = *((SatoriObject**)this - 1);
+    _ASSERTE(this->RawGetMethodTable() == newLocation->RawGetMethodTable());
+    return newLocation;
+}
+
+template <bool notExternal>
+FORCEINLINE bool SatoriObject::IsRelocatedTo(SatoriObject** newLocation)
+{
+    if (notExternal)
+    {
+        _ASSERTE(!this->IsExternal());
+    }
+    else if (this->IsExternal())
+    {
+        return false;
+    }
+
+    if (this->ContainingRegion()->IsRelocated())
+    {
+        *newLocation = RelocatedToUnchecked();
+        return true;
+    }
+
+    return false;
 }
 
 inline void SatoriObject::CleanSyncBlock()
