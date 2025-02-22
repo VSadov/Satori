@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Vladimir Sadov
+// Copyright (c) 2025 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -76,8 +76,8 @@ namespace Satori
     // could fit into same chunk
     const static size_t MARK_RANGE_THRESHOLD = MARK_CHUNK_SIZE - 2 * sizeof(size_t);
 
-    // if we have more than twice this much and work list is empty we can share half
-    const static int SHARE_WORK_THRESHOLD = 4;
+    // if we have more than this much and work list is empty we can share half
+    const static int SHARE_WORK_THRESHOLD = 8;
 
     // address bits set to track finalizable that needs to be scheduled to F-queue
     const static size_t FINALIZATION_PENDING = 1;
@@ -306,8 +306,8 @@ public:
         if (target < 100)
         {
             // target must be > 100%
-            // if wee see less, just default to triggering GC when ephemeral heap quadruples
-            target = 400;
+            // if wee see less, just default to triggering GC when ephemeral heap quadruples in size
+            target = Gen2Target() * 2;
         }
 
         return target;

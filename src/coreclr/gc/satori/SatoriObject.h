@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Vladimir Sadov
+// Copyright (c) 2025 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -69,6 +69,10 @@ public:
 
     void SetUnmovable();
     bool IsUnmovable();
+
+    template <bool notExternal = false>
+    bool IsRelocatedTo(SatoriObject** newLocation);
+    SatoriObject * RelocatedToUnchecked();
 
     void CleanSyncBlockAndSetUnfinished();
     bool IsUnfinished();
