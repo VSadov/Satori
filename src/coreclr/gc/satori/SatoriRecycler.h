@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Vladimir Sadov
+// Copyright (c) 2025 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -57,7 +57,6 @@ public:
     void AddEphemeralRegion(SatoriRegion* region);
     void AddTenuredRegion(SatoriRegion* region);
 
-    // TODO: VS should be moved to Heap?
     size_t GetNowMillis();
     size_t GetNowUsecs();
 
@@ -108,10 +107,6 @@ public:
     {
         return m_nextGcIsFullGc;
     }
-
-    bool IsReuseCandidate(SatoriRegion* region);
-    bool IsRelocationCandidate(SatoriRegion* region);
-    bool IsPromotionCandidate(SatoriRegion* region);
 
     LastRecordedGcInfo* GetLastGcInfo(gc_kind kind)
     {

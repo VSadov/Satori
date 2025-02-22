@@ -402,9 +402,9 @@ LEAF_ENTRY RhpAssignRef, _TEXT
         jne     AssignAndMarkCards      // no card marking, src is not a heap object
 
     // 2) check if the src and dst are from the same region
-        mov     rax, rsi
-        xor     rax, rdi
-        shr     rax, 21
+        mov     rax, rdi
+        and     rax, 0xFFFFFFFFFFE00000
+        cmp     rax, rdx
         jnz     RecordEscape            // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
@@ -610,9 +610,9 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         jne     AssignAndMarkCards_CmpXchg      // not local to this thread
 
     // 2) check if the src and dst are from the same region
-        mov     r11, rsi
-        xor     r11, rdi
-        shr     r11, 21
+        mov     r11, rdi
+        and     r11, 0xFFFFFFFFFFE00000
+        cmp     r11, rdx
         jnz     RecordEscape_CmpXchg            // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
@@ -780,9 +780,9 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         jne     AssignAndMarkCards_Xchg      // not local to this thread
 
     // 2) check if the src and dst are from the same region
-        mov     r11, rsi
-        xor     r11, rdi
-        shr     r11, 21
+        mov     r11, rdi
+        and     r11, 0xFFFFFFFFFFE00000
+        cmp     r11, rdx
         jnz     RecordEscape_Xchg            // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed

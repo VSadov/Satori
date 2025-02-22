@@ -1671,7 +1671,7 @@ void CheckEscapeSatori(Object** dst, Object* ref)
     SatoriRegion* region = obj->ContainingRegion();
     if (region->IsEscapeTrackedByCurrentThread())
     {
-        if ((((size_t)dst ^ (size_t)ref) >> 21) == 0 &&
+        if ((((size_t)dst ^ (size_t)ref) < Satori::REGION_SIZE_GRANULARITY) &&
             !(region->IsExposed((SatoriObject**)dst)))
         {
             // if assigning to the same region and location is not marked then
@@ -1700,7 +1700,7 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
         return;
 
     // check for obj in the same region or in gen2
-    if (((((size_t)dst ^ (size_t)obj) >> 21) == 0) ||
+    if ((((size_t)dst ^ (size_t)obj) < Satori::REGION_SIZE_GRANULARITY) ||
         (obj->ContainingRegion()->Generation() == 2))
     {
         if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
