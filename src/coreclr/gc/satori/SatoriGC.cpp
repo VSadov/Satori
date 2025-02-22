@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Vladimir Sadov
+// Copyright (c) 2025 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -741,7 +741,7 @@ bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
     _ASSERTE(curRegion->IsEscapeTrackedByCurrentThread());
 
     // if dst is within the curRegion and is not exposed, we are done
-    if (((dst ^ curRegion->Start()) >> 21) == 0)
+    if ((dst ^ curRegion->Start()) < Satori::REGION_SIZE_GRANULARITY)
     {
         if (!curRegion->AnyExposed(dst, len))
         {
@@ -756,7 +756,7 @@ bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
         return true;
     }
 
-    if (((src ^ curRegion->Start()) >> 21) == 0)
+    if ((src ^ curRegion->Start()) < Satori::REGION_SIZE_GRANULARITY)
     {
         // if src is in current region, the elements could be escaping
         if (!curRegion->AnyExposed(src, len))

@@ -279,9 +279,9 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         jne     AssignAndMarkCards      // not local to this thread
 
     // 2) check if the src and dst are from the same region
-        mov     rax, rsi
-        xor     rax, rdi
-        shr     rax, 21
+        mov     rax, rdi
+        and     rax, 0xFFFFFFFFFFE00000 // target aligned to region
+        cmp     rax, rdx
         jnz     RecordEscape            // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed

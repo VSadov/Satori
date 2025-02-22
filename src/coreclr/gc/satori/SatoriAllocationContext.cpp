@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Vladimir Sadov
+// Copyright (c) 2025 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -71,7 +71,7 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
         }
 
         if (detach ||
-            (region->SweepsSinceLastAllocation() > 2 && recycler->IsReuseCandidate(region)))
+            (region->SweepsSinceLastAllocation() > 2 && region->IsReuseCandidate()))
         {
             region->DetachFromAlocatingOwnerRelease();
         }
@@ -104,7 +104,7 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
         }
 
         if (detach ||
-            (region->SweepsSinceLastAllocation() > 2 && recycler->IsReuseCandidate(region)))
+            (region->SweepsSinceLastAllocation() > 2 && region->IsReuseCandidate()))
         {
             region->DetachFromAlocatingOwnerRelease();
         }

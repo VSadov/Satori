@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Vladimir Sadov
+// Copyright (c) 2025 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -289,6 +289,7 @@ bool SatoriRegion::Sweep()
         {
             size_t lastMarkedEnd = o->Start();
             o = SkipUnmarkedAndClear(o);
+            SatoriUtil::Prefetch(o);
             size_t skipped = o->Start() - lastMarkedEnd;
             SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
             SetIndicesForObject(free, o->Start());
@@ -302,7 +303,6 @@ bool SatoriRegion::Sweep()
         }
 
         _ASSERTE(!o->IsFree());
-        cannotRecycle = true;
 
         size_t size = o->Size();
         if (isEscapeTracking)
@@ -343,6 +343,11 @@ bool SatoriRegion::Sweep()
     this->m_individuallyPromoted = false;
 
     SetOccupancy(occupancy, objCount);
+    if (objCount !=0)
+    {
+        cannotRecycle = true;
+    }
+
     return cannotRecycle;
 }
 
@@ -400,6 +405,11 @@ inline bool& SatoriRegion::HasMarksSet()
 inline bool& SatoriRegion::DoNotSweep()
 {
     return m_doNotSweep;
+}
+
+inline bool& SatoriRegion::IsRelocated()
+{
+    return m_isRelocated;
 }
 
 inline bool& SatoriRegion::AcceptedPromotedObjects()
@@ -677,27 +687,23 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
 
         _ASSERTE(IsMarked(o));
 
-        ptrdiff_t r = *((ptrdiff_t*)o - 1);
-        _ASSERTE(r < 0);
-        SatoriObject* relocated = (SatoriObject*)-r;
-        _ASSERTE(relocated->RawGetMethodTable() == o->RawGetMethodTable());
-        _ASSERTE(!relocated->IsFree());
+        SatoriObject* promoted = o->RelocatedToUnchecked();
+        _ASSERTE(!promoted->IsFree());
 
-        SatoriPage* page = relocated->ContainingRegion()->ContainingPage();
-        size_t size = relocated->Size();
-        relocated->ForEachObjectRef(
+        SatoriPage* page = promoted->ContainingRegion()->ContainingPage();
+        size_t size = promoted->Size();
+        promoted->ForEachObjectRef(
             [&](SatoriObject** ppObject)
             {
                 // prevent re-reading o, UpdatePointersThroughCards could be doing the same update.
                 SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
-                if (child && !child->IsExternal())
+                if (child &&
+                    !child->IsExternal())
                 {
-                    ptrdiff_t ptr = *((ptrdiff_t*)child - 1);
-                    if (ptr < 0)
+                    SatoriObject* newLocation;
+                    if (child->IsRelocatedTo</*notExternal*/true>(&newLocation))
                     {
-                        _ASSERTE(child->RawGetMethodTable() == ((SatoriObject*)-ptr)->RawGetMethodTable());
-                        child = (SatoriObject*)-ptr;
-                        VolatileStoreWithoutBarrier(ppObject, child);
+                        VolatileStoreWithoutBarrier(ppObject, newLocation);
                     }
 
                     // update the card as if the relocated object got a child assigned
