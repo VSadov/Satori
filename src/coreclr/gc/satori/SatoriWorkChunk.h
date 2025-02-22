@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Vladimir Sadov
+// Copyright (c) 2025 Vladimir Sadov
 //
 // Permission is hereby granted, free of charge, to any person
 // obtaining a copy of this software and associated documentation
@@ -91,6 +91,14 @@ public:
     SatoriObject* Peek()
     {
         return m_data[m_top - 1];
+    }
+
+    void PrefetchNext(size_t i)
+    {
+        if (i <= m_top)
+        {
+            SatoriUtil::Prefetch(m_data[m_top - i]);
+        }
     }
 
     bool TryPush(SatoriObject* obj)
