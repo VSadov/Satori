@@ -2562,7 +2562,6 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                         _ASSERTE(!region->HasMarksSet());
 
                         int8_t resetValue = Satori::CardState::REMEMBERED;
-                        size_t unsetValue = Satori::CardState::BLANK;
                         if (region->Generation() < 2)
                         {
                             // We will not wipe remembered+ephemeral here.
@@ -2582,8 +2581,6 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                             }
 
                             resetValue = Satori::CardState::EPHEMERAL;
-                            _ASSERTE(Satori::CardState::EPHEMERAL == (int8_t)0x80);
-                            unsetValue = 0x8080808080808080;
                         }
 
                         // invariant check: when marking through cards the gen2 remset stays remset, thus should be marked through on every GC
@@ -2592,10 +2589,13 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
 
                         bool considerAllMarked = region->Generation() > m_condemnedGeneration;
                         int8_t* cards = page->CardsForGroup(i);
+
+                        _ASSERTE(Satori::CardState::DIRTY == (int8_t)0x04);
+                        const size_t dirtyBits = 0x0404040404040404;
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
                         {
-                            // cards are often sparsely set, if j is aligned, check the entire size_t for unset value
-                            if (((j & (sizeof(size_t) - 1)) == 0) && *((size_t*)&cards[j]) == unsetValue)
+                            // cards are often sparsely set, if j is aligned, check if any card in entire size_t is dirty
+                            if (((j & (sizeof(size_t) - 1)) == 0) && (*((size_t*)&cards[j]) & dirtyBits) == 0)
                             {
                                 j += sizeof(size_t) - 1;
                                 continue;
@@ -2900,19 +2900,17 @@ void SatoriRecycler::CleanCards()
                             continue;
                         }
 
-                        _ASSERTE(Satori::CardState::EPHEMERAL == (int8_t)0x80);
-                        const size_t unsetValue = region->Generation() >= 2 ?
-                            Satori::CardState::BLANK :
-                            0x8080808080808080;
-
                         bool considerAllMarked = region->Generation() > m_condemnedGeneration;
 
                         int8_t* cards = page->CardsForGroup(i);
                         const int8_t resetValue = region->Generation() >= 2 ? Satori::CardState::REMEMBERED : Satori::CardState::EPHEMERAL;
+
+                        _ASSERTE(Satori::CardState::DIRTY == (int8_t)0x04);
+                        const size_t dirtyBits = 0x0404040404040404;
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
                         {
-                            // cards are often sparsely set, if j is aligned, check the entire size_t for unset value
-                            if (((j & (sizeof(size_t) - 1)) == 0) && *((size_t*)&cards[j]) == unsetValue)
+                            // cards are often sparsely set, if j is aligned, check if any card in entire size_t is dirty
+                            if (((j & (sizeof(size_t) - 1)) == 0) && (*((size_t*)&cards[j]) & dirtyBits) == 0)
                             {
                                 j += sizeof(size_t) - 1;
                                 continue;
