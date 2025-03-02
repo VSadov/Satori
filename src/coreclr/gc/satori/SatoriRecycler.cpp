@@ -442,8 +442,6 @@ static const int concMarkThreshold = 0;
 static const int concMarkThreshold = 8 * 1024  * 1024;
 #endif
 
-static const int bgPauseThreshold = 1000; // microseconds
-
 bool SatoriRecycler::ShouldDoConcurrent(int generation)
 {
     if (IsLowLatencyMode())
@@ -451,23 +449,10 @@ bool SatoriRecycler::ShouldDoConcurrent(int generation)
         return true;
     }
 
-    size_t ethOccupancy = this->m_occupancy[1]  + this->m_occupancy[0];
-    if (generation == 2)
+    if (this->GetTotalOccupancy() < concMarkThreshold)
     {
-        if ((this->m_occupancy[2] + ethOccupancy < concMarkThreshold) &&
-            m_lastTenuredGcInfo.m_pauseDurations[0] < bgPauseThreshold)
-        {
             return false;
         }
-    }
-    else
-    {
-        if ((ethOccupancy < concMarkThreshold) &&
-            m_lastEphemeralGcInfo.m_pauseDurations[0] < bgPauseThreshold)
-        {
-            return false;
-        }
-    }
 
     return true;
 }
