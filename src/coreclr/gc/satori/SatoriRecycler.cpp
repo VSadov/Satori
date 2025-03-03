@@ -451,8 +451,8 @@ bool SatoriRecycler::ShouldDoConcurrent(int generation)
 
     if (this->GetTotalOccupancy() < concMarkThreshold)
     {
-            return false;
-        }
+        return false;
+    }
 
     return true;
 }
@@ -534,6 +534,35 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
         // GC has not started yet, come again later.
         return true;
     }
+
+    if (m_concurrentCleaningState == CC_CLEAN_STATE_WAIT_FOR_HELPERS)
+    {
+        // this is not a timeout, but there could be more work.
+        return true;
+    }
+
+    bool result;
+    Interlocked::Increment(&m_ccHelpersNum);
+    {
+        if (m_concurrentCleaningState == CC_CLEAN_STATE_WAIT_FOR_HELPERS)
+        {
+            // this is not a timeout, but there could be more work.
+            result = true;
+        }
+        else
+        {
+            result = HelpOnceCoreInner(minQuantum);
+        }
+    }
+    Interlocked::Decrement(&m_ccHelpersNum);
+
+    // TODO: VS if we are in CC_CLEAN_STATE_DONE state and see no helpers, perhaps could Block?
+
+    return result;
+}
+
+bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
+{
 
     if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
     {
@@ -770,52 +799,92 @@ void SatoriRecycler::HelpOnce()
         if (m_gcState == GC_STATE_CONCURRENT)
         {
 tryAgain:
-            bool moreWork = m_activeWorkers > 0 ||
-                !m_concurrentCardsDone ||
+            bool moreWork = !m_concurrentCardsDone ||
                 m_ccStackMarkState != CC_MARK_STATE_DONE ||
                 m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING ||
                 m_condemnedGeneration == 0 ||
                 !m_workList->IsEmpty();
 
             int64_t start = GCToOSInterface::QueryPerformanceCounter();
-            if (moreWork)
+            // assume that helpers may create more work
+            if ((moreWork || m_ccHelpersNum > 0) &&
+                m_concurrentCleaningState != CC_CLEAN_STATE_WAIT_FOR_HELPERS)
             {
-                HelpOnceCore(/*minQuantum*/ false);
-                m_noWorkSince = GCToOSInterface::QueryPerformanceCounter();
-
-                // if we did not use all the quantum in Low Latency mode,
-                // consume what roughly remains for pacing reasons.
-                if (IsLowLatencyMode() &&
-                    m_concurrentCleaningState >= CC_CLEAN_STATE_CLEANING)
+                if (HelpOnceCore(/*minQuantum*/ false))
                 {
-                    int64_t deadline = start + HelpQuantum() / 2;
-                    int iters = 1;
-                    while (GCToOSInterface::QueryPerformanceCounter() < deadline &&
-                        m_ccStackMarkState != CC_MARK_STATE_SUSPENDING_EE)
+                    m_noWorkSince = GCToOSInterface::QueryPerformanceCounter();
+                }
+                else
+                {
+                    // If got here just because there are helpers and see no work for very long time,
+                    // start moving towards cleaning/blocking, so that frequent, but useless helps do not starve gc forever.
+                    // This should be rare. basically a panic mode.
+                    if (!moreWork && start - m_noWorkSince > m_perfCounterTicksPerMilli)
                     {
-                        iters *= 2;
-                        for (int i = 0; i < iters; i++)
+                        goto treatAsNoWork;
+                    }
+                }
+
+                // Check if we need to pace. Even if we see more work, it could be not a timeout.
+                if (MaxWorkers() > 0)
+                {
+                    // if we did not use all the quantum in Low Latency mode,
+                    // consume what roughly remains for pacing reasons.
+                    if (IsLowLatencyMode() &&
+                        m_concurrentCleaningState >= CC_CLEAN_STATE_CLEANING)
+                    {
+                        int64_t deadline = start + HelpQuantum() / 2;
+                        int iters = 1;
+                        while (GCToOSInterface::QueryPerformanceCounter() < deadline &&
+                            m_ccStackMarkState != CC_MARK_STATE_SUSPENDING_EE)
                         {
-                            YieldProcessor();
+                            iters *= 2;
+                            for (int i = 0; i < iters; i++)
+                            {
+                                YieldProcessor();
+                            }
                         }
                     }
                 }
             }
             else
             {
-                if (m_concurrentCleaningState != CC_CLEAN_STATE_DONE)
+treatAsNoWork:
+                // if did not try to clean yet tell new helpers to not enter
+                if (m_concurrentCleaningState == CC_CLEAN_STATE_NOT_READY)
                 {
-                    if (m_concurrentCleaningState == CC_CLEAN_STATE_NOT_READY &&
-                        Interlocked::CompareExchange(&m_concurrentCleaningState, CC_CLEAN_STATE_SETTING_UP, CC_CLEAN_STATE_NOT_READY) == CC_CLEAN_STATE_NOT_READY)
+                    Interlocked::CompareExchange(&m_concurrentCleaningState, CC_CLEAN_STATE_WAIT_FOR_HELPERS, CC_CLEAN_STATE_NOT_READY);
+                }
+
+                // if helpers are all out, try to declare cleaning
+                if (m_concurrentCleaningState == CC_CLEAN_STATE_WAIT_FOR_HELPERS)
+                {
+                    if (m_ccHelpersNum != 0)
+                    {
+                        // helpers are still present, exit until next time.
+                        return;
+                    }
+
+                    if (Interlocked::CompareExchange(&m_concurrentCleaningState, CC_CLEAN_STATE_SETTING_UP, CC_CLEAN_STATE_WAIT_FOR_HELPERS) == CC_CLEAN_STATE_WAIT_FOR_HELPERS)
                     {
                         IncrementCardScanTicket();
                         m_concurrentCleaningState = CC_CLEAN_STATE_CLEANING;
-                        goto tryAgain;
                     }
                 }
-                else if (start - m_noWorkSince > HelpQuantum() * 4)
+
+                // we either completely done or cleaning or, in rare case, setting up for cleaning.
+                // if not done, run another cycle.
+                if (m_concurrentCleaningState != CC_CLEAN_STATE_DONE)
+                {
+                    goto tryAgain;
+                }
+
+                // was it long enough since last time we saw work?
+                if (start - m_noWorkSince > HelpQuantum() * 4)
                 {
                     // 4 help quantums without work, seems like we are done
+                    // we may have some helpers draining long chains and not sharing anything
+                    // in such degenerate case we still may want to wrap it up and and block.
                     if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
                     {
                         m_activeWorkerFn = nullptr;
@@ -838,7 +907,24 @@ tryAgain:
 void SatoriRecycler::ConcurrentWorkerFn()
 {
     // workers have deadline too, just to come here and check the stage.
-    while ((m_gcState == GC_STATE_CONCURRENT) && HelpOnceCore(/*minQuantum*/ false));
+    while ((m_gcState == GC_STATE_CONCURRENT))
+    {
+        if (HelpOnceCore(/*minQuantum*/ false))
+        {
+            m_noWorkSince = GCToOSInterface::QueryPerformanceCounter();
+        }
+        else
+        {
+            // we saw no work available and will exit.
+            // if more work is generated we will be invited back.
+            break;
+        }
+
+        if (m_concurrentCleaningState == CC_CLEAN_STATE_WAIT_FOR_HELPERS)
+        {
+            GCToOSInterface::Sleep(0);
+        }
+    }
 }
 
 int SatoriRecycler::MaxWorkers()
