@@ -874,6 +874,7 @@ treatAsNoWork:
                     if (m_ccHelpersNum != 0)
                     {
                         // helpers are still present, exit until next time.
+                        GCToEEInterface::GcPoll();
                         return;
                     }
 
