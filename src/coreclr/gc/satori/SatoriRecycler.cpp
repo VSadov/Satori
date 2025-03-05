@@ -921,7 +921,7 @@ treatAsNoWork:
 void SatoriRecycler::ConcurrentWorkerFn()
 {
     // workers have deadline too, just to come here and check the stage.
-    while ((m_gcState == GC_STATE_CONCURRENT))
+    while (m_gcState == GC_STATE_CONCURRENT)
     {
         if (HelpOnceCore(/*minQuantum*/ false))
         {
