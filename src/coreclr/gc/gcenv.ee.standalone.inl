@@ -255,6 +255,12 @@ inline bool GCToEEInterface::WasCurrentThreadCreatedByGC()
     return g_theGCToCLR->WasCurrentThreadCreatedByGC();
 }
 
+inline void GCToEEInterface::SetCurrentThreadCreatedByGC()
+{
+    assert(g_theGCToCLR != nullptr);
+    return g_theGCToCLR->SetCurrentThreadCreatedByGC();
+}
+
 inline bool GCToEEInterface::CreateThread(void (*threadStart)(void*), void* arg, bool is_suspendable, const char* name)
 {
     assert(g_theGCToCLR != nullptr);

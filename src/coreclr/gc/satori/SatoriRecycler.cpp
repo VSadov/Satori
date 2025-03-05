@@ -172,6 +172,7 @@ void SatoriRecycler::ShutDown()
 /* static */
 void SatoriRecycler::WorkerThreadMainLoop(void* param)
 {
+    GCToEEInterface::SetCurrentThreadCreatedByGC();
     SatoriRecycler* recycler = (SatoriRecycler*)param;
     Interlocked::Increment(&recycler->m_activeWorkers);
 

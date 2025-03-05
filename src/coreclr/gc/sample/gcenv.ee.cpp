@@ -309,6 +309,10 @@ bool GCToEEInterface::WasCurrentThreadCreatedByGC()
     return false;
 }
 
+void GCToEEInterface::SetCurrentThreadCreatedByGC()
+{
+}
+
 static MethodTable freeObjectMT;
 
 MethodTable* GCToEEInterface::GetFreeObjectMethodTable()

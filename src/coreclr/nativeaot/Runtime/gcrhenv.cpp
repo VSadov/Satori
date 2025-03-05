@@ -1052,55 +1052,44 @@ bool GCToEEInterface::WasCurrentThreadCreatedByGC()
     return ThreadStore::RawGetCurrentThread()->IsGCSpecial();
 }
 
-struct ThreadStubArguments
+void GCToEEInterface::SetCurrentThreadCreatedByGC()
 {
-    void (*m_pRealStartRoutine)(void*);
-    void* m_pRealContext;
-    CLREventStatic m_ThreadStartedEvent;
-};
+    // allow setting oly once
+    ASSERT(!WasCurrentThreadCreatedByGC());
+
+    ThreadStore::RawGetCurrentThread()->SetGCSpecial();
+    STRESS_LOG_RESERVE_MEM(GC_STRESSLOG_MULTIPLY);
+}
 
 static bool CreateUnsuspendableThread(void (*threadStart)(void*), void* arg, const char* name)
 {
     UNREFERENCED_PARAMETER(name);
 
-    ThreadStubArguments* threadStubArgs = new (nothrow) ThreadStubArguments();
-    if (!threadStubArgs)
-        return false;
-
-    threadStubArgs->m_pRealStartRoutine = threadStart;
-    threadStubArgs->m_pRealContext = arg;
-
-    // Helper used to wrap the start routine of background GC threads so we can do things like initialize the
-    // Redhawk thread state which requires running in the new thread's context.
-    auto threadStub = [](void* argument) -> DWORD
-    {
-        ThreadStore::RawGetCurrentThread()->SetGCSpecial();
-
-        ThreadStubArguments* pStartContext = (ThreadStubArguments*)argument;
-        auto realStartRoutine = pStartContext->m_pRealStartRoutine;
-        void* realContext = pStartContext->m_pRealContext;
-        delete pStartContext;
-
-        STRESS_LOG_RESERVE_MEM(GC_STRESSLOG_MULTIPLY);
-
-        realStartRoutine(realContext);
-
-        return 0;
-    };
-
-    return PalStartBackgroundGCThread(threadStub, threadStubArgs);
+    return PalStartBackgroundGCThread((BackgroundCallback)threadStart, arg);
 }
+
+struct ThreadStubArguments
+{
+    void (*m_pRealStartRoutine)(void*);
+    void* m_pRealContext;
+    bool m_isSuspendable;
+    CLREventStatic m_ThreadStartedEvent;
+};
 
 bool GCToEEInterface::CreateThread(void (*threadStart)(void*), void* arg, bool is_suspendable, const char* name)
 {
     UNREFERENCED_PARAMETER(name);
 
-    if (!is_suspendable)
-        return CreateUnsuspendableThread(threadStart, arg, name);
+#if FEATURE_SATORI_GC
+    _ASSERTE(!is_suspendable);
+    return CreateUnsuspendableThread(threadStart, arg, name);
+#else
 
     ThreadStubArguments threadStubArgs;
+
     threadStubArgs.m_pRealStartRoutine = threadStart;
     threadStubArgs.m_pRealContext = arg;
+    threadStubArgs.m_isSuspendable = is_suspendable;
 
     if (!threadStubArgs.m_ThreadStartedEvent.CreateAutoEventNoThrow(false))
     {
@@ -1113,11 +1102,15 @@ bool GCToEEInterface::CreateThread(void (*threadStart)(void*), void* arg, bool i
     {
         ThreadStubArguments* pStartContext = (ThreadStubArguments*)argument;
 
-        // Initialize the Thread for this thread. The false being passed indicates that the thread store lock
-        // should not be acquired as part of this operation. This is necessary because this thread is created in
-        // the context of a garbage collection and the lock is already held by the GC.
-        ASSERT(GCHeapUtilities::IsGCInProgress());
-        ThreadStore::AttachCurrentThread(false);
+        if (pStartContext->m_isSuspendable)
+        {
+            // Initialize the Thread for this thread. The false being passed indicates that the thread store lock
+            // should not be acquired as part of this operation. This is necessary because this thread is created in
+            // the context of a garbage collection and the lock is already held by the GC.
+            ASSERT(GCHeapUtilities::IsGCInProgress());
+
+            ThreadStore::AttachCurrentThread(false);
+        }
 
         ThreadStore::RawGetCurrentThread()->SetGCSpecial();
 
@@ -1144,6 +1137,7 @@ bool GCToEEInterface::CreateThread(void (*threadStart)(void*), void* arg, bool i
     ASSERT(res == WAIT_OBJECT_0);
 
     return true;
+#endif
 }
 
 // NativeAOT does not use async pinned handles

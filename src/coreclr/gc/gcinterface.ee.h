@@ -396,6 +396,9 @@ public:
     virtual
     bool WasCurrentThreadCreatedByGC() = 0;
 
+    virtual
+    void SetCurrentThreadCreatedByGC() = 0;
+
     // Given an object, if this object is an instance of `System.Threading.OverlappedData`,
     // and the runtime treats instances of this class specially, traverses the objects that
     // are directly or (once) indirectly pinned by this object and reports them to the GC for

@@ -1431,6 +1431,15 @@ bool GCToEEInterface::WasCurrentThreadCreatedByGC()
     return !!::IsGCSpecialThread();
 }
 
+void GCToEEInterface::SetCurrentThreadCreatedByGC()
+{
+    // allow setting oly once
+    _ASSERTE(!WasCurrentThreadCreatedByGC());
+
+    ClrFlsSetThreadType(ThreadType_GC);
+    STRESS_LOG_RESERVE_MEM(GC_STRESSLOG_MULTIPLY);
+}
+
 struct SuspendableThreadStubArguments
 {
     void* Argument;
