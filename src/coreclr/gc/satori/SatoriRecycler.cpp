@@ -543,6 +543,9 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
 
     bool result;
     int concurrentCleaningState;
+
+    // NB: m_ccHelpersNum is separate from m_activeWorkers
+    //     because app threads may also be helping
     Interlocked::Increment(&m_ccHelpersNum);
     {
         concurrentCleaningState = m_concurrentCleaningState;
@@ -564,18 +567,7 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
     {
         if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
         {
-            m_activeWorkerFn = nullptr;
-            if (IsWorkerThread())
-            {
-                Interlocked::Decrement(&m_activeWorkers);
-            }
-
             BlockingCollect();
-
-            if (IsWorkerThread())
-            {
-                Interlocked::Increment(&m_activeWorkers);
-            }
         }
     }
 
@@ -900,7 +892,6 @@ treatAsNoWork:
                     // in such degenerate case we still may want to wrap it up and and block.
                     if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
                     {
-                        m_activeWorkerFn = nullptr;
                         BlockingCollect();
                     }
                 }
@@ -1222,15 +1213,21 @@ void SatoriRecycler::BlockingCollectImpl()
     size_t time = GCToOSInterface::QueryPerformanceCounter();
 #endif
 
-    // we should not normally have active workers here.
-    // just in case we support forcing blocking stage for Collect or OOM situations
+    m_activeWorkerFn = nullptr;
+    if (IsWorkerThread())
+    {
+        // do not consider ourselves a worker to not wait forever when we need workers to leave.
+        Interlocked::Decrement(&m_activeWorkers);
+    }
+    else
+    {
+        // make sure everyone sees the new Fn before waiting for workers to drain.
+        MemoryBarrier();
+    }
+
     while (m_activeWorkers > 0)
     {
-        // since we are waiting for concurrent workers to stop, we could as well try helping
-        if (!HelpOnceCore(/*minQuantum*/ true))
-        {
-            YieldProcessor();
-        }
+        YieldProcessor();
     }
 
     m_gcState = GC_STATE_BLOCKED;
@@ -1283,6 +1280,12 @@ void SatoriRecycler::BlockingCollectImpl()
     Plan();
     Relocate();
     Update();
+
+    _ASSERTE(m_activeWorkers == 0);
+
+    // we are done using workers.
+    // undo the adjustment if we had to do one
+    if (IsWorkerThread()) m_activeWorkers++;
 
     m_gcCount[0]++;
     m_gcCount[1]++;
@@ -4400,7 +4403,7 @@ void SatoriRecycler::DrainDeferredSweepQueueWorkerFn()
         {
             SweepAndReturnRegion(curRegion);
             Interlocked::Decrement(&m_deferredSweepCount);
-        } while ((curRegion = m_deferredSweepRegions->TryPop()));
+        } while (m_activeWorkerFn && (curRegion = m_deferredSweepRegions->TryPop()));
     }
 }
 
