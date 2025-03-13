@@ -271,14 +271,6 @@ void ThreadStore::SuspendAllThreads(bool waitForGCEvent)
     // set the global trap for pinvoke leave and return
     RhpTrapThreads |= (uint32_t)TrapThreadsFlags::TrapThreads;
 
-    // TODO: VS remove
-    //long orig = _InterlockedExchange((volatile long*)&RhpTrapThreads, (long)TrapThreadsFlags::TrapThreads);
-    //if (orig != 0)
-    //{
-    //    printf("################################## was not NULL? \n");
-    //    abort();
-    //}
-
     // Our lock-free algorithm depends on flushing write buffers of all processors running RH code.  The
     // reason for this is that we essentially implement Dekker's algorithm, which requires write ordering.
     PalFlushProcessWriteBuffers();
@@ -365,14 +357,6 @@ void ThreadStore::ResumeAllThreads(bool waitForGCEvent)
 #endif //TARGET_ARM || TARGET_ARM64
 
     RhpTrapThreads &= ~(uint32_t)TrapThreadsFlags::TrapThreads;
-
-    // TODO: VS remove
-    //long orig = _InterlockedExchange((volatile long*)&RhpTrapThreads, (long)0);
-    //if (orig == 0)
-    //{
-    //    printf("################################## was already NULL? \n");
-    //    abort();
-    //}
 
     RhpSuspendingThread = NULL;
     if (waitForGCEvent)

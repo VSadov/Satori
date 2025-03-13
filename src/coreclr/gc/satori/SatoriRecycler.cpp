@@ -561,7 +561,7 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
     }
     int ccHelpersNum = Interlocked::Decrement(&m_ccHelpersNum);
 
-    // If we see no work, no workers, and the sate is CC_CLEAN_STATE_DONE,
+    // If we see no work, no workers, and the state is CC_CLEAN_STATE_DONE,
     // we will take it as a hint to start blocking stage.
     if (result == false && ccHelpersNum == 0 && concurrentCleaningState == CC_CLEAN_STATE_DONE)
     {
@@ -635,7 +635,6 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
 
     if (!m_concurrentCardsDone)
     {
-        // TODO: VS could cards be too granular? (half region granularity)?
         _ASSERTE(m_condemnedGeneration != 2);
         if (MarkThroughCardsConcurrent(deadline))
         {
@@ -663,7 +662,6 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
 
     if (m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING)
     {
-        // TODO: VS could cleaning be too granular? (half region granularity)?
         if (CleanCardsConcurrent(deadline))
         {
             return true;
