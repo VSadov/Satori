@@ -172,12 +172,15 @@ private:
     static const int CC_MARK_STATE_DONE = 3;
 
     static const int CC_CLEAN_STATE_NOT_READY = 0;
-    static const int CC_CLEAN_STATE_SETTING_UP = 1;
-    static const int CC_CLEAN_STATE_CLEANING = 2;
-    static const int CC_CLEAN_STATE_DONE = 3;
+    static const int CC_CLEAN_STATE_WAIT_FOR_HELPERS = 1;
+    static const int CC_CLEAN_STATE_SETTING_UP = 2;
+    static const int CC_CLEAN_STATE_CLEANING = 3;
+    static const int CC_CLEAN_STATE_DONE = 4;
 
     volatile int m_ccStackMarkState;
     volatile int m_ccStackMarkingThreadsNum;
+
+    volatile int m_ccHelpersNum;
 
     int m_syncBlockCacheScanDone;
 
@@ -261,6 +264,7 @@ private:
     void AskForHelp();
     void RunWithHelp(void(SatoriRecycler::* method)());
     bool HelpOnceCore(bool minQuantum);
+    bool HelpOnceCoreInner(bool minQuantum);
 
     void PushToEphemeralQueues(SatoriRegion* region);
     void PushToTenuredQueues(SatoriRegion* region);
