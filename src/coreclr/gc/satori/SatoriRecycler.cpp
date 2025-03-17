@@ -442,8 +442,6 @@ static const int concMarkThreshold = 0;
 static const int concMarkThreshold = 8 * 1024  * 1024;
 #endif
 
-static const int bgPauseThreshold = 1000; // microseconds
-
 bool SatoriRecycler::ShouldDoConcurrent(int generation)
 {
     if (IsLowLatencyMode())
@@ -451,22 +449,9 @@ bool SatoriRecycler::ShouldDoConcurrent(int generation)
         return true;
     }
 
-    size_t ethOccupancy = this->m_occupancy[1]  + this->m_occupancy[0];
-    if (generation == 2)
+    if (this->GetTotalOccupancy() < concMarkThreshold)
     {
-        if ((this->m_occupancy[2] + ethOccupancy < concMarkThreshold) &&
-            m_lastTenuredGcInfo.m_pauseDurations[0] < bgPauseThreshold)
-        {
-            return false;
-        }
-    }
-    else
-    {
-        if ((ethOccupancy < concMarkThreshold) &&
-            m_lastEphemeralGcInfo.m_pauseDurations[0] < bgPauseThreshold)
-        {
-            return false;
-        }
+        return false;
     }
 
     return true;
@@ -550,6 +535,48 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
         return true;
     }
 
+    if (m_concurrentCleaningState == CC_CLEAN_STATE_WAIT_FOR_HELPERS)
+    {
+        // this is not a timeout, but there could be more work.
+        return true;
+    }
+
+    bool result;
+    int concurrentCleaningState;
+
+    // NB: m_ccHelpersNum is separate from m_activeWorkers
+    //     because app threads may also be helping
+    Interlocked::Increment(&m_ccHelpersNum);
+    {
+        concurrentCleaningState = m_concurrentCleaningState;
+        if (concurrentCleaningState == CC_CLEAN_STATE_WAIT_FOR_HELPERS)
+        {
+            // this is not a timeout, but there could be more work.
+            result = true;
+        }
+        else
+        {
+            result = HelpOnceCoreInner(minQuantum);
+        }
+    }
+    int ccHelpersNum = Interlocked::Decrement(&m_ccHelpersNum);
+
+    // If we see no work, no workers, and the state is CC_CLEAN_STATE_DONE,
+    // we will take it as a hint to start blocking stage.
+    if (result == false && ccHelpersNum == 0 && concurrentCleaningState == CC_CLEAN_STATE_DONE)
+    {
+        if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
+        {
+            BlockingCollect();
+        }
+    }
+
+    return result;
+}
+
+bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
+{
+
     if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
     {
         _ASSERTE(m_isBarrierConcurrent);
@@ -596,30 +623,26 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
 
     if (!m_concurrentHandlesDone)
     {
-        bool moreWork = MarkHandles(deadline);
-        if (!moreWork)
+        if (MarkHandles(deadline))
+        {
+            return true;
+        }
+        else
         {
             m_concurrentHandlesDone = true;
         }
-
-        return true;
     }
 
     if (!m_concurrentCardsDone)
     {
-        // doing cards could be chunky (region granularity).
-        // prefer that it is done by workers
-        if (IsWorkerThread() || m_activeWorkers == 0)
+        _ASSERTE(m_condemnedGeneration != 2);
+        if (MarkThroughCardsConcurrent(deadline))
         {
-            _ASSERTE(m_condemnedGeneration != 2);
-            if (MarkThroughCardsConcurrent(deadline))
-            {
-                return true;
-            }
-            else
-            {
-                m_concurrentCardsDone = true;
-            }
+            return true;
+        }
+        else
+        {
+            m_concurrentCardsDone = true;
         }
     }
 
@@ -639,18 +662,13 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
 
     if (m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING)
     {
-        // doing cards could be chunky (region granularity).
-        // prefer that it is done by workers
-        if (IsWorkerThread() || m_activeWorkers == 0)
+        if (CleanCardsConcurrent(deadline))
         {
-            if (CleanCardsConcurrent(deadline))
-            {
-                return true;
-            }
-            else
-            {
-                 m_concurrentCleaningState = CC_CLEAN_STATE_DONE;
-            }
+            return true;
+        }
+        else
+        {
+                m_concurrentCleaningState = CC_CLEAN_STATE_DONE;
         }
     }
 
@@ -785,24 +803,39 @@ void SatoriRecycler::HelpOnce()
         if (m_gcState == GC_STATE_CONCURRENT)
         {
 tryAgain:
-            bool moreWork = m_activeWorkers > 0 ||
-                !m_concurrentCardsDone ||
+            bool moreWork = !m_concurrentCardsDone ||
                 m_ccStackMarkState != CC_MARK_STATE_DONE ||
                 m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING ||
                 m_condemnedGeneration == 0 ||
                 !m_workList->IsEmpty();
 
             int64_t start = GCToOSInterface::QueryPerformanceCounter();
-            if (moreWork)
+            // assume that helpers may create more work
+            if ((moreWork || m_ccHelpersNum > 0) &&
+                m_concurrentCleaningState != CC_CLEAN_STATE_WAIT_FOR_HELPERS)
             {
-                HelpOnceCore(/*minQuantum*/ false);
-                m_noWorkSince = GCToOSInterface::QueryPerformanceCounter();
-
-                // if we did not use all the quantum in Low Latency mode,
-                // consume what roughly remains for pacing reasons.
-                if (IsLowLatencyMode() &&
-                    m_concurrentCleaningState >= CC_CLEAN_STATE_CLEANING)
+                bool moreWork = HelpOnceCore(/*minQuantum*/ false);
+                if (moreWork)
                 {
+                    m_noWorkSince = GCToOSInterface::QueryPerformanceCounter();
+                }
+                else
+                {
+                    // If got here just because there are helpers and see no work for very long time,
+                    // start moving towards cleaning/blocking, so that frequent, but useless helps do not starve gc forever.
+                    // This should be rare. basically a panic mode.
+                    if (!moreWork && start - m_noWorkSince > m_perfCounterTicksPerMilli)
+                    {
+                        goto treatAsNoWork;
+                    }
+                }
+
+                // Check if we need to pace. Even if we see more work, it could be not a timeout.
+                // Only makes sense if we can use extra workers.
+                if (IsLowLatencyMode() && MaxWorkers() > 0)
+                {
+                    // if we did not use all the quantum in Low Latency mode,
+                    // consume what roughly remains for pacing reasons.
                     int64_t deadline = start + HelpQuantum() / 2;
                     int iters = 1;
                     while (GCToOSInterface::QueryPerformanceCounter() < deadline &&
@@ -818,22 +851,45 @@ tryAgain:
             }
             else
             {
-                if (m_concurrentCleaningState != CC_CLEAN_STATE_DONE)
+treatAsNoWork:
+                // if did not try to clean yet tell new helpers to not enter
+                if (m_concurrentCleaningState == CC_CLEAN_STATE_NOT_READY)
                 {
-                    if (m_concurrentCleaningState == CC_CLEAN_STATE_NOT_READY &&
-                        Interlocked::CompareExchange(&m_concurrentCleaningState, CC_CLEAN_STATE_SETTING_UP, CC_CLEAN_STATE_NOT_READY) == CC_CLEAN_STATE_NOT_READY)
+                    Interlocked::CompareExchange(&m_concurrentCleaningState, CC_CLEAN_STATE_WAIT_FOR_HELPERS, CC_CLEAN_STATE_NOT_READY);
+                }
+
+                // if helpers are all out, try to declare cleaning
+                if (m_concurrentCleaningState == CC_CLEAN_STATE_WAIT_FOR_HELPERS)
+                {
+                    if (m_ccHelpersNum != 0)
+                    {
+                        // helpers are still present, exit until next time.
+                        GCToEEInterface::GcPoll();
+                        return;
+                    }
+
+                    if (Interlocked::CompareExchange(&m_concurrentCleaningState, CC_CLEAN_STATE_SETTING_UP, CC_CLEAN_STATE_WAIT_FOR_HELPERS) == CC_CLEAN_STATE_WAIT_FOR_HELPERS)
                     {
                         IncrementCardScanTicket();
                         m_concurrentCleaningState = CC_CLEAN_STATE_CLEANING;
-                        goto tryAgain;
                     }
                 }
-                else if (start - m_noWorkSince > HelpQuantum() * 4)
+
+                // we either completely done or cleaning or, in rare case, setting up for cleaning.
+                // if not done, run another cycle.
+                if (m_concurrentCleaningState != CC_CLEAN_STATE_DONE)
+                {
+                    goto tryAgain;
+                }
+
+                // was it long enough since last time we saw work?
+                if (start - m_noWorkSince > HelpQuantum() * 4)
                 {
                     // 4 help quantums without work, seems like we are done
+                    // we may have some helpers draining long chains and not sharing anything
+                    // in such degenerate case we still may want to wrap it up and and block.
                     if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
                     {
-                        m_activeWorkerFn = nullptr;
                         BlockingCollect();
                     }
                 }
@@ -853,7 +909,24 @@ tryAgain:
 void SatoriRecycler::ConcurrentWorkerFn()
 {
     // workers have deadline too, just to come here and check the stage.
-    while ((m_gcState == GC_STATE_CONCURRENT) && HelpOnceCore(/*minQuantum*/ false));
+    while (m_gcState == GC_STATE_CONCURRENT)
+    {
+        if (HelpOnceCore(/*minQuantum*/ false))
+        {
+            m_noWorkSince = GCToOSInterface::QueryPerformanceCounter();
+        }
+        else
+        {
+            // we saw no work available and will exit.
+            // if more work is generated we will be invited back.
+            break;
+        }
+
+        if (m_concurrentCleaningState == CC_CLEAN_STATE_WAIT_FOR_HELPERS)
+        {
+            GCToOSInterface::Sleep(0);
+        }
+    }
 }
 
 int SatoriRecycler::MaxWorkers()
@@ -1138,15 +1211,21 @@ void SatoriRecycler::BlockingCollectImpl()
     size_t time = GCToOSInterface::QueryPerformanceCounter();
 #endif
 
-    // we should not normally have active workers here.
-    // just in case we support forcing blocking stage for Collect or OOM situations
+    m_activeWorkerFn = nullptr;
+    if (IsWorkerThread())
+    {
+        // do not consider ourselves a worker to not wait forever when we need workers to leave.
+        Interlocked::Decrement(&m_activeWorkers);
+    }
+    else
+    {
+        // make sure everyone sees the new Fn before waiting for workers to drain.
+        MemoryBarrier();
+    }
+
     while (m_activeWorkers > 0)
     {
-        // since we are waiting for concurrent workers to stop, we could as well try helping
-        if (!HelpOnceCore(/*minQuantum*/ true))
-        {
-            YieldProcessor();
-        }
+        YieldProcessor();
     }
 
     m_gcState = GC_STATE_BLOCKED;
@@ -1199,6 +1278,12 @@ void SatoriRecycler::BlockingCollectImpl()
     Plan();
     Relocate();
     Update();
+
+    _ASSERTE(m_activeWorkers == 0);
+
+    // we are done using workers.
+    // undo the adjustment if we had to do one
+    if (IsWorkerThread()) m_activeWorkers++;
 
     m_gcCount[0]++;
     m_gcCount[1]++;
@@ -2562,7 +2647,6 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                         _ASSERTE(!region->HasMarksSet());
 
                         int8_t resetValue = Satori::CardState::REMEMBERED;
-                        size_t unsetValue = Satori::CardState::BLANK;
                         if (region->Generation() < 2)
                         {
                             // We will not wipe remembered+ephemeral here.
@@ -2582,8 +2666,6 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                             }
 
                             resetValue = Satori::CardState::EPHEMERAL;
-                            _ASSERTE(Satori::CardState::EPHEMERAL == (int8_t)0x80);
-                            unsetValue = 0x8080808080808080;
                         }
 
                         // invariant check: when marking through cards the gen2 remset stays remset, thus should be marked through on every GC
@@ -2592,10 +2674,13 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
 
                         bool considerAllMarked = region->Generation() > m_condemnedGeneration;
                         int8_t* cards = page->CardsForGroup(i);
+
+                        _ASSERTE(Satori::CardState::DIRTY == (int8_t)0x04);
+                        const size_t dirtyBits = 0x0404040404040404;
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
                         {
-                            // cards are often sparsely set, if j is aligned, check the entire size_t for unset value
-                            if (((j & (sizeof(size_t) - 1)) == 0) && *((size_t*)&cards[j]) == unsetValue)
+                            // cards are often sparsely set, if j is aligned, check if any card in entire size_t is dirty
+                            if (((j & (sizeof(size_t) - 1)) == 0) && (*((size_t*)&cards[j]) & dirtyBits) == 0)
                             {
                                 j += sizeof(size_t) - 1;
                                 continue;
@@ -2900,19 +2985,17 @@ void SatoriRecycler::CleanCards()
                             continue;
                         }
 
-                        _ASSERTE(Satori::CardState::EPHEMERAL == (int8_t)0x80);
-                        const size_t unsetValue = region->Generation() >= 2 ?
-                            Satori::CardState::BLANK :
-                            0x8080808080808080;
-
                         bool considerAllMarked = region->Generation() > m_condemnedGeneration;
 
                         int8_t* cards = page->CardsForGroup(i);
                         const int8_t resetValue = region->Generation() >= 2 ? Satori::CardState::REMEMBERED : Satori::CardState::EPHEMERAL;
+
+                        _ASSERTE(Satori::CardState::DIRTY == (int8_t)0x04);
+                        const size_t dirtyBits = 0x0404040404040404;
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
                         {
-                            // cards are often sparsely set, if j is aligned, check the entire size_t for unset value
-                            if (((j & (sizeof(size_t) - 1)) == 0) && *((size_t*)&cards[j]) == unsetValue)
+                            // cards are often sparsely set, if j is aligned, check if any card in entire size_t is dirty
+                            if (((j & (sizeof(size_t) - 1)) == 0) && (*((size_t*)&cards[j]) & dirtyBits) == 0)
                             {
                                 j += sizeof(size_t) - 1;
                                 continue;
@@ -4257,28 +4340,27 @@ void SatoriRecycler::DrainDeferredSweepQueue()
 bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
 {
     bool isWorkerGCThread = IsWorkerThread();
-    if (!isWorkerGCThread && m_activeWorkers > 0)
-    {
-        // Sweeping and returning could be chunky or contentious.
-        // If there are workers, just say more work is needed.
-        return true;
-    }
 
-    SatoriRegion* curRegion = m_deferredSweepRegions->TryPop();
-    if (curRegion)
+    // Sweeping and returning could be contentious.
+    // If there are workers, do not participate.
+    if (isWorkerGCThread || m_activeWorkers <= 0)
     {
-        MaybeAskForHelp();
-        do
+        SatoriRegion* curRegion = m_deferredSweepRegions->TryPop();
+        if (curRegion)
         {
-            SweepAndReturnRegion(curRegion);
-            Interlocked::Decrement(&m_deferredSweepCount);
-
-            // ignore deadline on worker threads, we can't do anything else anyways.
-            if (!isWorkerGCThread && deadline && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
+            MaybeAskForHelp();
+            do
             {
-                break;
-            }
-        } while ((curRegion = m_deferredSweepRegions->TryPop()));
+                SweepAndReturnRegion(curRegion);
+                Interlocked::Decrement(&m_deferredSweepCount);
+
+                // ignore deadline on worker threads, we can't do anything else anyways.
+                if (!isWorkerGCThread && deadline && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
+                {
+                    break;
+                }
+            } while ((curRegion = m_deferredSweepRegions->TryPop()));
+        }
     }
 
     // no work that we can claim, but we must wait for sweeping to finish and
@@ -4319,7 +4401,7 @@ void SatoriRecycler::DrainDeferredSweepQueueWorkerFn()
         {
             SweepAndReturnRegion(curRegion);
             Interlocked::Decrement(&m_deferredSweepCount);
-        } while ((curRegion = m_deferredSweepRegions->TryPop()));
+        } while (m_activeWorkerFn && (curRegion = m_deferredSweepRegions->TryPop()));
     }
 }
 
