@@ -264,7 +264,6 @@ private:
     void AskForHelp();
     void RunWithHelp(void(SatoriRecycler::* method)());
     bool HelpOnceCore(bool minQuantum);
-
     bool HelpOnceCoreInner(bool minQuantum);
 
     void PushToEphemeralQueues(SatoriRegion* region);
