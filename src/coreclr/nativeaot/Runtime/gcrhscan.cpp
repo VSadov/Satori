@@ -30,10 +30,6 @@
 void GcEnumObjectsConservatively(PTR_PTR_Object ppLowerBound, PTR_PTR_Object ppUpperBound, EnumGcRefCallbackFunc * fnGcEnumRef, EnumGcRefScanContext * pSc);
 void GcEnumObject(PTR_PTR_Object ppObj, uint32_t flags, EnumGcRefCallbackFunc* fnGcEnumRef, EnumGcRefScanContext* pSc);
 
-/*
- * Scan current stack
- */
-
 void GCToEEInterface::GcPoll()
 {
     if (ThreadStore::IsTrapThreadsRequested())
@@ -47,6 +43,10 @@ void GCToEEInterface::GcPoll()
         pThread->DisablePreemptiveMode();
     }
 }
+
+/*
+ * Scan current stack
+ */
 
 void GCToEEInterface::GcScanCurrentStackRoots(EnumGcRefCallbackFunc* fn, EnumGcRefScanContext* sc)
 {
