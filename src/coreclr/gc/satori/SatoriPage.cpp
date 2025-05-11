@@ -62,6 +62,7 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
         return nullptr;
     }
 
+    heap->IncBytesCommitted(commitSize);
     result->m_end = address + pageSize;
     result->m_firstRegion = address + cardTableSize;
     result->m_initialCommit = address + commitSize;

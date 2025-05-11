@@ -75,14 +75,12 @@ static void UpdateWriteBarrier(void* pageMap, void* pageByteMap, size_t highest_
 
 SatoriHeap* SatoriHeap::Create()
 {
-    // we need to cover the whole possible address space (48bit, 52 may be supported as needed).
-    const int availableAddressSpaceBits = 48;
-    const int pageCountBits = availableAddressSpaceBits - Satori::PAGE_BITS;
     const int mapSize = (1 << pageCountBits) * sizeof(SatoriPage*);
     size_t rezerveSize = mapSize + sizeof(SatoriHeap);
 
     void* reserved = GCToOSInterface::VirtualReserve(rezerveSize, 0, VirtualReserveFlags::None);
-    size_t commitSize = min(SatoriUtil::CommitGranularity(), rezerveSize);
+    size_t commitSize = min(sizeof(SatoriHeap), rezerveSize);
+    commitSize = ALIGN_UP(commitSize, SatoriUtil::CommitGranularity());
     if (!GCToOSInterface::VirtualCommit(reserved, commitSize))
     {
         // failure
@@ -90,13 +88,8 @@ SatoriHeap* SatoriHeap::Create()
         return nullptr;
     }
 
-    SatoriHeap::s_pageByteMap = new (nothrow) int8_t[1 << pageCountBits]{};
-    if (!SatoriHeap::s_pageByteMap)
-    {
-        return nullptr;
-    }
-
     SatoriHeap* heap = (SatoriHeap*)reserved;
+    SatoriHeap::s_pageByteMap = heap->m_pageByteMap;
     heap->m_reservedMapSize = mapSize;
     heap->m_committedMapSize = commitSize - sizeof(SatoriHeap) + sizeof(SatoriPage*);
     InitWriteBarrier(heap->m_pageMap, s_pageByteMap, heap->CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
@@ -108,6 +101,7 @@ SatoriHeap* SatoriHeap::Create()
     heap->m_recycler.Initialize(heap);
     heap->m_finalizationQueue.Initialize(heap);
 
+    heap->m_committedBytes = commitSize;
     return heap;
 }
 
@@ -123,6 +117,7 @@ bool SatoriHeap::CommitMoreMap(size_t currentCommittedMapSize)
         {
             // we did the commit
             m_committedMapSize = min(currentCommittedMapSize + commitSize, m_reservedMapSize);
+            IncBytesCommitted(commitSize);
             UpdateWriteBarrier(m_pageMap, s_pageByteMap, CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
         }
     }
