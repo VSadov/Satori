@@ -260,7 +260,7 @@ void SatoriAllocator::AllocationTickDecrement(size_t totalUnused)
         return;
     }
 
-    Interlocked::ExchangeAdd64(&m_smallAllocTickAmount, (size_t)(-(int64_t)totalUnused));
+    Interlocked::ExchangeAdd64(&m_smallAllocTickAmount, (size_t)(-(ptrdiff_t)totalUnused));
 }
 
 Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags)

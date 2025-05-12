@@ -673,7 +673,7 @@ void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* tota
     *finalizationPendingCount = GetNumberOfFinalizable();
 
     *lastRecordedFragmentationBytes = 0;
-    *totalCommittedBytes = 0;
+    *totalCommittedBytes = m_heap->GetBytesCommitted();
     *promotedBytes = 0;
     *pinnedObjectCount = 0;
     *index = lastGcInfo->m_index;

@@ -72,6 +72,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
             return nullptr;
         }
 
+        containingPage->Heap()->IncBytesCommitted(toCommit);
         committed += toCommit;
     }
 
@@ -595,6 +596,8 @@ bool SatoriRegion::Coalesce(SatoriRegion* next)
         {
             return false;
         }
+
+        m_containingPage->Heap()->DecBytesCommitted(toDecommit);
     }
 
     m_end = next_end;
@@ -657,6 +660,7 @@ bool SatoriRegion::TryDecommit()
         {
             m_committed = decommitStart;
             m_used = min(m_used, decommitStart);
+            m_containingPage->Heap()->DecBytesCommitted(decommitSize);
             return true;
         }
     }
@@ -668,8 +672,10 @@ void SatoriRegion::TryCommit()
 {
     if (m_committed < m_end)
     {
-        if (GCToOSInterface::VirtualCommit((void*)m_committed, m_end - m_committed))
+        size_t toCommit =  m_end - m_committed;
+        if (GCToOSInterface::VirtualCommit((void*)m_committed, toCommit))
         {
+            m_containingPage->Heap()->IncBytesCommitted(toCommit);
             m_committed = m_end;
         }
     }
@@ -702,11 +708,13 @@ size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
         if (ensureCommitted > m_committed)
         {
             size_t newComitted = ALIGN_UP(ensureCommitted, SatoriUtil::CommitGranularity());
-            if (!GCToOSInterface::VirtualCommit((void*)m_committed, newComitted - m_committed))
+            size_t toCommit = newComitted - m_committed;
+            if (!GCToOSInterface::VirtualCommit((void*)m_committed, toCommit))
             {
                 return 0;
             }
 
+            m_containingPage->Heap()->IncBytesCommitted(toCommit);
             m_committed = newComitted;
         }
 
@@ -754,11 +762,13 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     if (ensureCommitted > m_committed)
     {
         size_t newComitted = ALIGN_UP(ensureCommitted, SatoriUtil::CommitGranularity());
-        if (!GCToOSInterface::VirtualCommit((void*)m_committed, newComitted - m_committed))
+        size_t toCommit = newComitted - m_committed;
+        if (!GCToOSInterface::VirtualCommit((void*)m_committed, toCommit))
         {
             return 0;
         }
 
+        m_containingPage->Heap()->IncBytesCommitted(toCommit);
         m_committed = newComitted;
     }
 
