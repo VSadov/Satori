@@ -118,10 +118,36 @@ public:
         }
     }
 
+    void IncBytesCommitted(size_t bytes)
+    {
+        Interlocked::ExchangeAdd64(&m_committedBytes, bytes);
+        _ASSERTE((ptrdiff_t)m_committedBytes > 0);
+    }
+
+    void DecBytesCommitted(size_t bytes)
+    {
+        Interlocked::ExchangeAdd64(&m_committedBytes, (size_t)(-(ptrdiff_t)bytes));
+        _ASSERTE((ptrdiff_t)m_committedBytes > 0);
+    }
+
+    size_t GetBytesCommitted()
+    {
+        return m_committedBytes;
+    }
+
 private:
+    // we need to cover the whole possible address space (48bit, 52 may be supported as needed).
+    static const int availableAddressSpaceBits = 47;
+    static const int pageCountBits = availableAddressSpaceBits - Satori::PAGE_BITS;
+
+    int8_t m_pageByteMap[1 << pageCountBits]{};
+    static int8_t* s_pageByteMap;
+
     SatoriAllocator m_allocator;
     SatoriRecycler m_recycler;
     SatoriFinalizationQueue m_finalizationQueue;
+
+    size_t m_committedBytes;
 
     size_t m_reservedMapSize;
     size_t m_committedMapSize;
@@ -129,8 +155,6 @@ private:
     size_t m_nextPageIndex;
     SatoriLock m_mapLock;
     SatoriPage* m_pageMap[1];
-
-    static int8_t* s_pageByteMap;
 
     bool CommitMoreMap(size_t currentlyCommitted);
 
