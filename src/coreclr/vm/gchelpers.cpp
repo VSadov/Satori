@@ -1120,7 +1120,7 @@ Object* AllocateImmortalObject(MethodTable* pMT, size_t objectSize)
     SetTypeHandleOnThreadForAlloc(TypeHandle(pMT));
 
     GC_ALLOC_FLAGS flags = GC_ALLOC_IMMORTAL;
-    if (pMT->ContainsPointers())
+    if (pMT->ContainsGCPointers())
         flags |= GC_ALLOC_CONTAINS_REF;
 
 #ifdef FEATURE_64BIT_ALIGNMENT

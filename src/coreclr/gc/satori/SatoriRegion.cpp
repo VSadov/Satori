@@ -912,7 +912,7 @@ inline void SatoriRegion::PushToMarkStackIfHasPointers(SatoriObject* obj)
     _ASSERTE(obj->SameRegion(this));
     _ASSERTE(!obj->GetNextInLocalMarkStack());
 
-    if (obj->RawGetMethodTable()->ContainsPointersOrCollectible())
+    if (obj->RawGetMethodTable()->ContainsGCPointersOrCollectible())
     {
         obj->SetNextInLocalMarkStack(m_markStack);
         _ASSERTE(m_markStack == obj->GetNextInLocalMarkStack());

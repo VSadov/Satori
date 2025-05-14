@@ -91,7 +91,7 @@ void SatoriObject::DirtyCardsForContent()
 {
     _ASSERTE(IsMarked());
     MethodTable* mt = RawGetMethodTable();
-    if (mt->ContainsPointersOrCollectible())
+    if (mt->ContainsGCPointersOrCollectible())
     {
         SatoriPage* page = ContainingRegion()->m_containingPage;
         // if dealing with a collectible type, include MT in the dirty range

@@ -125,7 +125,7 @@ private:
 #else
         BitScanReverse(&highestBit, value);
 #endif
-        return min(highestBit - Satori::REGION_BITS, Satori::ALLOCATOR_BUCKET_COUNT - 1);
+        return min((int)highestBit - Satori::REGION_BITS, Satori::ALLOCATOR_BUCKET_COUNT - 1);
     }
 };
 

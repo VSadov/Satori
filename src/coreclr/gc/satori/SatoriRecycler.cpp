@@ -1070,10 +1070,10 @@ void SatoriRecycler::AdjustHeuristics()
 
     // we trigger GC when ephemeral size grows to SatoriUtil::Gen1Target(),
     // the budget is the diff to reach that
-    size_t newGen1Budget = max(MIN_GEN1_BUDGET, ephemeralOccupancy * (SatoriUtil::Gen1Target() - 100) / 100);
+    size_t newGen1Budget = max((size_t)MIN_GEN1_BUDGET, ephemeralOccupancy * (SatoriUtil::Gen1Target() - 100) / 100);
 
     // alternatively we allow gen1 allocs up to 1/8 of total limit.
-    size_t altNewGen1Budget = max(MIN_GEN1_BUDGET, m_totalLimit / 8);
+    size_t altNewGen1Budget = max((size_t)MIN_GEN1_BUDGET, m_totalLimit / 8);
 
     // take max of both budgets
     newGen1Budget = max(newGen1Budget, altNewGen1Budget);
@@ -2096,7 +2096,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
 
 void SatoriRecycler::ScheduleMarkAsChildRanges(SatoriObject* o)
 {
-    if (o->RawGetMethodTable()->ContainsPointersOrCollectible())
+    if (o->RawGetMethodTable()->ContainsGCPointersOrCollectible())
     {
         size_t start = o->Start();
         size_t remains = o->Size();
@@ -2128,7 +2128,7 @@ void SatoriRecycler::ScheduleMarkAsChildRanges(SatoriObject* o)
 
 bool SatoriRecycler::ScheduleUpdateAsChildRanges(SatoriObject* o)
 {
-    if (o->RawGetMethodTable()->ContainsPointers())
+    if (o->RawGetMethodTable()->ContainsGCPointers())
     {
         size_t start = o->Start() + sizeof(size_t);
         size_t remains = o->Size() - sizeof(size_t);

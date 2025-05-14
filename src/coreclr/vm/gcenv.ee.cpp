@@ -552,7 +552,7 @@ void GCToEEInterface::GcPoll()
     }
     CONTRACTL_END;
 
-    if (g_TrapReturningThreads.LoadWithoutBarrier())
+    if (g_TrapReturningThreads)
     {
         Thread* pThread = ::GetThread();
         _ASSERTE(!ThreadStore::HoldingThreadStore(pThread));
