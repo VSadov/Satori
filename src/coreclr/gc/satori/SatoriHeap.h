@@ -154,6 +154,12 @@ private:
     size_t m_usedMapLength;
     size_t m_nextPageIndex;
     SatoriLock m_mapLock;
+
+#if _DEBUG
+    // make the Heap obj a bit larger to force some page map commits earlier.
+    int8_t dummy[0x7A70]{};
+#endif
+
     SatoriPage* m_pageMap[1];
 
     bool CommitMoreMap(size_t currentlyCommitted);
