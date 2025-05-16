@@ -76,22 +76,28 @@ static void UpdateWriteBarrier(void* pageMap, void* pageByteMap, size_t highest_
 SatoriHeap* SatoriHeap::Create()
 {
     const int mapSize = (1 << pageCountBits) * sizeof(SatoriPage*);
-    size_t rezerveSize = mapSize + sizeof(SatoriHeap);
+    size_t reserveSize = mapSize + offsetof(SatoriHeap, m_pageMap);
+    reserveSize = ALIGN_UP(reserveSize, SatoriUtil::CommitGranularity());
+    void* reserved = GCToOSInterface::VirtualReserve(nullptr, reserveSize, SatoriUtil::UseTHP());
+    if (reserved == nullptr)
+    {
+        return nullptr;
+    }
 
-    void* reserved = GCToOSInterface::VirtualReserve(rezerveSize, 0, VirtualReserveFlags::None);
-    size_t commitSize = min(sizeof(SatoriHeap), rezerveSize);
+    size_t commitSize = offsetof(SatoriHeap, m_pageMap) + sizeof(SatoriPage*);
     commitSize = ALIGN_UP(commitSize, SatoriUtil::CommitGranularity());
+    _ASSERTE(commitSize <= reserveSize);
     if (!GCToOSInterface::VirtualCommit(reserved, commitSize))
     {
         // failure
-        GCToOSInterface::VirtualRelease(reserved, rezerveSize);
         return nullptr;
     }
 
     SatoriHeap* heap = (SatoriHeap*)reserved;
     SatoriHeap::s_pageByteMap = heap->m_pageByteMap;
     heap->m_reservedMapSize = mapSize;
-    heap->m_committedMapSize = commitSize - sizeof(SatoriHeap) + sizeof(SatoriPage*);
+    heap->m_committedMapSize = commitSize - offsetof(SatoriHeap, m_pageMap);
+    heap->m_committedBytes = commitSize;
     InitWriteBarrier(heap->m_pageMap, s_pageByteMap, heap->CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
     heap->m_mapLock.Initialize();
     heap->m_nextPageIndex = 1;
@@ -100,26 +106,28 @@ SatoriHeap* SatoriHeap::Create()
     heap->m_allocator.Initialize(heap);
     heap->m_recycler.Initialize(heap);
     heap->m_finalizationQueue.Initialize(heap);
-
-    heap->m_committedBytes = commitSize;
     return heap;
 }
 
 bool SatoriHeap::CommitMoreMap(size_t currentCommittedMapSize)
 {
-    void* commitFrom = (void*)((size_t)&m_pageMap + currentCommittedMapSize);
-    size_t commitSize = SatoriUtil::CommitGranularity();
-
     SatoriLockHolder holder(&m_mapLock);
-    if (currentCommittedMapSize <= m_committedMapSize)
+    if (currentCommittedMapSize == m_committedMapSize)
     {
+        void* commitFrom = (void*)((size_t)&m_pageMap + currentCommittedMapSize);
+        size_t commitSize = SatoriUtil::CommitGranularity();
+        _ASSERTE(m_committedMapSize + commitSize <= m_reservedMapSize);
         if (GCToOSInterface::VirtualCommit(commitFrom, commitSize))
         {
             // we did the commit
-            m_committedMapSize = min(currentCommittedMapSize + commitSize, m_reservedMapSize);
+            m_committedMapSize += commitSize;
             IncBytesCommitted(commitSize);
             UpdateWriteBarrier(m_pageMap, s_pageByteMap, CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
         }
+    }
+    else
+    {
+        _ASSERTE(m_committedMapSize > currentCommittedMapSize);
     }
 
     // either we did commit or someone else did, otherwise this is a failure.
@@ -133,7 +141,8 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
     for (size_t i = nextPageIndex; i < maxIndex; i++)
     {
         size_t currentCommittedMapSize = m_committedMapSize;
-        if (i >= currentCommittedMapSize && !CommitMoreMap(currentCommittedMapSize))
+        size_t requiredMapSize = (i + 1) * sizeof(SatoriPage*);
+        if (requiredMapSize > currentCommittedMapSize && !CommitMoreMap(currentCommittedMapSize))
         {
             break;
         }
@@ -194,7 +203,7 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
     for (size_t i = m_nextPageIndex; i < maxIndex; i++)
     {
         size_t currentCommittedMapSize;
-        size_t requiredMapSize = i + mapMarkCount * sizeof(SatoriPage*);
+        size_t requiredMapSize = (i + mapMarkCount) * sizeof(SatoriPage*);
         while (requiredMapSize > ((currentCommittedMapSize = m_committedMapSize)))
         {
             if (!CommitMoreMap(currentCommittedMapSize))

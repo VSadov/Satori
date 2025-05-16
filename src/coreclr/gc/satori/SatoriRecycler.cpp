@@ -1239,11 +1239,14 @@ void SatoriRecycler::BlockingCollectImpl()
     Relocate();
     Update();
 
-    _ASSERTE(m_activeWorkers == 0);
-
     // we are done using workers.
     // undo the adjustment if we had to do one
-    if (IsWorkerThread()) m_activeWorkers++;
+    if (IsWorkerThread())
+    {
+        // interlocked because even though we saw no workers after m_activeWorkerFn was reset,
+        // some delayed workers may later still come and look for work.
+        Interlocked::Increment(&m_activeWorkers);
+    }
 
     m_gcCount[0]++;
     m_gcCount[1]++;

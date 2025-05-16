@@ -416,7 +416,7 @@ void* GCToOSInterface::VirtualReserve(void* location, size_t size, bool useTHP)
         return NULL;
     }
 
-    if (pRetVal != location)
+    if (location != nullptr && pRetVal != location)
     {
         munmap(pRetVal, size);
         return NULL;

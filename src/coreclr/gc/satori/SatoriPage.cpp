@@ -58,7 +58,6 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 
     if (!GCToOSInterface::VirtualCommit((void*)address, commitSize))
     {
-        GCToOSInterface::VirtualRelease((void*)address, pageSize);
         return nullptr;
     }
 

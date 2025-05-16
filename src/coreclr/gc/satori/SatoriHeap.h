@@ -136,8 +136,14 @@ public:
     }
 
 private:
-    // we need to cover the whole possible address space (48bit, 52 may be supported as needed).
-    static const int availableAddressSpaceBits = 47;
+    // We need to cover the whole addressable space, but no need to handle inaccessible VA.
+    // Accessing that should not happen for any valid reason, and will fail anyway.
+    // - the canonical user VA on x64 uses lower 47 bits (128 TB)
+    // - arm64 allows 48 lower bits (256 TB), linux uses that, but other OS use the same range as on x64.
+    // - we can eventually support 53 bit (4 PB) and 57 bit (??) extensions, it is too early to worry about that.
+    //
+    // For consistency and uniform testing, we will default to 48 bit VA.
+    static const int availableAddressSpaceBits = 48;
     static const int pageCountBits = availableAddressSpaceBits - Satori::PAGE_BITS;
 
     int8_t m_pageByteMap[1 << pageCountBits]{};
@@ -154,6 +160,12 @@ private:
     size_t m_usedMapLength;
     size_t m_nextPageIndex;
     SatoriLock m_mapLock;
+
+#if _DEBUG
+    // make the Heap obj a bit larger to force some page map commits earlier.
+    int8_t dummy[0x7A70]{};
+#endif
+
     SatoriPage* m_pageMap[1];
 
     bool CommitMoreMap(size_t currentlyCommitted);
