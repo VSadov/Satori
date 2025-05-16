@@ -136,8 +136,14 @@ public:
     }
 
 private:
-    // we need to cover the whole possible address space (48bit, 52 may be supported as needed).
-    static const int availableAddressSpaceBits = 47;
+    // We need to cover the whole possible address space.
+    // No need to reason about inaccessible VA as accessing it wil fail either way.
+    // - on x64 canonical user VA  uses lower 47 bits (128 TB)
+    // - arm64 allowes 48 lower bits (256 TB), although some OS use same 47 as on x64.
+    // - we can support 53 bit (4 PB) and 57 bit (??) extensions, but too early to worry about that.
+    // 
+    // For consistency and uniform testing, we will default to 48 bit.
+    static const int availableAddressSpaceBits = 48;
     static const int pageCountBits = availableAddressSpaceBits - Satori::PAGE_BITS;
 
     int8_t m_pageByteMap[1 << pageCountBits]{};
