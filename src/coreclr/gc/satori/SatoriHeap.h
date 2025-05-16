@@ -136,13 +136,13 @@ public:
     }
 
 private:
-    // We need to cover the whole possible address space.
-    // No need to reason about inaccessible VA as accessing it wil fail either way.
-    // - on x64 canonical user VA  uses lower 47 bits (128 TB)
-    // - arm64 allowes 48 lower bits (256 TB), although some OS use same 47 as on x64.
-    // - we can support 53 bit (4 PB) and 57 bit (??) extensions, but too early to worry about that.
-    // 
-    // For consistency and uniform testing, we will default to 48 bit.
+    // We need to cover the whole addressable space, but no need to handle inaccessible VA.
+    // Accessing that should not happen for any valid reason, and will fail anyway.
+    // - the canonical user VA on x64 uses lower 47 bits (128 TB)
+    // - arm64 allows 48 lower bits (256 TB), linux uses that, but other OS use the same range as on x64.
+    // - we can eventually support 53 bit (4 PB) and 57 bit (??) extensions, it is too early to worry about that.
+    //
+    // For consistency and uniform testing, we will default to 48 bit VA.
     static const int availableAddressSpaceBits = 48;
     static const int pageCountBits = availableAddressSpaceBits - Satori::PAGE_BITS;
 
