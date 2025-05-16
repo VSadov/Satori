@@ -566,6 +566,11 @@ int WriteBarrierManager::UpdateWriteWatchAndCardTableLocations(bool isRuntimeSus
     // If we are told that we require an upper bounds check (GC did some heap reshuffling),
     // we need to switch to the WriteBarrier_PostGrow function for good.
 
+#ifdef FEATURE_SATORI_GC
+    // as of now satori does not patch barriers on x64, no need to go further.
+    return SWB_PASS;
+#endif
+
     WriteBarrierType newType;
     if (NeedDifferentWriteBarrier(bReqUpperBoundsCheck, g_region_use_bitwise_write_barrier, &newType))
     {
