@@ -881,7 +881,7 @@ int WriteBarrierManager::UpdateWriteWatchAndCardTableLocations(bool isRuntimeSus
     // we need to switch to the WriteBarrier_PostGrow function for good.
 
 #ifdef FEATURE_SATORI_GC
-    // as of now satori does not patch barriers on x64
+    // as of now satori does not patch barriers on x64, no need to go further.
     return SWB_PASS;
 #endif
 
