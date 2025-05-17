@@ -896,6 +896,8 @@ void SatoriRecycler::BlockingMarkForConcurrent()
 
         size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
         m_CurrentGcInfo->m_pauseDurations[1] = blockingDuration / m_perfCounterTicksPerMicro;
+        m_gcDurationMillis[0] += blockingDuration / m_perfCounterTicksPerMicro;
+        UpdateGcCounters(blockingStart);
 
         GCToEEInterface::RestartEE(false);
     }
@@ -1146,8 +1148,9 @@ void SatoriRecycler::BlockingCollect1()
 
     size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
     m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_perfCounterTicksPerMicro;
-    m_gcDurationMillis[1] = blockingDuration / m_perfCounterTicksPerMicro;
+    m_gcDurationMillis[1] += blockingDuration / m_perfCounterTicksPerMicro;
     m_CurrentGcInfo = nullptr;
+    UpdateGcCounters(blockingStart);
 
     // restart VM
     GCToEEInterface::RestartEE(true);
@@ -1165,8 +1168,9 @@ void SatoriRecycler::BlockingCollect2()
 
     size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
     m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_perfCounterTicksPerMicro;
-    m_gcDurationMillis[2] = blockingDuration / m_perfCounterTicksPerMicro;
+    m_gcDurationMillis[2] += blockingDuration / m_perfCounterTicksPerMicro;
     m_CurrentGcInfo = nullptr;
+    UpdateGcCounters(blockingStart);
 
     // restart VM
     GCToEEInterface::RestartEE(true);
@@ -4411,3 +4415,26 @@ bool& SatoriRecycler::IsLowLatencyMode()
     return m_isLowLatencyMode;
 }
 
+void SatoriRecycler::UpdateGcCounters(int64_t blockingStart)
+{
+    // Compute Time in GC
+    int64_t currentPerfCounterTimer = GCToOSInterface::QueryPerformanceCounter();
+
+    int64_t totalTimeInGc = currentPerfCounterTimer - blockingStart;
+    int64_t timeInGCBase = (currentPerfCounterTimer - m_totalTimeSinceLastGcEnd);
+
+    if (timeInGCBase < totalTimeInGc)
+    {
+        totalTimeInGc = 0; // isn't likely except on some SMP machines-- perhaps make sure that
+                           //  _timeInGCBase >= g_TotalTimeInGC by setting affinity in GET_CYCLE_COUNT
+    }
+
+    while (timeInGCBase > UINT32_MAX)
+    {
+        timeInGCBase = timeInGCBase >> 8;
+        totalTimeInGc = totalTimeInGc >> 8;
+    }
+    
+    m_percentTimeInGcSinceLastGc = timeInGCBase != 0 ? (int)(totalTimeInGc * 100 / timeInGCBase) : 0;
+    m_totalTimeSinceLastGcEnd = currentPerfCounterTimer;
+}

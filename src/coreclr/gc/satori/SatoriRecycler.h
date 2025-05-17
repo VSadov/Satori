@@ -108,6 +108,11 @@ public:
         return m_nextGcIsFullGc;
     }
 
+    inline int GetPercentTimeInGcSinceLastGc()
+    {
+        return m_percentTimeInGcSinceLastGc;
+    }
+
     LastRecordedGcInfo* GetLastGcInfo(gc_kind kind)
     {
         if (kind == gc_kind_ephemeral)
@@ -200,6 +205,9 @@ private:
     int64_t m_gcCount[3];
     int64_t m_gcStartMillis[3];
     int64_t m_gcDurationMillis[3];
+
+    int64_t m_totalTimeSinceLastGcEnd;
+    int m_percentTimeInGcSinceLastGc;
 
     size_t m_gen1Budget;
     size_t m_totalLimit;
@@ -352,6 +360,8 @@ private:
     bool DrainDeferredSweepQueueConcurrent(int64_t deadline = 0);
     void DrainDeferredSweepQueueWorkerFn();
     void SweepAndReturnRegion(SatoriRegion* curRegion);
+
+    void UpdateGcCounters(int64_t blockingStart);
 
     void ASSERT_NO_WORK();
 };
