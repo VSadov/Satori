@@ -299,8 +299,7 @@ bool SatoriGC::RegisterForFinalization(int gen, Object* obj)
 
 int SatoriGC::GetLastGCPercentTimeInGC()
 {
-    // NYI
-    return 0;
+    return m_heap->Recycler()->GetPercentTimeInGcSinceLastGc();
 }
 
 size_t SatoriGC::GetLastGCGenerationSize(int gen)
@@ -720,8 +719,7 @@ unsigned int SatoriGC::GetGenerationWithRange(Object* object, uint8_t** ppStart,
 
 int64_t SatoriGC::GetTotalPauseDuration()
 {
-    // NYI
-    return 0;
+    return (m_heap->Recycler()->GetGcDurationMillis(0) + m_heap->Recycler()->GetGcDurationMillis(1) + m_heap->Recycler()->GetGcDurationMillis(2)) * 10;
 }
 
 void SatoriGC::EnumerateConfigurationValues(void* context, ConfigurationValueFunc configurationValueFunc)
