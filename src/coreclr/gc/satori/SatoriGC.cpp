@@ -197,26 +197,13 @@ unsigned SatoriGC::WhichGeneration(Object* obj)
 
 int SatoriGC::CollectionCount(int generation, int get_bgc_fgc_coutn)
 {
-    // get_bgc_fgc_coutn - not sure what this is. thus N/A
-
+    //get_bgc_fgc_coutn N/A
     if ((unsigned)generation > (unsigned)2)
     {
         return 0;
     }
 
-    int64_t count = m_heap->Recycler()->GetCollectionCount(generation);
-
-    // in the public API GC counts are not inclusive
-    if (generation < 1)
-    {
-        count -= m_heap->Recycler()->GetCollectionCount(1);
-    }
-    else if (generation < 2)
-    {
-        count -= m_heap->Recycler()->GetCollectionCount(2);
-    }
-
-    return (int)count;
+    return (int)m_heap->Recycler()->GetCollectionCount(generation);
 }
 
 int SatoriGC::StartNoGCRegion(uint64_t totalSize, bool lohSizeKnown, uint64_t lohSize, bool disallowFullBlockingGC)
@@ -373,8 +360,6 @@ bool SatoriGC::IsGCInProgressHelper(bool bConsiderGCStart)
     return m_gcInProgress;
 }
 
-// this is basically a GC index
-// it is used in suspend events, and in GC stress.
 unsigned SatoriGC::GetGcCount()
 {
     if (!m_heap)
@@ -382,7 +367,7 @@ unsigned SatoriGC::GetGcCount()
         return 0;
     }
 
-    return (unsigned)(int)m_heap->Recycler()->GetCollectionCount(/*gen*/ 0);
+    return (unsigned)(int)m_heap->Recycler()->GetCollectionCount(/*gen*/ 1);
 }
 
 bool SatoriGC::IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, int thread_number)
