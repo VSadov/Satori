@@ -152,9 +152,9 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_isLowLatencyMode = SatoriUtil::IsLowLatencyMode();
 
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 3; i++)
     {
-        m_gcStartMillis[i] = m_gcDurationMillis[i] = 0;
+        m_gcStartMillis[i] = m_gcDurationMillis[i] = m_gcAccmulatingDurationMillis[i] = 0;
     }
 
     m_lastEphemeralGcInfo = { 0 };
@@ -896,7 +896,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
 
         size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
         m_CurrentGcInfo->m_pauseDurations[1] = blockingDuration / m_perfCounterTicksPerMicro;
-        m_gcDurationMillis[0] += blockingDuration / m_perfCounterTicksPerMicro;
+        m_gcAccmulatingDurationMillis[m_condemnedGeneration] += blockingDuration / m_perfCounterTicksPerMicro;
         UpdateGcCounters(blockingStart);
 
         GCToEEInterface::RestartEE(false);
@@ -1148,7 +1148,8 @@ void SatoriRecycler::BlockingCollect1()
 
     size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
     m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_perfCounterTicksPerMicro;
-    m_gcDurationMillis[1] += blockingDuration / m_perfCounterTicksPerMicro;
+    m_gcDurationMillis[1] = blockingDuration / m_perfCounterTicksPerMicro;
+    m_gcAccmulatingDurationMillis[1] += blockingDuration / m_perfCounterTicksPerMicro;
     m_CurrentGcInfo = nullptr;
     UpdateGcCounters(blockingStart);
 
@@ -1168,7 +1169,8 @@ void SatoriRecycler::BlockingCollect2()
 
     size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
     m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_perfCounterTicksPerMicro;
-    m_gcDurationMillis[2] += blockingDuration / m_perfCounterTicksPerMicro;
+    m_gcDurationMillis[2] = blockingDuration / m_perfCounterTicksPerMicro;
+    m_gcAccmulatingDurationMillis[2] += blockingDuration / m_perfCounterTicksPerMicro;
     m_CurrentGcInfo = nullptr;
     UpdateGcCounters(blockingStart);
 
@@ -4411,6 +4413,11 @@ size_t SatoriRecycler::GetGcStartMillis(int generation)
 size_t SatoriRecycler::GetGcDurationMillis(int generation)
 {
     return m_gcDurationMillis[generation];
+}
+
+size_t SatoriRecycler::GetGcAccumulatingDurationMillis(int generation)
+{
+    return m_gcAccmulatingDurationMillis[generation];
 }
 
 bool& SatoriRecycler::IsLowLatencyMode()

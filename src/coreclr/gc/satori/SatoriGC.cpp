@@ -719,7 +719,9 @@ unsigned int SatoriGC::GetGenerationWithRange(Object* object, uint8_t** ppStart,
 
 int64_t SatoriGC::GetTotalPauseDuration()
 {
-    return (m_heap->Recycler()->GetGcDurationMillis(0) + m_heap->Recycler()->GetGcDurationMillis(1) + m_heap->Recycler()->GetGcDurationMillis(2)) * 10;
+    return (m_heap->Recycler()->GetGcAccumulatingDurationMillis(0)
+        + m_heap->Recycler()->GetGcAccumulatingDurationMillis(1)
+        + m_heap->Recycler()->GetGcAccumulatingDurationMillis(2)) * 10;
 }
 
 void SatoriGC::EnumerateConfigurationValues(void* context, ConfigurationValueFunc configurationValueFunc)

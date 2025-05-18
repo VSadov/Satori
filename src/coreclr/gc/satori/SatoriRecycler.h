@@ -92,6 +92,7 @@ public:
     size_t GetOccupancy(int i);
     size_t GetGcStartMillis(int generation);
     size_t GetGcDurationMillis(int generation);
+    size_t GetGcAccumulatingDurationMillis(int generation);
 
     int64_t GlobalGcIndex();
 
@@ -205,6 +206,7 @@ private:
     int64_t m_gcCount[3];
     int64_t m_gcStartMillis[3];
     int64_t m_gcDurationMillis[3];
+    int64_t m_gcAccmulatingDurationMillis[3];
 
     int64_t m_totalTimeSinceLastGcEnd;
     int m_percentTimeInGcSinceLastGc;
