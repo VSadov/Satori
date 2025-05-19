@@ -152,14 +152,15 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_isLowLatencyMode = SatoriUtil::IsLowLatencyMode();
 
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 3; i++)
     {
-        m_gcStartMillis[i] = m_gcDurationMillis[i] = 0;
+        m_gcStartMillis[i] = m_gcDurationUsecs[i] = m_gcAccmulatingDurationUsecs[i] = 0;
     }
 
     m_lastEphemeralGcInfo = { 0 };
     m_lastTenuredGcInfo   = { 0 };
     m_CurrentGcInfo = nullptr;
+    m_startMillis = GetNowMillis();
 }
 
 void SatoriRecycler::ShutDown()
@@ -896,6 +897,8 @@ void SatoriRecycler::BlockingMarkForConcurrent()
 
         size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
         m_CurrentGcInfo->m_pauseDurations[1] = blockingDuration / m_perfCounterTicksPerMicro;
+        m_gcAccmulatingDurationUsecs[m_condemnedGeneration] += blockingDuration / m_perfCounterTicksPerMicro;
+        UpdateGcCounters(blockingStart);
 
         GCToEEInterface::RestartEE(false);
     }
@@ -1146,8 +1149,14 @@ void SatoriRecycler::BlockingCollect1()
 
     size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
     m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_perfCounterTicksPerMicro;
-    m_gcDurationMillis[1] = blockingDuration / m_perfCounterTicksPerMicro;
+    m_gcDurationUsecs[1] = blockingDuration / m_perfCounterTicksPerMicro;
+    m_gcAccmulatingDurationUsecs[1] += blockingDuration / m_perfCounterTicksPerMicro;
+
+    size_t fromStartMillis = GetNowMillis() - m_startMillis;
+    m_CurrentGcInfo->m_pausePercentage = (uint32_t)(m_gcAccmulatingDurationUsecs[1] / (int64_t)fromStartMillis / 10);
+
     m_CurrentGcInfo = nullptr;
+    UpdateGcCounters(blockingStart);
 
     // restart VM
     GCToEEInterface::RestartEE(true);
@@ -1165,8 +1174,14 @@ void SatoriRecycler::BlockingCollect2()
 
     size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
     m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_perfCounterTicksPerMicro;
-    m_gcDurationMillis[2] = blockingDuration / m_perfCounterTicksPerMicro;
+    m_gcDurationUsecs[2] = blockingDuration / m_perfCounterTicksPerMicro;
+    m_gcAccmulatingDurationUsecs[2] += blockingDuration / m_perfCounterTicksPerMicro;
+
+    size_t fromStartMillis = GetNowMillis() - m_startMillis;
+    m_CurrentGcInfo->m_pausePercentage = (uint32_t)( m_gcAccmulatingDurationUsecs[2] / (int64_t)fromStartMillis / 10);
+
     m_CurrentGcInfo = nullptr;
+    UpdateGcCounters(blockingStart);
 
     // restart VM
     GCToEEInterface::RestartEE(true);
@@ -4406,7 +4421,12 @@ size_t SatoriRecycler::GetGcStartMillis(int generation)
 
 size_t SatoriRecycler::GetGcDurationMillis(int generation)
 {
-    return m_gcDurationMillis[generation];
+    return m_gcDurationUsecs[generation] / 1000;
+}
+
+size_t SatoriRecycler::GetGcAccumulatingDurationMillis(int generation)
+{
+    return m_gcAccmulatingDurationUsecs[generation];
 }
 
 bool& SatoriRecycler::IsLowLatencyMode()
@@ -4414,3 +4434,17 @@ bool& SatoriRecycler::IsLowLatencyMode()
     return m_isLowLatencyMode;
 }
 
+void SatoriRecycler::UpdateGcCounters(int64_t blockingStart)
+{
+    // Compute Time in GC
+    int64_t currentPerfCounterTimer = GCToOSInterface::QueryPerformanceCounter();
+
+    int64_t totalTimeInCurrentGc = currentPerfCounterTimer - blockingStart;
+    int64_t timeSinceLastGcEnded = currentPerfCounterTimer - m_totalTimeAtLastGcEnd;
+
+    // should always hold unless we switch to a nonmonotonic timer.
+    _ASSERTE(timeSinceLastGcEnded >= totalTimeInCurrentGc);
+
+    m_percentTimeInGcSinceLastGc = timeSinceLastGcEnded != 0 ? (int)(totalTimeInCurrentGc * 100 / timeSinceLastGcEnded) : 0;
+    m_totalTimeAtLastGcEnd = currentPerfCounterTimer;
+}
