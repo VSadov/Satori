@@ -42,6 +42,7 @@ struct LastRecordedGcInfo
 {
     size_t m_index;
     size_t m_pauseDurations[2];
+    uint32_t m_pausePercentage;
     uint8_t m_condemnedGeneration;
     bool m_compaction;
     bool m_concurrent;
@@ -92,6 +93,7 @@ public:
     size_t GetOccupancy(int i);
     size_t GetGcStartMillis(int generation);
     size_t GetGcDurationMillis(int generation);
+    size_t GetGcAccumulatingDurationMillis(int generation);
 
     int64_t GlobalGcIndex();
 
@@ -106,6 +108,11 @@ public:
     inline bool IsNextGcFullGc()
     {
         return m_nextGcIsFullGc;
+    }
+
+    inline int GetPercentTimeInGcSinceLastGc()
+    {
+        return m_percentTimeInGcSinceLastGc;
     }
 
     LastRecordedGcInfo* GetLastGcInfo(gc_kind kind)
@@ -199,7 +206,11 @@ private:
 
     int64_t m_gcCount[3];
     int64_t m_gcStartMillis[3];
-    int64_t m_gcDurationMillis[3];
+    int64_t m_gcDurationUsecs[3];
+    int64_t m_gcAccmulatingDurationUsecs[3];
+
+    int64_t m_totalTimeAtLastGcEnd;
+    int m_percentTimeInGcSinceLastGc;
 
     size_t m_gen1Budget;
     size_t m_totalLimit;
@@ -240,6 +251,8 @@ private:
     LastRecordedGcInfo m_lastEphemeralGcInfo;
     LastRecordedGcInfo m_lastTenuredGcInfo;
     LastRecordedGcInfo* m_CurrentGcInfo;
+
+    size_t m_startMillis;
 
 private:
     size_t Gen1RegionCount();
@@ -352,6 +365,8 @@ private:
     bool DrainDeferredSweepQueueConcurrent(int64_t deadline = 0);
     void DrainDeferredSweepQueueWorkerFn();
     void SweepAndReturnRegion(SatoriRegion* curRegion);
+
+    void UpdateGcCounters(int64_t blockingStart);
 
     void ASSERT_NO_WORK();
 };
