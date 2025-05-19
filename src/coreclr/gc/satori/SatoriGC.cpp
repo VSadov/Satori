@@ -443,6 +443,9 @@ size_t SatoriGC::GetLastGCStartTime(int generation)
     return m_heap->Recycler()->GetGcStartMillis(generation);
 }
 
+// This is used internally in some strange AddMemoryPressure heuristics.
+// I am not completely sure what we need to return here.
+// We will return the last pause time in msec. Although it may often be 0 in Satori.
 size_t SatoriGC::GetLastGCDuration(int generation)
 {
     return m_heap->Recycler()->GetGcDurationMillis(generation);
@@ -677,7 +680,8 @@ void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* tota
     *pinnedObjectCount = 0;
     *index = lastGcInfo->m_index;
     *generation = lastGcInfo->m_condemnedGeneration;
-    *pauseTimePct = 0;
+    // this is %% spent in STW from the moment of GC initialization, in wall-clock terms.
+    *pauseTimePct = lastGcInfo->m_pausePercentage;
     *isCompaction = lastGcInfo->m_compaction;
     *isConcurrent = lastGcInfo->m_concurrent;
     *genInfoRaw = 0;

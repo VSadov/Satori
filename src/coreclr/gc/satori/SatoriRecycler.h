@@ -42,6 +42,7 @@ struct LastRecordedGcInfo
 {
     size_t m_index;
     size_t m_pauseDurations[2];
+    uint32_t m_pausePercentage;
     uint8_t m_condemnedGeneration;
     bool m_compaction;
     bool m_concurrent;
@@ -205,10 +206,10 @@ private:
 
     int64_t m_gcCount[3];
     int64_t m_gcStartMillis[3];
-    int64_t m_gcDurationMillis[3];
-    int64_t m_gcAccmulatingDurationMillis[3];
+    int64_t m_gcDurationUsecs[3];
+    int64_t m_gcAccmulatingDurationUsecs[3];
 
-    int64_t m_totalTimeSinceLastGcEnd;
+    int64_t m_totalTimeAtLastGcEnd;
     int m_percentTimeInGcSinceLastGc;
 
     size_t m_gen1Budget;
@@ -250,6 +251,8 @@ private:
     LastRecordedGcInfo m_lastEphemeralGcInfo;
     LastRecordedGcInfo m_lastTenuredGcInfo;
     LastRecordedGcInfo* m_CurrentGcInfo;
+
+    size_t m_startMillis;
 
 private:
     size_t Gen1RegionCount();
