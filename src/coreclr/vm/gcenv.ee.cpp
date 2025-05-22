@@ -301,6 +301,7 @@ void GCToEEInterface::GcScanCurrentStackRoots(promote_func* fn, ScanContext* sc)
 #endif // FEATURE_EVENT_TRACE
     ScanStackRoots(pThread, fn, sc);
     ScanTailCallArgBufferRoots(pThread, fn, sc);
+    ScanThreadStaticRoots(pThread, fn, sc);
 #ifdef FEATURE_EVENT_TRACE
     sc->dwEtwRootKind = kEtwGCRootKindOther;
 #endif // FEATURE_EVENT_TRACE
