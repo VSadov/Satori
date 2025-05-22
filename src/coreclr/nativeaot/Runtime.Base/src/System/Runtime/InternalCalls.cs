@@ -270,7 +270,7 @@ namespace System.Runtime
         internal static extern void RhpSignalFinalizationComplete(uint fCount, int observedFullGcCount);
 
         [DllImport(Redhawk.BaseName)]
-        internal static extern object RhpGetNextFinalizableObject();
+        internal static extern unsafe void RhpGetNextFinalizableObject(void* pResult);
 
         [DllImport(Redhawk.BaseName)]
         internal static extern ulong RhpGetTickCount64();
