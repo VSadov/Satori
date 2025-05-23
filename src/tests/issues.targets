@@ -106,6 +106,9 @@
       <ExcludeList Include="$(XunitTestBinBase)/GC/API/Refresh/**">
         <Issue>Satori GC apis</Issue>
       </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/GetGeneration/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
       
       <ExcludeList Include="$(XunitTestBinBase)/JIT/Methodical/doublearray/**">
         <Issue>Satori GC apis, LOH expectations</Issue>
