@@ -722,7 +722,7 @@ LEAF_ENTRY RhpCheckedLockCmpXchg
 #endif
 
         mov    x17, x2
-\        casal  x2, x1, [x0]                  // exchange
+        casal  x2, x1, [x0]                  // exchange
         mov    x0, x2                        // x0 = result
         cmp    x2, x17
         bne    LOCAL_LABEL(Exit_Cmp_XchgNoCards)
