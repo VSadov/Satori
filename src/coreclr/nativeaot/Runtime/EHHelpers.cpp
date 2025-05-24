@@ -276,6 +276,14 @@ EXTERN_C int32_t __stdcall RhpPInvokeExceptionGuard(PEXCEPTION_RECORD       pExc
 FCDECL2(void, RhpThrowHwEx, int exceptionCode, TADDR faultingIP);
 
 EXTERN_C CODE_LOCATION RhpAssignRefAVLocation;
+EXTERN_C CODE_LOCATION RhpAssignRefAVLocationNotHeap;
+EXTERN_C CODE_LOCATION RhpCheckedAssignRefAVLocation;
+EXTERN_C CODE_LOCATION RhpByRefAssignRefAVLocation1;
+
+#if !defined(HOST_ARM64)
+EXTERN_C CODE_LOCATION RhpByRefAssignRefAVLocation2;
+#endif
+
 #if defined(HOST_X86)
 EXTERN_C CODE_LOCATION RhpAssignRefEAXAVLocation;
 EXTERN_C CODE_LOCATION RhpAssignRefECXAVLocation;
@@ -299,17 +307,18 @@ EXTERN_C CODE_LOCATION RhpByRefAssignRefAVLocation1;
 EXTERN_C CODE_LOCATION RhpByRefAssignRefAVLocation2;
 #endif
 
-#if defined(HOST_ARM64) && !defined(LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT)
-EXTERN_C CODE_LOCATION RhpCheckedLockCmpXchgAVLocation2;
-EXTERN_C CODE_LOCATION RhpCheckedXchgAVLocation2;
-#endif
-
 static bool InWriteBarrierHelper(uintptr_t faultingIP)
 {
 #ifndef USE_PORTABLE_HELPERS
     static uintptr_t writeBarrierAVLocations[] =
     {
         (uintptr_t)&RhpAssignRefAVLocation,
+        (uintptr_t)&RhpAssignRefAVLocationNotHeap,
+        (uintptr_t)&RhpCheckedAssignRefAVLocation,
+        (uintptr_t)&RhpByRefAssignRefAVLocation1,
+#if !defined(HOST_ARM64)
+        (uintptr_t)&RhpByRefAssignRefAVLocation2,
+#endif
 #if defined(HOST_X86)
         (uintptr_t)&RhpAssignRefEAXAVLocation,
         (uintptr_t)&RhpAssignRefECXAVLocation,

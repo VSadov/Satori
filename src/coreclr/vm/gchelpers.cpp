@@ -1438,7 +1438,7 @@ bool IsInHeapSatori(void* ptr)
 void CheckEscapeSatori(Object** dst, Object* ref)
 {
     SatoriObject* obj = (SatoriObject*)ref;
-    // TODO: no nullcheck when external
+    // TODO: Satori no nullcheck when external
     if (!obj || obj->IsExternal())
         return;
 
