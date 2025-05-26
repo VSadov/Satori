@@ -32,6 +32,8 @@ namespace Internal.Runtime
 
         private object? TryAllocateObject(MethodTable* type, nuint objectSize)
         {
+            // TODO: VS Satori can allocate immortal objects naturally. Use that instead. (see: AllocateImmortalObject)
+
             HalfBakedObject* obj = null;
 
             using (m_Crst.EnterScope())

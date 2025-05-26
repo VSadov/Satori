@@ -127,7 +127,11 @@ public:
 
     static bool UseThreadAllocationContexts()
     {
+#ifdef FEATURE_SATORI_GC
+        return true;
+#else
         return s_useThreadAllocationContexts;
+#endif
     }
 
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP

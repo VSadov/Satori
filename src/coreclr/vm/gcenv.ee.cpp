@@ -305,6 +305,7 @@ void GCToEEInterface::GcScanCurrentStackRoots(promote_func* fn, ScanContext* sc)
 #ifdef FEATURE_EVENT_TRACE
     sc->dwEtwRootKind = kEtwGCRootKindOther;
 #endif // FEATURE_EVENT_TRACE
+
      STRESS_LOG2(LF_GC | LF_GCROOTS, LL_INFO100, "Ending scan of Thread %p ID = 0x%x }\n", pThread, pThread->GetThreadId());
 }
 
