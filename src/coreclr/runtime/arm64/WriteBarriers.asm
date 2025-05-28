@@ -686,7 +686,6 @@ RecordEscape
 
 JustAssign_Cmp_Xchg
         ;; skip setting cards
-    ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocationNotHeap
         mov     x10, #0
 
 AssignAndMarkCards_Cmp_Xchg
@@ -699,7 +698,6 @@ AssignAndMarkCards_Cmp_Xchg
 #endif
 
         mov    x17, x2
-    ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         casal  x2, x1, [x0]                  ;; exchange
         mov    x0, x2                        ;; x0 = result
         cmp    x2, x17
@@ -712,7 +710,6 @@ NoUpdate_Cmp_Xchg
         ret     lr
 
 TryAgain1_Cmp_Xchg
-    ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation2
         ldaxr   x0, [x14]
         cmp     x0, x2
         bne     NoUpdate_Cmp_Xchg
@@ -896,7 +893,6 @@ RecordEscape_Cmp_Xchg
 
 JustAssign_Xchg
 TryAgain_Xchg
-    ALTERNATE_ENTRY RhpCheckedXchgAVLocationNotHeap
    ;; TODO: VS use LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT instead
         ldaxr   x17, [x0]
         stlxr   w12, x1, [x0]
@@ -908,8 +904,6 @@ TryAgain_Xchg
 AssignAndMarkCards_Xchg
         mov    x14, x0                        ;; x14 = dst
 TryAgain1_Xchg
-    ALTERNATE_ENTRY RhpCheckedXchgAVLocation
-    ALTERNATE_ENTRY RhpCheckedXchgAVLocation2
         ldaxr   x17, [x0]
         stlxr   w12, x1, [x0]
         cbnz    w12, TryAgain1_Xchg

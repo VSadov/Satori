@@ -282,7 +282,7 @@ inline void SatoriObject::ForEachObjectRef(F lambda, bool includeCollectibleAllo
         lambda((SatoriObject**)&loaderAllocator);
     }
 
-    if (!mt->ContainsPointers())
+    if (!mt->ContainsGCPointers())
     {
         return;
     }
@@ -354,7 +354,7 @@ inline void SatoriObject::ForEachObjectRef(F lambda, size_t size, bool includeCo
         lambda((SatoriObject**)&loaderAllocator);
     }
 
-    if (!mt->ContainsPointers())
+    if (!mt->ContainsGCPointers())
     {
         return;
     }
@@ -421,7 +421,7 @@ inline void SatoriObject::ForEachObjectRef(F lambda, size_t start, size_t end)
         lambda((SatoriObject**)&loaderAllocator);
     }
 
-    if (!mt->ContainsPointers())
+    if (!mt->ContainsGCPointers())
     {
         return;
     }

@@ -91,6 +91,47 @@ void GCToEEInterface::BeforeGcScanRoots(int condemned, bool is_bgc, bool is_conc
 #endif
 }
 
+/*
+ * Scan current stack
+ */
+
+void GCToEEInterface::GcScanCurrentStackRoots(ScanFunc* fn, ScanContext* sc)
+{
+    Thread* pThread = ThreadStore::GetCurrentThread();
+    if (pThread->IsGCSpecial())
+        return;
+
+    InlinedThreadStaticRoot* pRoot = pThread->GetInlinedThreadStaticList();
+    while (pRoot != NULL)
+    {
+        STRESS_LOG2(LF_GC | LF_GCROOTS, LL_INFO100, "{ Scanning Thread's %p inline thread statics root %p. \n", pThread, pRoot);
+        EnumGcRef(&pRoot->m_threadStaticsBase, GCRK_Object, fn, sc);
+        pRoot = pRoot->m_next;
+    }
+
+    STRESS_LOG1(LF_GC | LF_GCROOTS, LL_INFO100, "{ Scanning Thread's %p thread statics root. \n", pThread);
+    EnumGcRef(pThread->GetThreadStaticStorage(), GCRK_Object, fn, sc);
+
+    STRESS_LOG1(LF_GC | LF_GCROOTS, LL_INFO100, "{ Starting scan of Thread %p\n", pThread);
+    sc->thread_under_crawl = pThread;
+#if defined(FEATURE_EVENT_TRACE) && !defined(DACCESS_COMPILE)
+    sc->dwEtwRootKind = kEtwGCRootKindStack;
+#endif
+
+    pThread->GcScanRoots(fn, sc);
+
+#if defined(FEATURE_EVENT_TRACE) && !defined(DACCESS_COMPILE)
+    sc->dwEtwRootKind = kEtwGCRootKindOther;
+#endif
+    STRESS_LOG1(LF_GC | LF_GCROOTS, LL_INFO100, "Ending scan of Thread %p }\n", pThread);
+
+    sc->thread_under_crawl = NULL;
+}
+
+/*
+ * Scan all stack roots
+ */
+
 void GCToEEInterface::GcScanRoots(ScanFunc* fn, int condemned, int max_gen, ScanContext* sc)
 {
     // STRESS_LOG1(LF_GCROOTS, LL_INFO10, "GCScan: Phase = %s\n", sc->promotion ? "promote" : "relocate");
@@ -162,6 +203,20 @@ void GCToEEInterface::AfterGcScanRoots(int condemned, int /*max_gen*/, ScanConte
         ObjCMarshalNative::AfterRefCountedHandleCallbacks();
     }
 #endif
+}
+
+void GCToEEInterface::GcPoll()
+{
+    if (ThreadStore::IsTrapThreadsRequested())
+    {
+        Thread* pThread = ThreadStore::GetCurrentThread();
+        assert(!pThread->IsGCSpecial());
+        assert(pThread->IsCurrentThreadInCooperativeMode());
+        assert(pThread != ThreadStore::GetSuspendingThread());
+
+        pThread->EnablePreemptiveMode();
+        pThread->DisablePreemptiveMode();
+    }
 }
 
 void GCToEEInterface::GcDone(int condemned)
@@ -569,35 +624,6 @@ struct ThreadStubArguments
     CLREventStatic m_ThreadStartedEvent;
     const char* m_name;
 };
-
-static bool CreateUnsuspendableThread(void (*threadStart)(void*), void* arg, const char* name)
-{
-    UNREFERENCED_PARAMETER(name);
-
-    ThreadStubArguments* threadStubArgs = new (nothrow) ThreadStubArguments();
-    if (!threadStubArgs)
-        return false;
-
-    threadStubArgs->m_pRealStartRoutine = threadStart;
-    threadStubArgs->m_pRealContext = arg;
-
-    // Helper used to wrap the start routine of background GC threads so we can do things like initialize the
-    // Redhawk thread state which requires running in the new thread's context.
-    auto threadStub = [](void* argument) -> DWORD
-    {
-        ThreadStore::RawGetCurrentThread()->SetGCSpecial();
-
-        ThreadStubArguments* pStartContext = (ThreadStubArguments*)argument;
-        auto realStartRoutine = pStartContext->m_pRealStartRoutine;
-        void* realContext = pStartContext->m_pRealContext;
-        delete pStartContext;
-
-        STRESS_LOG_RESERVE_MEM(GC_STRESSLOG_MULTIPLY);
-
-        realStartRoutine(realContext);
-
-        return 0;
-    };
 
 static bool CreateNonSuspendableThread(void (*threadStart)(void*), void* arg, const char* name)
 {

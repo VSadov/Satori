@@ -603,12 +603,10 @@ endif
         jb      RecordEscape            ; target is exposed. record an escape.
 
     JustAssign:
-ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocationNotHeap
         lock cmpxchg    [rcx], rdx      ; no card marking, src is not a heap object
         ret
 
     AssignAndMarkCards:
-ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         lock cmpxchg    [rcx], rdx
         jne             Exit
 
@@ -766,12 +764,10 @@ endif
         jb      RecordEscape            ; target is exposed. record an escape.
 
     JustAssign:
-ALTERNATE_ENTRY RhpCheckedXchgAVLocationNotHeap
         xchg    [rcx], rax              ; no card marking, src is not a heap object
         ret
 
     AssignAndMarkCards:
-ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         xchg    [rcx], rax
 
     ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 

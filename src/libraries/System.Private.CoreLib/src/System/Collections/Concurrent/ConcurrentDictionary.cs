@@ -345,18 +345,18 @@ namespace System.Collections.Concurrent
                     throw new ArgumentException(SR.ConcurrentDictionary_SourceContainsDuplicateKeys);
                 }
 
-                if (typeof(TKey) == typeof(nuint))
+        private void InitializeFromCollection(IEnumerable<KeyValuePair<TKey, TValue>> collection)
+        {
+            foreach (KeyValuePair<TKey, TValue> pair in collection)
+            {
+                if (pair.Key is null)
                 {
-                    if (comparer == null)
-                    {
-                        _table = Unsafe.As<DictionaryImpl<TKey, TValue>>(new DictionaryImplNuintNoComparer<TValue>(capacity, Unsafe.As<ConcurrentDictionary<nuint, TValue>>(this)));
-                    }
-                    else
-                    {
-                        _table = Unsafe.As<DictionaryImpl<TKey, TValue>>(new DictionaryImplNuint<TValue>(capacity, Unsafe.As<ConcurrentDictionary<nuint, TValue>>(this)));
-                        _table._keyComparer = comparer;
-                    }
-                    return;
+                    ThrowHelper.ThrowKeyNullException();
+                }
+
+                if (!TryAddInternal(_tables, pair.Key, null, pair.Value, updateIfExists: false, acquireLock: false, out _))
+                {
+                    throw new ArgumentException(SR.ConcurrentDictionary_SourceContainsDuplicateKeys);
                 }
             }
 

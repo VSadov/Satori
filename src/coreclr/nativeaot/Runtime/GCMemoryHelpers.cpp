@@ -74,3 +74,4 @@ FCIMPL3(void, RhBulkMoveWithWriteBarrier, uint8_t* pDest, uint8_t* pSrc, size_t 
     }
 #endif //FEATURE_SATORI_GC
 }
+FCIMPLEND

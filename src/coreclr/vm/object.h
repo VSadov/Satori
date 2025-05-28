@@ -156,8 +156,13 @@ class Object
     VOID SetMethodTableForUOHObject(MethodTable *pMT)
     {
         WRAPPER_NO_CONTRACT;
+#if FEATURE_SATORI_GC
+        // nothing extra needs to happen in Satori.
+        m_pMethTab = pMT;
+#else
         // This function must be used if the allocation occurs on a UOH heap, and the method table might be a collectible type
         ErectWriteBarrierForMT(&m_pMethTab, pMT);
+#endif
     }
 #endif //!DACCESS_COMPILE
 

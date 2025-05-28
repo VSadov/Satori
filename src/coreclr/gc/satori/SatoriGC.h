@@ -165,6 +165,10 @@ public:
 
     // Inherited via IGCHeapInternal
     uint64_t GetGenerationBudget(int generation) override;
+
+    // Inherited via IGCHeapInternal
+    size_t GetLOHThreshold() override;
+    void DiagWalkHeapWithACHandling(walk_fn fn, void *context, int gen_number, bool walk_large_object_heap_p) override;
 };
 
 #endif

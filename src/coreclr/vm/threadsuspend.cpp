@@ -3178,40 +3178,6 @@ COR_PRF_SUSPEND_REASON GCSuspendReasonToProfSuspendReason(ThreadSuspend::SUSPEND
 }
 #endif // PROFILING_SUPPORTED
 
-// exponential spinwait with an approximate time limit for waiting in microsecond range.
-void SpinWait(int usecLimit)
-{
-    LARGE_INTEGER li;
-    QueryPerformanceCounter(&li);
-    int64_t startTicks = li.QuadPart;
-
-    QueryPerformanceFrequency(&li);
-    int64_t ticksPerSecond = li.QuadPart;
-    int64_t endTicks = startTicks + (usecLimit * ticksPerSecond) / 1000000;
-
-#ifdef TARGET_UNIX
-    if (usecLimit > 10)
-    {
-            PAL_nanosleep(usecLimit * 1000);
-    }
-#endif // TARGET_UNIX
-
-    for (int i = 0; i < 30; i++)
-    {
-        QueryPerformanceCounter(&li);
-        int64_t currentTicks = li.QuadPart;
-        if (currentTicks > endTicks)
-        {
-            break;
-        }
-
-        for (int j = 0; j < (1 << i); j++)
-        {
-            System_YieldProcessor();
-        }
-    }
-}
-
 //************************************************************************************
 //
 // SuspendRuntime is responsible for ensuring that all managed threads reach a

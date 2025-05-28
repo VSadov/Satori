@@ -308,7 +308,7 @@ bool GCEvent::CreateOSManualEventNoThrow(bool initialState)
 }
 
 #define _INC_PTHREADS
-#include "..\satori\SatoriGate.h"
+#include "../satori/SatoriGate.h"
 
 #if defined(TARGET_LINUX)
 

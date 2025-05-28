@@ -295,9 +295,11 @@ void GCToEEInterface::GcScanCurrentStackRoots(promote_func* fn, ScanContext* sc)
 #endif // FEATURE_EVENT_TRACE
     ScanStackRoots(pThread, fn, sc);
     ScanTailCallArgBufferRoots(pThread, fn, sc);
+    ScanThreadStaticRoots(pThread, fn, sc);
 #ifdef FEATURE_EVENT_TRACE
     sc->dwEtwRootKind = kEtwGCRootKindOther;
 #endif // FEATURE_EVENT_TRACE
+
      STRESS_LOG2(LF_GC | LF_GCROOTS, LL_INFO100, "Ending scan of Thread %p ID = 0x%x }\n", pThread, pThread->GetThreadId());
 }
 
@@ -575,7 +577,7 @@ void GCToEEInterface::GcPoll()
     }
     CONTRACTL_END;
 
-    if (g_TrapReturningThreads.LoadWithoutBarrier())
+    if (g_TrapReturningThreads)
     {
         Thread* pThread = ::GetThread();
         _ASSERTE(!ThreadStore::HoldingThreadStore(pThread));

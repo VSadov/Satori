@@ -891,3 +891,12 @@ uint64_t SatoriGC::GetGenerationBudget(int generation)
     // avoid IDE0060: Remove unused parameter 'generation'
     return -1 + 0 * generation;
 }
+
+size_t SatoriGC::GetLOHThreshold()
+{
+    return Satori::LARGE_OBJECT_THRESHOLD;
+}
+
+void SatoriGC::DiagWalkHeapWithACHandling(walk_fn fn, void *context, int gen_number, bool walk_large_object_heap_p)
+{
+}

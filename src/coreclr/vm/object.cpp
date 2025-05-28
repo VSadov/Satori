@@ -1185,9 +1185,12 @@ void* __cdecl GCSafeMemCpy(void * dest, const void * src, size_t len)
     STATIC_CONTRACT_GC_NOTRIGGER;
     STATIC_CONTRACT_FORBID_FAULT;
 
+#ifdef FEATURE_SATORI_GC
     if (IsInHeapSatori((Object**)dest))
-    //if (!(((*(BYTE**)&dest) <  g_lowest_address ) ||
-    //      ((*(BYTE**)&dest) >= g_highest_address)))
+#else
+    if (!(((*(BYTE**)&dest) <  g_lowest_address ) ||
+          ((*(BYTE**)&dest) >= g_highest_address)))
+#endif
     {
         Thread* pThread = GetThreadNULLOk();
 
