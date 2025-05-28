@@ -1326,11 +1326,13 @@ bool Ref_ScanDependentHandlesForPromotion(DhContext *pDhContext)
                 if (walk->pBuckets[i] != NULL)
                 {
                     int uCPUindex = getSlotNumber(pDhContext->m_pScanContext);
-                    // int uCPUlimit = getNumberOfSlots();
-                    // assert(uCPUlimit > 0);
-                    int uCPUstep = getThreadCount(pDhContext->m_pScanContext);
                     HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                    // for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#if !defined(FEATURE_SATORI_GC)
+                    int uCPUlimit = getNumberOfSlots();
+                    assert(uCPUlimit > 0);
+                    int uCPUstep = getThreadCount(pDhContext->m_pScanContext);
+                    for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                     {
                         HHANDLETABLE hTable = pTable[uCPUindex];
                         if (hTable)
@@ -1411,11 +1413,13 @@ void Ref_ScanWeakInteriorPointersForRelocation(uint32_t condemned, uint32_t maxg
             if (walk->pBuckets[i] != NULL)
             {
                 int uCPUindex = getSlotNumber(sc);
+                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
+#if !defined(FEATURE_SATORI_GC)
                 int uCPUlimit = getNumberOfSlots();
                 assert(uCPUlimit > 0);
                 int uCPUstep = getThreadCount(sc);
-                HHANDLETABLE* pTable = walk->pBuckets[i]->pTable;
-                for ( ; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+                for (; uCPUindex < uCPUlimit; uCPUindex += uCPUstep)
+#endif
                 {
                     HHANDLETABLE hTable = pTable[uCPUindex];
                     if (hTable)

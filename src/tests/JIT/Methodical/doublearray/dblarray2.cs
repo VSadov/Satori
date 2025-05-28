@@ -284,6 +284,7 @@ public class DblArray
     [SkipOnCoreClr("This test is not compatible with GCStress.", RuntimeTestModes.AnyGCStress)]
     [SkipOnMono("Needs triage")]
     [ActiveIssue("https://github.com/dotnet/runtime/issues/101284", typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsNativeAot))]
+    [ActiveIssue("Satori: tests implementation details")]
     public static int TestEntryPoint()
     {
         if (RuntimeInformation.ProcessArchitecture == Architecture.X86)

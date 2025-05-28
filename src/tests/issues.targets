@@ -100,7 +100,16 @@
       <ExcludeList Include="$(XunitTestBinBase)/GC/API/NoGCRegion/**">
         <Issue>Satori GC apis</Issue>
       </ExcludeList>
-
+      <ExcludeList Include="$(XunitTestBinBase)/baseservices/RuntimeConfiguration/TestConfigTester/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/Refresh/**">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/GC/API/GetGeneration/*">
+        <Issue>Satori GC apis</Issue>
+      </ExcludeList>
+      
       <ExcludeList Include="$(XunitTestBinBase)/JIT/Methodical/doublearray/**">
         <Issue>Satori GC apis, LOH expectations</Issue>
       </ExcludeList>
@@ -130,8 +139,13 @@
       <ExcludeList Include="$(XunitTestBinBase)/profiler/gc/gcallocate/*">
         <Issue>Satori profiler tracing</Issue>
       </ExcludeList>
-
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/gcheapenumeration/**">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
       <ExcludeList Include="$(XunitTestBinBase)/profiler/handles/handles/*">
+        <Issue>Satori profiler tracing</Issue>
+      </ExcludeList>
+      <ExcludeList Include="$(XunitTestBinBase)/profiler/unittest/enumthreads/*">
         <Issue>Satori profiler tracing</Issue>
       </ExcludeList>
 
