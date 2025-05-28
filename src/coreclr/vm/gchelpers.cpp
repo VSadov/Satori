@@ -1350,7 +1350,7 @@ Object* AllocateImmortalObject(MethodTable* pMT, size_t objectSize)
     SetTypeHandleOnThreadForAlloc(TypeHandle(pMT));
 
     GC_ALLOC_FLAGS flags = GC_ALLOC_IMMORTAL;
-    if (pMT->ContainsPointers())
+    if (pMT->ContainsGCPointers())
         flags |= GC_ALLOC_CONTAINS_REF;
 
 #ifdef FEATURE_64BIT_ALIGNMENT
@@ -1663,7 +1663,7 @@ bool IsInHeapSatori(void* ptr)
 void CheckEscapeSatori(Object** dst, Object* ref)
 {
     SatoriObject* obj = (SatoriObject*)ref;
-    // TODO: no nullcheck when external
+    // TODO: Satori no nullcheck needed when external? (null is susbset of external)
     if (!obj || obj->IsExternal())
         return;
 
@@ -1761,14 +1761,13 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref)
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
 
+#if FEATURE_SATORI_GC
+    // this whole thing is unnecessary in Satori
+    __UNREACHABLE();
+#else
+
     *dst = ref;
 
-#if FEATURE_SATORI_GC
-
-    // Satori large objects are allocated in either gen1 or gen2.
-    // PublishObject will sort this out and mark cards as needed.
-
-#else
 #ifdef WRITE_BARRIER_CHECK
     updateGCShadow((Object **)dst, (Object *)ref);     // support debugging write barrier, updateGCShadow only cares that these are pointers
 #endif

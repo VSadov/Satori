@@ -53,7 +53,7 @@ public:
 #endif
 #else
         // Satori does not mess up MT pointers.
-        { return get_EEType(); }
+        { return GetMethodTable(); }
 #endif
 
     ObjHeader * GetHeader() { return dac_cast<DPTR(ObjHeader)>(dac_cast<TADDR>(this) - SYNC_BLOCK_SKEW); }

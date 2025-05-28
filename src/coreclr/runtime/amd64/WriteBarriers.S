@@ -623,12 +623,10 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         jb      RecordEscape_CmpXchg            // target is exposed. record an escape.
 
     JustAssign_CmpXchg:
-ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocationNotHeap
         lock cmpxchg    [rdi], rsi     // no card marking, src is not a heap object
         ret
 
     AssignAndMarkCards_CmpXchg:
-ALTERNATE_ENTRY RhpCheckedLockCmpXchgAVLocation
         lock cmpxchg    [rdi], rsi
         jne             Exit_CmpXchg
 
@@ -793,12 +791,10 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         jb      RecordEscape_Xchg            // target is exposed. record an escape.
 
     JustAssign_Xchg:
-ALTERNATE_ENTRY RhpCheckedXchgAVLocationNotHeap
         xchg    [rdi], rax              // no card marking, src is not a heap object
         ret
 
     AssignAndMarkCards_Xchg:
-ALTERNATE_ENTRY RhpCheckedXchgAVLocation
         xchg    [rdi], rax
 
         // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
