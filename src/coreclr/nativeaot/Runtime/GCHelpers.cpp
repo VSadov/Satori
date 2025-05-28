@@ -52,6 +52,9 @@ bool InitializeGC()
     g_heap_type = GC_HEAP_WKS;
 #endif
 
+    //TODO: Satori
+    g_heap_type = GC_HEAP_SATORI;
+
     if (g_pRhConfig->GetgcConservative())
     {
         GetRuntimeInstance()->EnableConservativeStackReporting();
