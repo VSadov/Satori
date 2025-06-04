@@ -508,17 +508,28 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         mov  r9, rsp
         and  rsp, -16
 
-        ; save rsp, rcx, rdx, r8 and have enough stack for the callee
+        ; save rsp, rcx, rdx, r8
         push r9
         push rcx
         push rdx
         push r8
+
+        ; also save xmm0, in case it is used for stack clearing, as JIT_ByRefWriteBarrier should not trash xmm0
+        ; Hopefully EscapeFn cannot corrupt other xmm regs, since there is no float math or vectorizable code in there.
+        sub     rsp, 16
+        movdqu  [rsp], xmm0
+
+        ; shadow space
         sub  rsp, 20h
 
         ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         call    qword ptr [r8 + 8]
 
         add     rsp, 20h
+
+        movdqu  xmm0, [rsp]
+        add     rsp, 16
+
         pop     r8
         pop     rdx
         pop     rcx
@@ -528,33 +539,51 @@ LEAF_END RhpAssignRef, _TEXT
 
 ;;
 ;; RhpByRefAssignRef simulates movs instruction for object references.
-;;
-;; On entry:
-;;      rdi: address of ref-field (assigned to)
-;;      rsi: address of the data (source)
-;;
-;; On exit:
-;;      rdi, rsi are incremented by 8,
-;;      rcx, r8, r9, r11: trashed
-;;
+;; Entry:
+;;   RDI - address of ref-field (assigned to)
+;;   RSI - address of the data  (source)
+;; Exit:
+;;   RCX is trashed
+;;   RAX is trashed
+;;   RDI, RSI are incremented by SIZEOF(LPVOID)
 LEAF_ENTRY RhpByRefAssignRef, _TEXT
-    mov     rcx, rdi
-ALTERNATE_ENTRY RhpByRefAssignRefAVLocation1
-    mov     rdx, [rsi]
-    add     rdi, 8h
-    add     rsi, 8h
-
     ; See if dst is in GCHeap
-    mov     rax, [g_card_bundle_table] ; fetch the page byte map
-    mov     r8,  rcx
-    shr     r8,  30                    ; dst page index
-    cmp     byte ptr [rax + r8], 0
-    jne     CheckedEntry
+        mov     rax, [g_card_bundle_table]  ; fetch the page byte map
+        mov     rcx,  rdi
+        shr     rcx,  30                    ; dst page index
+        cmp     byte ptr [rax + rcx], 0
+        jne     InHeap
 
-    NotInHeap:
+ALTERNATE_ENTRY RhpByRefAssignRefAVLocation1
+        mov     rcx, [rsi]
 ALTERNATE_ENTRY RhpByRefAssignRefAVLocation2
-    mov     [rcx], rdx
-    ret
+        mov     [rdi], rcx
+        add     rdi, 8h
+        add     rsi, 8h
+        ret
+
+    InHeap:
+
+        ; JIT_WriteBarrier may trash these registers 
+        push    rdx
+        push    r8
+        push    r9
+        push    r10
+        push    r11
+
+        mov     rcx, rdi
+        mov     rdx, [rsi]
+        add     rdi, 8h
+        add     rsi, 8h
+
+        call    CheckedEntry
+
+        pop     r11
+        pop     r10
+        pop     r9
+        pop     r8
+        pop     rdx
+        ret
 LEAF_END RhpByRefAssignRef, _TEXT
 
 LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
