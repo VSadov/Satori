@@ -503,8 +503,16 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         push rdx
         push r10
 
+        // also save xmm0, in case it is used for stack clearing, as JIT_ByRefWriteBarrier should not trash xmm0
+        // Hopefully EscapeFn cannot corrupt other xmm regs, since there is no float math or vectorizable code in there.
+        sub     rsp, 16
+        movdqu  [rsp], xmm0
+
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         call    qword ptr [rdx + 8]
+
+        movdqu  xmm0, [rsp]
+        add     rsp, 16
 
         pop     r10
         pop     rdx
@@ -520,29 +528,43 @@ LEAF_END_MARKED JIT_WriteBarrier, _TEXT
 // Entry:
 //   RDI - address of ref-field (assigned to)
 //   RSI - address of the data  (source)
-//   Note: RyuJIT assumes that all volatile registers can be trashed by 
-//   the CORINFO_HELP_ASSIGN_BYREF helper (i.e. JIT_ByRefWriteBarrier)
-//   except RDI and RSI. This helper uses and defines RDI and RSI, so
-//   they remain as live GC refs or byrefs, and are not killed.
 // Exit:
+//   RCX is trashed
+//   RAX is trashed
 //   RDI, RSI are incremented by SIZEOF(LPVOID)
 LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
+     // See if dst is in GCHeap
+        PREPARE_EXTERNAL_VAR g_card_bundle_table, rax   // fetch the page byte map
+        mov     rcx,  rdi
+        shr     rcx,  30                    // dst page index
+        cmp     byte ptr [rax + rcx], 0
+        jne     InHeap
+
+        mov     rcx, [rsi]
+        mov     [rdi], rcx
+        add     rdi, 8
+        add     rsi, 8
+        ret
+
+    InHeap:
+        // JIT_WriteBarrier may trash these registers 
+        push    rdx
+        push    r8
+        push    r9
+        push    r10
+        push    r11
+
+        // save preadjusted rsi
         lea     r10, [rsi + 8]
         mov     rsi, [rsi]
 
-     // See if dst is in GCHeap
-        PREPARE_EXTERNAL_VAR g_card_bundle_table, rax   // fetch the page byte map
-        mov     rax, [rax]
+        call    CheckedEntry
 
-        mov     r8, rdi
-        shr     r8, 30                                  // dst page index
-        cmp     byte ptr [rax + r8], 0
-        jne     C_FUNC(CheckedEntry)
-
-    NotInHeap_ByRefWriteBarrier:
-        mov     [rdi], rsi
-        add     rdi, 8
-        mov     rsi, r10
+        pop     r11
+        pop     r10
+        pop     r9
+        pop     r8
+        pop     rdx
         ret
 LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
 
