@@ -396,12 +396,17 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         stp     x12,x13, [sp, 16 * 7]
         stp     x14,x15, [sp, 16 * 8]
 
+        ;; save Q0 just in case c++ code uses it to clear stack
+        str     q0, [sp, #-16]!
+
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         // mov  x0, x14  EscapeFn does not use dst, it is just to avoid arg shuffle on x64
         mov  x1, x15
         mov  x2, x16                       // source region
         ldr  x12, [x16, #8]                 // EscapeFn address
         blr  x12
+
+        ldr     q0, [sp], #16
 
         ldp     x0, x1,  [sp, 16 * 1]
         ldp     x2, x3,  [sp, 16 * 2]
