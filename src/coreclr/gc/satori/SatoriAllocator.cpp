@@ -321,12 +321,22 @@ const size_t minSharedAllocDelay = 128;
 
 SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
-
-// tryAgain:
-    if (!context->RegularRegion())
+    // when allocations cross certain thresholds, check if GC should start or help is needed.
+    size_t expectedAlloc = max(size, SatoriUtil::MinZeroInitSize());
+    size_t change = (context->alloc_bytes ^ (context->alloc_bytes + expectedAlloc));
+    if (change >= Satori::REGION_SIZE_GRANULARITY)
     {
         m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
+    }
+    else if (change >= Satori::PACE_BUDGET)
+    {
+        m_heap->Recycler()->HelpOnce();
+    }
 
+// tryAgain:
+
+    if (!context->RegularRegion())
+    {
         SatoriObject* freeObj = context->alloc_ptr != 0 ? context->FinishAllocFromShared() : nullptr;
 
         size_t usecNow = m_heap->Recycler()->GetNowUsecs();
@@ -346,18 +356,6 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 
                 return AllocRegularShared(context, size, flags);
             }
-        }
-    }
-    else
-    {
-        size_t expectedAlloc = max(size, SatoriUtil::MinZeroInitSize());
-        if ((context->alloc_bytes ^ (context->alloc_bytes + expectedAlloc)) >= Satori::REGION_SIZE_GRANULARITY)
-        {
-            m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
-        }
-        else
-        {
-            m_heap->Recycler()->HelpOnce();
         }
     }
 
@@ -678,27 +676,27 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
         return AllocHuge(context, size, flags);
     }
 
+    // when allocations cross certain thresholds, check if GC should start or help is needed.
+    size_t expectedAlloc = size;
+    size_t change = (context->alloc_bytes_uoh ^ (context->alloc_bytes_uoh + expectedAlloc));
+    if (change >= Satori::REGION_SIZE_GRANULARITY)
+    {
+        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_loh);
+    }
+    else if (change >= Satori::PACE_BUDGET)
+    {
+        m_heap->Recycler()->HelpOnce();
+    }
+
 tryAgain:
+
     if (!context->LargeRegion() &&
         size < Satori::REGION_SIZE_GRANULARITY / 2)
     {
-        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_loh);
-
         //m_largeAllocLock.Enter();
         if (m_largeAllocLock.TryEnter())
         {
             return AllocLargeShared(context, size, flags);
-        }
-    }
-    else
-    {
-        if ((context->alloc_bytes_uoh ^ (context->alloc_bytes_uoh + size)) >= Satori::REGION_SIZE_GRANULARITY)
-        {
-            m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
-        }
-        else
-        {
-            m_heap->Recycler()->HelpOnce();
         }
     }
 
@@ -941,12 +939,22 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
         return AllocHuge(context, size, flags);
     }
 
-    m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
-
     // if can't get a lock, let AllocLarge handle this.
     if (!m_pinnedAllocLock.TryEnter())
     {
         return AllocLarge(context, size, flags);
+    }
+
+    // when allocations cross certain thresholds, check if GC should start or help is needed.
+    size_t expectedAlloc = size;
+    size_t change = (context->alloc_bytes_uoh ^ (context->alloc_bytes_uoh + expectedAlloc));
+    if (change >= Satori::REGION_SIZE_GRANULARITY)
+    {
+        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
+    }
+    else if (change >= Satori::PACE_BUDGET)
+    {
+        m_heap->Recycler()->HelpOnce();
     }
 
     SatoriRegion* region = m_pinnedRegion;
