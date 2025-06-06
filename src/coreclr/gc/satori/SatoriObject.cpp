@@ -87,6 +87,25 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
     return o;
 }
 
+SatoriObject* SatoriObject::GetFreeIfExists(size_t location, size_t size)
+{
+    _ASSERTE(location == ALIGN_UP(location, Satori::OBJECT_ALIGNMENT));
+    _ASSERTE(size == ALIGN_UP(size, Satori::OBJECT_ALIGNMENT));
+    _ASSERTE(size >= Satori::MIN_FREE_SIZE);
+    _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY);
+
+    SatoriObject* o = (SatoriObject*)location;
+    _ASSERTE(o->ContainingRegion()->m_used > (location + 2 * sizeof(size_t)));
+
+    // if matching values that FormatAsFree sets, then the obj is already there.
+    if (o->RawGetMethodTable() != s_emptyObjectMt || ((size_t*)o)[1] != size - Satori::MIN_FREE_SIZE)
+        return nullptr;
+
+    _ASSERTE(o->IsSyncBlockClean());
+    _ASSERTE(!o->IsMarked());
+    return o;
+}
+
 void SatoriObject::DirtyCardsForContent()
 {
     _ASSERTE(IsMarked());

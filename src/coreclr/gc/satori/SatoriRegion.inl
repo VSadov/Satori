@@ -291,8 +291,13 @@ bool SatoriRegion::Sweep()
             o = SkipUnmarkedAndClear(o);
             SatoriUtil::Prefetch(o);
             size_t skipped = o->Start() - lastMarkedEnd;
-            SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
-            SetIndicesForObject(free, o->Start());
+            SatoriObject* free = nullptr; //SatoriObject::GetFreeIfExists(lastMarkedEnd, skipped);
+            if (!free)
+            {
+                free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
+                SetIndicesForObject(free, o->Start());
+            }
+
             AddFreeSpace(free, skipped);
 
             if (o->Start() >= objLimit)

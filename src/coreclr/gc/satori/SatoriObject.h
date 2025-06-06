@@ -46,6 +46,7 @@ public:
     SatoriObject() = delete;
     ~SatoriObject() = delete;
 
+    static SatoriObject* GetFreeIfExists(size_t location, size_t size);
     static SatoriObject* FormatAsFree(size_t location, size_t size);
 
     SatoriRegion* ContainingRegion();
@@ -94,6 +95,7 @@ public:
     void SetLocalReloc(int32_t);
 
     void CleanSyncBlock();
+    bool IsSyncBlockClean();
 
     void Validate();
 

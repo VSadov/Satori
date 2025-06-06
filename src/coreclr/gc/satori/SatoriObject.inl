@@ -232,6 +232,11 @@ inline void SatoriObject::CleanSyncBlock()
     *((size_t*)this - 1) = 0;
 }
 
+inline bool SatoriObject::IsSyncBlockClean()
+{
+    return *((size_t*)this - 1) == 0;
+}
+
 inline int SatoriObject::GetMarkBitAndWord(size_t* bitmapIndex)
 {
     size_t start = Start();
