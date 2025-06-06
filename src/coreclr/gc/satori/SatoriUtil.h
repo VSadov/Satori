@@ -234,6 +234,12 @@ public:
         return (GCConfig::GetTrimmigGC());
     }
 
+    // DOTNET_gcPace
+    static bool IsPacingEnabled()
+    {
+        return (GCConfig::GetPacingGC());
+    }
+
     // DOTNET_GCLatencyMode
     static bool IsLowLatencyMode()
     {
