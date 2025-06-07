@@ -708,7 +708,8 @@ void SatoriRecycler::HelpOnce()
 
     if (m_gcState != GC_STATE_NONE)
     {
-        if (m_gcState == GC_STATE_CONCURRENT)
+        if (m_gcState == GC_STATE_CONCURRENT &&
+            (SatoriUtil::IsPacingEnabled() || m_activeWorkers == 0))
         {
             if (m_condemnedGeneration == 0)
             {
