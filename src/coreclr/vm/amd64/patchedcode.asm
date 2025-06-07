@@ -385,7 +385,7 @@ endif
         ; also save xmm0, in case it is used for stack clearing, as JIT_ByRefWriteBarrier should not trash xmm0
         ; Hopefully EscapeFn cannot corrupt other xmm regs, since there is no float math or vectorizable code in there.
         sub     rsp, 16
-        movdqu  [rsp], xmm0
+        movdqa  [rsp], xmm0
 
         ; shadow space
         sub  rsp, 20h
@@ -395,7 +395,7 @@ endif
 
         add     rsp, 20h
 
-        movdqu  xmm0, [rsp]
+        movdqa  xmm0, [rsp]
         add     rsp, 16
 
         pop     r8
