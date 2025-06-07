@@ -79,6 +79,9 @@ namespace Satori
     // if we have more than this much and work list is empty we can share half
     const static int SHARE_WORK_THRESHOLD = 8;
 
+    // if we allocated this much, check if help is needed
+    const static int PACE_BUDGET = REGION_SIZE_GRANULARITY / 16;
+
     // address bits set to track finalizable that needs to be scheduled to F-queue
     const static size_t FINALIZATION_PENDING = 1;
 
@@ -232,6 +235,12 @@ public:
     static bool IsTrimmingEnabled()
     {
         return (GCConfig::GetTrimmigGC());
+    }
+
+    // DOTNET_gcPace
+    static bool IsPacingEnabled()
+    {
+        return (GCConfig::GetPacingGC());
     }
 
     // DOTNET_GCLatencyMode

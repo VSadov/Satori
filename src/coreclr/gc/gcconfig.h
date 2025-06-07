@@ -153,6 +153,7 @@ public:
     BOOL_CONFIG  (Gen1GC,                    "gcGen1",                    NULL,                                true,               "Specifies whether Gen1 GC can be performed")                                             \
     BOOL_CONFIG  (UseTHP,                    "gcTHP",                     NULL,                                true,               "Specifies whether Transparent Huge Pages can be used. (Linux only)")                     \
     BOOL_CONFIG  (TrimmigGC,                 "gcTrim",                    NULL,                                true,               "Specifies whether background trimming is enabled")                                       \
+    BOOL_CONFIG  (PacingGC,                  "gcPace",                    NULL,                                true,               "Specifies whether allocation pacing is enabled")                                         \
     INT_CONFIG   (GCRate,                    "gcRate",                    NULL,                                -1,                 "Specifies soft min limit for time between GCs in milliseconds. -1 - default")            \
     INT_CONFIG   (GCSpin,                    "gcSpin",                    NULL,                                -1,                 "Spin")                                                                                   \
     INT_CONFIG   (Gen2Target,                "gcGen2Target",              NULL,                                -1,                 "Specifies target for Gen2 GC (in terms of % of the last known size)")                    \
