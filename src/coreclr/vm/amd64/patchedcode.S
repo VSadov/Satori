@@ -446,12 +446,12 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         // also save xmm0, in case it is used for stack clearing, as JIT_ByRefWriteBarrier should not trash xmm0
         // Hopefully EscapeFn cannot corrupt other xmm regs, since there is no float math or vectorizable code in there.
         sub     rsp, 16
-        movdqu  [rsp], xmm0
+        movdqa  [rsp], xmm0
 
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         call    qword ptr [rdx + 8]
 
-        movdqu  xmm0, [rsp]
+        movdqa  xmm0, [rsp]
         add     rsp, 16
 
         pop     r10
@@ -475,6 +475,7 @@ LEAF_END_MARKED JIT_WriteBarrier, _TEXT
 LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
      // See if dst is in GCHeap
         PREPARE_EXTERNAL_VAR g_card_bundle_table, rax   // fetch the page byte map
+        mov     rax, [rax]
         mov     rcx,  rdi
         shr     rcx,  30                    // dst page index
         cmp     byte ptr [rax + rcx], 0
