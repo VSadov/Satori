@@ -111,4 +111,21 @@ private:
     static void Initialize();
 };
 
+
+class SatoriFreeListObject : public SatoriObject
+{
+private:
+    uint32_t       m_Length;
+#if defined(HOST_64BIT)
+    uint32_t       m_uAlignpad;
+#endif // HOST_64BIT
+
+public:
+    SatoriFreeListObject() = delete;
+    ~SatoriFreeListObject() = delete;
+
+    SatoriFreeListObject* m_nextInFreeList;
+    size_t m_discardedLength;
+};
+
 #endif

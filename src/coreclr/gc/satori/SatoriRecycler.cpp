@@ -4251,6 +4251,12 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
     RecordOccupancy(curRegion->Generation(), curRegion->Occupancy());
     if (curRegion->Generation() >= 2)
     {
+        if (curRegion->Generation() == 2 &&
+            (curRegion->SweepsSinceLastAllocation() & 3) == 3)
+        {
+            curRegion->DiscardFreeMemory();
+        }
+
         PushToTenuredQueues(curRegion);
     }
     else

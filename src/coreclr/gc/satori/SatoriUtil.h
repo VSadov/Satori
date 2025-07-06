@@ -105,6 +105,10 @@ namespace Satori
     static const size_t MIN_FREELIST_SIZE = 1 << MIN_FREELIST_SIZE_BITS;
     static const int FREELIST_COUNT = Satori::REGION_BITS - MIN_FREELIST_SIZE_BITS;
 
+    static const int DISCARD_GRANULARITY_BITS = 16; // we free in 64K chunks
+    static const int DISCARD_GRANULARITY = 1 << DISCARD_GRANULARITY_BITS;
+    static const int DISCARDABLE_FREELIST_START = DISCARD_GRANULARITY_BITS - MIN_FREELIST_SIZE_BITS;
+
     // TUNING: more buckets means more aggressive demotion.
     static const int REUSABLE_BUCKETS = 6;
 

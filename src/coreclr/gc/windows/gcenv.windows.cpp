@@ -780,6 +780,9 @@ bool GCToOSInterface::VirtualDecommit(void* address, size_t size)
     return !!::VirtualFree(address, size, MEM_DECOMMIT);
 }
 
+typedef DWORD (WINAPI *DiscardVirtualMemoryProc)(void * address, size_t size);
+static DiscardVirtualMemoryProc g_discardVirtualMemory = nullptr;
+
 // Reset virtual memory range. Indicates that data in the memory range specified by address and size is no
 // longer of interest, but it should not be decommitted.
 // Parameters:
@@ -791,6 +794,20 @@ bool GCToOSInterface::VirtualDecommit(void* address, size_t size)
 //  unlocking was requested but the unlock failed.
 bool GCToOSInterface::VirtualReset(void * address, size_t size, bool unlock)
 {
+    //if (g_discardVirtualMemory == NULL)
+    //{
+    //    HMODULE hKernel32 = ::LoadLibraryExW(L"kernel32", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    //    g_discardVirtualMemory = (DiscardVirtualMemoryProc)GetProcAddress(hKernel32, "DiscardVirtualMemory");
+    //}
+
+    //if (g_discardVirtualMemory == nullptr)
+    //{
+    //    printf("######################   FAIL   \n");
+    //    return false;
+    //}
+
+    //return g_discardVirtualMemory(address, size);
+
     bool success = ::VirtualAlloc(address, size, MEM_RESET, PAGE_READWRITE) != nullptr;
     if (success && unlock)
     {
