@@ -1173,6 +1173,8 @@ bool SatoriRegion::ThreadLocalMark()
     // We expect high mortality rate of Gen0 objects.
     // If surviving set is large, then collection will be more expensive with diminishing results.
     // We will not continue with collection if we see that too much of thread local objects are alive.
+    // The criteria does not need to be very precise. (anything in the order of 1/8 and 1/16 seems
+    // to yield similar results)
     const size_t maxSurv = Satori::REGION_SIZE_GRANULARITY / 8;
 
     // Temporarily use m_occupancy to estimate surviving size.
