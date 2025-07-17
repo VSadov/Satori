@@ -895,6 +895,7 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
     if (!region->IsMarked(o))
     {
         region->SetMarked(o);
+        region->m_occupancy += o->Size();
         region->PushToMarkStackIfHasPointers(o);
     }
 
@@ -1081,7 +1082,11 @@ void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion*
 
 bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
 {
-    // TUNING: 1/4 is not too greedy? maybe 1/8 ?
+    if (m_escapedSize > Satori::MAX_ESCAPE_SIZE)
+    {
+        return false;
+    }
+
     if (allocBytes - m_allocBytesAtCollect < Satori::REGION_SIZE_GRANULARITY / 4)
     {
         // this is too soon. last collection did not buy us as much as we wanted
@@ -1095,17 +1100,26 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
     size_t count = Recycler()->IncrementGen0Count();
     FIRE_EVENT(GCStart_V2, (int)count, 0, gc_reason::reason_alloc_soh, gc_etw_type_ngc);
 
-    ThreadLocalMark();
-    ThreadLocalPlan();
-    ThreadLocalUpdatePointers();
-    ThreadLocalCompact();
+    bool shouldCollect = ThreadLocalMark();
+    if (shouldCollect)
+    {
+        ThreadLocalPlan();
+        ThreadLocalUpdatePointers();
+        ThreadLocalCompact();
+    }
+
+    // schedule pending finalizables if we have them
+    // must be after compaction, since pend may escape objects.
+    if (HasPendingFinalizables())
+    {
+        ThreadLocalPendFinalizables();
+    }
 
     FIRE_EVENT(GCEnd_V1, (int)count, 0);
-
-    return true;
+    return shouldCollect;
 }
 
-void SatoriRegion::ThreadLocalMark()
+bool SatoriRegion::ThreadLocalMark()
 {
     Verify();
 
@@ -1156,6 +1170,18 @@ void SatoriRegion::ThreadLocalMark()
     _ASSERTE(escaped == this->m_escapedSize);
 #endif
 
+    // We expect high mortality rate of Gen0 objects.
+    // If surviving set is large, then collection will be more expensive with diminishing results.
+    // We will not continue with collection if we see that too much of thread local objects are alive.
+    // The criteria does not need to be very precise. (anything in the order of 1/8 and 1/16 seems
+    // to yield similar results)
+    const size_t maxSurv = Satori::REGION_SIZE_GRANULARITY / 8;
+
+    // Temporarily use m_occupancy to estimate surviving size.
+    // If we proceed with collection, m_occupancy will be recomputed anyways.
+    size_t uncollectedOccupancy = m_occupancy;
+    m_occupancy = 0;
+
     // mark roots for the current stack
     ScanContext sc;
     sc.promotion = TRUE;
@@ -1170,7 +1196,7 @@ void SatoriRegion::ThreadLocalMark()
     SatoriObject* o = PopFromMarkStack();
 
  propagateMarks:
-    while (o)
+    while (o && m_occupancy < maxSurv)
     {
         _ASSERTE(IsMarked(o));
         _ASSERTE(!IsEscaped(o));
@@ -1182,12 +1208,21 @@ void SatoriRegion::ThreadLocalMark()
                 if (child->SameRegion(this) && !IsMarked(child))
                 {
                     SetMarked(child);
+                    m_occupancy += child->Size();
                     PushToMarkStackIfHasPointers(child);
                 }
             },
             /* includeCollectibleAllocator */ true
         );
         o = PopFromMarkStack();
+    }
+
+    if (m_occupancy >= maxSurv)
+    {
+        // surviving set is too large.
+        while (PopFromMarkStack()){};
+        m_occupancy = uncollectedOccupancy;
+        return false;
     }
 
     if (checkFinalizables)
@@ -1217,6 +1252,7 @@ void SatoriRegion::ThreadLocalMark()
                     {
                         // keep alive
                         SetMarked(finalizable);
+                        m_occupancy += finalizable->Size();
                         PushToMarkStackIfHasPointers(finalizable);
                         (size_t&)finalizable |= Satori::FINALIZATION_PENDING;
                         HasPendingFinalizables() = true;
@@ -1236,6 +1272,7 @@ void SatoriRegion::ThreadLocalMark()
     }
 
     Verify(/*allowMarked*/ true);
+    return true;
 }
 
 void SatoriRegion::ThreadLocalPlan()
@@ -1606,13 +1643,6 @@ void SatoriRegion::ThreadLocalCompact()
                 (void*)(s1->Start() - sizeof(size_t)),
                 s2->Start() - s1->Start());
         }
-    }
-
-    // schedule pending finalizables if we have them
-    // must be after compaction, since pend may escape objects.
-    if (HasPendingFinalizables())
-    {
-        ThreadLocalPendFinalizables();
     }
 
     Verify();
