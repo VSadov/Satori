@@ -322,7 +322,7 @@ private:
 
     static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
 
-    void ThreadLocalMark();
+    bool ThreadLocalMark();
     void ThreadLocalPlan();
     void ThreadLocalUpdatePointers();
     void ThreadLocalCompact();
