@@ -193,8 +193,9 @@ void SatoriRegion::ForEachFinalizable(F lambda)
     SatoriWorkChunk* chunk = m_finalizableTrackers;
     while (chunk)
     {
-        items += chunk->Count();
-        for (size_t i = 0; i < chunk->Count(); i++)
+        size_t count = chunk->Count();
+        items += count;
+        for (size_t i = 0; i < count; i++)
         {
             SatoriObject* finalizable = chunk->Item(i);
             if (finalizable == nullptr)
@@ -212,6 +213,210 @@ void SatoriRegion::ForEachFinalizable(F lambda)
                     nulls++;
                 }
             }
+        }
+
+        // unfilled slots in the tail chunks count as nulls
+        if (chunk != m_finalizableTrackers)
+        {
+            nulls += chunk->FreeSpace();
+        }
+
+        chunk = chunk->Next();
+    }
+
+    // typically the list is short, so having some dead entries is not a big deal.
+    // compacting at 1/2 occupancy should be good enough.
+    // (50% max overhead at O(N) maintenance cost)
+    if (nulls * 2 > items)
+    {
+       CompactFinalizableTrackers();
+    }
+}
+
+template <typename F>
+bool SatoriRegion::PendFinalizables(F markFn, int condemnedGeneration)
+{
+    bool hasCF = false;
+    size_t items = 0;
+    size_t nulls = 0;
+
+    SatoriFinalizationQueue* q = m_containingPage->Heap()->FinalizationQueue();
+    SatoriWorkChunk* chunk = m_finalizableTrackers;
+    while (chunk)
+    {
+        int32_t toPend = 0;
+        int32_t toPendCF = 0;
+        size_t count = chunk->Count();
+        items += count;
+        for (size_t i = 0; i < count; i++)
+        {
+            SatoriObject* finalizable = chunk->Item(i);
+            _ASSERTE(((size_t)finalizable & Satori::FINALIZATION_PENDING_ANY) == 0);
+
+            if (finalizable == nullptr)
+            {
+                nulls++;
+                continue;
+            }
+
+            // reachable finalizables are not iteresting in any state.
+            // finalizer can be suppressed and re-registered again without creating new trackers.
+            // (this is preexisting behavior)
+            if (finalizable->IsMarked())
+            {
+                continue;
+            }
+
+            // eager finalization does not respect suppression (preexisting behavior)
+            if (GCToEEInterface::EagerFinalized(finalizable))
+            {
+                finalizable = nullptr;
+                nulls++;
+            }
+            else if (finalizable->IsFinalizationSuppressed())
+            {
+                // Reset the bit so it will be put back on the queue
+                // if resurrected and re-registered.
+                // NOTE: if finalizer could run only once until re-registered,
+                //       unreachable + suppressed object would not be able to resurrect.
+                //       however, re-registering multiple times may result in multiple finalizer runs.
+                // (this is preexisting behavior)
+                finalizable->UnSuppressFinalization();
+                finalizable = nullptr;
+                nulls++;
+            }
+            else
+            {
+                // finalizable has become unreachable.
+                // mark it as it needs to stay live until finalized and/or suppressed.
+                markFn(finalizable);
+
+                if (finalizable->RawGetMethodTable()->HasCriticalFinalizer())
+                {
+                    // can't pend just yet, because CriticalFinalizables must go
+                    // after regular finalizables scheduled in the same GC
+                    toPendCF++;
+                    (size_t&)finalizable |= Satori::FINALIZATION_PENDING_CRITICAL;
+                }
+                else
+                {
+                    toPend++;
+                    (size_t&)finalizable |= Satori::FINALIZATION_PENDING;
+                }
+            }
+
+            chunk->Item(i) = finalizable;
+        }
+
+        if (toPend)
+        {
+            size_t pendIdx;
+            bool overflow = !q->TryReserveSpace(toPend, &pendIdx);
+            for (size_t i = 0; i < count; i++)
+            {
+                SatoriObject* finalizable = chunk->Item(i);
+                if ((size_t)finalizable & Satori::FINALIZATION_PENDING)
+                {
+                    _ASSERTE(toPend > 0);
+#if _DEBUG
+                    toPend--;
+#endif
+
+                    (size_t&)finalizable &= ~Satori::FINALIZATION_PENDING;
+                    if (!overflow)
+                    {
+                        q->ScheduleForFinalizationAt(pendIdx++, finalizable);
+                        finalizable = nullptr;
+                        nulls++;
+                    }
+
+                    chunk->Item(i) = finalizable;
+                }
+            }
+
+            if (overflow)
+            {
+                q->SetOverflow(condemnedGeneration);
+            }
+        }
+
+        _ASSERTE(toPend == 0);
+
+        // unfilled slots in the tail chunks count as nulls
+        if (chunk != m_finalizableTrackers)
+        {
+            nulls += chunk->FreeSpace();
+        }
+
+        if (toPendCF)
+        {
+            chunk->SetAux(toPendCF);
+            hasCF = true;
+        }
+
+        chunk = chunk->Next();
+    }
+
+    // typically the list is short, so having some dead entries is not a big deal.
+    // compacting at 1/2 occupancy should be good enough.
+    // (50% max overhead at O(N) maintenance cost)
+    if (!hasCF && nulls * 2 > items)
+    {
+       CompactFinalizableTrackers();
+    }
+
+    return hasCF;
+}
+
+inline void SatoriRegion::PendCfFinalizables(int condemnedGeneration)
+{
+    size_t items = 0;
+    size_t nulls = 0;
+
+    SatoriFinalizationQueue* q = m_containingPage->Heap()->FinalizationQueue();
+    SatoriWorkChunk* chunk = m_finalizableTrackers;
+    while (chunk)
+    {
+        int32_t toPend = chunk->GetAndClearAux();
+        size_t count = chunk->Count();
+        items += count;
+        size_t pendIdx = 0;
+        bool overflow = toPend &&
+            (q->OverflowedGen() != 0 || !q->TryReserveSpace(toPend, &pendIdx));
+
+        for (size_t i = 0; i < count; i++)
+        {
+            SatoriObject* finalizable = chunk->Item(i);
+            if (finalizable == nullptr)
+            {
+                nulls++;
+                continue;
+            }
+
+            if ((size_t)finalizable & Satori::FINALIZATION_PENDING_CRITICAL)
+            {
+                _ASSERTE(toPend > 0);
+#if _DEBUG
+                toPend--;
+#endif
+
+                (size_t&)finalizable &= ~Satori::FINALIZATION_PENDING_CRITICAL;
+                if (!overflow)
+                {
+                    q->ScheduleForFinalizationAt(pendIdx++, finalizable);
+                    finalizable = nullptr;
+                    nulls++;
+                }
+
+                chunk->Item(i) = finalizable;
+            }
+        }
+
+        _ASSERTE(toPend == 0);
+
+        if (overflow)
+        {
+            q->SetOverflow(condemnedGeneration);
         }
 
         // unfilled slots in the tail chunks count as nulls
