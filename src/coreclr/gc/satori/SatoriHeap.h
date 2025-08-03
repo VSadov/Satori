@@ -146,20 +146,22 @@ private:
     static const int availableAddressSpaceBits = 48;
     static const int pageCountBits = availableAddressSpaceBits - Satori::PAGE_BITS;
 
-    int8_t m_pageByteMap[1 << pageCountBits]{};
-    static int8_t* s_pageByteMap;
-
     SatoriAllocator m_allocator;
     SatoriRecycler m_recycler;
-    SatoriFinalizationQueue m_finalizationQueue;
-
-    size_t m_committedBytes;
-
     size_t m_reservedMapSize;
     size_t m_committedMapSize;
     size_t m_usedMapLength;
     size_t m_nextPageIndex;
     SatoriLock m_mapLock;
+
+    size_t m_committedBytes;
+
+    DECLSPEC_ALIGN(64)
+    SatoriFinalizationQueue m_finalizationQueue;
+
+    DECLSPEC_ALIGN(64)
+    int8_t m_pageByteMap[1 << pageCountBits]{};
+    static int8_t* s_pageByteMap;
 
 #if _DEBUG
     // make the Heap obj a bit larger to force some page map commits earlier.
