@@ -109,6 +109,8 @@ size_t SatoriGC::GetNumberOfFinalizable()
 Object* SatoriGC::GetNextFinalizable()
 {
     SatoriFinalizationQueue* queue = m_heap->FinalizationQueue();
+
+tryAgain:
     Object* f = queue->TryGetNextItem();
     if (f == nullptr)
     {
@@ -118,7 +120,7 @@ Object* SatoriGC::GetNextFinalizable()
         if (queue->OverflowedGen() == 2)
         {
             m_heap->Recycler()->Collect(2, true, true);
-            f = queue->TryGetNextItem();
+            goto tryAgain;
         }
     }
 
