@@ -40,18 +40,23 @@ public:
     void Initialize(SatoriHeap* heap);
     bool TryUpdateScanTicket(int currentScanTicket);
     bool TryScheduleForFinalization(SatoriObject* finalizable);
+
+    bool TryReserveSpace(size_t count, size_t* index);
+    void ScheduleForFinalizationAt(size_t index, SatoriObject* finalizable);
+
     SatoriObject* TryGetNextItem();
     bool HasItems();
     size_t Count();
 
     int OverflowedGen();
     void SetOverflow(int generation);
+    void TryResizeIfOverflowing();
     void ResetOverflow(int generation);
 
     template <typename F>
     void ForEachObjectRef(F lambda)
     {
-        for (int i = m_dequeue; i != m_enqueue; i++)
+        for (size_t i = m_dequeue; i != m_enqueue; i++)
         {
             lambda(&m_data[i & m_sizeMask].value);
         }
@@ -61,17 +66,19 @@ private:
     struct Entry
     {
         SatoriObject* value;
-        int           version;
+        size_t        version;
     };
 
-    int m_enqueue;
-    int m_dequeue;
+    size_t m_enqueue;
+    DECLSPEC_ALIGN(64)
+    size_t m_dequeue;
+    DECLSPEC_ALIGN(64)
+    size_t m_sizeMask;
     int m_overflowedGen;
     int m_scanTicket;
-    int m_sizeMask;
     Entry* m_data;
     SatoriHeap* m_heap;
-    SatoriRegion* m_region;
+    Entry* m_newData;
 };
 
 #endif

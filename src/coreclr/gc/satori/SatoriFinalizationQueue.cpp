@@ -34,17 +34,18 @@
 #include "SatoriHeap.h"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
+#include "SatoriObject.inl"
 
 // limit the queue size to some large value just to have a limit.
 // needing this many items is likely an indication that finalizer is not keeping up and nothing can help that.
-static const int MAX_SIZE = 1 << 25;
+static const size_t MAX_SIZE = 1 << 25;
 
 #if _DEBUG
 // smaller size in debug to have overflows
-static const int INITIAL_SIZE = 1 << 5;
+static const size_t INITIAL_SIZE = 1 << 5;
 #else
 // 4K items (65Kb) - roughly the size of 2 region headers
-static const int INITIAL_SIZE = 1 << 12;
+static const size_t INITIAL_SIZE = 1 << 12;
 #endif
 
 void SatoriFinalizationQueue::Initialize(SatoriHeap* heap)
@@ -54,16 +55,18 @@ void SatoriFinalizationQueue::Initialize(SatoriHeap* heap)
     m_scanTicket = 0;
     m_overflowedGen = 0;
     m_heap = heap;
+    m_newData = nullptr;
 
-    int size = INITIAL_SIZE;
+    size_t size = INITIAL_SIZE;
 
     m_sizeMask = size - 1;
     size_t allocSize = size * sizeof(Entry);
     size_t regionSize = SatoriRegion::RegionSizeForAlloc(allocSize);
-    m_region = m_heap->Allocator()->GetRegion(regionSize);
-    m_data = (Entry*)m_region->Allocate(allocSize, /*zeroInitialize*/false);
+    SatoriRegion* region = m_heap->Allocator()->GetRegion(regionSize);
+    m_data = (Entry*)region->Allocate(allocSize, /*zeroInitialize*/false);
 
-    for (int i = 0; i < size; i++)
+    // format as empty
+    for (size_t i = 0; i < size; i++)
     {
         m_data[i].version = i;
     }
@@ -82,15 +85,17 @@ void SatoriFinalizationQueue::SetOverflow(int generation)
     }
 }
 
-void SatoriFinalizationQueue::ResetOverflow(int generation)
+void SatoriFinalizationQueue::TryResizeIfOverflowing()
 {
-    if (!m_overflowedGen || generation < m_overflowedGen)
-    {
+    if (!m_overflowedGen || m_newData != nullptr)
         return;
-    }
+
+    // claim resizing
+    if (Interlocked::CompareExchangePointer((void**)&m_newData, (void*)m_data, (void*)nullptr) != nullptr)
+        return;
 
     // try resizing
-    int size = (m_sizeMask + 1) * 2;
+    size_t size = (m_sizeMask + 1) * 2;
     if (size <= MAX_SIZE)
     {
         size_t allocSize = size * sizeof(Entry);
@@ -106,33 +111,71 @@ void SatoriFinalizationQueue::ResetOverflow(int generation)
                 return;
             }
 
-            // transfer items from the old queue
-            int dst = 0;
-            for (int src = m_dequeue; src != m_enqueue; src++)
-            {
-                newData[dst].value = m_data[src & m_sizeMask].value;
-                newData[dst].version = dst + 1;
-                dst++;
-            }
-
-            // format the rest of the items as empty
-            for (int i = dst; i < size; i++)
+            // format as empty
+            for (size_t i = 0; i < size; i++)
             {
                 newData[i].version = i;
             }
 
-            m_data = newData;
-            m_sizeMask = size - 1;
-            m_enqueue = dst;
-            m_dequeue = 0;
+            m_newData = newData;
+        }
+    }
+}
 
-            m_region->MakeBlank();
-            m_heap->Allocator()->ReturnRegion(m_region);
-            m_region = newRegion;
+void SatoriFinalizationQueue::ResetOverflow(int generation)
+{
+    if (!m_overflowedGen || generation < m_overflowedGen)
+    {
+        // no overflow or a minor collection after a major overflow.
+        // either way not our job to fix things up.
+        return;
+    }
+
+    if (m_newData == m_data)
+    {
+        // someone claimed, but failed to resize.
+        m_newData = nullptr;
+    }
+
+    if (m_newData == nullptr)
+    {
+        // we will be pending what last failed, try get more space.
+        TryResizeIfOverflowing();
+        if (m_newData == m_data)
+        {
+            m_newData = nullptr;
         }
     }
 
-    // either way we are not in an overflow unless we see a full queue again.
+    // if there was a resize, move things over.
+    if (m_newData != nullptr)
+    {
+        Entry* newData = m_newData;
+        m_newData = nullptr;
+
+        // transfer items from the old queue
+        size_t dst = 0;
+        for (size_t src = m_dequeue; src != m_enqueue; src++)
+        {
+            Entry* e = &newData[dst];
+            e->value = m_data[src & m_sizeMask].value;
+            _ASSERTE(e->version == dst);
+            e->version = dst + 1;
+            dst++;
+        }
+
+        SatoriRegion* oldRegion = ((SatoriObject*)m_data)->ContainingRegion();
+        oldRegion->MakeBlank();
+        m_heap->Allocator()->ReturnRegion(oldRegion);
+
+        m_data = newData;
+        size_t size = (m_sizeMask + 1) * 2;
+        m_sizeMask = size - 1;
+        m_enqueue = dst;
+        m_dequeue = 0;
+    }
+
+    // we are not in an overflow unless we see a full queue again.
     m_overflowedGen = 0;
 }
 
@@ -159,12 +202,13 @@ bool SatoriFinalizationQueue::TryUpdateScanTicket(int currentScanTicket)
 bool SatoriFinalizationQueue::TryScheduleForFinalization(SatoriObject* finalizable)
 {
     Entry* e;
-    int enq = m_enqueue;
+    size_t enq = m_enqueue;
+    size_t i = 0;
     for (;;)
     {
         e = &m_data[enq & m_sizeMask];
-        int version = VolatileLoad(&e->version);
-        int diff = version - enq;
+        size_t version = VolatileLoad(&e->version);
+        ptrdiff_t diff = version - enq;
 
         if (diff == 0)
         {
@@ -178,7 +222,13 @@ bool SatoriFinalizationQueue::TryScheduleForFinalization(SatoriObject* finalizab
             return false;
         }
 
-        YieldProcessor();
+        i++;
+        size_t lim = i * i;
+        for (size_t j = 0; j < lim; j++)
+        {
+            YieldProcessor();
+        }
+
         enq = m_enqueue;
     }
 
@@ -187,16 +237,43 @@ bool SatoriFinalizationQueue::TryScheduleForFinalization(SatoriObject* finalizab
     return true;
 }
 
-// called by a single consuming thread
+// called by multiple producers with no active consumers
+bool SatoriFinalizationQueue::TryReserveSpace(size_t count, size_t* index)
+{
+    size_t deq = m_dequeue;
+    size_t mask = m_sizeMask;
+    size_t enq;
+
+    do
+    {
+        enq = m_enqueue;
+        if (enq + count - deq >= mask)
+            return false; // overflow
+    }
+    while (Interlocked::CompareExchange(&m_enqueue, enq + count, enq) != enq);
+
+    *index = enq;
+    return true;
+}
+
+void SatoriFinalizationQueue::ScheduleForFinalizationAt(size_t index, SatoriObject* finalizable)
+{
+    Entry* e = &m_data[index & m_sizeMask];
+    e->value = finalizable;
+    _ASSERTE(e->version == index);
+    e->version = index + 1;
+}
+
+// called by a single consuming thread with possibly active producers
 SatoriObject* SatoriFinalizationQueue::TryGetNextItem()
 {
-    int deq = m_dequeue;
+    size_t deq = m_dequeue;
     Entry* e = &m_data[deq & m_sizeMask];
 
-    int version = VolatileLoad(&e->version);
+    size_t version = VolatileLoad(&e->version);
     SatoriObject* value = e->value;
 
-    int diff = version - (deq + 1);
+    ptrdiff_t diff = version - (deq + 1);
     if (diff < 0)
     {
         value = nullptr;
@@ -223,5 +300,5 @@ bool SatoriFinalizationQueue::HasItems()
 // only makes sense in quiescent state
 size_t SatoriFinalizationQueue::Count()
 {
-    return (m_dequeue - m_enqueue) & m_sizeMask;
+    return (m_enqueue - m_dequeue) & m_sizeMask;
 }

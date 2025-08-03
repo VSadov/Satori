@@ -1112,6 +1112,8 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
     // must be after compaction, since pend may escape objects.
     if (HasPendingFinalizables())
     {
+        // We do not interrupt "checkFinalizables" if surv set is too large,
+        // thus if we have unreachables, we have all of them and can pend them.
         ThreadLocalPendFinalizables();
     }
 
@@ -1254,7 +1256,7 @@ bool SatoriRegion::ThreadLocalMark()
                         SetMarked(finalizable);
                         m_occupancy += finalizable->Size();
                         PushToMarkStackIfHasPointers(finalizable);
-                        (size_t&)finalizable |= Satori::FINALIZATION_PENDING;
+                        (size_t&)finalizable |= Satori::FINALIZATION_PENDING_ANY;
                         HasPendingFinalizables() = true;
                     }
                 }
@@ -1264,11 +1266,8 @@ bool SatoriRegion::ThreadLocalMark()
         );
 
         o = PopFromMarkStack();
-        if (o)
-        {
-            checkFinalizables = false;
-            goto propagateMarks;
-        }
+        checkFinalizables = false;
+        goto propagateMarks;
     }
 
     Verify(/*allowMarked*/ true);
@@ -1528,8 +1527,8 @@ void SatoriRegion::ThreadLocalUpdatePointers()
             [&](SatoriObject* finalizable)
             {
                 // save the pending bit, will reapply back later
-                size_t finalizePending = (size_t)finalizable & Satori::FINALIZATION_PENDING;
-                (size_t&)finalizable &= ~Satori::FINALIZATION_PENDING;
+                size_t finalizePending = (size_t)finalizable & Satori::FINALIZATION_PENDING_ANY;
+                (size_t&)finalizable &= ~Satori::FINALIZATION_PENDING_ANY;
 
                 size_t reloc = finalizable->GetLocalReloc();
                 if (reloc)
@@ -1682,14 +1681,15 @@ void SatoriRegion::ThreadLocalPendFinalizables()
 
     FinalizationPendState pendState = FinalizationPendState::PendRegular;
     bool missedRegularPend = false;
+    SatoriFinalizationQueue* q = m_containingPage->Heap()->FinalizationQueue();
 
 tryAgain:
     ForEachFinalizableThreadLocal(
         [&](SatoriObject* finalizable)
         {
-            if ((size_t)finalizable & Satori::FINALIZATION_PENDING)
+            if ((size_t)finalizable & Satori::FINALIZATION_PENDING_ANY)
             {
-                SatoriObject* o = (SatoriObject*)((size_t)finalizable & ~Satori::FINALIZATION_PENDING);
+                SatoriObject* o = (SatoriObject*)((size_t)finalizable & ~Satori::FINALIZATION_PENDING_ANY);
                 if (pendState == FinalizationPendState::PendRegular && o->RawGetMethodTable()->HasCriticalFinalizer())
                 {
                     // within the same finalization set CF must finalize after ordinary F objects
@@ -1698,17 +1698,19 @@ tryAgain:
                 }
 
                 // by enqueing we are making the object available to the finalization thread
+                // we do not do this earlier when marking since we want give a chance
+                // for the obj tree to be compacted.
                 EscapeRecursively(o);
 
-                // in a rare case when an F object could not pend, we cannot pend any CFs from the same finalization set
-                // lest they may run before corresponding F objects.
-                // then we will just allow CFs to escape so they stay alive until global GC sorts this out.
+                // In a rare case when an F object could not pend, we cannot pend any CFs from the same finalization set
+                // lest they may run earlier than F objects from the same set.
+                // In such case we will just allow CFs to stay alive/escaped and finalization-tracked
+                // until global GC sorts this out.
                 if (missedRegularPend && o->RawGetMethodTable()->HasCriticalFinalizer())
-                { 
-                    return (SatoriObject*)nullptr;
+                {
+                    finalizable = o;
                 }
-
-                if (m_containingPage->Heap()->FinalizationQueue()->TryScheduleForFinalization(o))
+                else if (q->TryScheduleForFinalization(o))
                 {
                     // this tracker has served its purpose.
                     finalizable = nullptr;
@@ -1930,18 +1932,26 @@ void SatoriRegion::UpdateFinalizableTrackers()
     // their objects have been relocated to this region, we need to update these trackers
     if (m_finalizableTrackers)
     {
-        ForEachFinalizable(
-            [&](SatoriObject* finalizable)
+        SatoriWorkChunk* chunk = m_finalizableTrackers;
+        while (chunk)
+        {
+            size_t count = chunk->Count();
+            for (size_t i = 0; i < count; i++)
             {
-                if (!finalizable->SameRegion(this))
+                SatoriObject* finalizable = chunk->Item(i);
+                if (finalizable != nullptr)
                 {
-                    finalizable = finalizable->RelocatedToUnchecked();
-                    _ASSERTE(finalizable->SameRegion(this));
+                    if (!finalizable->SameRegion(this))
+                    {
+                        finalizable = finalizable->RelocatedToUnchecked();
+                        _ASSERTE(finalizable->SameRegion(this));
+                        chunk->Item(i) = finalizable;
+                    }
                 }
-
-                return finalizable;
             }
-        );
+
+            chunk = chunk->Next();
+        }
     }
 }
 
