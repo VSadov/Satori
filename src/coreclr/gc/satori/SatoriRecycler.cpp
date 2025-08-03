@@ -390,7 +390,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
 
     // When concurrent marking is allowed we may have marks already.
     // Demoted regions could be pre-marked
-#ifdef DEBUG
+#if _DEBUG
     if (!region->MaybeAllocatingAcquire())
     {
         region->Verify(/* allowMarked */ region->IsDemoted() || SatoriUtil::IsConcurrentEnabled());
@@ -666,12 +666,15 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
     }
 
     // we need the helpers to be out before cleaning as we need to switch scan ticket
-    if (m_concurrentCleaningState == CC_CLEAN_STATE_WAIT_FOR_HELPERS)
+    // and we need to read the state before reading the helper count
+    if (VolatileLoad(&m_concurrentCleaningState) == CC_CLEAN_STATE_WAIT_FOR_HELPERS)
     {
         // we can't help at this time, but there is more work.
         moreWork = true;
 
-        int ccHelpersNum = Interlocked::ExchangeAdd(&m_ccHelpersNum, 0);
+        // if we see no workers after seeing the wait state, the worker count is effectively 0
+        // as new worker will check the state after incrementing m_ccHelpersNum and not start helping if sees the state.
+        int ccHelpersNum = m_ccHelpersNum;
 
         // last helper initiates cleaning
         if (ccHelpersNum == 0 &&
@@ -3278,68 +3281,19 @@ void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContex
         do
         {
             _ASSERTE(region->Generation() <= m_condemnedGeneration);
-
-            bool hasPendingCF = false;
-            region->ForEachFinalizable(
+            bool hasCF = region->PendFinalizables(
                 [&](SatoriObject* finalizable)
                 {
-                    _ASSERTE(((size_t)finalizable & Satori::FINALIZATION_PENDING) == 0);
-
-                    // reachable finalizables are not iteresting in any state.
-                    // finalizer can be suppressed and re-registered again without creating new trackers.
-                    // (this is preexisting behavior)
-
-                    if (!finalizable->IsMarked())
-                    {
-                        // eager finalization does not respect suppression (preexisting behavior)
-                        if (GCToEEInterface::EagerFinalized(finalizable))
-                        {
-                            finalizable = nullptr;
-                        }
-                        else if (finalizable->IsFinalizationSuppressed())
-                        {
-                            // Reset the bit so it will be put back on the queue
-                            // if resurrected and re-registered.
-                            // NOTE: if finalizer could run only once until re-registered,
-                            //       unreachable + suppressed object would not be able to resurrect.
-                            //       however, re-registering multiple times may result in multiple finalizer runs.
-                            // (this is preexisting behavior)
-                            finalizable->UnSuppressFinalization();
-                            finalizable = nullptr;
-                        }
-                        else
-                        {
-                            // finalizable has just become unreachable
-                            if (finalizable->RawGetMethodTable()->HasCriticalFinalizer())
-                            {
-                                // can't schedule just yet, because CriticalFinalizables must go
-                                // after regular finalizables scheduled in the same GC
-                                hasPendingCF = true;
-                                (size_t&)finalizable |= Satori::FINALIZATION_PENDING;
-                            }
-                            else
-                            {
-                                finalizable->SetMarkedAtomic();
-                                markContext->PushToMarkQueues(finalizable);
-
-                                if (m_heap->FinalizationQueue()->TryScheduleForFinalization(finalizable))
-                                {
-                                    // this tracker has served its purpose.
-                                    finalizable = nullptr;
-                                }
-                                else
-                                {
-                                    m_heap->FinalizationQueue()->SetOverflow(m_condemnedGeneration);
-                                }
-                            }
-                        }
-                    }
-
-                    return finalizable;
-                }
+                    // Only us look at finalizables from this region right now
+                    // and no other marking is happening.
+                    // No need for this to be atomic.
+                    finalizable->SetMarked();
+                    markContext->PushToMarkQueues(finalizable);
+                },
+                m_condemnedGeneration
             );
 
-            if (hasPendingCF)
+            if (hasCF)
             {
                 m_finalizationPendingRegions->Push(region);
             }
@@ -3363,34 +3317,10 @@ void SatoriRecycler::QueueCriticalFinalizablesWorker()
     SatoriRegion* region = m_finalizationPendingRegions->TryPop();
     if (region)
     {
-        MarkContext c = MarkContext(this);
         MaybeAskForHelp();
         do
         {
-            region->ForEachFinalizable(
-                [&](SatoriObject* finalizable)
-                {
-                    if ((size_t)finalizable & Satori::FINALIZATION_PENDING)
-                    {
-                        (size_t&)finalizable &= ~Satori::FINALIZATION_PENDING;
-                        finalizable->SetMarkedAtomic();
-                        c.PushToMarkQueues(finalizable);
-
-                        if (m_heap->FinalizationQueue()->TryScheduleForFinalization(finalizable))
-                        {
-                            // this tracker has served its purpose.
-                            finalizable = nullptr;
-                        }
-                        else
-                        {
-                            m_heap->FinalizationQueue()->SetOverflow(m_condemnedGeneration);
-                        }
-                    }
-
-                    return finalizable;
-                }
-            );
-
+            region->PendCfFinalizables(m_condemnedGeneration);
             if (region->Generation() == 2)
             {
                 m_tenuredRegions->Push(region);
@@ -3400,15 +3330,6 @@ void SatoriRecycler::QueueCriticalFinalizablesWorker()
                 m_ephemeralRegions->Push(region);
             }
         } while ((region = m_finalizationPendingRegions->TryPop()));
-
-
-        if (c.m_WorkChunk != nullptr)
-        {
-            // some dead finalizables were added to F-queue and made reachable.
-            // need to trace them, but also finalizer thread has work to do
-            GCToEEInterface::EnableFinalization(true);
-            m_workList->Push(c.m_WorkChunk);
-        }
     }
 }
 
@@ -4310,6 +4231,16 @@ void SatoriRecycler::DrainDeferredSweepQueue()
 bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
 {
     bool isWorkerGCThread = IsWorkerThread();
+
+    if (isWorkerGCThread)
+    {
+        SatoriFinalizationQueue* q = m_heap->FinalizationQueue();
+        if (q->OverflowedGen() != 0)
+        {
+            MaybeAskForHelp();
+            q->TryResizeIfOverflowing();
+        }
+    }
 
     // Sweeping and returning could be contentious.
     // If there are workers, do not participate.
