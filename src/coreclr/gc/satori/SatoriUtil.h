@@ -84,6 +84,8 @@ namespace Satori
 
     // address bits set to track finalizable that needs to be scheduled to F-queue
     const static size_t FINALIZATION_PENDING = 1;
+    const static size_t FINALIZATION_PENDING_CRITICAL = 2;
+    const static size_t FINALIZATION_PENDING_ANY = FINALIZATION_PENDING | FINALIZATION_PENDING_CRITICAL;
 
     // one card covers 512 bytes (64 possible pointers)
     static const int BYTES_PER_CARD_BYTE = 512;

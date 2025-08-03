@@ -58,6 +58,8 @@ public:
     size_t Count()
     {
         _ASSERTE(!IsRange());
+        _ASSERTE((m_top >> 32) == 0);
+
         return m_top;
     }
 
@@ -185,6 +187,23 @@ public:
         obj = m_data[0];
         start = m_start;
         end = m_end;
+    }
+
+    // Temporarily store uint32 in upper bits of m_top
+    // We can't use Count while we have this.
+    // So clear this state ASAP.
+    void SetAux(uint32_t n)
+    {
+        _ASSERTE((m_top >> 32) == 0);
+
+        m_top |= (size_t)n << 32;
+    }
+
+    uint32_t GetAndClearAux()
+    {
+        uint32_t aux = (uint32_t)(m_top >> 32);
+        m_top &= UINT32_MAX;
+        return aux;
     }
 
 private:

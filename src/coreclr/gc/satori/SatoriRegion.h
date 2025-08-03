@@ -156,9 +156,12 @@ bool TryDemote();
 
     template <typename F>
     void ForEachFinalizable(F lambda);
-
     template <typename F>
     void ForEachFinalizableThreadLocal(F lambda);
+
+    template <typename F>
+    bool PendFinalizables(F markFn, int condemnedGeneration);
+    void PendCfFinalizables(int condemnedGeneration);
 
     // used for exclusive access to trackers when accessing concurrently with user threads
     void LockFinalizableTrackers();
