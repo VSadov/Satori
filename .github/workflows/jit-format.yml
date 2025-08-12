@@ -29,7 +29,7 @@ jobs:
     name: Format jit codebase ${{ matrix.os.name }}
     steps:
       - name: Checkout jitutils
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: jitutils
           repository: dotnet/jitutils
@@ -44,7 +44,7 @@ jobs:
           ./bootstrap${{ matrix.os.extension }}
         working-directory: jitutils
       - name: Checkout runtime
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: runtime
       - name: Install Python
