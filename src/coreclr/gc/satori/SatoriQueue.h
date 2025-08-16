@@ -117,6 +117,35 @@ public:
         _ASSERTE(m_count > oldCount);
     }
 
+    bool TryPushWithTryEnter(T* item)
+    {
+        _ASSERTE(item->m_next == nullptr);
+        _ASSERTE(item->m_prev == nullptr);
+        _ASSERTE(item->m_containingQueue == nullptr);
+
+        if (!m_lock.TryEnter())
+        {
+            return false;
+        }
+
+        m_count++;
+        item->m_containingQueue = this;
+        if (m_head == nullptr)
+        {
+            _ASSERTE(m_tail == nullptr);
+            m_tail = item;
+        }
+        else
+        {
+            item->m_next = m_head;
+            m_head->m_prev = item;
+        }
+
+        m_head = item;
+        m_lock.Leave();
+        return true;
+    }
+
     T* TryPop()
     {
         if (IsEmpty())

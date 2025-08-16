@@ -65,6 +65,7 @@ public:
     bool CanCoalesceWithNext();
     bool TryCoalesceWithNext();
 
+    void PreZeroTail();
     void ZeroInitAndLink(SatoriRegion* prev);
 
     static size_t RegionSizeForAlloc(size_t allocSize);
@@ -106,7 +107,7 @@ public:
     bool IsPromotionCandidate();
     bool IsRelocationCandidate(bool assumePromotion = false);
 
-bool TryDemote();
+    bool TryDemote();
     bool IsDemoted();
     SatoriWorkChunk* &DemotedObjects();
     bool& HasUnmarkedDemotedObjects();
@@ -120,6 +121,7 @@ bool TryDemote();
     size_t Start();
     size_t End();
     size_t Size();
+    bool IsLarge();
 
     SatoriObject* FirstObject();
     SatoriObject* FindObject(size_t location);

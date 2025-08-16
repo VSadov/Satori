@@ -3424,10 +3424,12 @@ void SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker()
     FreeRelocatedRegionsWorker();
 }
 
-void SatoriRecycler::FreeRelocatedRegion(SatoriRegion* curRegion, bool noLock)
+void SatoriRecycler::FreeEmptyRegion(SatoriRegion* curRegion, bool noLock)
 {
     _ASSERTE(!curRegion->HasPinnedObjects());
     curRegion->ClearMarks();
+    curRegion->SetOccupancy(0, 0);
+    curRegion->DoNotSweep() = true;
 
     bool isNurseryRegion = curRegion->IsAttachedToAllocatingOwner();
     if (isNurseryRegion)
@@ -3435,16 +3437,24 @@ void SatoriRecycler::FreeRelocatedRegion(SatoriRegion* curRegion, bool noLock)
         curRegion->DetachFromAlocatingOwnerRelease();
     }
 
-    // blank and return regions eagerly.
-    // we are zeroing a few kb - that might be comparable with costs of deferring.
-    curRegion->MakeBlank();
-    if (noLock)
+    if (!SatoriUtil::IsConcurrentEnabled() ||
+        !m_deferredSweepRegions->TryPushWithTryEnter(curRegion))
     {
-        m_heap->Allocator()->ReturnRegionNoLock(curRegion);
+ //       printf("#### -- \n");
+
+        curRegion->MakeBlank();
+        if (noLock)
+        {
+            m_heap->Allocator()->ReturnRegionNoLock(curRegion);
+        }
+        else
+        {
+            m_heap->Allocator()->ReturnRegion(curRegion);
+        }
     }
     else
     {
-        m_heap->Allocator()->ReturnRegion(curRegion);
+//        printf("@@@@ ++ \n");
     }
 }
 
@@ -3456,7 +3466,7 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
         MaybeAskForHelp();
         do
         {
-            FreeRelocatedRegion(curRegion, /* noLock */ true);
+            FreeEmptyRegion(curRegion, /* noLock */ true);
         } while ((curRegion = m_relocatedRegions->TryPop()));
     }
 }
@@ -3833,7 +3843,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     }
     else
     {
-        FreeRelocatedRegion(relocationSource, /* noLock */ false);
+        FreeEmptyRegion(relocationSource, /* noLock */ false);
     }
 }
 
@@ -4056,17 +4066,9 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                 {
                     if (!curRegion->Sweep</*updatePointers*/ true>())
                     {
-                        bool isNurseryRegion = curRegion->IsAttachedToAllocatingOwner();
-                        if (isNurseryRegion)
-                        {
-                            curRegion->DetachFromAlocatingOwnerRelease();
-                        }
-
-                        // blank and return regions eagerly.
-                        // we are zeroing a few kb - that might be comparable with costs of deferring.
-                        curRegion->MakeBlank();
-                        m_heap->Allocator()->ReturnRegionNoLock(curRegion);
+                        FreeEmptyRegion(curRegion, /*noLock*/true);
                         continue;
+
                     }
                 }
 
@@ -4085,9 +4087,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
 
                 if (curRegion->Occupancy() == 0)
                 {
-                    curRegion->DetachFromAlocatingOwnerRelease();
-                    curRegion->MakeBlank();
-                    m_heap->Allocator()->ReturnRegionNoLock(curRegion);
+                    FreeEmptyRegion(curRegion, /*noLock*/true);
                 }
                 else
                 {
@@ -4308,21 +4308,23 @@ void SatoriRecycler::DrainDeferredSweepQueueWorkerFn()
 
 void SatoriRecycler::SweepAndReturnRegion(SatoriRegion* curRegion)
 {
-    if (!curRegion->DoNotSweep())
-    {
+    bool keep = curRegion->DoNotSweep() ?
+        curRegion->Occupancy() != 0 :
         curRegion->Sweep</*updatePointers*/ false>();
-    }
 
-    if (curRegion->Occupancy() == 0)
+    if (m_gcState == GC_STATE_NONE && IsWorkerThread())
+        curRegion->PreZeroTail();
+
+    if (keep)
+    {
+        KeepRegion(curRegion);
+    }
+    else
     {
         curRegion->MakeBlank();
         IsBlockingPhase() ?
             m_heap->Allocator()->ReturnRegionNoLock(curRegion) :
             m_heap->Allocator()->ReturnRegion(curRegion);
-    }
-    else
-    {
-        KeepRegion(curRegion);
     }
 }
 

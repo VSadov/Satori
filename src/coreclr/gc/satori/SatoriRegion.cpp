@@ -681,6 +681,46 @@ void SatoriRegion::TryCommit()
     }
 }
 
+void SatoriRegion::PreZeroTail()
+{
+    // large can be arbitrary large, ignore them.
+    // otherwise we expect to spend on this not more than 20-50 usec
+    if (this->IsLarge())
+        return;
+
+    SatoriObject* lastFreeObj;
+    if (Occupancy() == 0)
+    {
+        lastFreeObj = FirstObject();
+    }
+    else
+    {
+        lastFreeObj = FindObject(End() - sizeof(size_t));
+
+        if (!lastFreeObj->IsFree())
+            return;
+
+        _ASSERTE(lastFreeObj->Start() < End());
+        _ASSERTE(lastFreeObj->End() >= End());
+    }
+
+    size_t usedByLastFree = lastFreeObj->Start() + FREE_LIST_NEXT_OFFSET + sizeof(size_t);
+    size_t used = m_used;
+    _ASSERTE(used > Start());
+    _ASSERTE(used <= End());
+
+    if(used > usedByLastFree)
+    {
+        size_t toZero = used - usedByLastFree;
+        if (toZero >= SatoriUtil::MinZeroInitSize())
+        {
+ //           printf(".");
+            memset((void*)usedByLastFree, 0, toZero);
+            m_used = usedByLastFree;
+        }
+    }
+}
+
 void SatoriRegion::ZeroInitAndLink(SatoriRegion* prev)
 {
     if (m_used > (size_t)&m_syncBlock)

@@ -113,6 +113,11 @@ inline size_t SatoriRegion::Size()
     return End() - Start();
 }
 
+inline bool SatoriRegion::IsLarge()
+{
+    return Size() > Satori::REGION_SIZE_GRANULARITY;
+}
+
 inline size_t SatoriRegion::GetAllocStart()
 {
     return m_allocStart;
