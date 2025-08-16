@@ -684,7 +684,7 @@ void SatoriRegion::TryCommit()
 void SatoriRegion::PreZeroTail()
 {
     // large can be arbitrary large, ignore them.
-    // otherwise we expect to spend on this not more than 20-50 usec
+    // otherwise we expect to spend on this not more than 20-50 usec 
     if (this->IsLarge())
         return;
 
