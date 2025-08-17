@@ -1,6 +1,6 @@
 # Satori GC
 
-An experimental concurrent garbage collector for .NET designed to enhance performance and responsiveness in C# applications by minimizing pause times and enabling smoother memory management. Suitable for latency-sensitive applications, real-time systems, and high-throughput server workloads.
+An experimental concurrent garbage collector for .NET, designed to enhance performance and responsiveness in C# applications by minimizing pause times and enabling smoother memory management. Suitable for latency-sensitive applications, real-time systems, and high-throughput server workloads.
 
 For more information about pauseless garbage collectors in .NET, you can follow the discussion [here](https://github.com/dotnet/runtime/discussions/115627).
 
