@@ -203,6 +203,12 @@ public:
         return (GCConfig::GetConcurrentGC());
     }
 
+    // DOTNET_gcForceCompact
+    static bool IsForceCompact()
+    {
+        return (GCConfig::GetForceCompact());
+    }
+
     // DOTNET_gcRelocatingGen1
     static bool IsRelocatingInGen1()
     {

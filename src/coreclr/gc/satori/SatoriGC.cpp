@@ -733,6 +733,7 @@ int64_t SatoriGC::GetTotalPauseDuration()
 void SatoriGC::EnumerateConfigurationValues(void* context, ConfigurationValueFunc configurationValueFunc)
 {
     GCConfig::EnumerateConfigurationValues(context, configurationValueFunc);
+    configurationValueFunc(context, (void*)"SatoriGC", (void*)"SatoriGC", GCConfigurationType::Boolean, true);
 }
 
 bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
