@@ -279,8 +279,6 @@ bool SatoriRegion::ValidateIndexEmpty()
     return true;
 }
 
-static const int FREE_LIST_NEXT_OFFSET = sizeof(ArrayBase);
-
 // prefers leftmost bucket that fits to improve locality, possibly at cost to fragmentation
 size_t SatoriRegion::StartAllocating(size_t minAllocSize)
 {
@@ -298,10 +296,10 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
     size_t minFreeObjSize = minAllocSize + Satori::MIN_FREE_SIZE;
 
     DWORD selectedBucket = Satori::FREELIST_COUNT;
-    SatoriObject* freeObj = m_freeLists[bucket];
-    if (freeObj)
+    SatoriFreeListObject* freeListObj = m_freeLists[bucket];
+    if (freeListObj)
     {
-        if (freeObj->FreeObjSize() >= minFreeObjSize)
+        if (freeListObj->FreeObjSize() >= minFreeObjSize)
         {
             selectedBucket = bucket;
         }
@@ -312,20 +310,20 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
     bucket++;
     for (; bucket < Satori::FREELIST_COUNT; bucket++)
     {
-        SatoriObject* freeObjCandidate = m_freeLists[bucket];
+        SatoriFreeListObject* freeObjCandidate = m_freeLists[bucket];
         if (freeObjCandidate &&
-            (selectedBucket == Satori::FREELIST_COUNT || freeObjCandidate->Start() < freeObj->Start()))
+            (selectedBucket == Satori::FREELIST_COUNT || freeObjCandidate->Start() < freeListObj->Start()))
         {
             selectedBucket = bucket;
-            freeObj = freeObjCandidate;
+            freeListObj = freeObjCandidate;
         }
     }
 
     if (selectedBucket < Satori::FREELIST_COUNT)
     {
-        m_freeLists[selectedBucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
-        m_allocStart = freeObj->Start();
-        m_allocEnd = m_allocStart + freeObj->FreeObjSize();
+        m_freeLists[selectedBucket] = freeListObj->m_nextInFreeList;
+        m_allocStart = freeListObj->Start();
+        m_allocEnd = m_allocStart + freeListObj->FreeObjSize();
         SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
         ClearIndicesForAllocRange();
         _ASSERTE(GetAllocRemaining() >= minAllocSize);
@@ -354,13 +352,13 @@ size_t SatoriRegion::StartAllocatingBestFit(size_t minAllocSize)
 
     for (; bucket < Satori::FREELIST_COUNT; bucket++)
     {
-        SatoriObject* freeObj = m_freeLists[bucket];
+        SatoriFreeListObject* freeObj = m_freeLists[bucket];
         if (freeObj)
         {
             size_t size = freeObj->FreeObjSize();
             if (size >= minFreeObjSize)
             {
-                m_freeLists[bucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
+                m_freeLists[bucket] = freeObj->m_nextInFreeList;
                 m_allocStart = freeObj->Start();
                 m_allocEnd = m_allocStart + size;
                 SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
@@ -410,6 +408,7 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
         return;
     }
 
+    SatoriFreeListObject* freeListObj = (SatoriFreeListObject*)freeObj;
     DWORD bucket;
     BitScanReverse64(&bucket, allocSize);
     bucket -= (Satori::MIN_FREELIST_SIZE_BITS);
@@ -417,17 +416,17 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
     _ASSERTE(bucket < Satori::FREELIST_COUNT);
 
     // insert at the tail
-    *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET) = nullptr;
+    freeListObj->m_nextInFreeList = nullptr;
     if (m_freeLists[bucket] == nullptr)
     {
-        m_freeLists[bucket] = m_freeListTails[bucket] = freeObj;
+        m_freeLists[bucket] = m_freeListTails[bucket] = freeListObj;
         return;
     }
 
-    SatoriObject* tailObj = m_freeListTails[bucket];
+    SatoriFreeListObject* tailObj = m_freeListTails[bucket];
     _ASSERTE(tailObj);
-    *(SatoriObject**)(tailObj->Start() + FREE_LIST_NEXT_OFFSET) = freeObj;
-    m_freeListTails[bucket] = freeObj;
+    tailObj->m_nextInFreeList = freeListObj;
+    m_freeListTails[bucket] = freeListObj;
 }
 
 void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
@@ -441,6 +440,7 @@ void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
         return;
     }
 
+    SatoriFreeListObject* freeListObj = (SatoriFreeListObject*)freeObj;
     DWORD bucket;
     BitScanReverse64(&bucket, allocSize);
     bucket -= (Satori::MIN_FREELIST_SIZE_BITS);
@@ -448,14 +448,14 @@ void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
     _ASSERTE(bucket < Satori::FREELIST_COUNT);
 
     // insert at the head, since we are returning what we recently took.
-    *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET) = m_freeLists[bucket];
+    freeListObj->m_nextInFreeList = m_freeLists[bucket];
 
     if (m_freeLists[bucket] == nullptr)
     {
-        m_freeListTails[bucket] = freeObj;
+        m_freeListTails[bucket] = freeListObj;
     }
 
-    m_freeLists[bucket] = freeObj;
+    m_freeLists[bucket] = freeListObj;
 }
 
 bool SatoriRegion::HasFreeSpaceInTopBucket()
@@ -2125,7 +2125,7 @@ bool SatoriRegion::TryDemote()
 
     if (!IsDemotable())
     {
-    return false;
+        return false;
     }
 
     SatoriWorkChunk* gen2Objects = Allocator()->TryGetWorkChunk();

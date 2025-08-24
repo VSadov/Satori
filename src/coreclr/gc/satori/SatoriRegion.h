@@ -302,8 +302,8 @@ private:
 #if _DEBUG
             bool m_hasMarksSet;
 #endif
-            SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
-            SatoriObject* m_freeListTails[Satori::FREELIST_COUNT];
+            SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];
+            SatoriFreeListObject* m_freeListTails[Satori::FREELIST_COUNT];
         };
     };
 
