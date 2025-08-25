@@ -784,7 +784,8 @@ void SatoriRecycler::ConcurrentWorkerFn()
 
         // past CC_CLEAN_STATE_NOT_READY stage we spin while GC_STATE_CONCURRENT - to check
         // for more work or for completion condition.
-        GCToOSInterface::Sleep(0);
+        MaybeAskForHelp();
+        break;
     }
 }
 
