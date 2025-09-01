@@ -326,7 +326,8 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
     else
     {
         // we do not know, so conservatively assume that the next GC may promote
-        if (region->IsRelocationCandidate(/*assumePromotion*/true))
+        if (region->IsRelocationCandidate(/*assumePromotion*/true) ||
+            region->SweepsSinceLastAllocation() == 0)
         {
             Interlocked::Increment(&m_relocatableEphemeralEstimate);
         }
@@ -349,7 +350,8 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
 
 void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
 {
-    if (region->IsRelocationCandidate())
+    if (region->IsRelocationCandidate() ||
+        region->SweepsSinceLastAllocation() == 0)
     {
         Interlocked::Increment(&m_relocatableTenuredEstimate);
     }
@@ -3570,11 +3572,18 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         //       It is relatively cheap, but for very large heaps could
         //       add up. By rough estimates planning 1Tb heap could take 100ms+.
         //       Think about this.
-        // MaybeAskForHelp();
+        MaybeAskForHelp();
 
         do
         {
             _ASSERTE(curRegion->Generation() <= m_condemnedGeneration);
+
+            if (curRegion->Generation() < 2 &&
+                !curRegion->IsAttachedToAllocatingOwner() &&
+                curRegion->SweepsSinceLastAllocation() == 0)
+            {
+                curRegion->LightSweep();
+            }
 
             // select relocation candidates and relocation targets according to sizes.
             if (curRegion->IsRelocationCandidate(m_promoteAllRegions))

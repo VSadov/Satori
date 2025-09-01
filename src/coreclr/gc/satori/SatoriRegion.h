@@ -106,7 +106,7 @@ public:
     bool IsPromotionCandidate();
     bool IsRelocationCandidate(bool assumePromotion = false);
 
-bool TryDemote();
+    bool TryDemote();
     bool IsDemoted();
     SatoriWorkChunk* &DemotedObjects();
     bool& HasUnmarkedDemotedObjects();
@@ -120,6 +120,7 @@ bool TryDemote();
     size_t Start();
     size_t End();
     size_t Size();
+    bool IsLarge();
 
     SatoriObject* FirstObject();
     SatoriObject* FindObject(size_t location);
@@ -147,6 +148,8 @@ bool TryDemote();
 
     template <bool updatePointers>
     bool Sweep();
+
+    void LightSweep();
 
     bool IsExposed(SatoriObject** location);
     bool AnyExposed(size_t from, size_t length);
