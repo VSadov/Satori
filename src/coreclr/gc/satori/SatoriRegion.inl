@@ -571,57 +571,6 @@ bool SatoriRegion::Sweep()
     return cannotRecycle;
 }
 
-inline void SatoriRegion::LightSweep()
-{
-    // we should only sweep when we have marks
-    _ASSERTE(HasMarksSet());
-    _ASSERTE(!DoNotSweep());
-
-    if (this->IsLarge())
-    {
-        return;
-    }
-
-    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
-
-    // we will be building new free lists
-    ClearFreeLists();
-
-    size_t occupancy = 0;
-    int32_t objCount = 0;
-    SatoriObject* o = FirstObject();
-    do
-    {
-        if (!IsMarked(o))
-        {
-            size_t lastMarkedEnd = o->Start();
-            o = SkipUnmarked(o);
-            SatoriUtil::Prefetch(o);
-            size_t skipped = o->Start() - lastMarkedEnd;
-            SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
-            SetIndicesForObject(free, o->Start());
-            AddFreeSpace(free, skipped);
-
-            if (o->Start() >= objLimit)
-            {
-                _ASSERTE(o->Start() == objLimit);
-                break;
-            }
-        }
-
-        _ASSERTE(!o->IsFree());
-
-        size_t size = o->Size();
-        objCount++; 
-        occupancy += size;
-        o = (SatoriObject*)(o->Start() + size);
-    } while (o->Start() < objLimit);
-
-    _ASSERTE(o->Start() == objLimit || End() > objLimit);
-
-    SetOccupancy(occupancy, objCount);
-}
-
 template <bool updatePointers>
 bool SatoriRegion::Sweep()
 {

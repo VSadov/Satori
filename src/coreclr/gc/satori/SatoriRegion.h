@@ -149,7 +149,8 @@ public:
     template <bool updatePointers>
     bool Sweep();
 
-    void LightSweep();
+    bool SatoriRegion::IsPreSweepCandidate();
+    void PreSweep();
 
     bool IsExposed(SatoriObject** location);
     bool AnyExposed(size_t from, size_t length);

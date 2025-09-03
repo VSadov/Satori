@@ -326,8 +326,9 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
     else
     {
         // we do not know, so conservatively assume that the next GC may promote
-        if (region->IsRelocationCandidate(/*assumePromotion*/true) ||
-            region->SweepsSinceLastAllocation() == 0)
+        // also assume that presweep candidates will want to relocate
+       if (region->IsRelocationCandidate(/*assumePromotion*/true) ||
+            region->IsPreSweepCandidate())
         {
             Interlocked::Increment(&m_relocatableEphemeralEstimate);
         }
@@ -350,8 +351,9 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
 
 void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
 {
+    // assume that presweep candidates will want to relocate
     if (region->IsRelocationCandidate() ||
-        region->SweepsSinceLastAllocation() == 0)
+        region->IsPreSweepCandidate())
     {
         Interlocked::Increment(&m_relocatableTenuredEstimate);
     }
@@ -3578,11 +3580,9 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         {
             _ASSERTE(curRegion->Generation() <= m_condemnedGeneration);
 
-            if (curRegion->Generation() < 2 &&
-                !curRegion->IsAttachedToAllocatingOwner() &&
-                curRegion->SweepsSinceLastAllocation() == 0)
+            if (curRegion->IsPreSweepCandidate())
             {
-                curRegion->LightSweep();
+                curRegion->PreSweep();
             }
 
             // select relocation candidates and relocation targets according to sizes.
@@ -3604,7 +3604,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
             }
         } while ((curRegion = regions->TryPop()));
     }
-};
+}
 
 void SatoriRecycler::AddRelocationTarget(SatoriRegion* region)
 {
