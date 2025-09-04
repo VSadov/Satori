@@ -3429,8 +3429,15 @@ void SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker()
     FreeRelocatedRegionsWorker();
 }
 
+// TODO: VS use in more plces whre ReturnRegionNoLock is used
 void SatoriRecycler::FreeRelocatedRegion(SatoriRegion* curRegion, bool noLock)
 {
+    // Blank and return an unoccupied region.
+    // The biggest cost here is clearing marks.
+    // Since knowing that the region is empty requires some form of sweeping,
+    // it is unlikely that wiping marks will add much next to that.
+    // Thus once we know the region is empty, we could as well free it.
+
     _ASSERTE(!curRegion->HasPinnedObjects());
     curRegion->ClearMarks();
 
@@ -3440,8 +3447,6 @@ void SatoriRecycler::FreeRelocatedRegion(SatoriRegion* curRegion, bool noLock)
         curRegion->DetachFromAlocatingOwnerRelease();
     }
 
-    // blank and return regions eagerly.
-    // we are zeroing a few kb - that might be comparable with costs of deferring.
     curRegion->MakeBlank();
     if (noLock)
     {
@@ -3585,8 +3590,12 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
                 curRegion->PreSweep();
             }
 
+            if (curRegion->Occupancy() == 0)
+            {
+                FreeRelocatedRegion(curRegion, /*noLock*/ true);
+            }
             // select relocation candidates and relocation targets according to sizes.
-            if (curRegion->IsRelocationCandidate(m_promoteAllRegions))
+            else if (curRegion->IsRelocationCandidate(m_promoteAllRegions))
             {
                 // when relocating, we want to start with larger regions
                 if (curRegion->Occupancy() > Satori::REGION_SIZE_GRANULARITY * 2 / 5)
@@ -3823,6 +3832,8 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
 
     relocationTarget->StopAllocating(dst);
 
+    printf("\n RELOCATED: %i \n", (int)objectsRelocated);
+
     // just update the obj count, if target is not marked this will be correct
     // otherwise sweep will update anyways.
     relocationTarget->SetOccupancy(relocationTarget->Occupancy(), relocationTarget->ObjCount() + objectsRelocated);
@@ -4043,6 +4054,12 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
             if (!m_promoteAllRegions && curRegion->IsPromotionCandidate())
             {
                 curRegion->IndividuallyPromote();
+            }
+
+            if (curRegion->IsPreSwept())
+            {
+                _ASSERTE (curRegion->Generation() <= m_condemnedGeneration);
+                curRegion->FinishSweepForPreSwept();
             }
 
             if (curRegion->Generation() > m_condemnedGeneration &&

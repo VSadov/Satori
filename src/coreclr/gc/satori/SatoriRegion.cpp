@@ -195,6 +195,7 @@ void SatoriRegion::MakeBlank()
     m_hasFinalizables = false;
     _ASSERTE(!m_hasPendingFinalizables);
     m_doNotSweep = false;
+    m_isPreSwept = false;
     m_isRelocated = false;
     _ASSERTE(!m_acceptedPromotedObjects);
     _ASSERTE(!m_individuallyPromoted);
@@ -2205,7 +2206,8 @@ bool SatoriRegion::IsPreSweepCandidate()
 {
     return SweepsSinceLastAllocation() == 0 &&
         !IsAttachedToAllocatingOwner() &&
-        !IsLarge();
+        !IsLarge() &&
+        !IsPromotionCandidate();
 }
 
 void SatoriRegion::PreSweep()
@@ -2214,6 +2216,7 @@ void SatoriRegion::PreSweep()
     _ASSERTE(HasMarksSet());
     _ASSERTE(!DoNotSweep());
     _ASSERTE(!IsLarge());
+    _ASSERTE(!this->m_individuallyPromoted);
 
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
 
@@ -2222,6 +2225,7 @@ void SatoriRegion::PreSweep()
 
     size_t occupancy = 0;
     int32_t objCount = 0;
+    bool hasFinalizables = false;
     SatoriObject* o = FirstObject();
     do
     {
@@ -2245,6 +2249,12 @@ void SatoriRegion::PreSweep()
         _ASSERTE(!o->IsFree());
 
         size_t size = o->Size();
+
+        if (!hasFinalizables && o->RawGetMethodTable()->HasFinalizer())
+        {
+            hasFinalizables = true;
+        }
+
         objCount++; 
         occupancy += size;
         o = (SatoriObject*)(o->Start() + size);
@@ -2252,7 +2262,40 @@ void SatoriRegion::PreSweep()
 
     _ASSERTE(o->Start() == objLimit || End() > objLimit);
 
+    this->m_hasFinalizables = hasFinalizables;
     SetOccupancy(occupancy, objCount);
+    this->IsPreSwept() = true;
+}
+
+void SatoriRegion::FinishSweepForPreSwept()
+{
+    // Do final things that Sweep would do for pre-swept regions.
+    // That is mostly clearing marks and a few other things.
+
+    // TUNING: could cleaning marks in presweep be a win?
+    // 
+    // We keep marks in presweep so that we could SkipUnmarked in
+    // couple places related to relocation - like RelocateRegion and
+    // UpdatePointersInPromotedObjects.
+    
+    // We could clear marks in presweep and introduce SkipUnmarkedOrFree to use in RelocateRegion.
+    // Perhaps need to make HasMarksSet non-debug for that or fold with DoNotSweep.
+    // Also would need to make RelocateRegion to sweep src.
+    // Reloc sweeping may need to fix index, since scan may look through old objs (for both stack and cards)
+    // (presweep already does)
+    // 
+    // In such model either sweep or reloc destroys marks.
+    // It could be interesting if presweep is relatively common
+    // (at least in relocating scenarios, as no-compact case does not care).
+    ClearMarks();
+
+#if _DEBUG
+    HasMarksSet() = false;
+#endif
+    HasPinnedObjects() = false;
+    HasUnmarkedDemotedObjects() = IsDemoted();
+    IsPreSwept() = false;
+    DoNotSweep() = true;
 }
 
 void SatoriRegion::Verify(bool allowMarked)

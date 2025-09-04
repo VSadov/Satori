@@ -151,6 +151,7 @@ public:
 
     bool SatoriRegion::IsPreSweepCandidate();
     void PreSweep();
+    void FinishSweepForPreSwept();
 
     bool IsExposed(SatoriObject** location);
     bool AnyExposed(size_t from, size_t length);
@@ -183,6 +184,7 @@ public:
 
     bool& HasPinnedObjects();
     bool& DoNotSweep();
+    bool& IsPreSwept();
     bool& IsRelocated();
     bool& AcceptedPromotedObjects();
     bool& IndividuallyPromoted();
@@ -298,6 +300,7 @@ private:
             bool m_hasFinalizables;
             bool m_hasPendingFinalizables;
             bool m_doNotSweep;
+            bool m_isPreSwept;
             bool m_isRelocated;
 
             bool m_acceptedPromotedObjects;

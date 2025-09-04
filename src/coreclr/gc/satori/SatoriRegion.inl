@@ -125,7 +125,7 @@ inline size_t SatoriRegion::Size()
 
 inline bool SatoriRegion::IsLarge()
 {
-    return Size() >= Satori::REGION_SIZE_GRANULARITY;
+    return Size() > Satori::REGION_SIZE_GRANULARITY;
 }
 
 inline size_t SatoriRegion::GetAllocStart()
@@ -625,6 +625,11 @@ inline bool& SatoriRegion::HasMarksSet()
 inline bool& SatoriRegion::DoNotSweep()
 {
     return m_doNotSweep;
+}
+
+inline bool& SatoriRegion::IsPreSwept()
+{
+    return m_isPreSwept;
 }
 
 inline bool& SatoriRegion::IsRelocated()
