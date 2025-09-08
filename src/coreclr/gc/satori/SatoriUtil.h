@@ -106,12 +106,14 @@ namespace Satori
     // When 1/4 escapes, we stop tracking escapes.
     static const int MAX_ESCAPE_SIZE = REGION_SIZE_GRANULARITY / 4;
 
+    // freelist bucket contais items that fit at least 1 << (i + min_bits)
+    // min freelist size is 4K+
     static const int MIN_FREELIST_SIZE_BITS = 12;
     static const size_t MIN_FREELIST_SIZE = 1 << MIN_FREELIST_SIZE_BITS;
     static const int FREELIST_COUNT = Satori::REGION_BITS - MIN_FREELIST_SIZE_BITS;
 
-    // TUNING: more buckets means more aggressive demotion.
-    static const int REUSABLE_BUCKETS = 6;
+    // min resusable bucket is 32K+  (so not a large obj will always fit)
+    static const int REUSABLE_BUCKETS = FREELIST_COUNT - 3;
 
     // we will limit number of demoted objects to not use too many chunks
     // it will softly limit the occupancy as well.
