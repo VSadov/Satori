@@ -1094,18 +1094,19 @@ void SatoriRecycler::AdjustHeuristics()
     // TUNING: using exponential smoothing with alpha == 1/2. is it a good smooth/lag balance?
     m_gen1Budget = (m_gen1Budget + newGen1Budget) / 2;
 
+    // if the heap size will definitely be over the limit at next GC, make the next GC a full GC
+    m_nextGcIsFullGc = occupancy + m_gen1Budget > m_totalLimit;
+    if (!SatoriUtil::IsGen1Enabled())
+    {
+        m_gen1Budget = m_totalLimit - occupancy;
+        m_nextGcIsFullGc = true;
+    }
+
     // limit budget to available memory
     size_t available = GetAvailableMemory();
     if (available < m_gen1Budget)
     {
         m_gen1Budget = available;
-    }
-
-    // if the heap size will definitely be over the limit at next GC, make the next GC a full GC
-    m_nextGcIsFullGc = occupancy + m_gen1Budget > m_totalLimit;
-    if (!SatoriUtil::IsGen1Enabled())
-    {
-        m_nextGcIsFullGc = true;
     }
 
     // now figure if we will promote
