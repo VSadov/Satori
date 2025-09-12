@@ -55,6 +55,7 @@ public:
 
     size_t Size();
     size_t FreeObjSize();
+    size_t FreeObjCapacity();
     bool SameRegion(SatoriRegion* otherRegion);
     bool IsFree();
     bool IsExternal();
@@ -125,7 +126,6 @@ public:
     ~SatoriFreeListObject() = delete;
 
     SatoriFreeListObject* m_nextInFreeList;
-    size_t m_discardedLength;
 };
 
 #endif

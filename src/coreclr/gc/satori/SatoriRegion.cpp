@@ -323,6 +323,8 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
     if (selectedBucket < Satori::FREELIST_COUNT)
     {
         m_freeLists[selectedBucket] = freeListObj->m_nextInFreeList;
+        m_freeListCapacities[selectedBucket] -= freeListObj->FreeObjCapacity();
+        _ASSERTE(m_freeLists[selectedBucket] != nullptr || m_freeListCapacities[selectedBucket] == 0);
         m_allocStart = freeListObj->Start();
         m_allocEnd = m_allocStart + freeListObj->FreeObjSize();
         SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
@@ -360,6 +362,8 @@ size_t SatoriRegion::StartAllocatingBestFit(size_t minAllocSize)
             if (size >= minFreeObjSize)
             {
                 m_freeLists[bucket] = freeObj->m_nextInFreeList;
+                m_freeListCapacities[bucket] -= freeObj->FreeObjCapacity();
+                _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
                 m_allocStart = freeObj->Start();
                 m_allocEnd = m_allocStart + size;
                 SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
@@ -416,6 +420,9 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
     _ASSERTE(bucket >= 0);
     _ASSERTE(bucket < Satori::FREELIST_COUNT);
 
+    _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
+    m_freeListCapacities[bucket] += freeListObj->FreeObjCapacity();
+
     // insert at the tail
     freeListObj->m_nextInFreeList = nullptr;
     if (m_freeLists[bucket] == nullptr)
@@ -447,6 +454,9 @@ void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
     bucket -= (Satori::MIN_FREELIST_SIZE_BITS);
     _ASSERTE(bucket >= 0);
     _ASSERTE(bucket < Satori::FREELIST_COUNT);
+
+    _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
+    m_freeListCapacities[bucket] += freeListObj->FreeObjCapacity();
 
     // insert at the head, since we are returning what we recently took.
     freeListObj->m_nextInFreeList = m_freeLists[bucket];
@@ -2199,7 +2209,7 @@ void SatoriRegion::ClearIndex()
 void SatoriRegion::ClearFreeLists()
 {
     // clear free lists and free list tails
-    memset(m_freeLists, 0, sizeof(m_freeLists) * 2);
+    memset(m_freeListCapacities, 0, sizeof(m_freeListCapacities) + sizeof(m_freeLists) + sizeof(m_freeListTails));
 }
 
 bool SatoriRegion::IsPreSweepCandidate()
