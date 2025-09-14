@@ -326,6 +326,7 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
     else
     {
         // we do not know, so conservatively assume that the next GC may promote
+        // TODO: VS is that actually correct? (i.e. nursery regs in gen1 may want to be reused instead)
         // also assume that presweep candidates will want to relocate
        if (region->IsRelocationCandidate(/*assumePromotion*/true) ||
             region->IsPreSweepCandidate())
@@ -352,6 +353,7 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
 void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
 {
     // assume that presweep candidates will want to relocate
+    // TODO: VS is that actually correct? (i.e. nursery regs in gen1 may want to be reused instead)
     if (region->IsRelocationCandidate() ||
         region->IsPreSweepCandidate())
     {
@@ -1094,8 +1096,10 @@ void SatoriRecycler::AdjustHeuristics()
     // TUNING: using exponential smoothing with alpha == 1/2. is it a good smooth/lag balance?
     m_gen1Budget = (m_gen1Budget + newGen1Budget) / 2;
 
-    // if the heap size will definitely be over the limit at next GC, make the next GC a full GC
-    m_nextGcIsFullGc = occupancy + m_gen1Budget > m_totalLimit;
+    // TODO: VS sometimes gen2 may need to follow gen2
+    // if the heap size will definitely be over the limit at next GC, make the next GC a full GC,
+    // unless we already doing gen2 GC
+    m_nextGcIsFullGc = (occupancy + m_gen1Budget > m_totalLimit) && m_condemnedGeneration != 2;
     if (!SatoriUtil::IsGen1Enabled())
     {
         m_gen1Budget = m_totalLimit - occupancy;
@@ -3430,7 +3434,7 @@ void SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker()
     FreeRelocatedRegionsWorker();
 }
 
-// TODO: VS use in more plces whre ReturnRegionNoLock is used
+// TODO: VS use in more places where ReturnRegionNoLock is used
 void SatoriRecycler::FreeRelocatedRegion(SatoriRegion* curRegion, bool noLock)
 {
     // Blank and return an unoccupied region.
@@ -3511,11 +3515,11 @@ void SatoriRecycler::Plan()
     // At an extreme we do not want to relocate one region
     // and then go through 100 regions and update pointers.
     //
-    // As crude criteria, we will do relocations if at least 1/2
+    // As crude criteria, we will do relocations if at least 1/3
     // of condemned regions want to participate. And at least 2.
     size_t desiredRelocating = SatoriUtil::IsForceCompact() ?
         0 :
-        m_condemnedRegionsCount / 2 + 2;
+        m_condemnedRegionsCount / 3 + 2;
 
     if (m_isRelocating == false ||
         relocatableEstimate <= desiredRelocating)
@@ -3531,7 +3535,9 @@ void SatoriRecycler::Plan()
     // or if this is gen1, which can reuse more.
     // Check again if it we are still meeting the relocation criteria.
     size_t relocatableActual = m_relocatingRegions->Count();
-    _ASSERTE(relocatableActual <= relocatableEstimate);
+
+    // TODO: VS how could this happen? demoted in gen2 (or promo-all) may become relocatable for example..
+    // _ASSERTE(relocatableActual <= relocatableEstimate);
     if (relocatableActual <= desiredRelocating)
     {
         m_stayingRegions->AppendUnsafe(m_relocatingRegions);

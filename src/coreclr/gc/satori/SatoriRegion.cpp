@@ -480,7 +480,7 @@ size_t SatoriRegion::FreeSpaceInTopNBuckets(int n)
     for (int bucket = Satori::FREELIST_COUNT -  n; bucket < Satori::FREELIST_COUNT; bucket++)
     {
         result += m_freeListCapacities[bucket];
-        }
+    }
 
     return result;
 }
@@ -2034,7 +2034,7 @@ void SatoriRegion::IndividuallyPromote()
         DetachFromAlocatingOwnerRelease();
     }
 
-    m_generation = 2;
+    SetGeneration(2);
     m_individuallyPromoted = true;
     RearmCardsForTenured();
 }
@@ -2047,17 +2047,7 @@ void SatoriRegion::IndividuallyPromote()
 //         In big quantities may hurt though.
 bool SatoriRegion::IsReuseCandidate()
 {
-    if (!HasFreeSpaceInTopNBuckets(Satori::REUSABLE_BUCKETS))
-        return false;
-
-    // TUNING: here we are roughly estimating reuse goodness. A better idea?
-    //       i.e. 32k max chunk can be not more than 131K (1/16 full)
-    //            64k max chunk can be not more than 262K (1/8 full)
-    //           128k max chunk can be not more than 524K (1/4 full)
-    //           256k max chunk can be not more than   1M (1/2 full)
-    //           512k max chunk                    always acceptable
-    //             1M max chunk                    always acceptable
-    return GetMaxAllocEstimate() * 4 > Occupancy();
+    return FreeSpaceInTopNBuckets(Satori::REUSABLE_BUCKETS) > Satori::REGION_SIZE_GRANULARITY / 4;
 }
 
 bool SatoriRegion::IsDemotable()
@@ -2076,7 +2066,7 @@ bool SatoriRegion::IsDemotable()
 bool SatoriRegion::IsPromotionCandidate()
 {
     // TUNING: individual promoting heuristic
-    // if the region has not seen an allocation for 4 cycles, perhaps should tenure it
+    // if the region is not reusable and has not seen an allocation for 4 cycles, perhaps should tenure it
     return Generation() == 1 &&
         SweepsSinceLastAllocation() > 4 &&
         !IsReuseCandidate();
@@ -2091,15 +2081,33 @@ bool SatoriRegion::IsRelocationCandidate(bool assumePromotion)
         return false;
     }
 
-    // region up to 3/4 will free 524K+ chunk if compacted, so it may be worth compacting
+    if (IsDemoted() && !assumePromotion)
+    {
+        return false;
+    }
+    // TODO: VS settle on this.
+    // size_t tooFullThreshold = Satori::REGION_SIZE_GRANULARITY / 2;
+
+    // region up to 3/4 will free 524K+ chunk if compacted, so it may be worth compacting in gen2
+    // region 1/2 full can be compacted in gen1
     // otherwise this is too full.
-    if (Occupancy() >= Satori::REGION_SIZE_GRANULARITY / 4 * 3)
+    size_t tooFullThreshold = assumePromotion ?
+        Satori::REGION_SIZE_GRANULARITY / 4 * 3 :
+        Satori::REGION_SIZE_GRANULARITY / 2;
+
+    if (Occupancy() >= tooFullThreshold)
     {
         return false;
     }
 
+    // did not use for a while, consider compacting.
+    if (SweepsSinceLastAllocation() > 2)
+    {
+        return true;
+    }
+
     // not reusable, consider compacting, as if reusable we'd rather reuse
-    if (!IsReusable())
+    if (!IsReuseCandidate())
     {
         return true;
     }
@@ -2212,10 +2220,12 @@ void SatoriRegion::ClearFreeLists()
 
 bool SatoriRegion::IsPreSweepCandidate()
 {
-    return SweepsSinceLastAllocation() == 0 &&
+    bool result = SweepsSinceLastAllocation() == 0 && 
         !IsAttachedToAllocatingOwner() &&
-        !IsLarge() &&
-        !IsPromotionCandidate();
+        !IsLarge();
+
+    _ASSERTE(!result || !IsPromotionCandidate());
+    return result;
 }
 
 void SatoriRegion::PreSweep()
@@ -2304,6 +2314,8 @@ void SatoriRegion::FinishSweepForPreSwept()
     HasUnmarkedDemotedObjects() = IsDemoted();
     IsPreSwept() = false;
     DoNotSweep() = true;
+
+    m_sweepsSinceLastAllocation++;
 }
 
 void SatoriRegion::Verify(bool allowMarked)
