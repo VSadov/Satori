@@ -474,17 +474,15 @@ bool SatoriRegion::HasFreeSpaceInTopBucket()
     return m_freeLists[Satori::FREELIST_COUNT - 1];
 }
 
-bool SatoriRegion::HasFreeSpaceInTopNBuckets(int n)
+size_t SatoriRegion::FreeSpaceInTopNBuckets(int n)
 {
+    size_t result = 0;
     for (int bucket = Satori::FREELIST_COUNT -  n; bucket < Satori::FREELIST_COUNT; bucket++)
     {
-        if (m_freeLists[bucket])
-        {
-            return true;
+        result += m_freeListCapacities[bucket];
         }
-    }
 
-    return false;
+    return result;
 }
 
 size_t SatoriRegion::GetMaxAllocEstimate()

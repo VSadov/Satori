@@ -85,7 +85,7 @@ public:
     void ReturnFreeSpace(SatoriObject * freeObj, size_t size);
 
     bool HasFreeSpaceInTopBucket();
-    bool HasFreeSpaceInTopNBuckets(int n);
+    size_t FreeSpaceInTopNBuckets(int n);
 
     void StartEscapeTrackingRelease(size_t threadTag);
     void StopEscapeTracking();
