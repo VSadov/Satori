@@ -3542,8 +3542,7 @@ void SatoriRecycler::Plan()
     // Check again if it we are still meeting the relocation criteria.
     size_t relocatableActual = m_relocatingRegions->Count();
 
-    // TODO: VS how could this happen? demoted in gen2 (or promo-all) may become relocatable for example..
-    // _ASSERTE(relocatableActual <= relocatableEstimate);
+    _ASSERTE(relocatableActual <= relocatableEstimate);
     if (relocatableActual <= desiredRelocating)
     {
         m_stayingRegions->AppendUnsafe(m_relocatingRegions);
