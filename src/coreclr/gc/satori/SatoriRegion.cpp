@@ -2091,7 +2091,7 @@ bool SatoriRegion::IsRelocationCandidate(bool assumePromotion)
     // region up to 3/4 will free 524K+ chunk if compacted, so it may be worth compacting in gen2
     // region 1/2 full can be compacted in gen1
     // otherwise this is too full.
-    size_t tooFullThreshold = assumePromotion ?
+    size_t tooFullThreshold = (Generation() == 2 || assumePromotion) ?
         Satori::REGION_SIZE_GRANULARITY / 4 * 3 :
         Satori::REGION_SIZE_GRANULARITY / 2;
 
