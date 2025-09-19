@@ -1098,12 +1098,21 @@ void SatoriRecycler::AdjustHeuristics()
 
     // if the heap size will definitely be over the limit at next GC, make the next GC a full GC,
     // unless we already doing gen2 GC
-    m_nextGcIsFullGc = (occupancy + m_gen1Budget > m_totalLimit) && m_condemnedGeneration != 2;
-
-    // in unusual cases gen1 ends up so large than every GC is gen2 gc.
-    if (m_gen1Budget > m_totalLimit)
+    if (m_condemnedGeneration != 2)
     {
-        m_nextGcIsFullGc = true;
+        // If the heap size will definitely be over the limit at next GC, make the next GC a full GC,
+        // NOTE: If gen1 is big, we will still use gen1 target, but then do gen2 GCs.
+        //       We may exceed the total goal temporarily. That is ok.
+        m_nextGcIsFullGc = (occupancy + m_gen1Budget > m_totalLimit);
+    }
+    else
+    {
+        // In unusul cases gen1 may end up so large than we get into "every GC is gen2 GC" mode.
+        // That can happen if object lifetimes do not behave generationally or
+        // there is high fragmentation that compaction could not defeat.
+        size_t approxTotalBudgetAfterGC = m_totalLimit * (SatoriUtil::Gen2Target() - 100) / SatoriUtil::Gen2Target();
+        // even if current GC is a gen2, the gen1 budget could exceed the new total, thus the next GC is gen2 again.
+        m_nextGcIsFullGc = m_gen1Budget > approxTotalBudgetAfterGC;
     }
 
     if (!SatoriUtil::IsGen1Enabled())

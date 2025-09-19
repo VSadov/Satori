@@ -2053,7 +2053,7 @@ bool SatoriRegion::IsReuseCandidate()
 bool SatoriRegion::IsDemotable()
 {
     if (ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION ||
-        Occupancy() > Satori::REGION_SIZE_GRANULARITY / 8)
+        FreeSpaceInTopNBuckets(Satori::REUSABLE_BUCKETS) < (Satori::REGION_SIZE_GRANULARITY / 8 * 7)) // TUNING:
     {
         return false;
     }
