@@ -89,6 +89,7 @@ public:
     int64_t GetTotalAllocatedBytes();
 
     void RecordOccupancy(int generation, size_t size);
+    void RecordDemotedOccupancy(size_t demotedOccupancy);
     void UpdateGenerationOccupancies();
     size_t GetTotalOccupancy();
     size_t GetOccupancy(int i);
@@ -226,6 +227,9 @@ private:
 
     size_t m_occupancy[3];
     size_t m_occupancyAcc[3];
+
+    size_t m_demotedOccupancy;
+    size_t m_demotedOccupancyAcc;
 
     size_t m_relocatableEphemeralEstimate;
     size_t m_relocatableTenuredEstimate;

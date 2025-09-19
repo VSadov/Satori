@@ -181,6 +181,7 @@ public:
     size_t Occupancy();
     int32_t& OccupancyAtReuse();
     int32_t ObjCount();
+    size_t DemotedOccupancy();
 
     bool& HasPinnedObjects();
     bool& DoNotSweep();
@@ -292,6 +293,7 @@ private:
             SatoriQueue<SatoriRegion>* m_containingQueue;
 
             size_t m_occupancy;
+            size_t m_demotedOccupancy;
             int32_t m_objCount;
 
             int32_t m_unfinishedAllocationCount;

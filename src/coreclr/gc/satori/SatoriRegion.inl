@@ -599,6 +599,12 @@ inline size_t SatoriRegion::Occupancy()
     return m_occupancy;
 }
 
+inline size_t SatoriRegion::DemotedOccupancy()
+{
+    _ASSERTE((m_demotedOccupancy != 0) == IsDemoted());
+    return m_demotedOccupancy;
+}
+
 inline int32_t &SatoriRegion::OccupancyAtReuse()
 {
     _ASSERTE(!IsAllocating());

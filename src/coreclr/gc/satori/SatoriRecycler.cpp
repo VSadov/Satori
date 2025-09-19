@@ -128,12 +128,11 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_relocatableTenuredEstimate = 0;
     m_promotionEstimate = 0;
 
-    m_occupancy[0] = 0;
-    m_occupancy[1] = 0;
-    m_occupancy[2] = 0;
-    m_occupancyAcc[0] = 0;
-    m_occupancyAcc[1] = 0;
-    m_occupancyAcc[2] = 0;
+    m_occupancy[0] = m_occupancyAcc[0] = 0;
+    m_occupancy[1] = m_occupancyAcc[1] = 0;
+    m_occupancy[2] = m_occupancyAcc[2] = 0;
+
+    m_demotedOccupancy = m_demotedOccupancyAcc = 0;
 
     m_gen1CountAtLastGen2 = 0;
     m_gen1Budget = MIN_GEN1_BUDGET;
@@ -1075,6 +1074,11 @@ void SatoriRecycler::AdjustHeuristics()
 
     size_t ephemeralOccupancy = m_occupancy[1] + m_occupancy[0];
     size_t tenuredOccupancy = m_occupancy[2];
+
+    //size_t demotedOccupancy = m_demotedOccupancy;
+    //ephemeralOccupancy -= demotedOccupancy;
+    //tenuredOccupancy += demotedOccupancy;
+
     size_t occupancy = tenuredOccupancy + ephemeralOccupancy;
 
     if (m_prevCondemnedGeneration == 2)
@@ -1278,6 +1282,10 @@ void SatoriRecycler::BlockingCollectImpl()
 
     _ASSERTE(m_deferredSweepRegions->IsEmpty());
 
+    // TODO: VS should adjust after deactivate? (and deal with the occupancies as well?
+    //       probably not as occupancies are as of the last GC completion. (i.e Gen0 size was captured long time ago)
+    //       is that true?
+    
     // now we know survivorship after the last GC
     // and we can figure what we want to do in this GC and when we will do the next one
     AdjustHeuristics();
@@ -3926,6 +3934,7 @@ void SatoriRecycler::Update()
     _ASSERTE(m_ephemeralFinalizationTrackingRegions->IsEmpty());
     _ASSERTE(m_occupancyAcc[0] == 0);
     _ASSERTE(m_occupancyAcc[1] == 0);
+    _ASSERTE(m_demotedOccupancyAcc == 0);
 
     _ASSERTE(m_promoteAllRegions || m_condemnedGeneration != 2);
     if (m_promoteAllRegions)
@@ -4162,6 +4171,8 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                 else
                 {
                     RecordOccupancy(curRegion->Generation(), curRegion->Occupancy());
+                    RecordDemotedOccupancy(curRegion->DemotedOccupancy());
+
                     curRegion->DoNotSweep() = false;
                 }
 
@@ -4241,6 +4252,8 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
     //
 
     RecordOccupancy(curRegion->Generation(), curRegion->Occupancy());
+    RecordDemotedOccupancy(curRegion->DemotedOccupancy());
+
     if (curRegion->Generation() >= 2)
     {
         PushToTenuredQueues(curRegion);
@@ -4399,6 +4412,14 @@ void SatoriRecycler::SweepAndReturnRegion(SatoriRegion* curRegion)
 void SatoriRecycler::RecordOccupancy(int generation, size_t occupancy)
 {
     Interlocked::ExchangeAdd64(&m_occupancyAcc[generation], occupancy);
+}
+
+void SatoriRecycler::RecordDemotedOccupancy(size_t demotedOccupancy)
+{
+    if (demotedOccupancy > 0)
+    {
+        Interlocked::ExchangeAdd64(&m_demotedOccupancy, demotedOccupancy);
+    }
 }
 
 size_t SatoriRecycler::GetOccupancy(int i)

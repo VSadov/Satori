@@ -93,6 +93,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     result->m_allocStart = (size_t)&result->m_firstObject;
     result->m_allocEnd = result->End();
     result->m_occupancy = result->m_allocEnd - result->m_allocStart;
+    result->m_demotedOccupancy = 0;
     result->m_escapeFunc = nullptr;
     result->m_generation = -1;
 
@@ -130,6 +131,8 @@ void SatoriRegion::FreeDemotedTrackers()
         gen2Objects->Clear();
         Allocator()->ReturnWorkChunk(gen2Objects);
     }
+
+    m_demotedOccupancy = 0;
 }
 
 // reset all cards when the region will no longer be tenured.
@@ -187,6 +190,7 @@ void SatoriRegion::MakeBlank()
     // assume all space reserved to allocations will be used
     // (we will revert what will be unused)
     m_occupancy = m_allocEnd - m_allocStart;
+    _ASSERTE(m_demotedOccupancy == 0);
     m_objCount = 0;
 
     m_unfinishedAllocationCount = 0;
@@ -2153,6 +2157,7 @@ bool SatoriRegion::TryDemote()
 
     // fail if we can't get chunks
     bool failed = false;
+    size_t demotedOccupancy = 0;
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     for (SatoriObject* o = FirstObject(); o->Start() < objLimit; o = o->Next())
     {
@@ -2171,6 +2176,8 @@ bool SatoriRegion::TryDemote()
                 gen2Objects = chunk;
                 gen2Objects->Push(o);
             }
+
+            demotedOccupancy += o->Size();
         }
     }
 
@@ -2181,6 +2188,7 @@ bool SatoriRegion::TryDemote()
         return false;
     }
 
+    m_demotedOccupancy = demotedOccupancy;
     this->HasUnmarkedDemotedObjects() = true;
     this->ResetCardsForEphemeral();
     this->SetGeneration(1);
