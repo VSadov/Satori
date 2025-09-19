@@ -1216,6 +1216,29 @@ void SatoriRecycler::BlockingCollect2()
     GCToEEInterface::RestartEE(true);
 }
 
+void SatoriRecycler::UpdateGenerationOccupancies()
+{
+    // updating m_occupancy[0] never needs to be deferred.
+    _ASSERTE(m_occupancyAcc[0] == 0);
+
+    // check if this has been done already
+    if (m_occupancy[1] == 0 && m_occupancy[2] == 0)
+        return;
+
+    m_occupancy[1] = m_occupancyAcc[1];
+    if (m_prevCondemnedGeneration == 2)
+    {
+        m_occupancy[2] = m_occupancyAcc[2];
+    }
+    else
+    {
+        m_occupancy[2] += m_occupancyAcc[2];
+    }
+
+    m_occupancyAcc[1] = 0;
+    m_occupancyAcc[2] = 0;
+}
+
 void SatoriRecycler::BlockingCollectImpl()
 {
     _ASSERTE(!m_nextGcIsFullGc || m_condemnedGeneration ==2);
@@ -1251,11 +1274,7 @@ void SatoriRecycler::BlockingCollectImpl()
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
 
     // all sweeping should be done by now
-    m_occupancy[1] = m_occupancyAcc[1];
-    m_occupancy[2] = m_occupancyAcc[2];
-
-    m_occupancyAcc[0] = 0;
-    m_occupancyAcc[1] = 0;
+    UpdateGenerationOccupancies();
 
     _ASSERTE(m_deferredSweepRegions->IsEmpty());
 
@@ -1349,12 +1368,12 @@ void SatoriRecycler::BlockingCollectImpl()
     else
     {
         // no deferred sweep, can update occupancy earlier (this is optional)
-        m_occupancy[1] = m_occupancyAcc[1];
-        m_occupancy[2] = m_occupancyAcc[2];
+        UpdateGenerationOccupancies();
     }
 
     // we are done with gen0 here, update the occupancy
     m_occupancy[0] = m_occupancyAcc[0];
+    m_occupancyAcc[0] = 0;
 
     m_trimmer->SetOkToRun();
 
@@ -3521,6 +3540,11 @@ void SatoriRecycler::Plan()
     if (m_condemnedGeneration == 2)
     {
         relocatableEstimate += m_relocatableTenuredEstimate;
+    }
+
+    if (m_promoteAllRegions)
+    {
+        // we will be rebuilding gen2, one way or another
         m_occupancyAcc[2] = 0;
         m_gen2AddedSinceLastCollection = 0;
         m_relocatableTenuredEstimate = 0;
@@ -3566,9 +3590,6 @@ void SatoriRecycler::DenyRelocation()
     // put all affected regions into staying queue
     if (m_promoteAllRegions)
     {
-        m_occupancyAcc[2] = 0;
-        m_gen2AddedSinceLastCollection = 0;
-        m_relocatableTenuredEstimate = 0;
         m_stayingRegions->AppendUnsafe(m_ephemeralRegions);
         m_stayingRegions->AppendUnsafe(m_tenuredRegions);
         m_stayingRegions->AppendUnsafe(m_tenuredFinalizationTrackingRegions);
@@ -3759,10 +3780,6 @@ void SatoriRecycler::RelocateWorker()
 
     if (m_condemnedGeneration != 2 && m_promoteAllRegions)
     {
-        m_occupancyAcc[2] = 0;
-        m_gen2AddedSinceLastCollection = 0;
-        m_relocatableTenuredEstimate = 0;
-
         AddTenuredRegionsToPlan(m_tenuredRegions);
         AddTenuredRegionsToPlan(m_tenuredFinalizationTrackingRegions);
     }
@@ -3909,11 +3926,15 @@ void SatoriRecycler::Update()
     _ASSERTE(m_ephemeralFinalizationTrackingRegions->IsEmpty());
     _ASSERTE(m_occupancyAcc[0] == 0);
     _ASSERTE(m_occupancyAcc[1] == 0);
-    if (m_condemnedGeneration == 2 || m_promoteAllRegions)
+
+    _ASSERTE(m_promoteAllRegions || m_condemnedGeneration != 2);
+    if (m_promoteAllRegions)
     {
         _ASSERTE(m_tenuredRegions->IsEmpty());
         _ASSERTE(m_tenuredFinalizationTrackingRegions->IsEmpty());
         _ASSERTE(m_occupancyAcc[2] == 0);
+        _ASSERTE(m_gen2AddedSinceLastCollection == 0);
+        _ASSERTE(m_relocatableTenuredEstimate == 0);
     }
 
     RunWithHelp(&SatoriRecycler::UpdateRegionsWorker);

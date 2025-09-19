@@ -89,6 +89,7 @@ public:
     int64_t GetTotalAllocatedBytes();
 
     void RecordOccupancy(int generation, size_t size);
+    void UpdateGenerationOccupancies();
     size_t GetTotalOccupancy();
     size_t GetOccupancy(int i);
     size_t GetGcStartMillis(int generation);
