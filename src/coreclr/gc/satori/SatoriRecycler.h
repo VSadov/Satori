@@ -227,9 +227,8 @@ private:
 
     size_t m_occupancy[3];
     size_t m_occupancyAcc[3];
-
-    size_t m_demotedOccupancy;
     size_t m_demotedOccupancyAcc;
+    bool m_occupancyReportingEnabled;
 
     size_t m_relocatableEphemeralEstimate;
     size_t m_relocatableTenuredEstimate;

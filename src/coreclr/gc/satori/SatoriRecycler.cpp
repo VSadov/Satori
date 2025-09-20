@@ -131,8 +131,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_occupancy[0] = m_occupancyAcc[0] = 0;
     m_occupancy[1] = m_occupancyAcc[1] = 0;
     m_occupancy[2] = m_occupancyAcc[2] = 0;
-
-    m_demotedOccupancy = m_demotedOccupancyAcc = 0;
+    m_demotedOccupancyAcc = 0;
+    m_occupancyReportingEnabled = false;
 
     m_gen1CountAtLastGen2 = 0;
     m_gen1Budget = MIN_GEN1_BUDGET;
@@ -1075,10 +1075,6 @@ void SatoriRecycler::AdjustHeuristics()
     size_t ephemeralOccupancy = m_occupancy[1] + m_occupancy[0];
     size_t tenuredOccupancy = m_occupancy[2];
 
-    //size_t demotedOccupancy = m_demotedOccupancy;
-    //ephemeralOccupancy -= demotedOccupancy;
-    //tenuredOccupancy += demotedOccupancy;
-
     size_t occupancy = tenuredOccupancy + ephemeralOccupancy;
 
     if (m_prevCondemnedGeneration == 2)
@@ -1220,14 +1216,15 @@ void SatoriRecycler::BlockingCollect2()
     GCToEEInterface::RestartEE(true);
 }
 
+NOINLINE
 void SatoriRecycler::UpdateGenerationOccupancies()
 {
     // updating m_occupancy[0] never needs to be deferred.
     _ASSERTE(m_occupancyAcc[0] == 0);
+    _ASSERTE(m_occupancyReportingEnabled);
 
-    // check if this has been done already
-    if (m_occupancy[1] == 0 && m_occupancy[2] == 0)
-        return;
+    m_occupancyAcc[1] -= m_demotedOccupancyAcc;
+    m_occupancyAcc[2] += m_demotedOccupancyAcc;
 
     m_occupancy[1] = m_occupancyAcc[1];
     if (m_prevCondemnedGeneration == 2)
@@ -1239,8 +1236,8 @@ void SatoriRecycler::UpdateGenerationOccupancies()
         m_occupancy[2] += m_occupancyAcc[2];
     }
 
-    m_occupancyAcc[1] = 0;
-    m_occupancyAcc[2] = 0;
+    m_occupancyAcc[1] = m_occupancyAcc[2] = m_demotedOccupancyAcc = 0;
+    m_occupancyReportingEnabled = false;
 }
 
 void SatoriRecycler::BlockingCollectImpl()
@@ -1278,7 +1275,10 @@ void SatoriRecycler::BlockingCollectImpl()
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
 
     // all sweeping should be done by now
-    UpdateGenerationOccupancies();
+    if (m_occupancyReportingEnabled)
+    {
+        UpdateGenerationOccupancies();
+    }
 
     _ASSERTE(m_deferredSweepRegions->IsEmpty());
 
@@ -1367,6 +1367,11 @@ void SatoriRecycler::BlockingCollectImpl()
     m_gcState = GC_STATE_NONE;
     m_gen1AddedSinceLastCollection = 0;
 
+    // we are done with gen0 here, update the occupancy
+    // we only do Acc for consistency, gen0 reporting is always done by blocking stage end.
+    m_occupancy[0] = m_occupancyAcc[0];
+    m_occupancyAcc[0] = 0;
+
     if (SatoriUtil::IsConcurrentEnabled() && !m_deferredSweepRegions->IsEmpty())
     {
         m_deferredSweepCount = m_deferredSweepRegions->Count();
@@ -1378,10 +1383,6 @@ void SatoriRecycler::BlockingCollectImpl()
         // no deferred sweep, can update occupancy earlier (this is optional)
         UpdateGenerationOccupancies();
     }
-
-    // we are done with gen0 here, update the occupancy
-    m_occupancy[0] = m_occupancyAcc[0];
-    m_occupancyAcc[0] = 0;
 
     m_trimmer->SetOkToRun();
 
@@ -3905,6 +3906,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     }
 }
 
+NOINLINE
 void SatoriRecycler::Update()
 {
     // if we ended up not moving anything, this is no longer a relocating GC.
@@ -3945,6 +3947,9 @@ void SatoriRecycler::Update()
         _ASSERTE(m_gen2AddedSinceLastCollection == 0);
         _ASSERTE(m_relocatableTenuredEstimate == 0);
     }
+
+    // rearm accs
+    m_occupancyReportingEnabled = true;
 
     RunWithHelp(&SatoriRecycler::UpdateRegionsWorker);
 
@@ -4411,14 +4416,16 @@ void SatoriRecycler::SweepAndReturnRegion(SatoriRegion* curRegion)
 
 void SatoriRecycler::RecordOccupancy(int generation, size_t occupancy)
 {
+    _ASSERTE(m_occupancyReportingEnabled);
     Interlocked::ExchangeAdd64(&m_occupancyAcc[generation], occupancy);
 }
 
 void SatoriRecycler::RecordDemotedOccupancy(size_t demotedOccupancy)
 {
+    _ASSERTE(m_occupancyReportingEnabled);
     if (demotedOccupancy > 0)
     {
-        Interlocked::ExchangeAdd64(&m_demotedOccupancy, demotedOccupancy);
+        Interlocked::ExchangeAdd64(&m_demotedOccupancyAcc, demotedOccupancy);
     }
 }
 
