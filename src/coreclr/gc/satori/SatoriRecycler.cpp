@@ -1223,20 +1223,15 @@ void SatoriRecycler::UpdateGenerationOccupancies()
     _ASSERTE(m_occupancyAcc[0] == 0);
     _ASSERTE(m_occupancyReportingEnabled);
 
-    m_occupancyAcc[1] -= m_demotedOccupancyAcc;
-    m_occupancyAcc[2] += m_demotedOccupancyAcc;
+    // Accumulators are cleared in Plan when corresponding generation is rebuilt,
+    // then it accumulates as GC add to the gen.
+    // NB: gen1 may add to gen2, gen1 is actually always rebuilt.
+    // 
+    // Here we just publish the current Acc, so the value is not seen while it fills up or updated.
+    m_occupancy[1] = m_occupancyAcc[1] - m_demotedOccupancyAcc;
+    m_occupancy[2] = m_occupancyAcc[2] + m_demotedOccupancyAcc;
 
-    m_occupancy[1] = m_occupancyAcc[1];
-    if (m_prevCondemnedGeneration == 2)
-    {
-        m_occupancy[2] = m_occupancyAcc[2];
-    }
-    else
-    {
-        m_occupancy[2] += m_occupancyAcc[2];
-    }
-
-    m_occupancyAcc[1] = m_occupancyAcc[2] = m_demotedOccupancyAcc = 0;
+    // no more reporting or accumulating (assert only) untill enabled again 
     m_occupancyReportingEnabled = false;
 }
 
@@ -1365,7 +1360,6 @@ void SatoriRecycler::BlockingCollectImpl()
     m_prevCondemnedGeneration = m_condemnedGeneration;
     m_condemnedGeneration = 0;
     m_gcState = GC_STATE_NONE;
-    m_gen1AddedSinceLastCollection = 0;
 
     // we are done with gen0 here, update the occupancy
     // we only do Acc for consistency, gen0 reporting is always done by blocking stage end.
@@ -3543,20 +3537,26 @@ void SatoriRecycler::Plan()
     }
 #endif
 
-    size_t relocatableEstimate = m_relocatableEphemeralEstimate;
-    m_relocatableEphemeralEstimate = 0;
+    // these counters are since last blocking collection, clear them
+    m_gen1AddedSinceLastCollection = 0;
+    m_gen2AddedSinceLastCollection = 0;
 
+    size_t relocatableEstimate = m_relocatableEphemeralEstimate;
     if (m_condemnedGeneration == 2)
     {
         relocatableEstimate += m_relocatableTenuredEstimate;
     }
 
+    // gen1 is always rebuilt, clear counters
+    m_occupancyAcc[1] = 0;
+    m_relocatableEphemeralEstimate = 0;
+
     if (m_promoteAllRegions)
     {
         // we will be rebuilding gen2, one way or another
         m_occupancyAcc[2] = 0;
-        m_gen2AddedSinceLastCollection = 0;
         m_relocatableTenuredEstimate = 0;
+        m_demotedOccupancyAcc = 0;
     }
 
     // If we do relocation, we are committed to do pointer updates.
@@ -3934,9 +3934,15 @@ void SatoriRecycler::Update()
 
     _ASSERTE(m_ephemeralRegions->IsEmpty());
     _ASSERTE(m_ephemeralFinalizationTrackingRegions->IsEmpty());
+
+    // The following must be reset in Plan, just want to be sure
+    // it did not change since then.
+    // We will be rebuilding these counters, possibly in deferred sweep.
     _ASSERTE(m_occupancyAcc[0] == 0);
     _ASSERTE(m_occupancyAcc[1] == 0);
-    _ASSERTE(m_demotedOccupancyAcc == 0);
+    _ASSERTE(m_relocatableEphemeralEstimate == 0);
+    _ASSERTE(m_gen1AddedSinceLastCollection == 0);
+    _ASSERTE(m_gen2AddedSinceLastCollection == 0);
 
     _ASSERTE(m_promoteAllRegions || m_condemnedGeneration != 2);
     if (m_promoteAllRegions)
@@ -3944,11 +3950,11 @@ void SatoriRecycler::Update()
         _ASSERTE(m_tenuredRegions->IsEmpty());
         _ASSERTE(m_tenuredFinalizationTrackingRegions->IsEmpty());
         _ASSERTE(m_occupancyAcc[2] == 0);
-        _ASSERTE(m_gen2AddedSinceLastCollection == 0);
+        _ASSERTE(m_demotedOccupancyAcc == 0);
         _ASSERTE(m_relocatableTenuredEstimate == 0);
     }
 
-    // rearm accs
+    // enable accumulating and reporting
     m_occupancyReportingEnabled = true;
 
     RunWithHelp(&SatoriRecycler::UpdateRegionsWorker);
@@ -4176,8 +4182,6 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                 else
                 {
                     RecordOccupancy(curRegion->Generation(), curRegion->Occupancy());
-                    RecordDemotedOccupancy(curRegion->DemotedOccupancy());
-
                     curRegion->DoNotSweep() = false;
                 }
 
@@ -4228,7 +4232,12 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
     if (curRegion->IsReuseCandidate())
     {
         _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
-        if ((curRegion->Generation() == 1) || curRegion->TryDemote())
+        if ((curRegion->Generation() == 2) && curRegion->TryDemote())
+        {
+            RecordDemotedOccupancy(curRegion->DemotedOccupancy());
+        }
+
+        if (curRegion->Generation() == 1)
         {
 #if _DEBUG
             // just split 50%/50% for testing purposes.
@@ -4257,7 +4266,6 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
     //
 
     RecordOccupancy(curRegion->Generation(), curRegion->Occupancy());
-    RecordDemotedOccupancy(curRegion->DemotedOccupancy());
 
     if (curRegion->Generation() >= 2)
     {

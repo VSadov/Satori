@@ -54,9 +54,6 @@ namespace Satori
 
     static const int ALLOCATOR_BUCKET_COUNT = PAGE_BITS - REGION_BITS;
 
-    // objects smaller than this go into regular region. 32K - to fit in bucket 3 and above
-    static const int LARGE_OBJECT_THRESHOLD = 32 * 1024;
-
     // object starts are aligned to this
     static const size_t OBJECT_ALIGNMENT = sizeof(size_t);
 
@@ -106,18 +103,21 @@ namespace Satori
     // When 1/4 escapes, we stop tracking escapes.
     static const int MAX_ESCAPE_SIZE = REGION_SIZE_GRANULARITY / 4;
 
+    // objects smaller than this go into regular region.
+    static const int LARGE_OBJECT_THRESHOLD = 32 * 1024;
+
     // freelist bucket contais items that fit at least 1 << (i + min_bits)
     // min freelist size is 4K+
-    static const int MIN_FREELIST_SIZE_BITS = 12;
+    static const int MIN_FREELIST_SIZE_BITS = 11;
     static const size_t MIN_FREELIST_SIZE = 1 << MIN_FREELIST_SIZE_BITS;
     static const int FREELIST_COUNT = Satori::REGION_BITS - MIN_FREELIST_SIZE_BITS;
 
-    // min resusable bucket is 32K+  (so not a large obj will always fit)
-    static const int REUSABLE_BUCKETS = FREELIST_COUNT - 3;
+    // large bucket size is 32K+ - so that any small obj would fit
+    static const int LARGE_BUCKETS = 6;
 
-    // we will limit number of demoted objects to not use too many chunks
+    // we will limit number of demoted objects to not use too many chunks (up to 4)
     // it will softly limit the occupancy as well.
-    const static size_t MAX_DEMOTED_OBJECTS_IN_REGION = 2048;
+    const static size_t MAX_DEMOTED_OBJECTS_IN_REGION = (MARK_CHUNK_COUNT - 2) * 4;
 }
 
 class SatoriUtil

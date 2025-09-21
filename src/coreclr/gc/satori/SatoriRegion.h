@@ -102,7 +102,7 @@ public:
     void ResetReusableForRelease();
 
     bool IsReuseCandidate();
-    bool IsDemotable();
+    bool IsDemotionCandidate();
     bool IsPromotionCandidate();
     bool IsRelocationCandidate(bool assumePromotion = false);
 
