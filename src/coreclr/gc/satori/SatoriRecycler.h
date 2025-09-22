@@ -89,7 +89,7 @@ public:
     int64_t GetTotalAllocatedBytes();
 
     void RecordOccupancy(int generation, size_t size);
-    void RecordDemotedOccupancy(size_t demotedOccupancy);
+    void RecordDemotedOccupancy(ptrdiff_t demotedOccupancy);
     void UpdateGenerationOccupancies();
     size_t GetTotalOccupancy();
     size_t GetOccupancy(int i);

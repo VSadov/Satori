@@ -190,7 +190,9 @@ void SatoriRegion::MakeBlank()
     // assume all space reserved to allocations will be used
     // (we will revert what will be unused)
     m_occupancy = m_allocEnd - m_allocStart;
-    _ASSERTE(m_demotedOccupancy == 0);
+    // this may be not 0 if we demoted without trackers before gen2 gc
+    // and then all objects died, so we blank this.
+    m_demotedOccupancy = 0;
     m_objCount = 0;
 
     m_unfinishedAllocationCount = 0;
@@ -2129,11 +2131,27 @@ bool SatoriRegion::IsRelocationCandidate(bool assumePromotion)
     return false;
 }
 
-bool SatoriRegion::TryDemote()
+bool SatoriRegion::TryDemote(bool nextGcIsFullGc)
 {
     _ASSERTE(!HasMarksSet());
     _ASSERTE(Generation() == 2);
     _ASSERTE(ObjCount() != 0);
+
+    // if next GC is full, this will end up in gen2,
+    // so no need to track gen2 objects.
+    if (nextGcIsFullGc && IsReuseCandidate())
+    {
+        m_demotedOccupancy = Occupancy();
+        // TODO: VS this may not be needed for correctness. do we need this for perf? does the barrier care in nextGcisGen2 case?
+        this->ResetCardsForEphemeral();
+        this->SetGeneration(1);
+        return true;
+    }
+
+    if (!IsDemotionCandidate())
+    {
+        return false;
+    }
 
     // TUNING: heuristic for demoting -  could consider occupancy, pinning, etc...
     //         the cost here is increasing  gen1, which is supposed to be short as 
@@ -2143,11 +2161,6 @@ bool SatoriRegion::TryDemote()
     //
     //         the worst case is if this is a largest possible reusable region that is also
     //         pointer-dense. Thus we will limit the size, just in case.
-
-    if (!IsDemotable())
-    {
-        return false;
-    }
 
     SatoriWorkChunk* gen2Objects = Allocator()->TryGetWorkChunk();
     if (!gen2Objects)

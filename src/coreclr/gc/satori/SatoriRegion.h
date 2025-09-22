@@ -106,7 +106,7 @@ public:
     bool IsPromotionCandidate();
     bool IsRelocationCandidate(bool assumePromotion = false);
 
-    bool TryDemote();
+    bool TryDemote(bool nextGcIsFullGc);
     bool IsDemoted();
     SatoriWorkChunk* &DemotedObjects();
     bool& HasUnmarkedDemotedObjects();

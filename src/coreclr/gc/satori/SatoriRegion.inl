@@ -601,7 +601,6 @@ inline size_t SatoriRegion::Occupancy()
 
 inline size_t SatoriRegion::DemotedOccupancy()
 {
-    _ASSERTE((m_demotedOccupancy != 0) == IsDemoted());
     return m_demotedOccupancy;
 }
 

@@ -4114,6 +4114,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
         {
             if (!m_promoteAllRegions && curRegion->IsPromotionCandidate())
             {
+                RecordDemotedOccupancy(-(ptrdiff_t)curRegion->DemotedOccupancy());
                 curRegion->IndividuallyPromote();
             }
 
@@ -4232,7 +4233,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
     if (curRegion->IsReuseCandidate())
     {
         _ASSERTE(curRegion->Size() == Satori::REGION_SIZE_GRANULARITY);
-        if ((curRegion->Generation() == 2) && curRegion->TryDemote())
+        if ((curRegion->Generation() == 2) && curRegion->TryDemote(m_nextGcIsFullGc))
         {
             RecordDemotedOccupancy(curRegion->DemotedOccupancy());
         }
@@ -4428,12 +4429,12 @@ void SatoriRecycler::RecordOccupancy(int generation, size_t occupancy)
     Interlocked::ExchangeAdd64(&m_occupancyAcc[generation], occupancy);
 }
 
-void SatoriRecycler::RecordDemotedOccupancy(size_t demotedOccupancy)
+void SatoriRecycler::RecordDemotedOccupancy(ptrdiff_t demotedOccupancy)
 {
     _ASSERTE(m_occupancyReportingEnabled);
-    if (demotedOccupancy > 0)
+    if (demotedOccupancy != 0)
     {
-        Interlocked::ExchangeAdd64(&m_demotedOccupancyAcc, demotedOccupancy);
+        Interlocked::ExchangeAdd64(&m_demotedOccupancyAcc, (size_t)demotedOccupancy);
     }
 }
 
