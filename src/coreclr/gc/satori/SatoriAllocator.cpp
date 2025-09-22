@@ -639,6 +639,9 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region)
                 nextContainingQueue->TryRemove(next))
             {
                 region = next;
+                size_t occupancy = region->Occupancy();
+                _ASSERTE(occupancy < Satori::REGION_SIZE_GRANULARITY);
+                region->OccupancyAtReuse() = (int32_t)occupancy;
                 return;
             }
         }
