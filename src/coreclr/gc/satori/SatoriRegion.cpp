@@ -328,7 +328,13 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
 
     if (selectedBucket < Satori::FREELIST_COUNT)
     {
-        m_freeLists[selectedBucket] = freeListObj->m_nextInFreeList;
+        SatoriFreeListObject* next = freeListObj->m_nextInFreeList;
+        m_freeLists[selectedBucket] = next;
+        if (next == nullptr)
+        {
+            m_freeListTails[selectedBucket] = nullptr;
+        }
+
         m_freeListCapacities[selectedBucket] -= freeListObj->FreeObjCapacity();
         _ASSERTE(m_freeLists[selectedBucket] != nullptr || m_freeListCapacities[selectedBucket] == 0);
         m_allocStart = freeListObj->Start();
@@ -367,7 +373,13 @@ size_t SatoriRegion::StartAllocatingBestFit(size_t minAllocSize)
             size_t size = freeObj->FreeObjSize();
             if (size >= minFreeObjSize)
             {
-                m_freeLists[bucket] = freeObj->m_nextInFreeList;
+                SatoriFreeListObject* next = freeObj->m_nextInFreeList;
+                m_freeLists[bucket] = next;
+                if (next == nullptr)
+                {
+                    m_freeListTails[bucket] = nullptr;
+                }
+
                 m_freeListCapacities[bucket] -= freeObj->FreeObjCapacity();
                 _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
                 m_allocStart = freeObj->Start();
