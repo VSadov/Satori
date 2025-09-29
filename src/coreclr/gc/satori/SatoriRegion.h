@@ -308,7 +308,7 @@ private:
             bool m_acceptedPromotedObjects;
             bool m_individuallyPromoted;
             bool m_hasUnmarkedDemotedObjects;
-            // TODO: can fold with m_doNotSweep?
+            // TODO: VS can fold with m_doNotSweep?
             bool m_hasMarksSet;
 
             size_t m_freeListCapacities[Satori::FREELIST_COUNT];
