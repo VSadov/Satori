@@ -267,6 +267,9 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 {
     size = ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
 
+    // TODO: VS GC_ALLOC_ZEROING_OPTIONAL should probably go to large heap.
+    //       That does not benefit from prezeroing and will only waste the buffer.
+    //       Also, then the logic of regular allocs may just assert that there is zeroing.
     if ((flags & (GC_ALLOC_IMMORTAL | GC_ALLOC_PINNED_OBJECT_HEAP | GC_ALLOC_LARGE_OBJECT_HEAP)) == 0)
     {
         if (context->alloc_ptr + size <= context->alloc_limit)
@@ -323,6 +326,10 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 {
     // when allocations cross certain thresholds, check if GC should start or help is needed.
     size_t curAlloc = context->alloc_bytes + context->alloc_bytes_uoh;
+    // TODO: VS can this be more reliable?
+    //       If we allocate less than MinZeroInitSize, we may end up helping extra times.
+    //       We would generally allocate at least 2K because of index alignment,
+    //       so extra helping should not happen too often.
     size_t expectedAlloc = max(size, SatoriUtil::MinZeroInitSize());
     size_t change = (curAlloc ^ (curAlloc + expectedAlloc));
     if (curAlloc == 0 || change >= Satori::REGION_SIZE_GRANULARITY)
@@ -377,20 +384,24 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
                 if (zeroInitialize)
                 {
-                    if (moreSpace < SatoriUtil::MinZeroInitSize())
+                    // We do not want to pre-zero extra bytes if they may not fit the next allocation,
+                    // but if we will have more than LARGE_OBJECT_THRESHOLD remaining, everything will fit.
+                    // In such case we will zero out extra.
+                    if (moreSpace + Satori::LARGE_OBJECT_THRESHOLD < allocRemaining && 
+                        moreSpace < SatoriUtil::MinZeroInitSize())
                     {
-                        moreSpace = min(allocRemaining, SatoriUtil::MinZeroInitSize());
+                        moreSpace = min(SatoriUtil::MinZeroInitSize(), allocRemaining - Satori::LARGE_OBJECT_THRESHOLD);
                     }
+                }
 
-                    // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
-                    // to improve chances that the object that is allocated here will be indexed
-                    size_t misAlignedOnIndexEnd = ALIGN_UP(region->GetAllocStart() + moreSpace + sizeof(size_t), Satori::INDEX_GRANULARITY) - sizeof(size_t);
-                    size_t misAlignedMoreSpace = misAlignedOnIndexEnd - region->GetAllocStart();
+                // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
+                // to improve chances that the object that is allocated here will be indexed
+                size_t misAlignedOnIndexEnd = ALIGN_UP(region->GetAllocStart() + moreSpace + sizeof(size_t), Satori::INDEX_GRANULARITY) - sizeof(size_t);
+                size_t misAlignedMoreSpace = misAlignedOnIndexEnd - region->GetAllocStart();
 
-                    if (misAlignedMoreSpace <= allocRemaining)
-                    {
-                        moreSpace = misAlignedMoreSpace;
-                    }
+                if (misAlignedMoreSpace <= allocRemaining)
+                {
+                    moreSpace = misAlignedMoreSpace;
                 }
 
                 if (region->Allocate(moreSpace, zeroInitialize))
@@ -525,20 +536,24 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
                 if (zeroInitialize)
                 {
-                    if (moreSpace < SatoriUtil::MinZeroInitSize())
+                    // We do not want to pre-zero extra bytes if they may not fit the next allocation,
+                    // but if we will have more than LARGE_OBJECT_THRESHOLD remaining, everything will fit.
+                    // In such case we will zero out extra.
+                    if (moreSpace + Satori::LARGE_OBJECT_THRESHOLD < allocRemaining && 
+                        moreSpace < SatoriUtil::MinZeroInitSize())
                     {
-                        moreSpace = min(allocRemaining, SatoriUtil::MinZeroInitSize());
+                        moreSpace = min(SatoriUtil::MinZeroInitSize(), allocRemaining - Satori::LARGE_OBJECT_THRESHOLD);
                     }
+                }
 
-                    // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
-                    // to improve chances that the object that is allocated here will be indexed
-                    size_t misAlignedOnIndexEnd = ALIGN_UP(region->GetAllocStart() + moreSpace + sizeof(size_t), Satori::INDEX_GRANULARITY) - sizeof(size_t);
-                    size_t misAlignedMoreSpace = misAlignedOnIndexEnd - region->GetAllocStart();
+                // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
+                // to improve chances that the object that is allocated here will be indexed
+                size_t misAlignedOnIndexEnd = ALIGN_UP(region->GetAllocStart() + moreSpace + sizeof(size_t), Satori::INDEX_GRANULARITY) - sizeof(size_t);
+                size_t misAlignedMoreSpace = misAlignedOnIndexEnd - region->GetAllocStart();
 
-                    if (misAlignedMoreSpace <= allocRemaining)
-                    {
-                        moreSpace = misAlignedMoreSpace;
-                    }
+                if (misAlignedMoreSpace <= allocRemaining)
+                {
+                    moreSpace = misAlignedMoreSpace;
                 }
 
                 // do not zero-initialize just yet, we will do that after leaving the lock.
