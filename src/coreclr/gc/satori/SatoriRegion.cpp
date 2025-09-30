@@ -60,7 +60,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     committed = max(address, committed);
     used = max(address, used);
 
-    // make sure the header is comitted
+    // make sure the header + minZero is comitted
     ptrdiff_t toCommit = (size_t)&result->m_syncBlock + SatoriUtil::MinZeroInitSize() - committed;
     if (toCommit > 0)
     {
