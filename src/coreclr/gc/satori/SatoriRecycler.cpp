@@ -3669,28 +3669,24 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
 
 void SatoriRecycler::AddRelocationTarget(SatoriRegion* region)
 {
-    size_t maxFree = region->GetMaxAllocEstimate();
+    int maxFreeBucket = region->GetMaxFreeBucket();
 
-    if (maxFree < Satori::MIN_FREELIST_SIZE)
+    if (maxFreeBucket < 0)
     {
         m_stayingRegions->Push(region);
     }
     else
     {
-        DWORD bucket;
-        BitScanReverse64(&bucket, maxFree);
-        bucket -= Satori::MIN_FREELIST_SIZE_BITS;
-        _ASSERTE(bucket >= 0);
-        _ASSERTE(bucket < Satori::FREELIST_COUNT);
+        _ASSERTE(maxFreeBucket < Satori::FREELIST_COUNT);
 
         // within the same bucket, we'd prefer to fill up pinned ones first
         if (region->HasPinnedObjects())
         {
-            m_relocationTargets[bucket]->Push(region);
+            m_relocationTargets[maxFreeBucket]->Push(region);
         }
         else
         {
-            m_relocationTargets[bucket]->Enqueue(region);
+            m_relocationTargets[maxFreeBucket]->Enqueue(region);
         }
     }
 }
@@ -3706,32 +3702,37 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool exis
 #endif
 
     DWORD bucket;
-    BitScanReverse64(&bucket, allocSize);
+    if (allocSize <= Satori::MIN_FREELIST_CAPACITY)
+    {
+        bucket = 0;
+    }
+    else
+	{
+        // skip buckets that could not possibly fit allocSize
+        BitScanReverse64(&bucket, allocSize);
+        bucket = bucket - Satori::MIN_FREELIST_CAPACITY_BITS;
 
-    // we could search through this bucket, which may have a large enough obj,
-    // but we will just use the next queue, which guarantees it fits
-    bucket++;
-
-    bucket = bucket > Satori::MIN_FREELIST_SIZE_BITS ?
-        bucket - Satori::MIN_FREELIST_SIZE_BITS :
-        0;
+        // this bucket may be able to fit allocSize or may be not,
+        // but we will just use the next bucket, which guarantees the allocSize will fit.
+        bucket++;
+	}
 
     _ASSERTE(bucket >= 0);
 
-    if(bucket < Satori::FREELIST_COUNT)
+    // If we want to relocate more than half region (to force compaction or whatever),
+    // we will not find any suitable buckets.
+    // That is ok, it will have to be to a fresh region, which will always fit.
+    for (; bucket < Satori::FREELIST_COUNT; bucket++)
     {
-        for (; bucket < Satori::FREELIST_COUNT; bucket++)
+        SatoriRegionQueue* queue = m_relocationTargets[bucket];
+        if (queue)
         {
-            SatoriRegionQueue* queue = m_relocationTargets[bucket];
-            if (queue)
+            SatoriRegion* region = queue->TryPop();
+            if (region)
             {
-                SatoriRegion* region = queue->TryPop();
-                if (region)
-                {
-                    size_t allocStart = region->StartAllocatingBestFit(allocSize);
-                    _ASSERTE(allocStart);
-                    return region;
-                }
+                size_t allocStart = region->StartAllocating(allocSize);
+                _ASSERTE(allocStart);
+                return region;
             }
         }
     }

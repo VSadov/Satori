@@ -286,114 +286,78 @@ bool SatoriRegion::ValidateIndexEmpty()
     return true;
 }
 
-// prefers leftmost bucket that fits to improve locality, possibly at cost to fragmentation
 size_t SatoriRegion::StartAllocating(size_t minAllocSize)
 {
     _ASSERTE(!IsAllocating());
 
-    // skip buckets that certainly will not fit.
+    SatoriFreeListObject* freeObj = nullptr;
     DWORD bucket;
-    BitScanReverse64(&bucket, minAllocSize);
-    bucket = bucket > Satori::MIN_FREELIST_SIZE_BITS ?
-        bucket - Satori::MIN_FREELIST_SIZE_BITS :
-        0;
 
-    // we will check the first free obj in the bucket, but will not dig through the rest.
-    // if the first obj does not fit, we will switch to the next bucket where everything will fit.
-    size_t minFreeObjSize = minAllocSize + Satori::MIN_FREE_SIZE;
-
-    DWORD selectedBucket = Satori::FREELIST_COUNT;
-    SatoriFreeListObject* freeListObj = m_freeLists[bucket];
-    if (freeListObj)
-    {
-        if (freeListObj->FreeObjSize() >= minFreeObjSize)
-        {
-            selectedBucket = bucket;
-        }
-    }
-
-    // in higher buckets everything will fit
-    // prefer free objects that start earlier
-    bucket++;
-    for (; bucket < Satori::FREELIST_COUNT; bucket++)
-    {
-        SatoriFreeListObject* freeObjCandidate = m_freeLists[bucket];
-        if (freeObjCandidate &&
-            (selectedBucket == Satori::FREELIST_COUNT || freeObjCandidate->Start() < freeListObj->Start()))
-        {
-            selectedBucket = bucket;
-            freeListObj = freeObjCandidate;
-        }
-    }
-
-    if (selectedBucket < Satori::FREELIST_COUNT)
-    {
-        SatoriFreeListObject* next = freeListObj->m_nextInFreeList;
-        m_freeLists[selectedBucket] = next;
-        if (next == nullptr)
-        {
-            m_freeListTails[selectedBucket] = nullptr;
-        }
-
-        m_freeListCapacities[selectedBucket] -= freeListObj->FreeObjCapacity();
-        _ASSERTE(m_freeLists[selectedBucket] != nullptr || m_freeListCapacities[selectedBucket] == 0);
-        m_allocStart = freeListObj->Start();
-        m_allocEnd = m_allocStart + freeListObj->FreeObjSize();
-        SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
-        ClearIndicesForAllocRange();
-        _ASSERTE(GetAllocRemaining() >= minAllocSize);
-        m_sweepsSinceLastAllocation = 0;
-        return m_allocStart;
-    }
-
-    return 0;
-}
-
-// prefers smallest bucket that fits to reduce fragmentation, possibly at cost to locality
-size_t SatoriRegion::StartAllocatingBestFit(size_t minAllocSize)
-{
-    _ASSERTE(!IsAllocating());
+    // Free list objects are bucketized by capacity.
+    // A free list obj of capacity X can accept allocation
+    // of an object of size X with MIN_FREE_SIZE remaining
+    // for the parseability terminator.
 
     // skip buckets that certainly will not fit.
-    DWORD bucket;
-    BitScanReverse64(&bucket, minAllocSize);
-    bucket = bucket > Satori::MIN_FREELIST_SIZE_BITS ?
-        bucket - Satori::MIN_FREELIST_SIZE_BITS :
-        0;
-
-    // we will check the first free obj in the bucket, but will not dig through the rest.
-    // if the first obj does not fit, we will switch to the next bucket where everything will fit.
-    size_t minFreeObjSize = minAllocSize + Satori::MIN_FREE_SIZE;
-
-    for (; bucket < Satori::FREELIST_COUNT; bucket++)
+    if (minAllocSize <= Satori::MIN_FREELIST_CAPACITY)
     {
-        SatoriFreeListObject* freeObj = m_freeLists[bucket];
+        bucket = 0;
+    }
+    else
+    {
+        BitScanReverse64(&bucket, minAllocSize);
+        bucket = bucket - Satori::MIN_FREELIST_CAPACITY_BITS;
+        _ASSERTE(bucket >= 0 && bucket < Satori::FREELIST_COUNT);
+
+        freeObj = m_freeLists[bucket];
         if (freeObj)
         {
-            size_t size = freeObj->FreeObjSize();
-            if (size >= minFreeObjSize)
+            size_t capacity = freeObj->FreeObjCapacity();
+            if (capacity >= minAllocSize)
             {
-                SatoriFreeListObject* next = freeObj->m_nextInFreeList;
-                m_freeLists[bucket] = next;
-                if (next == nullptr)
-                {
-                    m_freeListTails[bucket] = nullptr;
-                }
-
-                m_freeListCapacities[bucket] -= freeObj->FreeObjCapacity();
-                _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
-                m_allocStart = freeObj->Start();
-                m_allocEnd = m_allocStart + size;
-                SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
-                ClearIndicesForAllocRange();
-                _ASSERTE(GetAllocRemaining() >= minAllocSize);
-                m_sweepsSinceLastAllocation = 0;
-                return m_allocStart;
+                goto hasObj;
             }
+        }
+
+        // skip to the next bucket, which will certainly fit if nonempty
+        bucket++;
+    }
+
+    for (; bucket < Satori::FREELIST_COUNT; bucket++)
+    {
+        freeObj = m_freeLists[bucket];
+        if (freeObj)
+        {
+            goto hasObj;
         }
     }
 
     return 0;
+
+hasObj:
+    SatoriFreeListObject* next = freeObj->m_nextInFreeList;
+    m_freeLists[bucket] = next;
+    if (next == nullptr)
+    {
+        m_freeListTails[bucket] = nullptr;
+    }
+
+    size_t freeObjSize = freeObj->FreeObjSize();
+    _ASSERTE(freeObjSize >= minAllocSize + Satori::MIN_FREE_SIZE);
+    _ASSERTE(freeObj->FreeObjCapacity() ==  freeObjSize - Satori::MIN_FREE_SIZE);
+
+    m_freeListCapacities[bucket] -= (freeObjSize - Satori::MIN_FREE_SIZE);
+    _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
+    m_allocStart = freeObj->Start();
+    m_allocEnd = m_allocStart + freeObjSize;
+    // Assume all will be used.
+    // We will deduct back the unused part when we stop allocating.
+    SetOccupancy(m_occupancy + freeObjSize);
+    ClearIndicesForAllocRange();
+    _ASSERTE(GetAllocRemaining() >= minAllocSize);
+    m_sweepsSinceLastAllocation = 0;
+
+    return m_allocStart;
 }
 
 void SatoriRegion::StopAllocating(size_t allocPtr)
@@ -401,7 +365,8 @@ void SatoriRegion::StopAllocating(size_t allocPtr)
     _ASSERTE(IsAllocating());
     _ASSERTE(allocPtr != 0);
 
-    // make unused allocation span parseable
+    // Make unused allocation span parseable
+    // TODO: VS can this ever be equal? should there be space for the terminator?
     if (allocPtr != m_allocEnd)
     {
         m_used = max(m_used, allocPtr + Satori::MIN_FREE_SIZE);
@@ -423,23 +388,25 @@ void SatoriRegion::StopAllocating()
 void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
 {
     _ASSERTE(freeObj->Size() == size);
-    // allocSize is smaller than size to make sure the span can always be made parseable
+    _ASSERTE(size >= Satori::MIN_FREE_SIZE);
+    // capacity is smaller than size to make sure the span can always be made parseable
     // after allocating objects in it.
-    ptrdiff_t allocSize = size - Satori::MIN_FREE_SIZE;
-    if (allocSize < Satori::MIN_FREELIST_SIZE)
+    size_t capacity = size - Satori::MIN_FREE_SIZE;
+    if (capacity < Satori::MIN_FREELIST_CAPACITY)
     {
         return;
     }
 
     SatoriFreeListObject* freeListObj = (SatoriFreeListObject*)freeObj;
     DWORD bucket;
-    BitScanReverse64(&bucket, allocSize);
-    bucket -= (Satori::MIN_FREELIST_SIZE_BITS);
+    BitScanReverse64(&bucket, capacity);
+    bucket -= (Satori::MIN_FREELIST_CAPACITY_BITS);
     _ASSERTE(bucket >= 0);
     _ASSERTE(bucket < Satori::FREELIST_COUNT);
 
     _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
-    m_freeListCapacities[bucket] += freeListObj->FreeObjCapacity();
+    _ASSERTE(capacity == freeListObj->FreeObjCapacity());
+    m_freeListCapacities[bucket] += capacity;
 
     // insert at the tail
     freeListObj->m_nextInFreeList = nullptr;
@@ -458,23 +425,25 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
 void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
 {
     _ASSERTE(freeObj->Size() == size);
-    // allocSize is smaller than size to make sure the span can always be made parseable
+    _ASSERTE(size >= Satori::MIN_FREE_SIZE);
+    // capacity is smaller than size to make sure the span can always be made parseable
     // after allocating objects in it.
-    ptrdiff_t allocSize = size - Satori::MIN_FREE_SIZE;
-    if (allocSize < Satori::MIN_FREELIST_SIZE)
+    size_t capacity = size - Satori::MIN_FREE_SIZE;
+    if (capacity < Satori::MIN_FREELIST_CAPACITY)
     {
         return;
     }
 
     SatoriFreeListObject* freeListObj = (SatoriFreeListObject*)freeObj;
     DWORD bucket;
-    BitScanReverse64(&bucket, allocSize);
-    bucket -= (Satori::MIN_FREELIST_SIZE_BITS);
+    BitScanReverse64(&bucket, capacity);
+    bucket -= (Satori::MIN_FREELIST_CAPACITY_BITS);
     _ASSERTE(bucket >= 0);
     _ASSERTE(bucket < Satori::FREELIST_COUNT);
 
     _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
-    m_freeListCapacities[bucket] += freeListObj->FreeObjCapacity();
+    _ASSERTE(capacity == freeListObj->FreeObjCapacity());
+    m_freeListCapacities[bucket] += capacity;
 
     // insert at the head, since we are returning what we recently took.
     freeListObj->m_nextInFreeList = m_freeLists[bucket];
@@ -503,19 +472,17 @@ size_t SatoriRegion::FreeSpaceInTopNBuckets(int n)
     return result;
 }
 
-size_t SatoriRegion::GetMaxAllocEstimate()
+int SatoriRegion::GetMaxFreeBucket()
 {
-    size_t maxRemaining = GetAllocRemaining();
     for (int bucket = Satori::FREELIST_COUNT - 1; bucket >= 0; bucket--)
     {
         if (m_freeLists[bucket])
         {
-            maxRemaining = max(maxRemaining, ((size_t)1 << (bucket + Satori::MIN_FREELIST_SIZE_BITS)));
-            break;
+            return bucket;
         }
     }
 
-    return maxRemaining;
+    return -1;
 }
 
 void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextCommitted, size_t& nextUsed)

@@ -71,12 +71,11 @@ public:
 
     size_t GetAllocStart();
     size_t GetAllocRemaining();
-    size_t GetMaxAllocEstimate();
+    int GetMaxFreeBucket();
     size_t Allocate(size_t size, bool zeroInitialize);
     size_t AllocateHuge(size_t size, bool zeroInitialize);
 
     size_t StartAllocating(size_t minSize);
-    size_t StartAllocatingBestFit(size_t minAllocSize);
     void StopAllocating(size_t allocPtr);
     void StopAllocating();
     bool IsAllocating();

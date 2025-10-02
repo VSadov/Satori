@@ -59,6 +59,7 @@ void SatoriObject::EscapeCheckOnHandleCreation()
     }
 }
 
+// TODO: VS should return FreeObject?
 SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
 {
     _ASSERTE(location == ALIGN_UP(location, Satori::OBJECT_ALIGNMENT));
@@ -104,6 +105,8 @@ void SatoriObject::DirtyCardsForContent()
 void SatoriObject::Validate()
 {
 #ifdef _DEBUG
+    // min object size is the same as min free size because any hole
+    // must be able to fit a free obj for parseability reasons
     _ASSERTE(this->Size() >= Satori::MIN_FREE_SIZE);
 
     if (ContainingRegion()->IsEscapeTrackedByCurrentThread())

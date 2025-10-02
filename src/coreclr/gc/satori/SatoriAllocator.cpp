@@ -267,9 +267,6 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
 {
     size = ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
 
-    // TODO: VS GC_ALLOC_ZEROING_OPTIONAL should probably go to large heap.
-    //       That does not benefit from prezeroing and will only waste the buffer.
-    //       Also, then the logic of regular allocs may just assert that there is zeroing.
     if ((flags & (GC_ALLOC_IMMORTAL | GC_ALLOC_PINNED_OBJECT_HEAP | GC_ALLOC_LARGE_OBJECT_HEAP)) == 0)
     {
         if (context->alloc_ptr + size <= context->alloc_limit)
@@ -392,16 +389,16 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                     {
                         moreSpace = min(SatoriUtil::MinZeroInitSize(), allocRemaining - Satori::LARGE_OBJECT_THRESHOLD);
                     }
-                }
 
-                // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
-                // to improve chances that the object that is allocated here will be indexed
-                size_t misAlignedOnIndexEnd = ALIGN_UP(region->GetAllocStart() + moreSpace + sizeof(size_t), Satori::INDEX_GRANULARITY) - sizeof(size_t);
-                size_t misAlignedMoreSpace = misAlignedOnIndexEnd - region->GetAllocStart();
+                    // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
+                    // to improve chances that the object that is allocated here will be indexed
+                    size_t misAlignedOnIndexEnd = ALIGN_UP(region->GetAllocStart() + moreSpace + sizeof(size_t), Satori::INDEX_GRANULARITY) - sizeof(size_t);
+                    size_t misAlignedMoreSpace = misAlignedOnIndexEnd - region->GetAllocStart();
 
-                if (misAlignedMoreSpace <= allocRemaining)
-                {
-                    moreSpace = misAlignedMoreSpace;
+                    if (misAlignedMoreSpace <= allocRemaining)
+                    {
+                        moreSpace = misAlignedMoreSpace;
+                    }
                 }
 
                 if (region->Allocate(moreSpace, zeroInitialize))
@@ -528,6 +525,8 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
     {
         if (region != nullptr)
         {
+            // get extra MIN_FREE_SIZE as other threads will allocate ater us
+            // and when we are done we need a parseability separator.
             size_t moreSpace = size + Satori::MIN_FREE_SIZE;
             size_t allocRemaining = region->GetAllocRemaining();
             if (allocRemaining >= moreSpace)
@@ -544,16 +543,16 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
                     {
                         moreSpace = min(SatoriUtil::MinZeroInitSize(), allocRemaining - Satori::LARGE_OBJECT_THRESHOLD);
                     }
-                }
 
-                // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
-                // to improve chances that the object that is allocated here will be indexed
-                size_t misAlignedOnIndexEnd = ALIGN_UP(region->GetAllocStart() + moreSpace + sizeof(size_t), Satori::INDEX_GRANULARITY) - sizeof(size_t);
-                size_t misAlignedMoreSpace = misAlignedOnIndexEnd - region->GetAllocStart();
+                    // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
+                    // to improve chances that the object that is allocated here will be indexed
+                    size_t misAlignedOnIndexEnd = ALIGN_UP(region->GetAllocStart() + moreSpace + sizeof(size_t), Satori::INDEX_GRANULARITY) - sizeof(size_t);
+                    size_t misAlignedMoreSpace = misAlignedOnIndexEnd - region->GetAllocStart();
 
-                if (misAlignedMoreSpace <= allocRemaining)
-                {
-                    moreSpace = misAlignedMoreSpace;
+                    if (misAlignedMoreSpace <= allocRemaining)
+                    {
+                        moreSpace = misAlignedMoreSpace;
+                    }
                 }
 
                 // do not zero-initialize just yet, we will do that after leaving the lock.
@@ -768,7 +767,7 @@ tryAgain:
             }
 
             // try get from the free list
-            if (region->StartAllocatingBestFit(size))
+            if (region->StartAllocating(size))
             {
                 // we have enough free space in the region to continue
                 continue;
@@ -866,7 +865,7 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
             }
 
             // try get from the free list
-            if (region->StartAllocatingBestFit(size))
+            if (region->StartAllocating(size))
             {
                 // we have enough free space in the region to continue
                 continue;
