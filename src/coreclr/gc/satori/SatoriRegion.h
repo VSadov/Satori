@@ -155,7 +155,7 @@ public:
     bool IsExposed(SatoriObject** location);
     bool AnyExposed(size_t from, size_t length);
     void EscapeRecursively(SatoriObject* obj);
-    void EscsapeAll();
+    void EscapeAll();
     void EscapeShallow(SatoriObject* o, size_t size);
 
     template <typename F>

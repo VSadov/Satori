@@ -494,7 +494,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             switch (region->ReusableFor())
             {
             case SatoriRegion::ReuseLevel::Gen0:
-                region->EscsapeAll();
+                region->EscapeAll();
                 goto fallthrough;
             case SatoriRegion::ReuseLevel::None:
             fallthrough:

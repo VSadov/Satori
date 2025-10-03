@@ -1005,7 +1005,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
     } while (o);
 }
 
-void SatoriRegion::EscsapeAll()
+void SatoriRegion::EscapeAll()
 {
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     for (SatoriObject* o = FirstObject(); o->Start() < objLimit;)
