@@ -227,11 +227,6 @@ void SatoriAllocator::ReturnRegionNoLock(SatoriRegion* region)
 
 void SatoriAllocator::AllocationTickIncrement(AllocationTickKind allocationTickKind, size_t totalAdded, SatoriObject* obj, size_t objSize)
 {
-    if (!EVENT_ENABLED(GCAllocationTick_V4))
-    {
-        return;
-    }
-
     size_t& tickAmout = allocationTickKind == AllocationTickKind::Small ?
         m_smallAllocTickAmount :
         allocationTickKind == AllocationTickKind::Large ?
@@ -310,44 +305,75 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
     return nullptr;
 }
 
-thread_local
-size_t lastSharedRegularAllocUsec;
-
 #ifdef _DEBUG
-const size_t minSharedAllocDelay = 1024;
+// allow more frequent allocs from shared in debug
+const size_t minSharedAllocDelay = 5;
 #else
-const size_t minSharedAllocDelay = 128;
+// how often would we want to take a lock in usecs for 2k or more
+// if we come for more sooner, take an own region.
+// Shared is for slow allocators.
+const size_t minSharedAllocDelay = 50;
 #endif
 
-SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags)
+thread_local
+size_t t_lastSharedRegularAllocUsec;
+
+thread_local
+size_t t_lastAllocBytes;
+
+thread_local
+size_t t_lastAllocBytesAtGCcheck;
+
+void SatoriAllocator::CheckAndHelp(SatoriAllocationContext* context)
 {
-    // when allocations cross certain thresholds, check if GC should start or help is needed.
-    size_t curAlloc = context->alloc_bytes + context->alloc_bytes_uoh;
-    // TODO: VS can this be more reliable?
-    //       If we allocate less than MinZeroInitSize, we may end up helping extra times.
-    //       We would generally allocate at least 2K because of index alignment,
-    //       so extra helping should not happen too often.
-    size_t expectedAlloc = max(size, SatoriUtil::MinZeroInitSize());
-    size_t change = (curAlloc ^ (curAlloc + expectedAlloc));
-    if (curAlloc == 0 || change >= Satori::REGION_SIZE_GRANULARITY)
+    size_t curAllocBytes = context->alloc_bytes + context->alloc_bytes_uoh;
+    if (curAllocBytes == 0)
     {
         m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
+        return;
     }
-    else if (change >= Satori::PACE_BUDGET)
+
+    size_t lastAllocBytes = t_lastAllocBytes;
+    // sometimes we release bytes back, wait until we go forward.
+    if (curAllocBytes < lastAllocBytes)
+        return;
+
+    size_t change = curAllocBytes - lastAllocBytes;
+    if (change < Satori::PACE_BUDGET)
+        return;
+
+    if (curAllocBytes - t_lastAllocBytesAtGCcheck >= Satori::REGION_SIZE_GRANULARITY)
+    {
+        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
+        t_lastAllocBytesAtGCcheck = curAllocBytes;
+    }
+    else
     {
         m_heap->Recycler()->HelpOnce();
     }
 
-// tryAgain:
+    t_lastAllocBytes = curAllocBytes;
+}
+
+SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags)
+{
+    // when allocations cross certain thresholds, check if GC should start or help is needed.
+    CheckAndHelp(context);
+
+// tryAgain: 
 
     if (!context->RegularRegion())
     {
-        SatoriObject* freeObj = context->alloc_ptr != 0 ? context->FinishAllocFromShared() : nullptr;
+        // If just allocated from shared, close the alloc.
+        // If we continue from shared, we will return the remainder, once we have the lock.
+        // If not we will just leave the free obj unreturned. It is probably small anyways.
+        SatoriObject* freeObj = context->alloc_ptr != 0 ?
+            context->FinishAllocFromShared() : nullptr;
 
         size_t usecNow = m_heap->Recycler()->GetNowUsecs();
-        if (usecNow - lastSharedRegularAllocUsec > minSharedAllocDelay)
+        if (usecNow - t_lastSharedRegularAllocUsec >= minSharedAllocDelay)
         {
-            lastSharedRegularAllocUsec = usecNow;
+            t_lastSharedRegularAllocUsec = usecNow;
 
             //m_regularAllocLock.Enter();
             if (m_regularAllocLock.TryEnter())
@@ -417,7 +443,11 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
                     result->CleanSyncBlock();
                     region->SetIndicesForObject(result, result->Start() + size);
 
-                    AllocationTickIncrement(AllocationTickKind::Small, moreSpace, result, size);
+                    if (!EVENT_ENABLED(GCAllocationTick_V4))
+                    {
+                        AllocationTickIncrement(AllocationTickKind::Small, moreSpace, result, size);
+                    }
+
                     return result;
                 }
                 else
@@ -525,7 +555,7 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
     {
         if (region != nullptr)
         {
-            // get extra MIN_FREE_SIZE as other threads will allocate ater us
+            // get extra MIN_FREE_SIZE as other threads will allocate after us
             // and when we are done we need a parseability separator.
             size_t moreSpace = size + Satori::MIN_FREE_SIZE;
             size_t allocRemaining = region->GetAllocRemaining();
@@ -552,6 +582,12 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
                     if (misAlignedMoreSpace <= allocRemaining)
                     {
                         moreSpace = misAlignedMoreSpace;
+                    }
+                    else
+                    {
+                        // In nonshared we can pick the tail with single object allocs.
+                        // In shared, just pick the tail. We do not want allocs in shared that are too small.
+                        moreSpace = allocRemaining;
                     }
                 }
 
@@ -600,7 +636,11 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
                     memset((uint8_t*)result + sizeof(size_t), 0, moreSpace - 2 * sizeof(size_t));
                 }
 
-                AllocationTickIncrement(AllocationTickKind::Small, moreSpace, result, size);
+                if (!EVENT_ENABLED(GCAllocationTick_V4))
+                {
+                    AllocationTickIncrement(AllocationTickKind::Small, moreSpace, result, size);
+                }
+
                 return result;
             }
 
@@ -695,18 +735,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
     }
 
     // when allocations cross certain thresholds, check if GC should start or help is needed.
-    // when allocations cross certain thresholds, check if GC should start or help is needed.
-    size_t curAlloc = context->alloc_bytes + context->alloc_bytes_uoh;
-    size_t expectedAlloc = size;
-    size_t change = (curAlloc ^ (curAlloc + expectedAlloc));
-    if (curAlloc == 0 || change >= Satori::REGION_SIZE_GRANULARITY)
-    {
-        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
-    }
-    else if (change >= Satori::PACE_BUDGET)
-    {
-        m_heap->Recycler()->HelpOnce();
-    }
+    CheckAndHelp(context);
 
 tryAgain:
 
@@ -753,7 +782,11 @@ tryAgain:
                 result->CleanSyncBlock();
                 region->SetIndicesForObject(result, result->Start() + size);
 
-                AllocationTickIncrement(AllocationTickKind::Large, size, result, size);
+                if (!EVENT_ENABLED(GCAllocationTick_V4))
+                {
+                    AllocationTickIncrement(AllocationTickKind::Large, size, result, size);
+                }
+
                 return result;
             }
         }
@@ -855,7 +888,11 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
                     memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));
                 }
 
-                AllocationTickIncrement(AllocationTickKind::Large, size, result, size);
+                if (!EVENT_ENABLED(GCAllocationTick_V4))
+                {
+                    AllocationTickIncrement(AllocationTickKind::Large, size, result, size);
+                }
+
                 return result;
             }
 
@@ -908,10 +945,11 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
 
 SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
+    // when allocations cross certain thresholds, check if GC should start or help is needed.
+    CheckAndHelp(context);
+
     size_t regionSize = SatoriRegion::RegionSizeForAlloc(size);
     _ASSERTE(regionSize > Satori::REGION_SIZE_GRANULARITY);
-
-    m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_loh);
     SatoriRegion* hugeRegion = GetRegion(regionSize);
     if (!hugeRegion)
     {
@@ -946,7 +984,11 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     }
 
     context->alloc_bytes_uoh += size;
-    AllocationTickIncrement(AllocationTickKind::Large, size, result, size);
+    if (!EVENT_ENABLED(GCAllocationTick_V4))
+    {
+        AllocationTickIncrement(AllocationTickKind::Large, size, result, size);
+    }
+
     return result;
 }
 
@@ -966,17 +1008,7 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
     }
 
     // when allocations cross certain thresholds, check if GC should start or help is needed.
-    size_t curAlloc = context->alloc_bytes + context->alloc_bytes_uoh;
-    size_t expectedAlloc = size;
-    size_t change = (curAlloc ^ (curAlloc + expectedAlloc));
-    if (curAlloc == 0 || change >= Satori::REGION_SIZE_GRANULARITY)
-    {
-        m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
-    }
-    else if (change >= Satori::PACE_BUDGET)
-    {
-        m_heap->Recycler()->HelpOnce();
-    }
+    CheckAndHelp(context);
 
     SatoriRegion* region = m_pinnedRegion;
     while (true)
@@ -1020,7 +1052,11 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
                     memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));
                 }
 
-                AllocationTickIncrement(AllocationTickKind::Pinned, size, result, size);
+                if (!EVENT_ENABLED(GCAllocationTick_V4))
+                {
+                    AllocationTickIncrement(AllocationTickKind::Pinned, size, result, size);
+                }
+
                 return result;
             }
 
@@ -1093,7 +1129,10 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
                     context->alloc_bytes_uoh += size;
                     region->SetIndicesForObject(result, result->Start() + size);
 
-                    AllocationTickIncrement(AllocationTickKind::Pinned, size, result, size);
+                    if (!EVENT_ENABLED(GCAllocationTick_V4))
+                    {
+                        AllocationTickIncrement(AllocationTickKind::Pinned, size, result, size);
+                    }
                 }
                 else
                 {
