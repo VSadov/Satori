@@ -2033,15 +2033,12 @@ bool SatoriRegion::IsReuseCandidate()
     return FreeSpaceInTopNBuckets(Satori::FREELIST_COUNT) > Satori::REGION_SIZE_GRANULARITY / 32;
 }
 
-bool SatoriRegion::IsDemotable()
+bool SatoriRegion::IsDemotionCandidate(bool nextGcIsFullGC)
 {
-    if (ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION ||
-        FreeSpaceInTopNBuckets(Satori::REUSABLE_BUCKETS) < (Satori::REGION_SIZE_GRANULARITY / 8 * 7)) // TUNING:
-    {
+    if (!nextGcIsFullGC && ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION)
         return false;
-    }
 
-    return true;
+    return IsReuseCandidate();
 }
 
 // regions that were not reused or relocated for a while could be tenured.
@@ -2057,17 +2054,19 @@ bool SatoriRegion::IsPromotionCandidate()
 
 // we relocate regions if that would improve their reuse quality.
 // compaction might also improve mutator locality, somewhat.
-bool SatoriRegion::IsRelocationCandidate(bool assumePromotion)
+bool SatoriRegion::IsRelocationCandidate(bool assumePromotion, bool nextGcIsFullGC)
 {
     if (HasPinnedObjects())
     {
         return false;
     }
 
+    // demoted cannot be compacted, unless we will promote this
     if (IsDemoted() && !assumePromotion)
     {
         return false;
     }
+
     // TODO: VS settle on this.
     // size_t tooFullThreshold = Satori::REGION_SIZE_GRANULARITY / 2;
 
@@ -2083,7 +2082,7 @@ bool SatoriRegion::IsRelocationCandidate(bool assumePromotion)
         return false;
     }
 
-    // did not use for a while, consider compacting.
+    // did not use for a while, consider compacting even if reusable.
     if (SweepsSinceLastAllocation() > 2)
     {
         return true;
@@ -2098,7 +2097,7 @@ bool SatoriRegion::IsRelocationCandidate(bool assumePromotion)
     // if gen2 and not demotable, then cannot reuse, consider compacting
     if (Generation() == 2 || assumePromotion)
     {
-        if (!IsDemotable())
+        if (!IsDemotionCandidate(nextGcIsFullGC))
         {
             return true;
         }
@@ -2108,26 +2107,38 @@ bool SatoriRegion::IsRelocationCandidate(bool assumePromotion)
     return false;
 }
 
+bool SatoriRegion::IsPreSweepCandidate()
+{
+    return false;
+
+    bool result = SweepsSinceLastAllocation() == 0 && 
+        !IsAttachedToAllocatingOwner() &&
+        !IsLarge();
+
+    _ASSERTE(!result || !IsPromotionCandidate());
+    return result;
+}
+
 bool SatoriRegion::TryDemote(bool nextGcIsFullGc)
 {
     _ASSERTE(!HasMarksSet());
     _ASSERTE(Generation() == 2);
     _ASSERTE(ObjCount() != 0);
 
+    if (!IsDemotionCandidate(nextGcIsFullGc))
+    {
+        return false;
+    }
+
     // if next GC is full, this will end up in gen2,
     // so no need to track gen2 objects.
-    if (nextGcIsFullGc && IsReuseCandidate())
+    if (nextGcIsFullGc)
     {
         m_demotedOccupancy = Occupancy();
-        // TODO: VS this may not be needed for correctness. do we need this for perf? does the barrier care in nextGcisGen2 case?
+        // TODO: VS this may not be needed for correctness. do we need this for perf? does the barrier care in nextGcIsGen2 case?
         this->ResetCardsForEphemeral();
         this->SetGeneration(1);
         return true;
-    }
-
-    if (!IsDemotionCandidate())
-    {
-        return false;
     }
 
     // TUNING: heuristic for demoting -  could consider occupancy, pinning, etc...
@@ -2214,16 +2225,6 @@ void SatoriRegion::ClearFreeLists()
 {
     // clear free lists and free list tails
     memset(m_freeListCapacities, 0, sizeof(m_freeListCapacities) + sizeof(m_freeLists) + sizeof(m_freeListTails));
-}
-
-bool SatoriRegion::IsPreSweepCandidate()
-{
-    bool result = SweepsSinceLastAllocation() == 0 && 
-        !IsAttachedToAllocatingOwner() &&
-        !IsLarge();
-
-    _ASSERTE(!result || !IsPromotionCandidate());
-    return result;
 }
 
 void SatoriRegion::PreSweep()

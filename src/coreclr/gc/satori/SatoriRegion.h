@@ -101,9 +101,9 @@ public:
     void ResetReusableForRelease();
 
     bool IsReuseCandidate();
-    bool IsDemotionCandidate();
+    bool IsDemotionCandidate(bool nextGcIsFullGC);
     bool IsPromotionCandidate();
-    bool IsRelocationCandidate(bool assumePromotion = false);
+    bool IsRelocationCandidate(bool assumePromotion, bool nextGcIsFullGC);
 
     bool TryDemote(bool nextGcIsFullGc);
     bool IsDemoted();
