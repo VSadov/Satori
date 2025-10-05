@@ -118,9 +118,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_gcState = GC_STATE_NONE;
     m_isBarrierConcurrent = false;
 
-    m_gcCount[0] = 0;
-    m_gcCount[1] = 0;
-    m_gcCount[2] = 0;
+    m_gcCount[0] = m_gcCount[1] = m_gcCount[2] = 0;
+    m_compactingGcCount[0] = m_compactingGcCount[1] = m_compactingGcCount[2] = 0;
 
     m_condemnedGeneration = 0;
 
@@ -327,7 +326,7 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
         // we do not know, so conservatively assume that the next GC may promote
         // TODO: VS is that actually correct? (i.e. nursery regs in gen1 may want to be reused instead)
         // also assume that presweep candidates will want to relocate
-       if (region->IsRelocationCandidate(/*assumePromotion*/true) ||
+       if (region->IsRelocationCandidate(/*assumePromotion*/true, m_nextGcIsFullGc) ||
             region->IsPreSweepCandidate())
         {
             Interlocked::Increment(&m_relocatableEphemeralEstimate);
@@ -353,7 +352,7 @@ void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
 {
     // assume that presweep candidates will want to relocate
     // TODO: VS is that actually correct? (i.e. nursery regs in gen1 may want to be reused instead)
-    if (region->IsRelocationCandidate() ||
+    if (region->IsRelocationCandidate(/*assumePromotion*/true, m_nextGcIsFullGc) ||
         region->IsPreSweepCandidate())
     {
         Interlocked::Increment(&m_relocatableTenuredEstimate);
@@ -1319,6 +1318,17 @@ void SatoriRecycler::BlockingCollectImpl()
     if (m_condemnedGeneration == 2)
     {
         m_gcCount[2]++;
+        if (m_isRelocating)
+        {
+            m_compactingGcCount[2]++;
+        }
+    }
+    else
+    {
+        if (m_isRelocating)
+        {
+            m_compactingGcCount[1]++;
+        }
     }
 
     m_CurrentGcInfo->m_index = GlobalGcIndex();
@@ -3647,7 +3657,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
                 FreeRelocatedRegion(curRegion, /*noLock*/ true);
             }
             // select relocation candidates and relocation targets according to sizes.
-            else if (curRegion->IsRelocationCandidate(m_promoteAllRegions))
+            else if (curRegion->IsRelocationCandidate(m_promoteAllRegions, m_nextGcIsFullGc))
             {
                 // when relocating, we want to start with larger regions
                 if (curRegion->Occupancy() > Satori::REGION_SIZE_GRANULARITY * 2 / 5)

@@ -207,6 +207,8 @@ private:
     int m_prevCondemnedGeneration;
 
     int64_t m_gcCount[3];
+    int64_t m_compactingGcCount[3];
+
     int64_t m_gcStartMillis[3];
     int64_t m_gcDurationUsecs[3];
     int64_t m_gcAccmulatingDurationUsecs[3];
