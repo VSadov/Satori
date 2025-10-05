@@ -2035,8 +2035,20 @@ bool SatoriRegion::IsReuseCandidate()
 
 bool SatoriRegion::IsDemotionCandidate(bool nextGcIsFullGC)
 {
-    if (!nextGcIsFullGC && ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION)
+    // If next gc is gen2, then demoted objects are free.
+    // Everything will be gen2 anyways, thus we can demote anything that is reusable.
+    if (!nextGcIsFullGC)
+    {
+        // We limit the occupancy, since it adds to gen1 costs.
+        // We do not want more than 1/8x of gen2 ending up as a gen1 cost.
+        // (we typically allow gen1 to be at least 1/8th of gen2 even if gen1 mortality is high.)
+        // We also limit the number of demoted objects, since it consumes trackers.
+        if (ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION ||
+            Occupancy() > Satori::REGION_SIZE_GRANULARITY / 8)
+        {
         return false;
+        }
+    }
 
     return IsReuseCandidate();
 }
