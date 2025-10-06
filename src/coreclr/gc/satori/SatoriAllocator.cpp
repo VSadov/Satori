@@ -316,15 +316,21 @@ const size_t minSharedAllocDelay = 50;
 #endif
 
 thread_local
-size_t t_lastSharedRegularAllocUsec;
-
-thread_local
 size_t t_lastAllocBytes;
 
 thread_local
 size_t t_lastAllocBytesAtGCcheck;
 
-void SatoriAllocator::CheckAndHelp(SatoriAllocationContext* context)
+thread_local
+struct AllocStats
+{
+    size_t lastRegularAllocBytes;
+    size_t lastAllocRecordUsec;
+    // in byte/microsecond, same as MB/sec
+    size_t regularAllocRate;
+} t_allocStats;
+
+void SatoriAllocator::UpdateAllocStatsAndHelpIfNeeded(SatoriAllocationContext* context)
 {
     size_t curAllocBytes = context->alloc_bytes + context->alloc_bytes_uoh;
     if (curAllocBytes == 0)
@@ -356,28 +362,37 @@ void SatoriAllocator::CheckAndHelp(SatoriAllocationContext* context)
     }
 
     t_lastAllocBytes = curAllocBytes;
+
+    size_t curUsec = m_heap->Recycler()->GetNowUsecs();
+    size_t curRegularAllocBytes = context->alloc_bytes;
+    if (curRegularAllocBytes > t_allocStats.lastRegularAllocBytes &&
+        curUsec > t_allocStats.lastAllocRecordUsec)
+    {
+        t_allocStats.regularAllocRate =  (curRegularAllocBytes - t_allocStats.lastRegularAllocBytes) / (curUsec - t_allocStats.lastAllocRecordUsec);
+        t_allocStats.lastRegularAllocBytes = curRegularAllocBytes;
+        t_allocStats.lastAllocRecordUsec = curUsec; 
+    }
 }
 
 SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
     // when allocations cross certain thresholds, check if GC should start or help is needed.
-    CheckAndHelp(context);
+    UpdateAllocStatsAndHelpIfNeeded(context);
 
 // tryAgain: 
 
     if (!context->RegularRegion())
     {
-        // If just allocated from shared, close the alloc.
-        // If we continue from shared, we will return the remainder, once we have the lock.
-        // If not we will just leave the free obj unreturned. It is probably small anyways.
+        // If was allocating from shared, close the alloc.
+        // If we continue from the same shared region, we will return the remainder, once we have the lock.
+        // If not we will just leave the free obj unreturned. It is probably too small anyways.
         SatoriObject* freeObj = context->alloc_ptr != 0 ?
             context->FinishAllocFromShared() : nullptr;
 
-        size_t usecNow = m_heap->Recycler()->GetNowUsecs();
-        if (usecNow - t_lastSharedRegularAllocUsec >= minSharedAllocDelay)
+        // TODO: VS may be 10 or 50 ?
+        // we will consider 100+ MB/s as fast-allocating and try getting a non-shared region
+        if (t_allocStats.regularAllocRate < 100)
         {
-            t_lastSharedRegularAllocUsec = usecNow;
-
             //m_regularAllocLock.Enter();
             if (m_regularAllocLock.TryEnter())
             {
@@ -733,7 +748,7 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
     }
 
     // when allocations cross certain thresholds, check if GC should start or help is needed.
-    CheckAndHelp(context);
+    UpdateAllocStatsAndHelpIfNeeded(context);
 
 tryAgain:
 
@@ -944,7 +959,7 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
 SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
     // when allocations cross certain thresholds, check if GC should start or help is needed.
-    CheckAndHelp(context);
+    UpdateAllocStatsAndHelpIfNeeded(context);
 
     size_t regionSize = SatoriRegion::RegionSizeForAlloc(size);
     _ASSERTE(regionSize > Satori::REGION_SIZE_GRANULARITY);
@@ -1006,7 +1021,7 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
     }
 
     // when allocations cross certain thresholds, check if GC should start or help is needed.
-    CheckAndHelp(context);
+    UpdateAllocStatsAndHelpIfNeeded(context);
 
     SatoriRegion* region = m_pinnedRegion;
     while (true)
