@@ -1106,6 +1106,8 @@ void SatoriRecycler::AdjustHeuristics()
     }
     else
     {
+        // TODO: VS we see gen2 after gen2 in roslyn, why is that?
+
         // In unusul cases gen1 may end up so large than we get into "every GC is gen2 GC" mode.
         // That can happen if object lifetimes do not behave generationally or
         // there is high fragmentation that compaction could not defeat.
