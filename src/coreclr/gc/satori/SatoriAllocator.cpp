@@ -340,7 +340,10 @@ void SatoriAllocator::CheckAndHelp(SatoriAllocationContext* context)
 
     size_t change = curAllocBytes - lastAllocBytes;
     if (change < Satori::PACE_BUDGET)
+    {
+        // too soon. 
         return;
+    }
 
     if (curAllocBytes - t_lastAllocBytesAtGCcheck >= Satori::REGION_SIZE_GRANULARITY)
     {
@@ -565,14 +568,9 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
                 if (zeroInitialize)
                 {
-                    // We do not want to pre-zero extra bytes if they may not fit the next allocation,
-                    // but if we will have more than LARGE_OBJECT_THRESHOLD remaining, everything will fit.
-                    // In such case we will zero out extra.
-                    if (moreSpace + Satori::LARGE_OBJECT_THRESHOLD < allocRemaining && 
-                        moreSpace < SatoriUtil::MinZeroInitSize())
-                    {
-                        moreSpace = min(SatoriUtil::MinZeroInitSize(), allocRemaining - Satori::LARGE_OBJECT_THRESHOLD);
-                    }
+                    // We do not want to pre-zero too much in shared case.
+                    // Just aligning on index is good enough.
+                    // Also we do not want the threads to hold on to unfinished allocs for too long.
 
                     // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
                     // to improve chances that the object that is allocated here will be indexed
