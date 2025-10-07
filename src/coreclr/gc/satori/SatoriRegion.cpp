@@ -2064,18 +2064,22 @@ bool SatoriRegion::IsPromotionCandidate()
         !IsReuseCandidate();
 }
 
-// we relocate regions if that would improve their reuse quality.
-// compaction might also improve mutator locality, somewhat.
-bool SatoriRegion::IsRelocationCandidate(bool assumePromotion, bool nextGcIsFullGC)
+// we relocate regions if there is enough unused space.
+bool SatoriRegion::IsRelocationCandidate(bool assumeTheRegionWillBePromoted, bool nextGcIsFullGC)
 {
+    if (nextGcIsFullGC)
+        assumeTheRegionWillBePromoted = true;
+
     if (HasPinnedObjects())
     {
+        // can't relocate
         return false;
     }
 
-    // demoted cannot be compacted, unless we will promote this
-    if (IsDemoted() && !assumePromotion)
+    // demoted cannot be compacted, unless we will promote it back
+    if (IsDemoted() && !assumeTheRegionWillBePromoted)
     {
+        // effectively pinned
         return false;
     }
 
@@ -2085,7 +2089,7 @@ bool SatoriRegion::IsRelocationCandidate(bool assumePromotion, bool nextGcIsFull
     // region up to 3/4 will free 524K+ chunk if compacted, so it may be worth compacting in gen2
     // region 1/2 full can be compacted in gen1
     // otherwise this is too full.
-    size_t tooFullThreshold = (Generation() == 2 || assumePromotion) ?
+    size_t tooFullThreshold = (Generation() == 2 || assumeTheRegionWillBePromoted) ?
         Satori::REGION_SIZE_GRANULARITY / 4 * 3 :
         Satori::REGION_SIZE_GRANULARITY / 2;
 
@@ -2107,7 +2111,7 @@ bool SatoriRegion::IsRelocationCandidate(bool assumePromotion, bool nextGcIsFull
     }
 
     // if gen2 and not demotable, then cannot reuse, consider compacting
-    if (Generation() == 2 || assumePromotion)
+    if (Generation() == 2 || assumeTheRegionWillBePromoted)
     {
         if (!IsDemotionCandidate(nextGcIsFullGC))
         {
