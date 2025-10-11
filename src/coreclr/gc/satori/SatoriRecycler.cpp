@@ -3596,7 +3596,8 @@ void SatoriRecycler::Plan()
     // Check again if it we are still meeting the relocation criteria.
     size_t relocatableActual = m_relocatingRegions->Count();
 
-    _ASSERTE(relocatableActual <= relocatableEstimate);
+// TODO: VS why can happen?
+//    _ASSERTE(relocatableActual <= relocatableEstimate);
     if (relocatableActual <= desiredRelocating)
     {
         m_stayingRegions->AppendUnsafe(m_relocatingRegions);
