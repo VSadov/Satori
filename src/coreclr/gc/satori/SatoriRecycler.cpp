@@ -324,8 +324,7 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
     else
     {
         // we do not know, so conservatively assume that the next GC may promote
-        // TODO: VS is that actually correct? (i.e. nursery regs in gen1 may want to be reused instead)
-        // also assume that presweep candidates will want to relocate
+        // also assume that presweep candidates might be relocatable
        if (region->IsRelocationCandidate(/*assumePromotion*/true, m_nextGcIsFullGc) ||
             region->IsPreSweepCandidate())
         {
@@ -350,8 +349,7 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
 
 void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
 {
-    // assume that presweep candidates will want to relocate
-    // TODO: VS is that actually correct? (i.e. nursery regs in gen1 may want to be reused instead)
+    // also assume that presweep candidates might be relocatable
     if (region->IsRelocationCandidate(/*assumePromotion*/true, m_nextGcIsFullGc) ||
         region->IsPreSweepCandidate())
     {

@@ -2057,11 +2057,14 @@ bool SatoriRegion::IsDemotionCandidate(bool nextGcIsFullGC)
 // unless it is a reuse candidate
 bool SatoriRegion::IsPromotionCandidate()
 {
-    // TUNING: individual promoting heuristic
-    // if the region is not reusable and has not seen an allocation for 4 cycles, perhaps should tenure it
+    // If the region is heavy and has not seen an allocation for 4 cycles, perhaps should tenure it.
+    // The goal is to make gen1 cheaper by moving expensive regions to gen2
+    // Note that other uses for the region could be:
+    //     reuse:   that evidently did not happen, either not reusable or gen1 has too may reusables.
+    //     compact: that evidently did not happen, either not enough candidates, or it is pinned.
     return Generation() == 1 &&
         SweepsSinceLastAllocation() > 4 &&
-        !IsReuseCandidate();
+        Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2;
 }
 
 // we relocate regions if there is enough unused space.
