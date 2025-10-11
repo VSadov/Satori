@@ -368,7 +368,8 @@ void SatoriAllocator::UpdateAllocStatsAndHelpIfNeeded(SatoriAllocationContext* c
     if (curRegularAllocBytes > t_allocStats.lastRegularAllocBytes &&
         curUsec > t_allocStats.lastAllocRecordUsec)
     {
-        t_allocStats.regularAllocRate =  (curRegularAllocBytes - t_allocStats.lastRegularAllocBytes) / (curUsec - t_allocStats.lastAllocRecordUsec);
+        // TODO: VS needs smoothing?
+        t_allocStats.regularAllocRate = (curRegularAllocBytes - t_allocStats.lastRegularAllocBytes) / (curUsec - t_allocStats.lastAllocRecordUsec);
         t_allocStats.lastRegularAllocBytes = curRegularAllocBytes;
         t_allocStats.lastAllocRecordUsec = curUsec; 
     }
@@ -379,7 +380,7 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
     // when allocations cross certain thresholds, check if GC should start or help is needed.
     UpdateAllocStatsAndHelpIfNeeded(context);
 
-// tryAgain: 
+tryAgain: 
 
     if (!context->RegularRegion())
     {
@@ -515,10 +516,8 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
             region->DetachFromAlocatingOwnerRelease();
             m_heap->Recycler()->AddEphemeralRegion(region);
 
-            // TUNING: we could force trying to allocate from shared based on some heuristic
-            //  goto tryAgain;
-
-            // if we got this far with region not detached, get another one
+            // could not allocate, start over with trying to get a region
+            goto tryAgain;
         }
 
         TryGetRegularRegion(region);
