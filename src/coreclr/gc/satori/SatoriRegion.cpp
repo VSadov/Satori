@@ -2067,6 +2067,7 @@ bool SatoriRegion::IsPromotionCandidate()
         Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2;
 }
 
+// TODO: VS what is the difference between parameters?
 // we relocate regions if there is enough unused space.
 size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeTheRegionWillBePromoted, bool nextGcIsFullGC)
 {
