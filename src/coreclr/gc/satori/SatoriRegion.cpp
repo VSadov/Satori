@@ -2128,8 +2128,11 @@ bool SatoriRegion::IsRelocationCandidate(bool assumeTheRegionWillBePromoted, boo
 
 bool SatoriRegion::IsPreSweepCandidate()
 {
-    return false;
-
+    // If saw sweeps, then the free lists have seen the first attrition for given generation.
+    // Otherwise saw allocations or was not swept in gen2 yet. Either way the free data may be quite off.
+    // If attached, will not participate in relocation.
+    // Large do not participate in relocations.
+    // Note: demoted will not relocate, but can accept relocations, so still can presweep.
     bool result = SweepsSinceLastAllocation() == 0 && 
         !IsAttachedToAllocatingOwner() &&
         !IsLarge();
