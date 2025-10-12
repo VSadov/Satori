@@ -2046,7 +2046,7 @@ bool SatoriRegion::IsDemotionCandidate(bool nextGcIsFullGC)
         if (ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION ||
             Occupancy() > Satori::REGION_SIZE_GRANULARITY / 8)
         {
-        return false;
+            return false;
         }
     }
 
@@ -2068,62 +2068,29 @@ bool SatoriRegion::IsPromotionCandidate()
 }
 
 // we relocate regions if there is enough unused space.
-bool SatoriRegion::IsRelocationCandidate(bool assumeTheRegionWillBePromoted, bool nextGcIsFullGC)
+size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeTheRegionWillBePromoted, bool nextGcIsFullGC)
 {
     if (nextGcIsFullGC)
         assumeTheRegionWillBePromoted = true;
 
-    if (HasPinnedObjects())
-    {
-        // can't relocate
-        return false;
-    }
+    if (IsLarge() || HasPinnedObjects())
+        return 0;        // can't relocate
 
-    // demoted cannot be compacted, unless we will promote it back
+    // demoted cannot be compacted, but if we promote it, it will not be demoted.
     if (IsDemoted() && !assumeTheRegionWillBePromoted)
-    {
-        // effectively pinned
-        return false;
-    }
+        return 0;        // effectively pinned
 
-    // TODO: VS settle on this.
-    // size_t tooFullThreshold = Satori::REGION_SIZE_GRANULARITY / 2;
+    size_t tooFullThreshold = Satori::REGION_SIZE_GRANULARITY / 2;
+    // TODO: VS this is not completely correct.
+    //       There is also header, but do we care, since this is an estimate?
+    size_t reclaim = Satori::REGION_SIZE_GRANULARITY - Occupancy();
+    if (IsPreSweepCandidate())
+        reclaim = max(reclaim, Satori::REGION_SIZE_GRANULARITY / 2);
 
-    // region up to 3/4 will free 524K+ chunk if compacted, so it may be worth compacting in gen2
-    // region 1/2 full can be compacted in gen1
-    // otherwise this is too full.
-    size_t tooFullThreshold = (Generation() == 2 || assumeTheRegionWillBePromoted) ?
-        Satori::REGION_SIZE_GRANULARITY / 4 * 3 :
-        Satori::REGION_SIZE_GRANULARITY / 2;
+    if (reclaim < tooFullThreshold)
+        return 0;        // too full. we do not want to move this
 
-    if (Occupancy() >= tooFullThreshold)
-    {
-        return false;
-    }
-
-    // did not use for a while, consider compacting even if reusable.
-    if (SweepsSinceLastAllocation() > 2)
-    {
-        return true;
-    }
-
-    // not reusable, consider compacting, as if reusable we'd rather reuse
-    if (!IsReuseCandidate())
-    {
-        return true;
-    }
-
-    // if gen2 and not demotable, then cannot reuse, consider compacting
-    if (Generation() == 2 || assumeTheRegionWillBePromoted)
-    {
-        if (!IsDemotionCandidate(nextGcIsFullGC))
-        {
-            return true;
-        }
-    }
-
-    // we may be able to reuse this, do not compact.
-    return false;
+    return reclaim;
 }
 
 bool SatoriRegion::IsPreSweepCandidate()

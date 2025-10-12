@@ -232,8 +232,8 @@ private:
     size_t m_demotedOccupancyAcc;
     bool m_occupancyReportingEnabled;
 
-    size_t m_relocatableEphemeralEstimate;
-    size_t m_relocatableTenuredEstimate;
+    size_t m_estimatedEphemeralReclaim;
+    size_t m_estimatedTenuredReclaim;
     size_t m_promotionEstimate;
 
     int64_t m_currentAllocBytesLiveThreads;

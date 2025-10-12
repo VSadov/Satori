@@ -123,8 +123,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_condemnedGeneration = 0;
 
-    m_relocatableEphemeralEstimate = 0;
-    m_relocatableTenuredEstimate = 0;
+    m_estimatedEphemeralReclaim = 0;
+    m_estimatedTenuredReclaim = 0;
     m_promotionEstimate = 0;
 
     m_occupancy[0] = m_occupancyAcc[0] = 0;
@@ -324,11 +324,10 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
     else
     {
         // we do not know, so conservatively assume that the next GC may promote
-        // also assume that presweep candidates might be relocatable
-       if (region->IsRelocationCandidate(/*assumePromotion*/true, m_nextGcIsFullGc) ||
-            region->IsPreSweepCandidate())
+        size_t estimatedReclaim = region->ReclaimSizeIfRelocated(/*assumePromotion*/true, m_nextGcIsFullGc);
+        if (estimatedReclaim  > 0)
         {
-            Interlocked::Increment(&m_relocatableEphemeralEstimate);
+            Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, estimatedReclaim);
         }
 
         if (region->IsPromotionCandidate())
@@ -349,11 +348,11 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
 
 void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
 {
-    // also assume that presweep candidates might be relocatable
-    if (region->IsRelocationCandidate(/*assumePromotion*/true, m_nextGcIsFullGc) ||
-        region->IsPreSweepCandidate())
+    // we do not know, so conservatively assume that the next GC may promote
+    size_t estimatedReclaim = region->ReclaimSizeIfRelocated(/*assumePromotion*/true, m_nextGcIsFullGc);
+    if (estimatedReclaim  > 0)
     {
-        Interlocked::Increment(&m_relocatableTenuredEstimate);
+        Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, estimatedReclaim);
     }
 
     if (region->HasFinalizables())
@@ -3551,21 +3550,21 @@ void SatoriRecycler::Plan()
     m_gen1AddedSinceLastCollection = 0;
     m_gen2AddedSinceLastCollection = 0;
 
-    size_t relocatableEstimate = m_relocatableEphemeralEstimate;
+    size_t estimatedReclaim = m_estimatedEphemeralReclaim;
     if (m_condemnedGeneration == 2)
     {
-        relocatableEstimate += m_relocatableTenuredEstimate;
+        estimatedReclaim += m_estimatedTenuredReclaim;
     }
 
     // gen1 is always rebuilt, clear counters
     m_occupancyAcc[1] = 0;
-    m_relocatableEphemeralEstimate = 0;
+    m_estimatedEphemeralReclaim = 0;
 
     if (m_promoteAllRegions)
     {
         // we will be rebuilding gen2, one way or another
         m_occupancyAcc[2] = 0;
-        m_relocatableTenuredEstimate = 0;
+        m_estimatedTenuredReclaim = 0;
         m_demotedOccupancyAcc = 0;
     }
 
@@ -3573,14 +3572,15 @@ void SatoriRecycler::Plan()
     // At an extreme we do not want to relocate one region
     // and then go through 100 regions and update pointers.
     //
-    // As crude criteria, we will do relocations if at least 1/3
-    // of condemned regions want to participate. And at least 2.
-    size_t desiredRelocating = SatoriUtil::IsForceCompact() ?
+    // As crude criteria, we will do relocations if at least 1/2
+    // of condemned regions want to participate. And at least 2 total.
+    // And each on average results in 1/2 region free space.
+    size_t desiredReclaim = SatoriUtil::IsForceCompact() ?
         0 :
-        m_condemnedRegionsCount / 3 + 2;
+        (m_condemnedRegionsCount / 2 + 2) * Satori::REGION_SIZE_GRANULARITY / 2;
 
     if (m_isRelocating == false ||
-        relocatableEstimate <= desiredRelocating)
+        estimatedReclaim < desiredReclaim)
     {
         DenyRelocation();
         return;
@@ -3592,11 +3592,15 @@ void SatoriRecycler::Plan()
     // The actual relocatable number could be less than the estimate due to pinning
     // or if this is gen1, which can reuse more.
     // Check again if it we are still meeting the relocation criteria.
-    size_t relocatableActual = m_relocatingRegions->Count();
+    size_t relocatableActual = m_estimatedEphemeralReclaim;
+    m_estimatedEphemeralReclaim = 0;
 
-// TODO: VS why can happen?
-//    _ASSERTE(relocatableActual <= relocatableEstimate);
-    if (relocatableActual <= desiredRelocating)
+    // This can happen when we are too optimistic about preswept candidates
+    // and they did not result in 1/2 reclaim as we thought.
+    // We could have skipped presweeping.
+    // TODO: VS can we learn from this to estimate better next time?
+    //    _ASSERTE(relocatableActual <= relocatableEstimate);
+    if (relocatableActual <= desiredReclaim)
     {
         m_stayingRegions->AppendUnsafe(m_relocatingRegions);
         DenyRelocation();
@@ -3658,21 +3662,31 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
                 FreeRelocatedRegion(curRegion, /*noLock*/ true);
             }
             // select relocation candidates and relocation targets according to sizes.
-            else if (curRegion->IsRelocationCandidate(m_promoteAllRegions, m_nextGcIsFullGc))
+            else
             {
-                // when relocating, we want to start with larger regions
-                if (curRegion->Occupancy() > Satori::REGION_SIZE_GRANULARITY * 2 / 5)
+                size_t reclaim = curRegion->ReclaimSizeIfRelocated(m_promoteAllRegions, m_nextGcIsFullGc);
+                if (reclaim)
                 {
-                    m_relocatingRegions->Push(curRegion);
+                    // we use m_estimatedEphemeralReclaim to accumulate current estimate
+                    // which is likely better if we did any presweeping.
+                    Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, reclaim);
+                    // when relocating, we want to start with larger regions
+                    if (curRegion->Occupancy() > Satori::REGION_SIZE_GRANULARITY * 2 / 5)
+                    {
+                        m_relocatingRegions->Push(curRegion);
+                    }
+                    else
+                    {
+                        m_relocatingRegions->Enqueue(curRegion);
+                    }
+
+                    continue;
                 }
                 else
                 {
-                    m_relocatingRegions->Enqueue(curRegion);
+                    // no point to relocate
+                    AddRelocationTarget(curRegion);
                 }
-            }
-            else
-            {
-                AddRelocationTarget(curRegion);
             }
         } while ((curRegion = regions->TryPop()));
     }
@@ -3952,7 +3966,7 @@ void SatoriRecycler::Update()
     // We will be rebuilding these counters, possibly in deferred sweep.
     _ASSERTE(m_occupancyAcc[0] == 0);
     _ASSERTE(m_occupancyAcc[1] == 0);
-    _ASSERTE(m_relocatableEphemeralEstimate == 0);
+    _ASSERTE(m_estimatedEphemeralReclaim == 0);
     _ASSERTE(m_gen1AddedSinceLastCollection == 0);
     _ASSERTE(m_gen2AddedSinceLastCollection == 0);
 
@@ -3963,7 +3977,7 @@ void SatoriRecycler::Update()
         _ASSERTE(m_tenuredFinalizationTrackingRegions->IsEmpty());
         _ASSERTE(m_occupancyAcc[2] == 0);
         _ASSERTE(m_demotedOccupancyAcc == 0);
-        _ASSERTE(m_relocatableTenuredEstimate == 0);
+        _ASSERTE(m_estimatedTenuredReclaim == 0);
     }
 
     // enable accumulating and reporting
