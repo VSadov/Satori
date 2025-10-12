@@ -1080,10 +1080,11 @@ void SatoriRecycler::AdjustHeuristics()
 
     // we trigger GC when ephemeral size grows to SatoriUtil::Gen1Target(),
     // the budget is the diff to reach that
+    // NOTE: after gen2 ephemeralOccupancy is 0.
     size_t newGen1Budget = max((size_t)MIN_GEN1_BUDGET, ephemeralOccupancy * (SatoriUtil::Gen1Target() - 100) / 100);
 
-    // alternatively we allow gen1 allocs up to 1/8 of total limit.
-    size_t altNewGen1Budget = max((size_t)MIN_GEN1_BUDGET, m_totalLimit / 8);
+    // alternatively we allow gen1 allocs up to 1/16 of total limit.
+    size_t altNewGen1Budget = max((size_t)MIN_GEN1_BUDGET, m_totalLimit / 16);
 
     // take max of both budgets
     newGen1Budget = max(newGen1Budget, altNewGen1Budget);
@@ -1096,21 +1097,16 @@ void SatoriRecycler::AdjustHeuristics()
     // unless we already doing gen2 GC
     if (m_condemnedGeneration != 2)
     {
-        // If the heap size will definitely be over the limit at next GC, make the next GC a full GC,
-        // NOTE: If gen1 is big, we will still use gen1 target, but then do gen2 GCs.
+        // NOTE: If gen1 is big, we will still use gen1 target, but then do gen2 GC.
         //       We may exceed the total goal temporarily. That is ok.
         m_nextGcIsFullGc = (occupancy + m_gen1Budget > m_totalLimit);
     }
     else
     {
-        // TODO: VS we see gen2 after gen2 in roslyn, why is that?
-
-        // In unusul cases gen1 may end up so large than we get into "every GC is gen2 GC" mode.
-        // That can happen if object lifetimes do not behave generationally or
-        // there is high fragmentation that compaction could not defeat.
-        size_t approxTotalBudgetAfterGC = m_totalLimit * (SatoriUtil::Gen2Target() - 100) / SatoriUtil::Gen2Target();
-        // even if current GC is a gen2, the gen1 budget could exceed the new total, thus the next GC is gen2 again.
-        m_nextGcIsFullGc = m_gen1Budget > approxTotalBudgetAfterGC;
+        // TODO: VS if heap is very small, we might just do gen2 again. No point in generations.
+        //       And deciding on what is "small" might depend on MIN_GEN1_BUDGET.
+        //       If we do not want to do GC for less than X, perhaps we want to just do gen2 if total < X*2 or smth.
+        m_nextGcIsFullGc = false;
     }
 
     if (!SatoriUtil::IsGen1Enabled())
