@@ -148,7 +148,7 @@ public:
     template <bool updatePointers>
     bool Sweep();
 
-    bool SatoriRegion::IsPreSweepCandidate(bool assumeFullGC);
+    bool IsPreSweepCandidate(bool assumeFullGC);
     void PreSweep();
     void FinishSweepForPreSwept();
 
