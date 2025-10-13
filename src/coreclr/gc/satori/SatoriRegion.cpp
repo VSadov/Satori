@@ -2077,7 +2077,6 @@ size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeTheRegionWillBePromoted, 
     if (IsLarge() || HasPinnedObjects())
         return 0;        // can't relocate
 
-    // demoted cannot be compacted, but if we promote it, it will not be demoted.
     if (IsDemoted() && !assumeTheRegionWillBePromoted)
         return 0;        // effectively pinned
 
@@ -2085,7 +2084,7 @@ size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeTheRegionWillBePromoted, 
     // TODO: VS this is not completely correct.
     //       There is also header, but do we care, since this is an estimate?
     size_t reclaim = Satori::REGION_SIZE_GRANULARITY - Occupancy();
-    if (IsPreSweepCandidate())
+    if (IsPreSweepCandidate(nextGcIsFullGC))
         reclaim = max(reclaim, Satori::REGION_SIZE_GRANULARITY / 2);
 
     if (reclaim < tooFullThreshold)
@@ -2094,16 +2093,21 @@ size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeTheRegionWillBePromoted, 
     return reclaim;
 }
 
-bool SatoriRegion::IsPreSweepCandidate()
+bool SatoriRegion::IsPreSweepCandidate(bool assumeFullGC)
 {
-    // If saw sweeps, then the free lists have seen the first attrition for given generation.
-    // Otherwise saw allocations or was not swept in gen2 yet. Either way the free data may be quite off.
-    // If attached, will not participate in relocation.
     // Large do not participate in relocations.
-    // Note: demoted will not relocate, but can accept relocations, so still can presweep.
-    bool result = SweepsSinceLastAllocation() == 0 && 
-        !IsAttachedToAllocatingOwner() &&
-        !IsLarge();
+    if (IsLarge())
+        return false;
+
+    // Attached regions will not participate in relocation, unless full GC
+    if (!assumeFullGC && IsAttachedToAllocatingOwner())
+        return false;
+
+    // If saw sweeps, then the free lists have seen the first attrition for given generation.
+    // Otherwise the free data may be quite off.
+    // NOTE: demoted will not relocate, but can accept relocations, so still can presweep.
+    // NOTE: gen1 regions will be considered unswept for gen2 GC purposes.
+    bool result = SweepsSinceLastAllocation() == 0 || (assumeFullGC && Generation() != 2);
 
     _ASSERTE(!result || !IsPromotionCandidate());
     return result;

@@ -3568,12 +3568,34 @@ void SatoriRecycler::Plan()
     // At an extreme we do not want to relocate one region
     // and then go through 100 regions and update pointers.
     //
-    // As crude criteria, we will do relocations if at least 1/2
-    // of condemned regions want to participate. And at least 2 total.
-    // And each on average results in 1/2 region free space.
-    size_t desiredReclaim = SatoriUtil::IsForceCompact() ?
-        0 :
-        (m_condemnedRegionsCount / 2 + 2) * Satori::REGION_SIZE_GRANULARITY / 2;
+    // As crude criteria, we will do relocations if at least some fraction
+    // of condemned regions wants to participate. And at least 2 total.
+    // And an average region would yield 1/2 region free space.
+    // NOTE: Regions must be no more than 1/2 full to be considered candidates,
+    //       but for presweepable we only guess that they would have that much.
+    //       After presweep we may find otherwise. Too many mispredicted cases
+    //       could add up to denying relocation after planning. That is not a
+    //       problem, just some regions would be swept in STW and the rest
+    //       concurrently. It is actually when we compact, then presweeping is
+    //       a bit of a waste if we end up relocating the swept region.
+    //       We pay presweep price for the quality of relocation. Relocation
+    //       is not cheap, so better be effective.
+    size_t desiredReclaim = 0;
+    if (!SatoriUtil::IsForceCompact())
+    {
+        // Note: this is relative to region count not occupancy,
+        //       since relocation has no effect on occipancy.
+        if (m_condemnedGeneration == 2)
+        {
+            // gen2 free space may hang around for a while, so we compact if can reclaim ~1/6 of space
+            desiredReclaim = (m_condemnedRegionsCount / 3 + 2) * Satori::REGION_SIZE_GRANULARITY / 2;
+        }
+        else
+        {
+            // gen1 can reuse most of free space, so compact only if ~1/2 can be reclaimed
+            desiredReclaim = (m_condemnedRegionsCount / 1 + 2) * Satori::REGION_SIZE_GRANULARITY / 2;
+        }
+    }
 
     if (m_isRelocating == false ||
         estimatedReclaim < desiredReclaim)
@@ -3648,7 +3670,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
         {
             _ASSERTE(curRegion->Generation() <= m_condemnedGeneration);
 
-            if (curRegion->IsPreSweepCandidate())
+            if (curRegion->IsPreSweepCandidate(m_condemnedGeneration == 2))
             {
                 curRegion->PreSweep();
             }
