@@ -2109,7 +2109,7 @@ bool SatoriRegion::IsPreSweepCandidate(bool assumeFullGC)
     // NOTE: gen1 regions will be considered unswept for gen2 GC purposes.
     bool result = SweepsSinceLastAllocation() == 0 || (assumeFullGC && Generation() != 2);
 
-    _ASSERTE(!result || !IsPromotionCandidate());
+    _ASSERTE(!result || assumeFullGC || !IsPromotionCandidate());
     return result;
 }
 
