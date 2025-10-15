@@ -366,7 +366,8 @@ void SatoriRegion::StopAllocating(size_t allocPtr)
     _ASSERTE(allocPtr != 0);
 
     // Make unused allocation span parseable
-    // TODO: VS can this ever be equal? should there be space for the terminator?
+    // Unbuffered allocs like Large, will consume whole allocation.
+    // Buffered/small allocs will have extra space at least for a terminator.
     if (allocPtr != m_allocEnd)
     {
         m_used = max(m_used, allocPtr + Satori::MIN_FREE_SIZE);
@@ -2067,24 +2068,21 @@ bool SatoriRegion::IsPromotionCandidate()
         Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2;
 }
 
-// TODO: VS what is the difference between parameters?
 // we relocate regions if there is enough unused space.
-size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeTheRegionWillBePromoted, bool nextGcIsFullGC)
+size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeFullGC)
 {
-    if (nextGcIsFullGC)
-        assumeTheRegionWillBePromoted = true;
-
     if (IsLarge() || HasPinnedObjects())
         return 0;        // can't relocate
 
-    if (IsDemoted() && !assumeTheRegionWillBePromoted)
+    if (IsDemoted() && !assumeFullGC)
         return 0;        // effectively pinned
 
     size_t tooFullThreshold = Satori::REGION_SIZE_GRANULARITY / 2;
-    // TODO: VS this is not completely correct.
-    //       There is also header, but do we care, since this is an estimate?
+    // NOTE: this is not exactly how much space is left in a half-full region
+    //       as there is also some space taken by the header.
+    //       But for an estimate/threshold this is close enough.
     size_t reclaim = Satori::REGION_SIZE_GRANULARITY - Occupancy();
-    if (IsPreSweepCandidate(nextGcIsFullGC))
+    if (IsPreSweepCandidate(assumeFullGC))
         reclaim = max(reclaim, Satori::REGION_SIZE_GRANULARITY / 2);
 
     if (reclaim < tooFullThreshold)
@@ -2107,7 +2105,8 @@ bool SatoriRegion::IsPreSweepCandidate(bool assumeFullGC)
     // Otherwise the free data may be quite off.
     // NOTE: demoted will not relocate, but can accept relocations, so still can presweep.
     // NOTE: gen1 regions will be considered unswept for gen2 GC purposes.
-    bool result = SweepsSinceLastAllocation() == 0 || (assumeFullGC && Generation() != 2);
+    bool result = SweepsSinceLastAllocation() == 0 ||
+        (assumeFullGC && Generation() != 2);
 
     _ASSERTE(!result || assumeFullGC || !IsPromotionCandidate());
     return result;
@@ -2129,8 +2128,8 @@ bool SatoriRegion::TryDemote(bool nextGcIsFullGc)
     if (nextGcIsFullGc)
     {
         m_demotedOccupancy = Occupancy();
-        // TODO: VS this may not be needed for correctness. do we need this for perf? does the barrier care in nextGcIsGen2 case?
-        this->ResetCardsForEphemeral();
+        // The following is not necessary as when next GC is a full GC, we do not do cards.
+        // this->ResetCardsForEphemeral();
         this->SetGeneration(1);
         return true;
     }

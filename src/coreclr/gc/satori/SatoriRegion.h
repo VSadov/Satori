@@ -103,7 +103,7 @@ public:
     bool IsReuseCandidate();
     bool IsDemotionCandidate(bool nextGcIsFullGC);
     bool IsPromotionCandidate();
-    size_t ReclaimSizeIfRelocated(bool assumeTheRegionWillBePromoted, bool nextGcIsFullGC);
+    size_t ReclaimSizeIfRelocated(bool assumeFullGC);
 
     bool TryDemote(bool nextGcIsFullGc);
     bool IsDemoted();

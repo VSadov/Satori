@@ -324,7 +324,7 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
     else
     {
         // we do not know, so conservatively assume that the next GC may promote
-        size_t estimatedReclaim = region->ReclaimSizeIfRelocated(/*assumePromotion*/true, m_nextGcIsFullGc);
+        size_t estimatedReclaim = region->ReclaimSizeIfRelocated(m_nextGcIsFullGc);
         if (estimatedReclaim  > 0)
         {
             Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, estimatedReclaim);
@@ -349,7 +349,7 @@ void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
 void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
 {
     // we do not know, so conservatively assume that the next GC may promote
-    size_t estimatedReclaim = region->ReclaimSizeIfRelocated(/*assumePromotion*/true, m_nextGcIsFullGc);
+    size_t estimatedReclaim = region->ReclaimSizeIfRelocated(m_nextGcIsFullGc);
     if (estimatedReclaim  > 0)
     {
         Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, estimatedReclaim);
@@ -3683,7 +3683,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
             // select relocation candidates and relocation targets according to sizes.
             else
             {
-                size_t reclaim = curRegion->ReclaimSizeIfRelocated(m_promoteAllRegions, m_nextGcIsFullGc);
+                size_t reclaim = curRegion->ReclaimSizeIfRelocated(m_promoteAllRegions);
                 if (reclaim)
                 {
                     // we use m_estimatedEphemeralReclaim to accumulate current estimate
@@ -3853,6 +3853,9 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
 {
     // the region must be in after marking and before sweeping state
     _ASSERTE(relocationSource->HasMarksSet());
+    // TODO: VS we could relocate demoted if next GC is Full GC,
+    // but would need to free the gen2 trackers.
+    // Aslo see ReclaimSizeIfRelocated, which assumes these do not relocate.
     _ASSERTE(!relocationSource->IsDemoted());
 
     relocationSource->Verify(true);

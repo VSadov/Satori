@@ -137,8 +137,8 @@ inline size_t SatoriRegion::GetAllocRemaining()
 {
     // reserve Satori::MIN_FREE_SIZE to be able to make the unused space parseable
     ptrdiff_t diff = m_allocEnd - m_allocStart - Satori::MIN_FREE_SIZE;
-    // TODO: VS when can this go below 0?
-    return diff > 0 ? (size_t)diff : 0;
+    _ASSERTE(!IsAllocating() || diff >=0);
+    return diff >= 0 ? (size_t)diff : 0;
 }
 
 inline size_t SatoriRegion::RegionSizeForAlloc(size_t allocSize)

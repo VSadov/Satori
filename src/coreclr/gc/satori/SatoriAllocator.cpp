@@ -390,7 +390,7 @@ tryAgain:
         SatoriObject* freeObj = context->alloc_ptr != 0 ?
             context->FinishAllocFromShared() : nullptr;
 
-        // TODO: VS may be 10 or 50 ?
+        // TUNING: may be 10 or 50 ? Is it important?
         // we will consider 100+ MB/s as fast-allocating and try getting a non-shared region
         if (t_allocStats.regularAllocRate < 100)
         {
