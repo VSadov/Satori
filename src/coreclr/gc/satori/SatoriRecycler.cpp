@@ -1271,14 +1271,16 @@ void SatoriRecycler::BlockingCollectImpl()
 
     _ASSERTE(m_deferredSweepRegions->IsEmpty());
 
-    // TODO: VS should adjust after deactivate? (and deal with the occupancies as well?
-    //       probably not as occupancies are as of the last GC completion. (i.e Gen0 size was captured long time ago)
-    //       is that true?
-    
     // now we know survivorship after the last GC
     // and we can figure what we want to do in this GC and when we will do the next one
+    // NOTE: AdjustHeuristics is in the context of previous GC, which is complete by now and m_occupancy
+    //       was updated accordingly. In fact some regions are still attached to threads and not even
+    //       known to Recycler.
+    //       That is intentional. We could glance into current state (i.e. m_gen1AddedSinceLastCollection),
+    //       but we have only vague idea of how much of that is alive until we mark. And if we
+    //       need to guess, we'd guess "same as before" - thus counts at last GC are close enough.
     AdjustHeuristics();
-
+    
     // Here we know if the next GC will surely be a full GC.
     ToggleWriteBarrier(false, /* skipCards */ m_nextGcIsFullGc, /* eeSuspended */ true);
     m_isBarrierConcurrent = false;
@@ -3615,8 +3617,7 @@ void SatoriRecycler::Plan()
 
     // This can happen when we are too optimistic about preswept candidates
     // and they did not result in 1/2 reclaim as we thought.
-    // We could have skipped presweeping.
-    // TODO: VS can we learn from this to estimate better next time?
+    // We could have skipped presweeping, if we could know.
     //    _ASSERTE(relocatableActual <= relocatableEstimate);
     if (relocatableActual <= desiredReclaim)
     {
