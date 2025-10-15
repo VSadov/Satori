@@ -368,7 +368,6 @@ void SatoriAllocator::UpdateAllocStatsAndHelpIfNeeded(SatoriAllocationContext* c
     if (curRegularAllocBytes > t_allocStats.lastRegularAllocBytes &&
         curUsec > t_allocStats.lastAllocRecordUsec)
     {
-        // TODO: VS needs smoothing?
         t_allocStats.regularAllocRate = (curRegularAllocBytes - t_allocStats.lastRegularAllocBytes) / (curUsec - t_allocStats.lastAllocRecordUsec);
         t_allocStats.lastRegularAllocBytes = curRegularAllocBytes;
         t_allocStats.lastAllocRecordUsec = curUsec; 
