@@ -3689,6 +3689,12 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
                     // we use m_estimatedEphemeralReclaim to accumulate current estimate
                     // which is likely better if we did any presweeping.
                     Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, reclaim);
+
+                    // TODO: VS why with larger? should we start with smaller?
+                    //       are we afraid small will take large free spaces? but they prefer smaller ones...
+                    //       relocating small ones is more effective, if just enough space, we'd prefer them
+                    //       perhaps even sort relocatables by size?
+
                     // when relocating, we want to start with larger regions
                     if (curRegion->Occupancy() > Satori::REGION_SIZE_GRANULARITY * 2 / 5)
                     {
