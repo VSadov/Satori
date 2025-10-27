@@ -345,6 +345,9 @@ private:
     void PlanWorker();
     void PlanRegions(SatoriRegionQueue* regions);
     void DenyRelocation();
+
+    // TODO: VS move to utils?
+    static int32_t BucketForAlloc(size_t allocSize);
     void AddTenuredRegionsToPlan(SatoriRegionQueue* regions);
     void AddRelocationTarget(SatoriRegion* region);
     SatoriRegion* TryGetRelocationTarget(size_t size, bool existingRegionOnly);

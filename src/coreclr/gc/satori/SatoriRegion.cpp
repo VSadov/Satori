@@ -2068,7 +2068,8 @@ bool SatoriRegion::IsPromotionCandidate()
         Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2;
 }
 
-// we relocate regions if there is enough unused space.
+// how much unusable space is reclaimed if relocated.
+// this is used to estimate goodness of overall and individual relocations.
 size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeFullGC)
 {
     if (IsLarge() || HasPinnedObjects())
@@ -2077,16 +2078,33 @@ size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeFullGC)
     if (IsDemoted() && !assumeFullGC)
         return 0;        // effectively pinned
 
-    size_t tooFullThreshold = Satori::REGION_SIZE_GRANULARITY / 2;
-    // NOTE: this is not exactly how much space is left in a half-full region
-    //       as there is also some space taken by the header.
-    //       But for an estimate/threshold this is close enough.
-    size_t reclaim = Satori::REGION_SIZE_GRANULARITY - Occupancy();
+    // with presweepables we do not know exact occupancy or free lists,
+    // so make a guess at 1/2 region
     if (IsPreSweepCandidate(assumeFullGC))
-        reclaim = max(reclaim, Satori::REGION_SIZE_GRANULARITY / 2);
+        return Satori::REGION_SIZE_GRANULARITY / 2;
 
-    if (reclaim < tooFullThreshold)
+    if (Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2)
         return 0;        // too full. we do not want to move this
+
+    // max reclaim is all unoccupied space.
+    size_t reclaim =
+        Satori::REGION_SIZE_GRANULARITY - Occupancy() - sizeof(SatoriRegion) - Satori::MIN_FREE_SIZE;
+
+    // nothing is reusable in gen2, so all unused is reclaimable
+    // demotables are technically reusable, but we would rather relocate, than demote
+    if (Generation() == 2 || assumeFullGC)
+        return reclaim;
+
+    // it was not reused in two GCs, just put it together with is not reusable.
+    if (SweepsSinceLastAllocation() > 2)
+        return reclaim;
+
+    // reduce reclaim by reusable size in large buckets. Large buckets are certainly reusable
+    reclaim -= FreeSpaceInTopNBuckets(Satori::LARGE_BUCKETS);
+
+    // if reclaim is too small compared to occupancy, do not relocate.
+    if (reclaim * 2 < Occupancy())
+        return 0;
 
     return reclaim;
 }
@@ -2099,6 +2117,9 @@ bool SatoriRegion::IsPreSweepCandidate(bool assumeFullGC)
 
     // Attached regions will not participate in relocation, unless full GC
     if (!assumeFullGC && IsAttachedToAllocatingOwner())
+        return false;
+
+    if (this->IsPreSwept())
         return false;
 
     // If saw sweeps, then the free lists have seen the first attrition for given generation.

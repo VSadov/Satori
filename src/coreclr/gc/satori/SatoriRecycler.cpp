@@ -3741,6 +3741,27 @@ void SatoriRecycler::AddRelocationTarget(SatoriRegion* region)
     }
 }
 
+// static
+int32_t SatoriRecycler::BucketForAlloc(size_t allocSize)
+{
+    if (allocSize <= Satori::MIN_FREELIST_CAPACITY)
+    {
+        return 0;
+    }
+    else
+	{
+        // skip buckets that could not possibly fit allocSize
+        DWORD bucket;
+        BitScanReverse64(&bucket, allocSize);
+        bucket = bucket - Satori::MIN_FREELIST_CAPACITY_BITS;
+
+        // this bucket may be able to fit allocSize or may be not,
+        // but we will just use the next bucket, which guarantees the allocSize will fit.
+        bucket++;
+        return (int32_t)bucket;
+	}
+}
+
 SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool existingRegionOnly)
 {
     //make this occasionally fail in debug to be sure we can handle low memory case.
@@ -3751,22 +3772,7 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool exis
     }
 #endif
 
-    DWORD bucket;
-    if (allocSize <= Satori::MIN_FREELIST_CAPACITY)
-    {
-        bucket = 0;
-    }
-    else
-	{
-        // skip buckets that could not possibly fit allocSize
-        BitScanReverse64(&bucket, allocSize);
-        bucket = bucket - Satori::MIN_FREELIST_CAPACITY_BITS;
-
-        // this bucket may be able to fit allocSize or may be not,
-        // but we will just use the next bucket, which guarantees the allocSize will fit.
-        bucket++;
-	}
-
+    int32_t bucket = BucketForAlloc(allocSize);
     _ASSERTE(bucket >= 0);
 
     // If we want to relocate more than half region (to force compaction or whatever),
@@ -3869,7 +3875,12 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     size_t maxBytesToCopy = relocationSource->Occupancy();
     // if half region is contiguously free, relocate only into existing regions,
     // otherwise we would rather make this one a target of relocations.
-    bool existingRegionOnly = relocationSource->HasFreeSpaceInTopBucket();
+
+    // TODO: VS allow taking free if 1/8 occupancy or less?
+    // TODO: VS consider "in-place" scheme if missing target, high frag, but also high occ.
+
+    // if has free to fit itself, forbid new
+    bool existingRegionOnly = relocationSource->GetMaxFreeBucket() >= BucketForAlloc(maxBytesToCopy) ; //relocationSource->GetMaxFreeBucket();
     SatoriRegion* relocationTarget = TryGetRelocationTarget(maxBytesToCopy, existingRegionOnly);
 
     // could not get a region. we must be low on available memory.
