@@ -2088,7 +2088,7 @@ size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeFullGC)
 
     // max reclaim is all unoccupied space.
     size_t reclaim =
-        Satori::REGION_SIZE_GRANULARITY - Occupancy() - sizeof(SatoriRegion) - Satori::MIN_FREE_SIZE;
+        Satori::REGION_SIZE_GRANULARITY - Occupancy() - sizeof(SatoriRegion);
 
     // nothing is reusable in gen2, so all unused is reclaimable
     // demotables are technically reusable, but we would rather relocate, than demote
@@ -2106,6 +2106,7 @@ size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeFullGC)
     if (reclaim * 2 < Occupancy())
         return 0;
 
+    _ASSERTE(reclaim <= Satori::REGION_SIZE_GRANULARITY);
     return reclaim;
 }
 
