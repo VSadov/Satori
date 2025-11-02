@@ -351,6 +351,7 @@ private:
     void AddTenuredRegionsToPlan(SatoriRegionQueue* regions);
     void AddRelocationTarget(SatoriRegion* region);
     SatoriRegion* TryGetRelocationTarget(size_t size, bool existingRegionOnly);
+    SatoriRegion* GetOrAddRelocationTarget(SatoriRegion * region, size_t allocSize);
 
     void Relocate();
     void RelocateWorker();

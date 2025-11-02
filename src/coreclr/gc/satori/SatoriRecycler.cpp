@@ -3741,7 +3741,24 @@ void SatoriRecycler::AddRelocationTarget(SatoriRegion* region)
     }
 }
 
-// static
+SatoriRegion* SatoriRecycler::GetOrAddRelocationTarget(SatoriRegion* region, size_t allocSize)
+{
+    int maxFreeBucket = region->GetMaxFreeBucket();
+    _ASSERTE(maxFreeBucket >= 0);
+    _ASSERTE(maxFreeBucket < Satori::FREELIST_COUNT);
+    _ASSERTE(!region->HasPinnedObjects());
+
+    SatoriRegion* result = m_relocationTargets[maxFreeBucket]->PopOrPush(region);
+    if (result)
+    {
+        size_t allocStart = result->StartAllocating(allocSize);
+        _ASSERTE(allocStart);
+    }
+
+    return result;
+}
+
+// static 
 int32_t SatoriRecycler::BucketForAlloc(size_t allocSize)
 {
     if (allocSize <= Satori::MIN_FREELIST_CAPACITY)
@@ -3749,7 +3766,7 @@ int32_t SatoriRecycler::BucketForAlloc(size_t allocSize)
         return 0;
     }
     else
-	{
+    {
         // skip buckets that could not possibly fit allocSize
         DWORD bucket;
         BitScanReverse64(&bucket, allocSize);
@@ -3759,7 +3776,7 @@ int32_t SatoriRecycler::BucketForAlloc(size_t allocSize)
         // but we will just use the next bucket, which guarantees the allocSize will fit.
         bucket++;
         return (int32_t)bucket;
-	}
+    }
 }
 
 SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool existingRegionOnly)
@@ -3873,22 +3890,34 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     relocationSource->Verify(true);
 
     size_t maxBytesToCopy = relocationSource->Occupancy();
-    // if half region is contiguously free, relocate only into existing regions,
-    // otherwise we would rather make this one a target of relocations.
 
-    // TODO: VS allow taking free if 1/8 occupancy or less?
-    // TODO: VS consider "in-place" scheme if missing target, high frag, but also high occ.
-
-    // if has free to fit itself, forbid new
+    // If the region could be used as a target for itself,
+    // there could be more like this, do not ask for a free region.
+    // We would rather make this one a target of relocations.
     bool existingRegionOnly = relocationSource->GetMaxFreeBucket() >= BucketForAlloc(maxBytesToCopy) ; //relocationSource->GetMaxFreeBucket();
     SatoriRegion* relocationTarget = TryGetRelocationTarget(maxBytesToCopy, existingRegionOnly);
 
-    // could not get a region. we must be low on available memory.
-    // we can try using the source region as a target for other relocations.
     if (!relocationTarget)
     {
-        AddRelocationTarget(relocationSource);
-        return;
+        if (existingRegionOnly)
+        {
+            // we did not found a target, but the region could fit into its own free.
+            // we will make it a target instead.
+            // however, there could be be more like this, and we do not want all become targets,
+            // so we use GetOrAdd.
+            relocationTarget = GetOrAddRelocationTarget(relocationSource, maxBytesToCopy);
+            if (!relocationTarget)
+            {
+                return;
+            }
+        }
+        else
+        {
+            // we could not get a region. we must be low on available memory.
+            // we can still try using the source region as a target for other relocations.
+            AddRelocationTarget(relocationSource);
+            return;
+        }
     }
 
     // transfer finalization trackers if we have any
