@@ -312,7 +312,7 @@ public:
         if (target < 100)
         {
             // target must be > 100%
-            // if wee see less, just default to triggering GC when heap doubles
+            // if we see less, just default to triggering GC when heap doubles
             target = 200;
         }
 
@@ -326,7 +326,7 @@ public:
         if (target < 100)
         {
             // target must be > 100%
-            // if wee see less, just default to triggering GC when ephemeral heap quadruples in size
+            // if we see less, just default to same as Gen2
             target = Gen2Target() * 2;
         }
 
