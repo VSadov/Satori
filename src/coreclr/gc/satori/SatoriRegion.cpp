@@ -2095,12 +2095,12 @@ size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeFullGC)
     if (Generation() == 2 || assumeFullGC)
         return reclaim;
 
-    // it was not reused in two GCs, just put it together with is not reusable.
-    if (SweepsSinceLastAllocation() > 2)
-        return reclaim;
-
-    // reduce reclaim by reusable size in large buckets. Large buckets are certainly reusable
-    reclaim -= FreeSpaceInTopNBuckets(Satori::LARGE_BUCKETS);
+    // it was not reused in two GCs, just treat as not reusable.
+    if (SweepsSinceLastAllocation() <= 2)
+    {
+        // reduce reclaim by reusable size in large buckets. Large buckets are certainly reusable
+        reclaim -= FreeSpaceInTopNBuckets(Satori::LARGE_BUCKETS);
+    }
 
     // if reclaim is too small compared to occupancy, do not relocate.
     if (reclaim * 2 < Occupancy())
