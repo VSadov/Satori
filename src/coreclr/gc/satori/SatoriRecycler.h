@@ -218,7 +218,7 @@ private:
 
     size_t m_gen1Budget;
     size_t m_totalLimit;
-    size_t m_nextGcIsFullGc;
+    bool m_nextGcIsFullGc;
 
     size_t m_condemnedRegionsCount;
     size_t m_deferredSweepCount;

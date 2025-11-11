@@ -1098,8 +1098,13 @@ void SatoriRecycler::AdjustHeuristics()
     if (m_condemnedGeneration != 2)
     {
         // NOTE: If gen1 is big, we will still use gen1 target, but then do gen2 GC.
-        //       We may exceed the total goal temporarily. That is ok.
-        m_nextGcIsFullGc = (occupancy + m_gen1Budget > m_totalLimit);
+        //       We may exceed the total goal temporarily.
+        //       That is ok, but try not to overrun by too much.
+        if (occupancy + m_gen1Budget > m_totalLimit)
+        {
+            m_nextGcIsFullGc = true;
+            m_gen1Budget = max(m_totalLimit -occupancy, (size_t)MIN_GEN1_BUDGET);
+        }
     }
     else
     {
