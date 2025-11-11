@@ -4439,8 +4439,8 @@ bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
     }
 
     // Sweeping and returning could be contentious.
-    // If there are workers, do not participate.
-    if (isWorkerGCThread || m_activeWorkers <= 0)
+    // If there are workers and we are in a low latency mode, do not participate.
+    if (isWorkerGCThread || m_activeWorkers <= 0 || !m_isLowLatencyMode)
     {
         SatoriRegion* curRegion = m_deferredSweepRegions->TryPop();
         if (curRegion)
