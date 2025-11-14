@@ -1095,15 +1095,20 @@ void SatoriRecycler::AdjustHeuristics()
 
     // if the heap size will definitely be over the limit at next GC, make the next GC a full GC,
     // unless we already doing gen2 GC
-    if (m_condemnedGeneration != 2)
+    if ((m_condemnedGeneration != 2 && occupancy + m_gen1Budget > m_totalLimit) ||
+        !SatoriUtil::IsGen1Enabled())
     {
         // NOTE: If gen1 is big, we will still use gen1 target, but then do gen2 GC.
         //       We may exceed the total goal temporarily.
         //       That is ok, but try not to overrun by too much.
-        if (occupancy + m_gen1Budget > m_totalLimit)
+        m_nextGcIsFullGc = true;
+        if (occupancy > m_totalLimit)
         {
-            m_nextGcIsFullGc = true;
-            m_gen1Budget = max(m_totalLimit -occupancy, (size_t)MIN_GEN1_BUDGET);
+            m_gen1Budget = (size_t)MIN_GEN1_BUDGET;
+        }
+        else
+        {
+            m_gen1Budget = max(m_totalLimit - occupancy, (size_t)MIN_GEN1_BUDGET);
         }
     }
     else
@@ -1112,12 +1117,6 @@ void SatoriRecycler::AdjustHeuristics()
         //       And deciding on what is "small" might depend on MIN_GEN1_BUDGET.
         //       If we do not want to do GC for less than X, perhaps we want to just do gen2 if total < X*2 or smth.
         m_nextGcIsFullGc = false;
-    }
-
-    if (!SatoriUtil::IsGen1Enabled())
-    {
-        m_gen1Budget = m_totalLimit - occupancy;
-        m_nextGcIsFullGc = true;
     }
 
     // limit budget to available memory
@@ -1140,7 +1139,7 @@ void SatoriRecycler::AdjustHeuristics()
     else
     {
         // ensure that sometimes we do gen2
-        if ((int)m_gcCount[1] - m_gen1CountAtLastGen2 > 64)
+        if ((int)m_gcCount[1] - m_gen1CountAtLastGen2 > 128)
         {
            m_nextGcIsFullGc = true;
         }
@@ -1218,9 +1217,12 @@ void SatoriRecycler::BlockingCollect2()
 NOINLINE
 void SatoriRecycler::UpdateGenerationOccupancies()
 {
-    // updating m_occupancy[0] never needs to be deferred.
-    _ASSERTE(m_occupancyAcc[0] == 0);
     _ASSERTE(m_occupancyReportingEnabled);
+
+    // We do not need to defer updating gen0, but we will defer for consistency,
+    // So that all counts would appear as published at once, more or less.
+    m_occupancy[0] = m_occupancyAcc[0];
+    m_occupancyAcc[0] = 0;
 
     // Accumulators are cleared in Plan when corresponding generation is rebuilt,
     // then it accumulates as GC add to the gen.
@@ -1372,11 +1374,6 @@ void SatoriRecycler::BlockingCollectImpl()
     m_prevCondemnedGeneration = m_condemnedGeneration;
     m_condemnedGeneration = 0;
     m_gcState = GC_STATE_NONE;
-
-    // we are done with gen0 here, update the occupancy
-    // we only do Acc for consistency, gen0 reporting is always done by blocking stage end.
-    m_occupancy[0] = m_occupancyAcc[0];
-    m_occupancyAcc[0] = 0;
 
     if (SatoriUtil::IsConcurrentEnabled() && !m_deferredSweepRegions->IsEmpty())
     {
