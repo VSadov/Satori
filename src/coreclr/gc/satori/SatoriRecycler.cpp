@@ -1060,22 +1060,22 @@ size_t GetAvailableMemory()
 
 void SatoriRecycler::AdjustHeuristics()
 {
-    // all sweeping should be done by now and occupancies should reflect live set as of last GC.
+    // All sweeping should be done by now and occupancies should reflect live set as of last GC.
     // m_gen1AddedSinceLastCollection collects direct allocs into gen1 and is not reflected in that.
     // m_gen2AddedSinceLastCollection collects direct allocs into gen2 and is not included in m_occupancy[2]
     // m_gen2AddedSinceLastCollection may accumulate across several collections, name is a bit misleading.
-    // these counts are not included in occupancy since these are new allocs and the objects may not be alive.
+    // These counts are not included in occupancy since these are new allocs and the objects may not be alive.
     // The purpose of these counters is just to track new allocs and trigger GC.
     // 
     // Sum of all occupancies and allocs added should be the total occupancy in tenured and ephemeral lists.
     // TODO: VS worth asserting?
     //
-    // Gen0 are not included in the numbers as we collect these stats when region is passed to recycler,
-    // but Gen0 regions are still owned by threads - we do not know yet if we will promote en-masse.
+    // Nursery regions are not included in the numbers as we collect these stats when region is passed to recycler,
+    // but Nursery regions are still owned by threads/allocator - we do not detach them until we are sure will
+    // promote en-masse.  (thus the alloc counts may have a lag up to 2Mb per thread, which seems ok).
 
     size_t ephemeralOccupancy = m_occupancy[1] + m_occupancy[0];
     size_t tenuredOccupancy = m_occupancy[2];
-
     size_t occupancy = tenuredOccupancy + ephemeralOccupancy;
 
     if (m_prevCondemnedGeneration == 2)
@@ -1083,9 +1083,10 @@ void SatoriRecycler::AdjustHeuristics()
         m_totalLimit = occupancy * SatoriUtil::Gen2Target() / 100;
     }
 
-    // we trigger GC when ephemeral size grows to SatoriUtil::Gen1Target(),
+    // we trigger GC when estimated ephemeral size grows to SatoriUtil::Gen1Target(),
     // the budget is the diff to reach that
-    // NOTE: after gen2 ephemeralOccupancy is 0.
+    // NOTE: after gen2 ephemeralOccupancy is 0. GC.Collect can also see small gen1 size.
+    //       that is ok to happen occasionally as we have min limits and smoothing.
     size_t newGen1Budget = max((size_t)MIN_GEN1_BUDGET, ephemeralOccupancy * (SatoriUtil::Gen1Target() - 100) / 100);
 
     // alternatively we allow gen1 allocs up to 1/16 of total limit.
