@@ -48,7 +48,6 @@ FORCEINLINE size_t SatoriObject::Size()
     return size;
 }
 
-//TODO: VS  should this be on FreeObj?
 FORCEINLINE size_t SatoriObject::FreeObjSize()
 {
     _ASSERTE(IsFree());
@@ -58,7 +57,6 @@ FORCEINLINE size_t SatoriObject::FreeObjSize()
     return size;
 }
 
-//TODO: VS  should this be on FreeObj?
 FORCEINLINE size_t SatoriObject::FreeObjCapacity()
 {
     _ASSERTE(IsFree());

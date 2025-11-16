@@ -59,7 +59,6 @@ void SatoriObject::EscapeCheckOnHandleCreation()
     }
 }
 
-// TODO: VS should return FreeObject?
 SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
 {
     _ASSERTE(location == ALIGN_UP(location, Satori::OBJECT_ALIGNMENT));
