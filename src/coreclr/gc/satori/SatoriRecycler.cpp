@@ -1113,9 +1113,6 @@ void SatoriRecycler::AdjustHeuristics()
     }
     else
     {
-        // TODO: VS if heap is very small, we might just do gen2 again. No point in generations.
-        //       And deciding on what is "small" might depend on MIN_GEN1_BUDGET.
-        //       If we do not want to do GC for less than X, perhaps we want to just do gen2 if total < X*2 or smth.
         m_nextGcIsFullGc = false;
     }
 
@@ -3481,7 +3478,7 @@ void SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker()
 }
 
 // TODO: VS use in more places where ReturnRegionNoLock is used
-void SatoriRecycler::FreeRelocatedRegion(SatoriRegion* curRegion, bool noLock)
+void SatoriRecycler::FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool noLock)
 {
     // Blank and return an unoccupied region.
     // The biggest cost here is clearing marks.
@@ -3517,7 +3514,7 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
         MaybeAskForHelp();
         do
         {
-            FreeRelocatedRegion(curRegion, /* noLock */ true);
+            FreeLogicallyEmptyRegion(curRegion, /* noLock */ true);
         } while ((curRegion = m_relocatedRegions->TryPop()));
     }
 }
@@ -3680,7 +3677,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
 
             if (curRegion->Occupancy() == 0)
             {
-                FreeRelocatedRegion(curRegion, /*noLock*/ true);
+                FreeLogicallyEmptyRegion(curRegion, /*noLock*/ true);
             }
             // select relocation candidates and relocation targets according to sizes.
             else
@@ -3692,12 +3689,9 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
                     // which is likely better if we did any presweeping.
                     Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, reclaim);
 
-                    // TODO: VS why with larger? should we start with smaller?
-                    //       are we afraid small will take large free spaces? but they prefer smaller ones...
-                    //       relocating small ones is more effective, if just enough space, we'd prefer them
-                    //       perhaps even sort relocatables by size?
-
-                    // when relocating, we want to start with larger regions
+                    // When relocating, we want to start with larger regions
+                    // They are harder to fit and if cannot fit, we get extra targets.
+                    // It is better to get extra targets early, to have more ways to use them.
                     if (curRegion->Occupancy() > Satori::REGION_SIZE_GRANULARITY * 2 / 5)
                     {
                         m_relocatingRegions->Push(curRegion);
@@ -3760,27 +3754,6 @@ SatoriRegion* SatoriRecycler::GetOrAddRelocationTarget(SatoriRegion* region, siz
     return result;
 }
 
-// static 
-int32_t SatoriRecycler::BucketForAlloc(size_t allocSize)
-{
-    if (allocSize <= Satori::MIN_FREELIST_CAPACITY)
-    {
-        return 0;
-    }
-    else
-    {
-        // skip buckets that could not possibly fit allocSize
-        DWORD bucket;
-        BitScanReverse64(&bucket, allocSize);
-        bucket = bucket - Satori::MIN_FREELIST_CAPACITY_BITS;
-
-        // this bucket may be able to fit allocSize or may be not,
-        // but we will just use the next bucket, which guarantees the allocSize will fit.
-        bucket++;
-        return (int32_t)bucket;
-    }
-}
-
 SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool existingRegionOnly)
 {
     //make this occasionally fail in debug to be sure we can handle low memory case.
@@ -3791,7 +3764,7 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool exis
     }
 #endif
 
-    int32_t bucket = BucketForAlloc(allocSize);
+    int32_t bucket = SatoriUtil::BucketForAlloc(allocSize);
     _ASSERTE(bucket >= 0);
 
     // If we want to relocate more than half region (to force compaction or whatever),
@@ -3896,7 +3869,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     // If the region could be used as a target for itself,
     // there could be more like this, do not ask for a free region.
     // We would rather make this one a target of relocations.
-    bool existingRegionOnly = relocationSource->GetMaxFreeBucket() >= BucketForAlloc(maxBytesToCopy) ; //relocationSource->GetMaxFreeBucket();
+    bool existingRegionOnly = relocationSource->GetMaxFreeBucket() >= SatoriUtil::BucketForAlloc(maxBytesToCopy);
     SatoriRegion* relocationTarget = TryGetRelocationTarget(maxBytesToCopy, existingRegionOnly);
 
     if (!relocationTarget)
@@ -3998,7 +3971,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     }
     else
     {
-        FreeRelocatedRegion(relocationSource, /* noLock */ false);
+        FreeLogicallyEmptyRegion(relocationSource, /* noLock */ false);
     }
 }
 

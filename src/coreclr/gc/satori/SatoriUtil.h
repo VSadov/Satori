@@ -135,6 +135,26 @@ public:
         return (size_t)1 << highestBit;
     }
 
+    static int32_t BucketForAlloc(size_t allocSize)
+    {
+        if (allocSize <= Satori::MIN_FREELIST_CAPACITY)
+        {
+            return 0;
+        }
+        else
+        {
+            // skip buckets that could not possibly fit allocSize
+            DWORD bucket;
+            BitScanReverse64(&bucket, allocSize);
+            bucket = bucket - Satori::MIN_FREELIST_CAPACITY_BITS;
+
+            // this bucket may be able to fit allocSize or may be not,
+            // but we will just use the next bucket, which guarantees the allocSize will fit.
+            bucket++;
+            return (int32_t)bucket;
+        }
+    }
+
     // must match what is used in barriers.
     static size_t GetCurrentThreadTag()
     {
