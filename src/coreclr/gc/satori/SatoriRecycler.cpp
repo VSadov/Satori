@@ -1060,13 +1060,18 @@ size_t GetAvailableMemory()
 
 void SatoriRecycler::AdjustHeuristics()
 {
-    // all sweeping should be done by now and occupancies should reflect live set.
+    // all sweeping should be done by now and occupancies should reflect live set as of last GC.
     // m_gen1AddedSinceLastCollection collects direct allocs into gen1 and is not reflected in that.
     // m_gen2AddedSinceLastCollection collects direct allocs into gen2 and is not included in m_occupancy[2]
     // m_gen2AddedSinceLastCollection may accumulate across several collections, name is a bit misleading.
-    // these counts are really just diffs not included in occupancy
-    // sum of all occupancies and allocs added is the total that we have in gen1/gen2 (but not in gen0).
-    // (TODO: VS worth asserting?)
+    // these counts are not included in occupancy since these are new allocs and the objects may not be alive.
+    // The purpose of these counters is just to track new allocs and trigger GC.
+    // 
+    // Sum of all occupancies and allocs added should be the total occupancy in tenured and ephemeral lists.
+    // TODO: VS worth asserting?
+    //
+    // Gen0 are not included in the numbers as we collect these stats when region is passed to recycler,
+    // but Gen0 regions are still owned by threads - we do not know yet if we will promote en-masse.
 
     size_t ephemeralOccupancy = m_occupancy[1] + m_occupancy[0];
     size_t tenuredOccupancy = m_occupancy[2];
@@ -3477,17 +3482,22 @@ void SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker()
     FreeRelocatedRegionsWorker();
 }
 
-// TODO: VS use in more places where ReturnRegionNoLock is used
-void SatoriRecycler::FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool noLock)
+// noLock - if the current stage can only add more regions to the allocator
+void SatoriRecycler::FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool hasMarks, bool noLock)
 {
     // Blank and return an unoccupied region.
-    // The biggest cost here is clearing marks.
-    // Since knowing that the region is empty requires some form of sweeping,
-    // it is unlikely that wiping marks will add much next to that.
-    // Thus once we know the region is empty, we could as well free it.
+    // The biggest cost here could be clearing marks, which is often is not needed
+    // as logically empty regions would have nothing marked. (one exception: evacuated regions)
+    // The rest is a fairly relatively cheap wiping of metadata fields.
+    // Thus we do not defer freeing - once we know the region is empty, we free it.
 
     _ASSERTE(!curRegion->HasPinnedObjects());
-    curRegion->ClearMarks();
+
+    // NOTE: MakeBalnk will assert that nothing is marked.
+    if (hasMarks)
+    {
+        curRegion->ClearMarks();
+    }
 
     bool isNurseryRegion = curRegion->IsAttachedToAllocatingOwner();
     if (isNurseryRegion)
@@ -3514,7 +3524,7 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
         MaybeAskForHelp();
         do
         {
-            FreeLogicallyEmptyRegion(curRegion, /* noLock */ true);
+            FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ true, /* noLock */ true);
         } while ((curRegion = m_relocatedRegions->TryPop()));
     }
 }
@@ -3677,7 +3687,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
 
             if (curRegion->Occupancy() == 0)
             {
-                FreeLogicallyEmptyRegion(curRegion, /*noLock*/ true);
+                FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ false, /*noLock*/ true);
             }
             // select relocation candidates and relocation targets according to sizes.
             else
@@ -3971,7 +3981,8 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     }
     else
     {
-        FreeLogicallyEmptyRegion(relocationSource, /* noLock */ false);
+        // relocationSource happened to be empty
+        FreeLogicallyEmptyRegion(relocationSource, /* hasMarks */ false, /* noLock */ false);
     }
 }
 
@@ -4216,16 +4227,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
                 {
                     if (!curRegion->Sweep</*updatePointers*/ true>())
                     {
-                        bool isNurseryRegion = curRegion->IsAttachedToAllocatingOwner();
-                        if (isNurseryRegion)
-                        {
-                            curRegion->DetachFromAlocatingOwnerRelease();
-                        }
-
-                        // blank and return regions eagerly.
-                        // we are zeroing a few kb - that might be comparable with costs of deferring.
-                        curRegion->MakeBlank();
-                        m_heap->Allocator()->ReturnRegionNoLock(curRegion);
+                        FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ false, /*noLock*/ true);
                         continue;
                     }
                 }
@@ -4245,9 +4247,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
 
                 if (curRegion->Occupancy() == 0)
                 {
-                    curRegion->DetachFromAlocatingOwnerRelease();
-                    curRegion->MakeBlank();
-                    m_heap->Allocator()->ReturnRegionNoLock(curRegion);
+                    FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ false, /*noLock*/ true);
                 }
                 else
                 {
@@ -4481,10 +4481,7 @@ void SatoriRecycler::SweepAndReturnRegion(SatoriRegion* curRegion)
 
     if (curRegion->Occupancy() == 0)
     {
-        curRegion->MakeBlank();
-        IsBlockingPhase() ?
-            m_heap->Allocator()->ReturnRegionNoLock(curRegion) :
-            m_heap->Allocator()->ReturnRegion(curRegion);
+        FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ false, /*noLock*/ IsBlockingPhase());
     }
     else
     {

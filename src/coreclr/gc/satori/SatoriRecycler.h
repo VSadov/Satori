@@ -354,7 +354,7 @@ private:
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);
-    void FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool noLock);
+    void FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool hasMarks, bool noLock);
     void FreeRelocatedRegionsWorker();
 
     void PromoteHandlesAndFreeRelocatedRegions();
