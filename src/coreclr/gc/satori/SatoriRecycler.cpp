@@ -257,7 +257,7 @@ int SatoriRecycler::GetRootScanTicket()
     return m_rootScanTicket;
 }
 
-int8_t SatoriRecycler::GetCardScanTicket()
+uint8_t SatoriRecycler::GetCardScanTicket()
 {
     return m_cardScanTicket;
 }
@@ -2356,12 +2356,12 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
     }
 }
 
-// Just a number that is likely be different for different threads
-// making the same call.
-// mix in the GC index to not get stuck with the same combination, in case it is not good.
-size_t ThreadSpecificNumber(int64_t gcIndex)
+// Just a number that is likely be different for different threads making the same call.
+// Mix in the gcId to not get stuck with the same combination across threads, in case
+// it is not a good state.
+size_t ThreadSpecificNumber(int64_t gcId)
 {
-    size_t result = (((size_t)&result ^ (size_t)gcIndex) * 11400714819323198485llu) >> 32;
+    size_t result = (((size_t)&result ^ (size_t)gcId) * 11400714819323198485llu) >> 32;
     return result;
 }
 
@@ -2372,10 +2372,10 @@ int64_t SatoriRecycler::GlobalGcIndex()
 
 struct ConcurrentCardsRestart
 {
-    int64_t gcIndex;
+    int64_t gcId;
     SatoriPage* page;
     size_t ii;
-    size_t offset;
+    size_t rndOffset;
 };
 
 thread_local
@@ -2386,14 +2386,16 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
     SatoriWorkChunk* dstChunk = nullptr;
     bool revisit = false;
 
-    int64_t gcIndex = GlobalGcIndex();
+    // Use Gen1 count to identify the current GC. Not Gen0 as that could be changing concurrently.
+    // Multiply by 2 to not intersect with concurrent card cleaner, which uses the same restart state.
+    int64_t gcId = m_gcCount[1] * 2;
     ConcurrentCardsRestart* pRestart = &t_concurrentCardState;
-    if (pRestart->gcIndex != gcIndex)
+    if (pRestart->gcId != gcId)
     {
-        pRestart->gcIndex = gcIndex;
+        pRestart->gcId = gcId;
         pRestart->page = nullptr;
         pRestart->ii = 0;
-        pRestart->offset = ThreadSpecificNumber(GlobalGcIndex());
+        pRestart->rndOffset = ThreadSpecificNumber(gcId);
     }
 
     m_heap->ForEachPageUntil(
@@ -2405,7 +2407,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
             // Blank ones will not match any tickets and will be visited by clearing pass, if become dirty.
             if (pageState != Satori::CardState::BLANK)
             {
-                int8_t currentScanTicket = GetCardScanTicket();
+                uint8_t currentScanTicket = GetCardScanTicket();
                 if (page->ScanTicket() == currentScanTicket)
                 {
                     // this is not a timeout, continue to next page
@@ -2418,7 +2420,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                 size_t groupCount = page->CardGroupCount();
 
                 // if restarting with the same page, continue with the last ii and offset
-                size_t offset = pRestart->offset;
+                size_t offset = pRestart->rndOffset;
                 size_t ii = pRestart->ii;
                 if (pRestart->page != page)
                 {
@@ -2437,7 +2439,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                     // sets them for clearing later.
                     if (groupState != Satori::CardState::BLANK)
                     {
-                        int8_t groupTicket = page->CardGroupScanTicket(i);
+                        uint8_t groupTicket = page->CardGroupScanTicket(i);
                         if (groupTicket == currentScanTicket)
                         {
                             continue;
@@ -2480,7 +2482,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
 
                         // invariant check: when marking through cards the gen2 remset stays remset, thus should be marked through on every GC
                         // and should not fall far behind the tickets
-                        _ASSERTE(groupTicket == 0 || currentScanTicket - groupTicket <= 2);
+                        _ASSERTE(groupTicket == 0 || groupTicket == 0xff || (uint8_t)(currentScanTicket - groupTicket) == 1);
                         int8_t resetValue = Satori::CardState::REMEMBERED;
                         int8_t* cards = page->CardsForGroup(i);
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
@@ -2600,14 +2602,16 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
     SatoriWorkChunk* dstChunk = nullptr;
     bool revisit = false;
 
-    int64_t gcIndex = GlobalGcIndex();
+    // Use Gen1 count to identify the current GC. Not Gen0 as that could be changing concurrently.
+    // Multiply by 2 and add 1 to not intersect with concurrent marking, which uses the same restart state.
+    int64_t gcId = m_gcCount[1] * 2 + 1;
     ConcurrentCardsRestart* pRestart = &t_concurrentCardState;
-    if (pRestart->gcIndex != gcIndex)
+    if (pRestart->gcId != gcId)
     {
-        pRestart->gcIndex = gcIndex;
+        pRestart->gcId = gcId;
         pRestart->page = nullptr;
         pRestart->ii = 0;
-        pRestart->offset = ThreadSpecificNumber(GlobalGcIndex());
+        pRestart->rndOffset = ThreadSpecificNumber(gcId);
     }
 
     m_heap->ForEachPageUntil(
@@ -2620,7 +2624,7 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
             // If it gets dirty again - blocking stage will have to deal with it.
             if (pageState != Satori::CardState::BLANK)
             {
-                int8_t currentScanTicket = GetCardScanTicket();
+                uint8_t currentScanTicket = GetCardScanTicket();
                 if (page->ScanTicket() == currentScanTicket)
                 {
                     // this is not a timeout, continue to next page
@@ -2633,7 +2637,7 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                 size_t groupCount = page->CardGroupCount();
 
                 // if restarting with the same page, continue with the last ii and offset
-                size_t offset = pRestart->offset;
+                size_t offset = pRestart->rndOffset;
                 size_t ii = pRestart->ii;
                 if (pRestart->page != page)
                 {
@@ -2651,7 +2655,7 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                     // visit and advance all non-blank GROUPS, not just dirty as we must advance remembered as well.
                     if (groupState != Satori::CardState::BLANK)
                     {
-                        int8_t groupTicket = page->CardGroupScanTicket(i);
+                        uint8_t groupTicket = page->CardGroupScanTicket(i);
                         if (groupTicket == currentScanTicket)
                         {
                             continue;
@@ -2660,10 +2664,15 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                         // claim the group as complete, now it is ours
                         page->CardGroupScanTicket(i) = currentScanTicket;
 
-                        // Unlike marking we do not have to actually clean cards or commit to finish anything, since blocking cleaner
-                        // does not use tickets for completion.
-                        // We need to ensure that gen2 groups advance, but otherwise setting the ticket is just to track completion
-                        // of the current pass and claim pieces of work.
+                        // Unlike marking we do not have to actually clean cards or commit to finish anything,
+                        // since blocking cleaner does not use tickets for completion.
+                        // We need to ensure that non-blank gen2 groups advance and we have done that for this group.
+                        // Otherwise setting the ticket is just to track completion of the current pass, so we will ignore
+                        // groups that were not dirty when we looked at state.
+                        if (groupState != Satori::CardState::DIRTY)
+                        {
+                            continue;
+                        }
 
                         // NB: two threads may claim the same group and do overlapping work
                         //     that is correct, but redundant. We could claim using interlocked operation
@@ -2702,7 +2711,7 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
 
                         // invariant check: when marking through cards the gen2 remset stays remset, thus should be marked through on every GC
                         // and should not fall far behind the tickets
-                        _ASSERTE(region->Generation() != 2 || groupTicket == 0 || currentScanTicket - groupTicket <= 2);
+                        _ASSERTE(region->Generation() != 2 || groupTicket == 0 || groupTicket == 0xff || (uint8_t)(currentScanTicket - groupTicket) == 1);
 
                         bool considerAllMarked = region->Generation() > m_condemnedGeneration;
                         int8_t* cards = page->CardsForGroup(i);
@@ -2831,7 +2840,7 @@ void SatoriRecycler::MarkThroughCards()
             int8_t pageState = page->CardState();
             if (pageState != Satori::CardState::BLANK)
             {
-                int8_t currentScanTicket = GetCardScanTicket();
+                uint8_t currentScanTicket = GetCardScanTicket();
                 if (page->ScanTicket() == currentScanTicket)
                 {
                     // continue to next page
@@ -2850,7 +2859,7 @@ void SatoriRecycler::MarkThroughCards()
                     int8_t groupState = page->CardGroupState(i);
                     if (groupState != Satori::CardState::BLANK)
                     {
-                        int8_t groupTicket = page->CardGroupScanTicket(i);
+                        uint8_t groupTicket = page->CardGroupScanTicket(i);
                         if (groupTicket == currentScanTicket)
                         {
                             continue;
@@ -2889,7 +2898,7 @@ void SatoriRecycler::MarkThroughCards()
 
                         // invariant check: when marking through cards the gen2 remset stays remset, thus should be marked through on every GC
                         // and should not fall far behind the tickets
-                        _ASSERTE(groupTicket == 0 || currentScanTicket - groupTicket <= 2);
+                        _ASSERTE(groupTicket == 0 || groupTicket == 0xff || (uint8_t)(currentScanTicket - groupTicket) == 1);
                         const int8_t resetValue = Satori::CardState::REMEMBERED;
                         int8_t* cards = page->CardsForGroup(i);
 
@@ -3114,7 +3123,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
             _ASSERTE(pageState < Satori::CardState::PROCESSING);
             if (pageState == Satori::CardState::REMEMBERED)
             {
-                int8_t currentScanTicket = GetCardScanTicket();
+                uint8_t currentScanTicket = GetCardScanTicket();
                 if (page->ScanTicket() == currentScanTicket)
                 {
                     // continue to next page
@@ -3134,7 +3143,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                     _ASSERTE(groupState < Satori::CardState::PROCESSING);
                     if (groupState == Satori::CardState::REMEMBERED)
                     {
-                        int8_t groupTicket = page->CardGroupScanTicket(i);
+                        uint8_t groupTicket = page->CardGroupScanTicket(i);
                         if (groupTicket == currentScanTicket)
                         {
                             continue;
@@ -3152,7 +3161,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
 
                         // invariant check: when marking/updating through cards the gen2 remset stays remset,
                         // thus should be marked through on every GC and should not fall far behind the tickets
-                        _ASSERTE(groupTicket == 0 || currentScanTicket - groupTicket <= 2);
+                        _ASSERTE(groupTicket == 0 || groupTicket == 0xff || (uint8_t)(currentScanTicket - groupTicket) == 1);
                         int8_t* cards = page->CardsForGroup(i);
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
                         {
@@ -4055,10 +4064,6 @@ void SatoriRecycler::Update()
                 page->ScanTicket() = 0;
             }
         );
-
-        // this is optional, we can allow the ticket to just wrap around,
-        // but -1 could be suboptimal for concurrent dirty scans
-        m_cardScanTicket = 0;
     }
 
 }
