@@ -55,6 +55,7 @@ public:
 
     size_t Size();
     size_t FreeObjSize();
+    size_t FreeObjCapacity();
     bool SameRegion(SatoriRegion* otherRegion);
     bool IsFree();
     bool IsExternal();
@@ -109,6 +110,22 @@ public:
 private:
     static MethodTable* s_emptyObjectMt;
     static void Initialize();
+};
+
+
+class SatoriFreeListObject : public SatoriObject
+{
+private:
+    uint32_t       m_Length;
+#if defined(HOST_64BIT)
+    uint32_t       m_uAlignpad;
+#endif // HOST_64BIT
+
+public:
+    SatoriFreeListObject() = delete;
+    ~SatoriFreeListObject() = delete;
+
+    SatoriFreeListObject* m_nextInFreeList;
 };
 
 #endif

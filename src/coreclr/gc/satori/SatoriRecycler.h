@@ -89,6 +89,8 @@ public:
     int64_t GetTotalAllocatedBytes();
 
     void RecordOccupancy(int generation, size_t size);
+    void RecordDemotedOccupancy(ptrdiff_t demotedOccupancy);
+    void UpdateGenerationOccupancies();
     size_t GetTotalOccupancy();
     size_t GetOccupancy(int i);
     size_t GetGcStartMillis(int generation);
@@ -136,7 +138,7 @@ private:
     SatoriHeap* m_heap;
 
     int m_rootScanTicket;
-    int8_t m_cardScanTicket;
+    uint8_t m_cardScanTicket;
 
     SatoriWorkList* m_workList;
     SatoriTrimmer* m_trimmer;
@@ -205,6 +207,8 @@ private:
     int m_prevCondemnedGeneration;
 
     int64_t m_gcCount[3];
+    int64_t m_compactingGcCount[3];
+
     int64_t m_gcStartMillis[3];
     int64_t m_gcDurationUsecs[3];
     int64_t m_gcAccmulatingDurationUsecs[3];
@@ -214,7 +218,7 @@ private:
 
     size_t m_gen1Budget;
     size_t m_totalLimit;
-    size_t m_nextGcIsFullGc;
+    bool m_nextGcIsFullGc;
 
     size_t m_condemnedRegionsCount;
     size_t m_deferredSweepCount;
@@ -225,9 +229,11 @@ private:
 
     size_t m_occupancy[3];
     size_t m_occupancyAcc[3];
+    size_t m_demotedOccupancyAcc;
+    bool m_occupancyReportingEnabled;
 
-    size_t m_relocatableEphemeralEstimate;
-    size_t m_relocatableTenuredEstimate;
+    size_t m_estimatedEphemeralReclaim;
+    size_t m_estimatedTenuredReclaim;
     size_t m_promotionEstimate;
 
     int64_t m_currentAllocBytesLiveThreads;
@@ -287,7 +293,7 @@ private:
 
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();
-    int8_t GetCardScanTicket();
+    uint8_t GetCardScanTicket();
 
     void MarkOwnStack(gc_alloc_context* aContext, MarkContext* markContext);
     void MarkThroughCards();
@@ -339,14 +345,16 @@ private:
     void PlanWorker();
     void PlanRegions(SatoriRegionQueue* regions);
     void DenyRelocation();
+
     void AddTenuredRegionsToPlan(SatoriRegionQueue* regions);
     void AddRelocationTarget(SatoriRegion* region);
     SatoriRegion* TryGetRelocationTarget(size_t size, bool existingRegionOnly);
+    SatoriRegion* GetOrAddRelocationTarget(SatoriRegion * region, size_t allocSize);
 
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);
-    void FreeRelocatedRegion(SatoriRegion* curRegion, bool noLock);
+    void FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool hasMarks, bool noLock);
     void FreeRelocatedRegionsWorker();
 
     void PromoteHandlesAndFreeRelocatedRegions();

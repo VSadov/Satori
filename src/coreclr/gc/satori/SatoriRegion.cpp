@@ -60,7 +60,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     committed = max(address, committed);
     used = max(address, used);
 
-    // make sure the header is comitted
+    // make sure the header + minZero is comitted
     ptrdiff_t toCommit = (size_t)&result->m_syncBlock + SatoriUtil::MinZeroInitSize() - committed;
     if (toCommit > 0)
     {
@@ -93,6 +93,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     result->m_allocStart = (size_t)&result->m_firstObject;
     result->m_allocEnd = result->End();
     result->m_occupancy = result->m_allocEnd - result->m_allocStart;
+    result->m_demotedOccupancy = 0;
     result->m_escapeFunc = nullptr;
     result->m_generation = -1;
 
@@ -130,6 +131,8 @@ void SatoriRegion::FreeDemotedTrackers()
         gen2Objects->Clear();
         Allocator()->ReturnWorkChunk(gen2Objects);
     }
+
+    m_demotedOccupancy = 0;
 }
 
 // reset all cards when the region will no longer be tenured.
@@ -187,6 +190,9 @@ void SatoriRegion::MakeBlank()
     // assume all space reserved to allocations will be used
     // (we will revert what will be unused)
     m_occupancy = m_allocEnd - m_allocStart;
+    // this may be not 0 if we demoted without creating trackers before Gen2 gc
+    // and then all objects died in Gen2, so we clear this here.
+    m_demotedOccupancy = 0;
     m_objCount = 0;
 
     m_unfinishedAllocationCount = 0;
@@ -195,6 +201,7 @@ void SatoriRegion::MakeBlank()
     m_hasFinalizables = false;
     _ASSERTE(!m_hasPendingFinalizables);
     m_doNotSweep = false;
+    m_isPreSwept = false;
     m_isRelocated = false;
     _ASSERTE(!m_acceptedPromotedObjects);
     _ASSERTE(!m_individuallyPromoted);
@@ -279,100 +286,80 @@ bool SatoriRegion::ValidateIndexEmpty()
     return true;
 }
 
-static const int FREE_LIST_NEXT_OFFSET = sizeof(ArrayBase);
-
-// prefers leftmost bucket that fits to improve locality, possibly at cost to fragmentation
 size_t SatoriRegion::StartAllocating(size_t minAllocSize)
 {
     _ASSERTE(!IsAllocating());
 
-    // skip buckets that certainly will not fit.
+    SatoriFreeListObject* freeObj = nullptr;
     DWORD bucket;
-    BitScanReverse64(&bucket, minAllocSize);
-    bucket = bucket > Satori::MIN_FREELIST_SIZE_BITS ?
-        bucket - Satori::MIN_FREELIST_SIZE_BITS :
-        0;
 
-    // we will check the first free obj in the bucket, but will not dig through the rest.
-    // if the first obj does not fit, we will switch to the next bucket where everything will fit.
-    size_t minFreeObjSize = minAllocSize + Satori::MIN_FREE_SIZE;
-
-    DWORD selectedBucket = Satori::FREELIST_COUNT;
-    SatoriObject* freeObj = m_freeLists[bucket];
-    if (freeObj)
-    {
-        if (freeObj->FreeObjSize() >= minFreeObjSize)
-        {
-            selectedBucket = bucket;
-        }
-    }
-
-    // in higher buckets everything will fit
-    // prefer free objects that start earlier
-    bucket++;
-    for (; bucket < Satori::FREELIST_COUNT; bucket++)
-    {
-        SatoriObject* freeObjCandidate = m_freeLists[bucket];
-        if (freeObjCandidate &&
-            (selectedBucket == Satori::FREELIST_COUNT || freeObjCandidate->Start() < freeObj->Start()))
-        {
-            selectedBucket = bucket;
-            freeObj = freeObjCandidate;
-        }
-    }
-
-    if (selectedBucket < Satori::FREELIST_COUNT)
-    {
-        m_freeLists[selectedBucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
-        m_allocStart = freeObj->Start();
-        m_allocEnd = m_allocStart + freeObj->FreeObjSize();
-        SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
-        ClearIndicesForAllocRange();
-        _ASSERTE(GetAllocRemaining() >= minAllocSize);
-        m_sweepsSinceLastAllocation = 0;
-        return m_allocStart;
-    }
-
-    return 0;
-}
-
-// prefers smallest bucket that fits to reduce fragmentation, possibly at cost to locality
-size_t SatoriRegion::StartAllocatingBestFit(size_t minAllocSize)
-{
-    _ASSERTE(!IsAllocating());
+    // Free list objects are bucketized by capacity (not by size!).
+    // A free list obj of capacity X can accept allocation
+    // of an object of size X with MIN_FREE_SIZE remaining
+    // for the parseability terminator.
 
     // skip buckets that certainly will not fit.
-    DWORD bucket;
-    BitScanReverse64(&bucket, minAllocSize);
-    bucket = bucket > Satori::MIN_FREELIST_SIZE_BITS ?
-        bucket - Satori::MIN_FREELIST_SIZE_BITS :
-        0;
-
-    // we will check the first free obj in the bucket, but will not dig through the rest.
-    // if the first obj does not fit, we will switch to the next bucket where everything will fit.
-    size_t minFreeObjSize = minAllocSize + Satori::MIN_FREE_SIZE;
-
-    for (; bucket < Satori::FREELIST_COUNT; bucket++)
+    if (minAllocSize <= Satori::MIN_FREELIST_CAPACITY)
     {
-        SatoriObject* freeObj = m_freeLists[bucket];
+        bucket = 0;
+    }
+    else
+    {
+        BitScanReverse64(&bucket, minAllocSize);
+        bucket = bucket - Satori::MIN_FREELIST_CAPACITY_BITS;
+        _ASSERTE(bucket >= 0 && bucket < Satori::FREELIST_COUNT);
+
+        // this bucket _may_ contain large enough free objects.
+        // we will opportunistically test the first one, but will not go further.
+        freeObj = m_freeLists[bucket];
         if (freeObj)
         {
-            size_t size = freeObj->FreeObjSize();
-            if (size >= minFreeObjSize)
+            size_t capacity = freeObj->FreeObjCapacity();
+            if (capacity >= minAllocSize)
             {
-                m_freeLists[bucket] = *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET);
-                m_allocStart = freeObj->Start();
-                m_allocEnd = m_allocStart + size;
-                SetOccupancy(m_occupancy + m_allocEnd - m_allocStart);
-                ClearIndicesForAllocRange();
-                _ASSERTE(GetAllocRemaining() >= minAllocSize);
-                m_sweepsSinceLastAllocation = 0;
-                return m_allocStart;
+                goto hasObj;
             }
+        }
+
+        // skip to the next bucket, which will certainly fit if nonempty
+        bucket++;
+    }
+
+    for (; bucket < Satori::FREELIST_COUNT; bucket++)
+    {
+        freeObj = m_freeLists[bucket];
+        if (freeObj)
+        {
+            goto hasObj;
         }
     }
 
     return 0;
+
+hasObj:
+    SatoriFreeListObject* next = freeObj->m_nextInFreeList;
+    m_freeLists[bucket] = next;
+    if (next == nullptr)
+    {
+        m_freeListTails[bucket] = nullptr;
+    }
+
+    size_t freeObjSize = freeObj->FreeObjSize();
+    _ASSERTE(freeObjSize >= minAllocSize + Satori::MIN_FREE_SIZE);
+    _ASSERTE(freeObj->FreeObjCapacity() ==  freeObjSize - Satori::MIN_FREE_SIZE);
+
+    m_freeListCapacities[bucket] -= (freeObjSize - Satori::MIN_FREE_SIZE);
+    _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
+    m_allocStart = freeObj->Start();
+    m_allocEnd = m_allocStart + freeObjSize;
+    // Assume all will be used.
+    // We will deduct back the unused part when we stop allocating.
+    SetOccupancy(m_occupancy + freeObjSize);
+    ClearIndicesForAllocRange();
+    _ASSERTE(GetAllocRemaining() >= minAllocSize);
+    m_sweepsSinceLastAllocation = 0;
+
+    return m_allocStart;
 }
 
 void SatoriRegion::StopAllocating(size_t allocPtr)
@@ -380,7 +367,9 @@ void SatoriRegion::StopAllocating(size_t allocPtr)
     _ASSERTE(IsAllocating());
     _ASSERTE(allocPtr != 0);
 
-    // make unused allocation span parseable
+    // Make unused allocation span parseable
+    // Unbuffered allocs like Huge, will consume whole allocation.
+    // Buffered/FreeList allocs will have extra space enough to fit a terminator.
     if (allocPtr != m_allocEnd)
     {
         m_used = max(m_used, allocPtr + Satori::MIN_FREE_SIZE);
@@ -402,60 +391,72 @@ void SatoriRegion::StopAllocating()
 void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
 {
     _ASSERTE(freeObj->Size() == size);
-    // allocSize is smaller than size to make sure the span can always be made parseable
+    _ASSERTE(size >= Satori::MIN_FREE_SIZE);
+    // capacity is smaller than size to make sure the span can always be made parseable
     // after allocating objects in it.
-    ptrdiff_t allocSize = size - Satori::MIN_FREE_SIZE;
-    if (allocSize < Satori::MIN_FREELIST_SIZE)
+    size_t capacity = size - Satori::MIN_FREE_SIZE;
+    if (capacity < Satori::MIN_FREELIST_CAPACITY)
     {
         return;
     }
 
+    SatoriFreeListObject* freeListObj = (SatoriFreeListObject*)freeObj;
     DWORD bucket;
-    BitScanReverse64(&bucket, allocSize);
-    bucket -= (Satori::MIN_FREELIST_SIZE_BITS);
+    BitScanReverse64(&bucket, capacity);
+    bucket -= (Satori::MIN_FREELIST_CAPACITY_BITS);
     _ASSERTE(bucket >= 0);
     _ASSERTE(bucket < Satori::FREELIST_COUNT);
 
+    _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
+    _ASSERTE(capacity == freeListObj->FreeObjCapacity());
+    m_freeListCapacities[bucket] += capacity;
+
     // insert at the tail
-    *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET) = nullptr;
+    freeListObj->m_nextInFreeList = nullptr;
     if (m_freeLists[bucket] == nullptr)
     {
-        m_freeLists[bucket] = m_freeListTails[bucket] = freeObj;
+        m_freeLists[bucket] = m_freeListTails[bucket] = freeListObj;
         return;
     }
 
-    SatoriObject* tailObj = m_freeListTails[bucket];
+    SatoriFreeListObject* tailObj = m_freeListTails[bucket];
     _ASSERTE(tailObj);
-    *(SatoriObject**)(tailObj->Start() + FREE_LIST_NEXT_OFFSET) = freeObj;
-    m_freeListTails[bucket] = freeObj;
+    tailObj->m_nextInFreeList = freeListObj;
+    m_freeListTails[bucket] = freeListObj;
 }
 
 void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
 {
     _ASSERTE(freeObj->Size() == size);
-    // allocSize is smaller than size to make sure the span can always be made parseable
+    _ASSERTE(size >= Satori::MIN_FREE_SIZE);
+    // capacity is smaller than size to make sure the span can always be made parseable
     // after allocating objects in it.
-    ptrdiff_t allocSize = size - Satori::MIN_FREE_SIZE;
-    if (allocSize < Satori::MIN_FREELIST_SIZE)
+    size_t capacity = size - Satori::MIN_FREE_SIZE;
+    if (capacity < Satori::MIN_FREELIST_CAPACITY)
     {
         return;
     }
 
+    SatoriFreeListObject* freeListObj = (SatoriFreeListObject*)freeObj;
     DWORD bucket;
-    BitScanReverse64(&bucket, allocSize);
-    bucket -= (Satori::MIN_FREELIST_SIZE_BITS);
+    BitScanReverse64(&bucket, capacity);
+    bucket -= (Satori::MIN_FREELIST_CAPACITY_BITS);
     _ASSERTE(bucket >= 0);
     _ASSERTE(bucket < Satori::FREELIST_COUNT);
 
+    _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
+    _ASSERTE(capacity == freeListObj->FreeObjCapacity());
+    m_freeListCapacities[bucket] += capacity;
+
     // insert at the head, since we are returning what we recently took.
-    *(SatoriObject**)(freeObj->Start() + FREE_LIST_NEXT_OFFSET) = m_freeLists[bucket];
+    freeListObj->m_nextInFreeList = m_freeLists[bucket];
 
     if (m_freeLists[bucket] == nullptr)
     {
-        m_freeListTails[bucket] = freeObj;
+        m_freeListTails[bucket] = freeListObj;
     }
 
-    m_freeLists[bucket] = freeObj;
+    m_freeLists[bucket] = freeListObj;
 }
 
 bool SatoriRegion::HasFreeSpaceInTopBucket()
@@ -463,32 +464,28 @@ bool SatoriRegion::HasFreeSpaceInTopBucket()
     return m_freeLists[Satori::FREELIST_COUNT - 1];
 }
 
-bool SatoriRegion::HasFreeSpaceInTopNBuckets(int n)
+size_t SatoriRegion::FreeSpaceInTopNBuckets(int n)
 {
+    size_t result = 0;
     for (int bucket = Satori::FREELIST_COUNT -  n; bucket < Satori::FREELIST_COUNT; bucket++)
     {
-        if (m_freeLists[bucket])
-        {
-            return true;
-        }
+        result += m_freeListCapacities[bucket];
     }
 
-    return false;
+    return result;
 }
 
-size_t SatoriRegion::GetMaxAllocEstimate()
+int SatoriRegion::GetMaxFreeBucket()
 {
-    size_t maxRemaining = GetAllocRemaining();
     for (int bucket = Satori::FREELIST_COUNT - 1; bucket >= 0; bucket--)
     {
         if (m_freeLists[bucket])
         {
-            maxRemaining = max(maxRemaining, ((size_t)1 << (bucket + Satori::MIN_FREELIST_SIZE_BITS)));
-            break;
+            return bucket;
         }
     }
 
-    return maxRemaining;
+    return -1;
 }
 
 void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextCommitted, size_t& nextUsed)
@@ -1011,7 +1008,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
     } while (o);
 }
 
-void SatoriRegion::EscsapeAll()
+void SatoriRegion::EscapeAll()
 {
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     for (SatoriObject* o = FirstObject(); o->Start() < objLimit;)
@@ -2025,94 +2022,141 @@ void SatoriRegion::IndividuallyPromote()
         DetachFromAlocatingOwnerRelease();
     }
 
-    m_generation = 2;
+    SetGeneration(2);
     m_individuallyPromoted = true;
     RearmCardsForTenured();
 }
 
 // ideally, we just reuse the region for allocations.
-// the region must have enough free space and not be very fragmented
-// TUNING: heuristic for reuse could be more aggressive, consider pinning, etc...
-//         the cost for being too aggressive is inability to trace byrefs concurrently,
-//         it is not huge, byref is rarely the only ref.
-//         In big quantities may hurt though.
+// TUNING: any situations when we want to require more?
 bool SatoriRegion::IsReuseCandidate()
 {
-    if (!HasFreeSpaceInTopNBuckets(Satori::REUSABLE_BUCKETS))
-        return false;
-
-    // TUNING: here we are roughly estimating reuse goodness. A better idea?
-    //       i.e. 32k max chunk can be not more than 131K (1/16 full)
-    //            64k max chunk can be not more than 262K (1/8 full)
-    //           128k max chunk can be not more than 524K (1/4 full)
-    //           256k max chunk can be not more than   1M (1/2 full)
-    //           512k max chunk                    always acceptable
-    //             1M max chunk                    always acceptable
-    return GetMaxAllocEstimate() * 4 > Occupancy();
+    // just ask for enough of usable capaciity to make it worthwile.
+    // taking a lock when adding/removing the region to reusables
+    return FreeSpaceInTopNBuckets(Satori::FREELIST_COUNT) > Satori::REGION_SIZE_GRANULARITY / 32;
 }
 
-bool SatoriRegion::IsDemotable()
+bool SatoriRegion::IsDemotionCandidate(bool nextGcIsFullGC)
 {
-    if (ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION ||
-        Occupancy() > Satori::REGION_SIZE_GRANULARITY / 8)
+    // If next gc is gen2, then demoted objects do not add to marking costs.
+    // Everything will be gen2 anyways, thus we can demote anything that is reusable.
+    if (!nextGcIsFullGC)
     {
-        return false;
+        // We limit the occupancy, since it adds to gen1 costs.
+        // We do not want more than 1/8x of gen2 ending up as a gen1 cost.
+        // (we typically allow gen1 to be at least 1/8th of gen2 even if gen1 mortality is high.)
+        // We also limit the number of demoted objects, since it consumes trackers.
+        if (ObjCount() > Satori::MAX_DEMOTED_OBJECTS_IN_REGION ||
+            Occupancy() > Satori::REGION_SIZE_GRANULARITY / 8)
+        {
+            return false;
+        }
     }
 
-    return true;
+    return IsReuseCandidate();
 }
 
 // regions that were not reused or relocated for a while could be tenured.
 // unless it is a reuse candidate
 bool SatoriRegion::IsPromotionCandidate()
 {
-    // TUNING: individual promoting heuristic
-    // if the region has not seen an allocation for 4 cycles, perhaps should tenure it
+    // If the region is heavy and has not seen an allocation for 4 cycles, perhaps should tenure it.
+    // The goal is to make gen1 cheaper by moving expensive regions to gen2
+    // Note that other uses for the region could be:
+    //     reuse:   that evidently did not happen, either not reusable or gen1 has too may reusables.
+    //     compact: that evidently did not happen, either not enough candidates, or it is pinned.
     return Generation() == 1 &&
         SweepsSinceLastAllocation() > 4 &&
-        !IsReuseCandidate();
+        Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2;
 }
 
-// we relocate regions if that would improve their reuse quality.
-// compaction might also improve mutator locality, somewhat.
-bool SatoriRegion::IsRelocationCandidate(bool assumePromotion)
+// how much unusable space is reclaimed if relocated.
+// this is used to estimate goodness of overall and individual relocations.
+size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeFullGC)
 {
-    if (HasPinnedObjects())
+    if (IsLarge() || HasPinnedObjects())
+        return 0;        // can't relocate
+
+    if (IsDemoted() && !assumeFullGC)
+        return 0;        // effectively pinned
+
+    // with presweepables we do not know exact occupancy or free lists,
+    // so make a guess at 1/2 region
+    if (IsPreSweepCandidate(assumeFullGC))
+        return Satori::REGION_SIZE_GRANULARITY / 2;
+
+    if (Occupancy() > Satori::REGION_SIZE_GRANULARITY / 2)
+        return 0;        // too full. we do not want to move this
+
+    // max reclaim is all unoccupied space.
+    size_t reclaim =
+        Satori::REGION_SIZE_GRANULARITY - Occupancy() - sizeof(SatoriRegion);
+
+    // nothing is reusable in gen2, so all unused is reclaimable
+    // demotables are technically reusable, but we would rather relocate, than demote
+    if (Generation() == 2 || assumeFullGC)
+        return reclaim;
+
+    // it was not reused in two GCs, just treat as not reusable.
+    if (SweepsSinceLastAllocation() <= 2)
     {
-        return false;
+        // reduce reclaim by reusable size in large buckets. Large buckets are certainly reusable
+        reclaim -= FreeSpaceInTopNBuckets(Satori::LARGE_BUCKETS);
     }
 
-    // region up to 3/4 will free 524K+ chunk if compacted, so it may be worth compacting
-    // otherwise this is too full.
-    if (Occupancy() >= Satori::REGION_SIZE_GRANULARITY / 4 * 3)
-    {
-        return false;
-    }
+    // if reclaim is too small compared to occupancy, do not relocate.
+    if (reclaim * 2 < Occupancy())
+        return 0;
 
-    // not reusable, consider compacting, as if reusable we'd rather reuse
-    if (!IsReusable())
-    {
-        return true;
-    }
-
-    // if gen2 and not demotable, then cannot reuse, consider compacting
-    if (Generation() == 2 || assumePromotion)
-    {
-        if (!IsDemotable())
-        {
-            return true;
-        }
-    }
-
-    // we may be able to reuse this, do not compact.
-    return false;
+    _ASSERTE(reclaim <= Satori::REGION_SIZE_GRANULARITY);
+    return reclaim;
 }
 
-bool SatoriRegion::TryDemote()
+bool SatoriRegion::IsPreSweepCandidate(bool assumeFullGC)
+{
+    // Large do not participate in relocations.
+    if (IsLarge())
+        return false;
+
+    // Attached regions will not participate in relocation, unless full GC
+    if (!assumeFullGC && IsAttachedToAllocatingOwner())
+        return false;
+
+    if (this->IsPreSwept())
+        return false;
+
+    // If saw sweeps, then the free lists have seen the first attrition for given generation.
+    // Otherwise the free data may be quite off.
+    // NOTE: demoted will not relocate, but can accept relocations, so still can presweep.
+    // NOTE: gen1 regions will be considered unswept for gen2 GC purposes.
+    bool result = SweepsSinceLastAllocation() == 0 ||
+        (assumeFullGC && Generation() != 2);
+
+    _ASSERTE(!result || assumeFullGC || !IsPromotionCandidate());
+    return result;
+}
+
+bool SatoriRegion::TryDemote(bool nextGcIsFullGc)
 {
     _ASSERTE(!HasMarksSet());
     _ASSERTE(Generation() == 2);
     _ASSERTE(ObjCount() != 0);
+
+    if (!IsDemotionCandidate(nextGcIsFullGc))
+    {
+        return false;
+    }
+
+    // if next GC is full, this will end up in gen2,
+    // so no need to track gen2 objects.
+    if (nextGcIsFullGc)
+    {
+        m_demotedOccupancy = Occupancy();
+        // The following is not necessary as when next GC is a full GC, we do not do cards.
+        // this->ResetCardsForEphemeral();
+        this->SetGeneration(1);
+        return true;
+    }
 
     // TUNING: heuristic for demoting -  could consider occupancy, pinning, etc...
     //         the cost here is increasing  gen1, which is supposed to be short as 
@@ -2123,11 +2167,6 @@ bool SatoriRegion::TryDemote()
     //         the worst case is if this is a largest possible reusable region that is also
     //         pointer-dense. Thus we will limit the size, just in case.
 
-    if (!IsDemotable())
-    {
-    return false;
-    }
-
     SatoriWorkChunk* gen2Objects = Allocator()->TryGetWorkChunk();
     if (!gen2Objects)
     {
@@ -2136,6 +2175,7 @@ bool SatoriRegion::TryDemote()
 
     // fail if we can't get chunks
     bool failed = false;
+    size_t demotedOccupancy = 0;
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     for (SatoriObject* o = FirstObject(); o->Start() < objLimit; o = o->Next())
     {
@@ -2154,6 +2194,8 @@ bool SatoriRegion::TryDemote()
                 gen2Objects = chunk;
                 gen2Objects->Push(o);
             }
+
+            demotedOccupancy += o->Size();
         }
     }
 
@@ -2164,6 +2206,7 @@ bool SatoriRegion::TryDemote()
         return false;
     }
 
+    m_demotedOccupancy = demotedOccupancy;
     this->HasUnmarkedDemotedObjects() = true;
     this->ResetCardsForEphemeral();
     this->SetGeneration(1);
@@ -2198,7 +2241,97 @@ void SatoriRegion::ClearIndex()
 void SatoriRegion::ClearFreeLists()
 {
     // clear free lists and free list tails
-    memset(m_freeLists, 0, sizeof(m_freeLists) * 2);
+    memset(m_freeListCapacities, 0, sizeof(m_freeListCapacities) + sizeof(m_freeLists) + sizeof(m_freeListTails));
+}
+
+void SatoriRegion::PreSweep()
+{
+    // we should only sweep when we have marks
+    _ASSERTE(HasMarksSet());
+    _ASSERTE(!DoNotSweep());
+    _ASSERTE(!IsLarge());
+    _ASSERTE(!this->m_individuallyPromoted);
+
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+
+    // we will be building new free lists
+    ClearFreeLists();
+
+    size_t occupancy = 0;
+    int32_t objCount = 0;
+    bool hasFinalizables = false;
+    SatoriObject* o = FirstObject();
+    do
+    {
+        if (!IsMarked(o))
+        {
+            size_t lastMarkedEnd = o->Start();
+            o = SkipUnmarked(o);
+            SatoriUtil::Prefetch(o);
+            size_t skipped = o->Start() - lastMarkedEnd;
+            SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
+            SetIndicesForObject(free, o->Start());
+            AddFreeSpace(free, skipped);
+
+            if (o->Start() >= objLimit)
+            {
+                _ASSERTE(o->Start() == objLimit);
+                break;
+            }
+        }
+
+        _ASSERTE(!o->IsFree());
+
+        size_t size = o->Size();
+
+        if (!hasFinalizables && o->RawGetMethodTable()->HasFinalizer())
+        {
+            hasFinalizables = true;
+        }
+
+        objCount++; 
+        occupancy += size;
+        o = (SatoriObject*)(o->Start() + size);
+    } while (o->Start() < objLimit);
+
+    _ASSERTE(o->Start() == objLimit || End() > objLimit);
+
+    this->m_hasFinalizables = hasFinalizables;
+    SetOccupancy(occupancy, objCount);
+    this->IsPreSwept() = true;
+}
+
+void SatoriRegion::FinishSweepForPreSwept()
+{
+    // Do final things that Sweep would do for pre-swept regions.
+    // That is mostly clearing marks and a few other things.
+
+    // TUNING: could cleaning marks in presweep be a win?
+    // 
+    // We keep marks in presweep so that we could SkipUnmarked in
+    // couple places related to relocation - like RelocateRegion and
+    // UpdatePointersInPromotedObjects.
+    
+    // We could clear marks in presweep and introduce SkipUnmarkedOrFree to use in RelocateRegion.
+    // Perhaps need to make HasMarksSet non-debug for that or fold with DoNotSweep.
+    // Also would need to make RelocateRegion to sweep src.
+    // Reloc sweeping may need to fix index, since scan may look through old objs (for both stack and cards)
+    // (presweep already does)
+    // 
+    // In such model either sweep or reloc destroys marks.
+    // It could be interesting if presweep is relatively common
+    // (at least in relocating scenarios, as no-compact case does not care).
+    ClearMarks();
+
+#if _DEBUG
+    HasMarksSet() = false;
+#endif
+    HasPinnedObjects() = false;
+    HasUnmarkedDemotedObjects() = IsDemoted();
+    IsPreSwept() = false;
+    DoNotSweep() = true;
+
+    m_sweepsSinceLastAllocation++;
 }
 
 void SatoriRegion::Verify(bool allowMarked)

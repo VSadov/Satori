@@ -121,9 +121,9 @@ public:
     void ResetCardsForRange(size_t start, size_t end, bool isTenured);
 
     volatile int8_t& CardState();
-    volatile int8_t& ScanTicket();
+    volatile uint8_t& ScanTicket();
     volatile int8_t& CardGroupState(size_t i);
-    volatile int8_t& CardGroupScanTicket(size_t i);
+    volatile uint8_t& CardGroupScanTicket(size_t i);
 
     size_t CardGroupCount();
     int8_t* CardsForGroup(size_t i);
@@ -148,7 +148,7 @@ private:
         struct
         {
             int8_t m_cardState;
-            int8_t m_scanTicket;
+            uint8_t m_scanTicket;
             size_t m_end;
             size_t m_initialCommit;
             size_t m_firstRegion;
@@ -170,6 +170,8 @@ private:
 
             // computed size,
             // 2 byte per card group (4 per region granule)
+            //   one signed byte for a state, which has negative values.
+            //   and one unsigned for a ticket, which is a wrap-around counter.
             // 2048 bytes per 1Gb
             DECLSPEC_ALIGN(128)
             int8_t m_cardGroups[1];

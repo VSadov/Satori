@@ -153,6 +153,50 @@ public:
         return result;
     }
 
+    // same as TryPop, but on empty pushes the item.
+    // emptines is checked under a lock.
+    T* PopOrPush(T* item)
+    {
+        _ASSERTE(item->m_next == nullptr);
+        _ASSERTE(item->m_prev == nullptr);
+        _ASSERTE(item->m_containingQueue == nullptr);
+
+        T* result;
+        {
+            SatoriLockHolder holder(&m_lock);
+            result = m_head;
+            if (result == nullptr)
+            {
+                // push the item and return nullptr.
+                _ASSERTE(m_tail == nullptr);
+                m_count++;
+                item->m_containingQueue = this;
+                m_tail = item;
+                m_head = item;
+                return nullptr;
+            }
+
+            // pop the result
+            T* next = result->m_next;
+            m_count--;
+            m_head = next;
+            result->m_containingQueue = nullptr;
+            if (next == nullptr)
+            {
+                m_tail = nullptr;
+            }
+            else
+            {
+                next->m_prev = nullptr;
+            }
+        }
+
+        _ASSERTE(result->m_prev == nullptr);
+        result->m_next = nullptr;
+
+        return result;
+    }
+
     T* TryPopWithTryEnter()
     {
         if (IsEmpty())

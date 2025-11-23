@@ -71,12 +71,10 @@ public:
 
     size_t GetAllocStart();
     size_t GetAllocRemaining();
-    size_t GetMaxAllocEstimate();
     size_t Allocate(size_t size, bool zeroInitialize);
     size_t AllocateHuge(size_t size, bool zeroInitialize);
 
     size_t StartAllocating(size_t minSize);
-    size_t StartAllocatingBestFit(size_t minAllocSize);
     void StopAllocating(size_t allocPtr);
     void StopAllocating();
     bool IsAllocating();
@@ -84,8 +82,9 @@ public:
     void AddFreeSpace(SatoriObject* freeObj, size_t size);
     void ReturnFreeSpace(SatoriObject * freeObj, size_t size);
 
+    int GetMaxFreeBucket();
     bool HasFreeSpaceInTopBucket();
-    bool HasFreeSpaceInTopNBuckets(int n);
+    size_t FreeSpaceInTopNBuckets(int n);
 
     void StartEscapeTrackingRelease(size_t threadTag);
     void StopEscapeTracking();
@@ -102,11 +101,11 @@ public:
     void ResetReusableForRelease();
 
     bool IsReuseCandidate();
-    bool IsDemotable();
+    bool IsDemotionCandidate(bool nextGcIsFullGC);
     bool IsPromotionCandidate();
-    bool IsRelocationCandidate(bool assumePromotion = false);
+    size_t ReclaimSizeIfRelocated(bool assumeFullGC);
 
-bool TryDemote();
+    bool TryDemote(bool nextGcIsFullGc);
     bool IsDemoted();
     SatoriWorkChunk* &DemotedObjects();
     bool& HasUnmarkedDemotedObjects();
@@ -120,6 +119,7 @@ bool TryDemote();
     size_t Start();
     size_t End();
     size_t Size();
+    bool IsLarge();
 
     SatoriObject* FirstObject();
     SatoriObject* FindObject(size_t location);
@@ -148,10 +148,14 @@ bool TryDemote();
     template <bool updatePointers>
     bool Sweep();
 
+    bool IsPreSweepCandidate(bool assumeFullGC);
+    void PreSweep();
+    void FinishSweepForPreSwept();
+
     bool IsExposed(SatoriObject** location);
     bool AnyExposed(size_t from, size_t length);
     void EscapeRecursively(SatoriObject* obj);
-    void EscsapeAll();
+    void EscapeAll();
     void EscapeShallow(SatoriObject* o, size_t size);
 
     template <typename F>
@@ -176,9 +180,11 @@ bool TryDemote();
     size_t Occupancy();
     int32_t& OccupancyAtReuse();
     int32_t ObjCount();
+    size_t DemotedOccupancy();
 
     bool& HasPinnedObjects();
     bool& DoNotSweep();
+    bool& IsPreSwept();
     bool& IsRelocated();
     bool& AcceptedPromotedObjects();
     bool& IndividuallyPromoted();
@@ -286,6 +292,7 @@ private:
             SatoriQueue<SatoriRegion>* m_containingQueue;
 
             size_t m_occupancy;
+            size_t m_demotedOccupancy;
             int32_t m_objCount;
 
             int32_t m_unfinishedAllocationCount;
@@ -294,16 +301,18 @@ private:
             bool m_hasFinalizables;
             bool m_hasPendingFinalizables;
             bool m_doNotSweep;
+            bool m_isPreSwept;
             bool m_isRelocated;
 
             bool m_acceptedPromotedObjects;
             bool m_individuallyPromoted;
             bool m_hasUnmarkedDemotedObjects;
-#if _DEBUG
+            // TODO: VS can fold with m_doNotSweep?
             bool m_hasMarksSet;
-#endif
-            SatoriObject* m_freeLists[Satori::FREELIST_COUNT];
-            SatoriObject* m_freeListTails[Satori::FREELIST_COUNT];
+
+            size_t m_freeListCapacities[Satori::FREELIST_COUNT];
+            SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];
+            SatoriFreeListObject* m_freeListTails[Satori::FREELIST_COUNT];
         };
     };
 

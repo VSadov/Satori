@@ -53,8 +53,14 @@ FORCEINLINE size_t SatoriObject::FreeObjSize()
     _ASSERTE(IsFree());
     size_t size = Satori::MIN_FREE_SIZE;
     size += (size_t)((ArrayBase*)this)->GetNumComponents();
-    size = ALIGN_UP(size, Satori::OBJECT_ALIGNMENT);
+    _ASSERTE(size == ALIGN_UP(size, Satori::OBJECT_ALIGNMENT));
     return size;
+}
+
+FORCEINLINE size_t SatoriObject::FreeObjCapacity()
+{
+    _ASSERTE(IsFree());
+    return (size_t)((ArrayBase*)this)->GetNumComponents();
 }
 
 inline size_t SatoriObject::Start()

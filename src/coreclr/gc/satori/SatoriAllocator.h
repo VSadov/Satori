@@ -104,6 +104,7 @@ private:
     DECLSPEC_ALIGN(64)
     volatile int32_t m_singePageAdders;
 
+    void UpdateAllocStatsAndHelpIfNeeded(SatoriAllocationContext * context);
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocRegularShared(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocLarge(SatoriAllocationContext* context, size_t size, uint32_t flags);

@@ -104,6 +104,8 @@ void SatoriObject::DirtyCardsForContent()
 void SatoriObject::Validate()
 {
 #ifdef _DEBUG
+    // min object size is the same as min free size because any hole
+    // must be able to fit a free obj for parseability reasons
     _ASSERTE(this->Size() >= Satori::MIN_FREE_SIZE);
 
     if (ContainingRegion()->IsEscapeTrackedByCurrentThread())
