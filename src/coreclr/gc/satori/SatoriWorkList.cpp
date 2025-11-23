@@ -49,7 +49,7 @@ void SatoriWorkList::PushSlow(SatoriWorkChunk* item)
         SatoriLock::CollisionBackoff(collisions++);
     }
 
-#ifdef _DEBUG
+#ifdef COUNT_CHUNKS
     Interlocked::Increment(&m_count);
 #endif
 }
@@ -76,7 +76,7 @@ SatoriWorkChunk* SatoriWorkList::TryPopSlow()
         SatoriLock::CollisionBackoff(collisions++);
     }
 
-#ifdef _DEBUG
+#ifdef COUNT_CHUNKS
     Interlocked::Decrement(&m_count);
 #endif
 

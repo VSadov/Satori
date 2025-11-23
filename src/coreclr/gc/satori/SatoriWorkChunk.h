@@ -33,6 +33,8 @@
 #include "SatoriQueue.h"
 #include "SatoriObject.h"
 
+// TODO: VS intra-region trackers could have a specialized version that stores pointers as int32.
+//       If the size of this matters at all. So far it looks we do not need that many chunks.
 class SatoriWorkChunk
 {
     friend class SatoriWorkList;

@@ -31,6 +31,9 @@
 #include "../gc.h"
 #include "SatoriWorkChunk.h"
 
+#if _DEBUG
+#define COUNT_CHUNKS
+#endif
 
 #if defined(TARGET_WINDOWS)
 FORCEINLINE uint8_t Cas128(int64_t volatile *pDst, int64_t iValueHigh, int64_t iValueLow, int64_t *pComparand)
@@ -59,7 +62,7 @@ public:
     {
         m_head = head;
         m_aba = aba;
-#ifdef _DEBUG
+#ifdef COUNT_CHUNKS
         m_count = 0;
 #endif
     }
@@ -100,7 +103,7 @@ public:
         SatoriWorkList orig(head, aba);
         if (Cas128((int64_t*)this, aba + 1, (int64_t)item, (int64_t*)&orig))
         {
-#ifdef _DEBUG
+#ifdef COUNT_CHUNKS
             Interlocked::Increment(&m_count);
 #endif
             return;
@@ -123,9 +126,9 @@ public:
         SatoriWorkList orig(head, aba);
         if (Cas128((int64_t*)this, aba + 1, (int64_t)head->m_next, (int64_t*)&orig))
         {
-    #ifdef _DEBUG
+#ifdef COUNT_CHUNKS
             Interlocked::Decrement(&m_count);
-    #endif
+#endif
             head->m_next = nullptr;
             return head;
         }
@@ -133,7 +136,7 @@ public:
         return TryPopSlow();
     }
 
-#ifdef _DEBUG
+#ifdef COUNT_CHUNKS
     size_t Count()
     {
         return m_count;
@@ -146,7 +149,7 @@ private:
         SatoriWorkChunk* volatile m_head;
         volatile size_t m_aba;
     };
-#ifdef _DEBUG
+#ifdef COUNT_CHUNKS
     size_t m_count;
 #endif
 
