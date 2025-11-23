@@ -63,7 +63,7 @@ inline volatile int8_t& SatoriPage::CardState()
 }
 
 // order is unimportant, but we want to read it only once when we read it, thus volatile.
-inline volatile int8_t& SatoriPage::ScanTicket()
+inline volatile uint8_t& SatoriPage::ScanTicket()
 {
     return m_scanTicket;
 }
@@ -75,9 +75,9 @@ inline volatile int8_t& SatoriPage::CardGroupState(size_t i)
 }
 
 // order is unimportant, but we want to read it once when we read it, thus volatile.
-inline volatile int8_t& SatoriPage::CardGroupScanTicket(size_t i)
+inline volatile uint8_t& SatoriPage::CardGroupScanTicket(size_t i)
 {
-    return m_cardGroups[i * 2 + 1];
+    return (uint8_t&)m_cardGroups[i * 2 + 1];
 }
 
 inline size_t SatoriPage::CardGroupCount()

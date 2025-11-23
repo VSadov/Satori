@@ -324,6 +324,7 @@ void SatoriPage::WipeGroupsForRange(size_t start, size_t end)
 
     size_t firstGroup = firstByteOffset / Satori::BYTES_PER_CARD_GROUP;
     size_t lastGroup = lastByteOffset / Satori::BYTES_PER_CARD_GROUP;
+    // this resets both states and tickets
     memset((void*)&m_cardGroups[firstGroup * 2], Satori::CardState::BLANK, (lastGroup - firstGroup + 1) * 2);
 }
 

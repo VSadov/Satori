@@ -54,9 +54,6 @@ namespace Satori
 
     static const int ALLOCATOR_BUCKET_COUNT = PAGE_BITS - REGION_BITS;
 
-    // objects smaller than this go into regular region. 32K - to fit in bucket 3 and above
-    static const int LARGE_OBJECT_THRESHOLD = 32 * 1024;
-
     // object starts are aligned to this
     static const size_t OBJECT_ALIGNMENT = sizeof(size_t);
 
@@ -106,16 +103,21 @@ namespace Satori
     // When 1/4 escapes, we stop tracking escapes.
     static const int MAX_ESCAPE_SIZE = REGION_SIZE_GRANULARITY / 4;
 
-    static const int MIN_FREELIST_SIZE_BITS = 12;
-    static const size_t MIN_FREELIST_SIZE = 1 << MIN_FREELIST_SIZE_BITS;
-    static const int FREELIST_COUNT = Satori::REGION_BITS - MIN_FREELIST_SIZE_BITS;
+    // objects smaller than this go into regular region.
+    static const int LARGE_OBJECT_THRESHOLD = 32 * 1024;
 
-    // TUNING: more buckets means more aggressive demotion.
-    static const int REUSABLE_BUCKETS = 6;
+    // freelist bucket contais items that fit at least 1 << (i + min_bits)
+    // min freelist capacity is 4K+
+    static const int MIN_FREELIST_CAPACITY_BITS = 11;
+    static const size_t MIN_FREELIST_CAPACITY = 1 << MIN_FREELIST_CAPACITY_BITS;
+    static const int FREELIST_COUNT = Satori::REGION_BITS - MIN_FREELIST_CAPACITY_BITS;
 
-    // we will limit number of demoted objects to not use too many chunks
+    // large bucket size is 32K+ - so that any small obj would fit
+    static const int LARGE_BUCKETS = 6;
+
+    // we will limit number of demoted objects to not use too many chunks (up to 4)
     // it will softly limit the occupancy as well.
-    const static size_t MAX_DEMOTED_OBJECTS_IN_REGION = 2048;
+    const static size_t MAX_DEMOTED_OBJECTS_IN_REGION = (MARK_CHUNK_COUNT - 2) * 4;
 }
 
 class SatoriUtil
@@ -131,6 +133,26 @@ public:
         BitScanReverse(&highestBit, value);
 #endif
         return (size_t)1 << highestBit;
+    }
+
+    static int32_t BucketForAlloc(size_t allocSize)
+    {
+        if (allocSize <= Satori::MIN_FREELIST_CAPACITY)
+        {
+            return 0;
+        }
+        else
+        {
+            // skip buckets that could not possibly fit allocSize
+            DWORD bucket;
+            BitScanReverse64(&bucket, allocSize);
+            bucket = bucket - Satori::MIN_FREELIST_CAPACITY_BITS;
+
+            // this bucket may be able to fit allocSize or may be not,
+            // but we will just use the next bucket, which guarantees the allocSize will fit.
+            bucket++;
+            return (int32_t)bucket;
+        }
     }
 
     // must match what is used in barriers.
@@ -310,7 +332,7 @@ public:
         if (target < 100)
         {
             // target must be > 100%
-            // if wee see less, just default to triggering GC when heap doubles
+            // if we see less, just default to triggering GC when heap doubles
             target = 200;
         }
 
@@ -324,7 +346,7 @@ public:
         if (target < 100)
         {
             // target must be > 100%
-            // if wee see less, just default to triggering GC when ephemeral heap quadruples in size
+            // if we see less, just default to triggering GC when ephemeral heap quadruples in size
             target = Gen2Target() * 2;
         }
 
