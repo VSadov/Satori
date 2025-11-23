@@ -75,6 +75,12 @@ inline void SatoriRegion::SetGeneration(int generation)
     _ASSERTE(generation != 0);
     _ASSERTE(m_generation != 0);
 
+    if (m_generation != generation)
+    {
+        // generation has changed, reset sweeps counter
+        m_sweepsSinceLastAllocation = 0;
+    }
+
     m_generation = generation;
 }
 
@@ -84,6 +90,10 @@ inline void SatoriRegion::SetGenerationRelease(int generation)
     // the region is attached, since 0+ detached regions are assumed parseable.
     _ASSERTE(generation != 0);
     _ASSERTE(m_generation == -1 || IsReusable());
+
+    // No need to reset m_sweepsSinceLastAllocation like in SetGeneration.
+    // SetGenerationRelease is always related to an alocation anyways.
+    // (promoting/demoting does not need "Release")
 
     VolatileStore(&m_generation, generation);
 }
@@ -113,6 +123,11 @@ inline size_t SatoriRegion::Size()
     return End() - Start();
 }
 
+inline bool SatoriRegion::IsLarge()
+{
+    return Size() > Satori::REGION_SIZE_GRANULARITY;
+}
+
 inline size_t SatoriRegion::GetAllocStart()
 {
     return m_allocStart;
@@ -122,7 +137,8 @@ inline size_t SatoriRegion::GetAllocRemaining()
 {
     // reserve Satori::MIN_FREE_SIZE to be able to make the unused space parseable
     ptrdiff_t diff = m_allocEnd - m_allocStart - Satori::MIN_FREE_SIZE;
-    return diff > 0 ? (size_t)diff : 0;
+    _ASSERTE(!IsAllocating() || diff >=0);
+    return diff >= 0 ? (size_t)diff : 0;
 }
 
 inline size_t SatoriRegion::RegionSizeForAlloc(size_t allocSize)
@@ -584,6 +600,11 @@ inline size_t SatoriRegion::Occupancy()
     return m_occupancy;
 }
 
+inline size_t SatoriRegion::DemotedOccupancy()
+{
+    return m_demotedOccupancy;
+}
+
 inline int32_t &SatoriRegion::OccupancyAtReuse()
 {
     _ASSERTE(!IsAllocating());
@@ -610,6 +631,11 @@ inline bool& SatoriRegion::HasMarksSet()
 inline bool& SatoriRegion::DoNotSweep()
 {
     return m_doNotSweep;
+}
+
+inline bool& SatoriRegion::IsPreSwept()
+{
+    return m_isPreSwept;
 }
 
 inline bool& SatoriRegion::IsRelocated()
