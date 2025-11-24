@@ -249,7 +249,11 @@ LEAF_END JIT_PatchedCodeLast, _TEXT
 #else  //FEATURE_SATORI_GC      ##############################################################################
 
 .macro ALTERNATE_ENTRY Name
+#if defined(__APPLE__)
+        .alt_entry C_FUNC(\Name)
+#else
         .global C_FUNC(\Name)
+#endif
 C_FUNC(\Name):
 .endm
 
@@ -499,7 +503,7 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
         lea     r10, [rsi + 8]
         mov     rsi, [rsi]
 
-        call    CheckedEntry
+        call    C_FUNC(CheckedEntry)
 
         pop     r11
         pop     r10
