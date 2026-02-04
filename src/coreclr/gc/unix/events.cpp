@@ -351,18 +351,19 @@ bool SatoriGate::TimedWait(int timeout)
 void SatoriGate::Wait()
 {
     syscall(SYS_futex, &m_state, FUTEX_WAIT_PRIVATE, s_blocking, NULL, NULL, 0);
+    m_state = s_blocking;
 }
 
 void SatoriGate::WakeAll()
 {
     m_state = s_open;
-    syscall(SYS_futex, &m_state, FUTEX_WAKE_PRIVATE, s_blocking, INT_MAX , NULL, 0);
+    syscall(SYS_futex, &m_state, FUTEX_WAKE_PRIVATE, INT_MAX);
 }
 
 void SatoriGate::WakeOne()
 {
     m_state = s_open;
-    syscall(SYS_futex, &m_state, FUTEX_WAKE_PRIVATE, s_blocking, 1, NULL, 0);
+    syscall(SYS_futex, &m_state, FUTEX_WAKE_PRIVATE, 1);
 }
 #else
 SatoriGate::SatoriGate()
