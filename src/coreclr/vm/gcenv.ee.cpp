@@ -1206,9 +1206,9 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         stompWBCompleteActions |= ::SwitchToWriteWatchBarrier(is_runtime_suspended);
         if (!is_runtime_suspended)
         {
-            // If runtime is not suspended, force all threads to see the changed state before
-            // observing future allocations.
-            FlushProcessWriteBuffers();
+            // If runtime is not suspended, force all threads to see the changed state before observing future allocations.
+            minipal_memory_barrier_process_wide();
+
         }
 
         return;
