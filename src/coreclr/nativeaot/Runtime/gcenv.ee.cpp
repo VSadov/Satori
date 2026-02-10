@@ -539,7 +539,7 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         {
             // If runtime is not suspended, force all threads to see the changed state before
             // observing future allocations.
-            FlushProcessWriteBuffers();
+            PalFlushProcessWriteBuffers();
         }
 
         return;

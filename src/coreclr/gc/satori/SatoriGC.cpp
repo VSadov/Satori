@@ -345,6 +345,11 @@ bool SatoriGC::IsPromoted(Object* object)
         o->IsMarkedOrOlderThan(m_heap->Recycler()->GetCondemnedGeneration());
 }
 
+bool SatoriGC::IsPromoted2(Object* object, bool bVerifyNextHeader)
+{
+    return IsPromoted(object);
+}
+
 bool SatoriGC::IsHeapPointer(void* object, bool small_heap_only)
 {
     //small_heap_only is unused - there is no special heap for large objects.
@@ -902,4 +907,13 @@ size_t SatoriGC::GetLOHThreshold()
 
 void SatoriGC::DiagWalkHeapWithACHandling(walk_fn fn, void *context, int gen_number, bool walk_large_object_heap_p)
 {
+}
+
+void SatoriGC::NullBridgeObjectsWeakRefs(size_t length, void* unreachableObjectHandles)
+{
+#ifdef FEATURE_JAVAMARSHAL
+    Ref_NullBridgeObjectsWeakRefs(length, unreachableObjectHandles);
+#else
+    assert(false);
+#endif
 }

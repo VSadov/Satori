@@ -172,7 +172,11 @@ BOOL ClrVirtualProtect(LPVOID lpAddress, SIZE_T dwSize, DWORD flNewProtect, PDWO
                 // Ensure that the section following us is having different memory protection
                 MEMORY_BASIC_INFORMATION nextSectionInfo;
                 _ASSERTE(ClrVirtualQuery(pAddressOfFollowingSection, &nextSectionInfo, sizeof(nextSectionInfo)) != 0);
+
+#ifndef FEATURE_SATORI_GC
+                // Satori does not copy barriers and does not change the protection thus this assert is triggered.
                 _ASSERTE(nextSectionInfo.Protect != uefInfo.Protect);
+#endif
 
                 // save the memory protection details
                 s_dwProtection = uefInfo.Protect;

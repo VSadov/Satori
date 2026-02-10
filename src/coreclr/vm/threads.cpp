@@ -3472,9 +3472,6 @@ WaitCompleted:
 
     return ret;
 }
-    }
-             ret == WAIT_TIMEOUT ||
-             ret == WAIT_FAILED);
 
 //--------------------------------------------------------------------
 // Only one style of wait for DoSignalAndWait since we don't support this on STA Threads

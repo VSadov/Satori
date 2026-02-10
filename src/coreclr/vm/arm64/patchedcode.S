@@ -517,10 +517,23 @@ LEAF_ENTRY JIT_WriteBarrier_WriteWatch_Byte_Region64, _TEXT
     WRITE_BARRIER_RETURN_STUB Exit_WriteWatch_Byte_Region64
 LEAF_END_MARKED JIT_WriteBarrier_WriteWatch_Byte_Region64, _TEXT
 
-LOCAL_LABEL(Exit):
-    add  x14, x14, 8
-    ret  lr
-WRITE_BARRIER_END JIT_WriteBarrier
+
+//-----------------------------------------------------------------------------
+// void JIT_WriteBarrier_WriteWatch_Bit_Region64(Object** dst, Object* src)
+//
+// Skipped functionality:
+//      Does not call check card table stub
+//
+LEAF_ENTRY JIT_WriteBarrier_WriteWatch_Bit_Region64, _TEXT
+    WRITE_BARRIER_ENTRY_STUB Start_WriteWatch_Bit_Region64
+    WRITE_BARRIER_SHADOW_UPDATE_STUB Start_WriteWatch_Bit_Region64
+    WRITE_BARRIER_WRITE_WATCH_FOR_GC_HEAP_STUB Start_WriteWatch_Bit_Region64, Exit_WriteWatch_Bit_Region64
+    WRITE_BARRIER_CHECK_EPHEMERAL_LOW_AND_HIGH_STUB Start_WriteWatch_Bit_Region64, Exit_WriteWatch_Bit_Region64
+    WRITE_BARRIER_REGION_CHECK_STUB Start_WriteWatch_Bit_Region64, Exit_WriteWatch_Bit_Region64
+    WRITE_BARRIER_CHECK_BIT_REGIONS_CARD_TABLE_STUB Start_WriteWatch_Bit_Region64, Exit_WriteWatch_Bit_Region64
+    WRITE_BARRIER_CHECK_CARD_BUNDLE_TABLE_STUB Start_WriteWatch_Bit_Region64, Exit_WriteWatch_Bit_Region64
+    WRITE_BARRIER_RETURN_STUB Exit_WriteWatch_Bit_Region64
+LEAF_END_MARKED JIT_WriteBarrier_WriteWatch_Bit_Region64, _TEXT
 
 #else  // FEATURE_SATORI_GC
 
@@ -736,48 +749,62 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         b       LOCAL_LABEL(AssignAndMarkCards)
 WRITE_BARRIER_END JIT_WriteBarrier
 
-#endif  // FEATURE_SATORI_GC
-
-    // Begin patchable literal pool
+//-----------------------------------------------------------------------------
+// JIT_WriteBarrier_Table
+// 
+// Patchable literal pool
+//
     .balign 64  // Align to power of two at least as big as patchable literal pool so that it fits optimally in cache line
 WRITE_BARRIER_ENTRY JIT_WriteBarrier_Table
-LOCAL_LABEL(wbs_begin):
 LOCAL_LABEL(wbs_card_table):
+PATCH_LABEL JIT_WriteBarrier_Patch_Label_CardTable
     .quad 0
 LOCAL_LABEL(wbs_card_bundle_table):
+PATCH_LABEL JIT_WriteBarrier_Patch_Label_CardBundleTable
     .quad 0
 LOCAL_LABEL(wbs_sw_ww_table):
+PATCH_LABEL JIT_WriteBarrier_Patch_Label_WriteWatchTable
     .quad 0
-LOCAL_LABEL(wbs_ephemeral_low):
+PATCH_LABEL JIT_WriteBarrier_Patch_Label_Lower
     .quad 0
-LOCAL_LABEL(wbs_ephemeral_high):
+PATCH_LABEL JIT_WriteBarrier_Patch_Label_Upper
     .quad 0
-LOCAL_LABEL(wbs_lowest_address):
+PATCH_LABEL JIT_WriteBarrier_Patch_Label_LowestAddress
     .quad 0
-LOCAL_LABEL(wbs_highest_address):
+PATCH_LABEL JIT_WriteBarrier_Patch_Label_HighestAddress
+    .quad 0
+PATCH_LABEL JIT_WriteBarrier_Patch_Label_RegionToGeneration
+    .quad 0
+PATCH_LABEL JIT_WriteBarrier_Patch_Label_RegionShr
     .quad 0
 #ifdef WRITE_BARRIER_CHECK
-LOCAL_LABEL(wbs_GCShadow):
+PATCH_LABEL JIT_WriteBarrier_Patch_Label_GCShadow
     .quad 0
-LOCAL_LABEL(wbs_GCShadowEnd):
+PATCH_LABEL JIT_WriteBarrier_Patch_Label_GCShadowEnd
     .quad 0
 #endif
 WRITE_BARRIER_END JIT_WriteBarrier_Table
-//-----------------------------------------------------------------------------
-// void JIT_WriteBarrier_WriteWatch_Bit_Region64(Object** dst, Object* src)
-//
-// Skipped functionality:
-//      Does not call check card table stub
-//
-LEAF_ENTRY JIT_WriteBarrier_WriteWatch_Bit_Region64, _TEXT
-    WRITE_BARRIER_ENTRY_STUB Start_WriteWatch_Bit_Region64
-    WRITE_BARRIER_SHADOW_UPDATE_STUB Start_WriteWatch_Bit_Region64
-    WRITE_BARRIER_WRITE_WATCH_FOR_GC_HEAP_STUB Start_WriteWatch_Bit_Region64, Exit_WriteWatch_Bit_Region64
-    WRITE_BARRIER_CHECK_EPHEMERAL_LOW_AND_HIGH_STUB Start_WriteWatch_Bit_Region64, Exit_WriteWatch_Bit_Region64
-    WRITE_BARRIER_REGION_CHECK_STUB Start_WriteWatch_Bit_Region64, Exit_WriteWatch_Bit_Region64
-    WRITE_BARRIER_CHECK_BIT_REGIONS_CARD_TABLE_STUB Start_WriteWatch_Bit_Region64, Exit_WriteWatch_Bit_Region64
-    WRITE_BARRIER_CHECK_CARD_BUNDLE_TABLE_STUB Start_WriteWatch_Bit_Region64, Exit_WriteWatch_Bit_Region64
-    WRITE_BARRIER_RETURN_STUB Exit_WriteWatch_Bit_Region64
-LEAF_END_MARKED JIT_WriteBarrier_WriteWatch_Bit_Region64, _TEXT
 
+// ------------------------------------------------------------------
+// End of the writeable code region
+#if defined(__APPLE__)
+    .private_extern C_FUNC(JIT_PatchedCodeLast)
+    .alt_entry C_FUNC(JIT_PatchedCodeLast)
+C_FUNC(JIT_PatchedCodeLast):
+    .cfi_endproc
+    ret  lr
+#else
+LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
+    ret  lr
+LEAF_END JIT_PatchedCodeLast, _TEXT
+#endif
+
+LEAF_ENTRY JIT_WriteBarrier_SATORI, _TEXT
+    // TODO: Satori, when we need barrier replacement
+        mov   x14, 0
+        stlr  x15, [x14]
+        ret   lr
+LEAF_END_MARKED JIT_WriteBarrier_SATORI, _TEXT
+
+#endif  // FEATURE_SATORI_GC
 

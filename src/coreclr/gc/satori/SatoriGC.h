@@ -92,6 +92,7 @@ public:
     virtual size_t GetLastGCGenerationSize(int gen) override;
     virtual HRESULT Initialize() override;
     virtual bool IsPromoted(Object* object) override;
+    virtual bool IsPromoted2(Object* object, bool bVerifyNextHeader) override;
     virtual bool IsHeapPointer(void* object, bool small_heap_only = false) override;
     virtual unsigned GetCondemnedGeneration() override;
     virtual bool IsGCInProgressHelper(bool bConsiderGCStart = false) override;
@@ -167,8 +168,9 @@ public:
     uint64_t GetGenerationBudget(int generation) override;
 
     // Inherited via IGCHeapInternal
-    size_t GetLOHThreshold() override;
-    void DiagWalkHeapWithACHandling(walk_fn fn, void *context, int gen_number, bool walk_large_object_heap_p) override;
+    virtual size_t GetLOHThreshold() override;
+    virtual void DiagWalkHeapWithACHandling(walk_fn fn, void *context, int gen_number, bool walk_large_object_heap_p) override;
+    virtual void NullBridgeObjectsWeakRefs(size_t length, void* unreachableObjectHandles) override; 
 };
 
 #endif

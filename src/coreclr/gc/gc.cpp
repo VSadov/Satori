@@ -28,6 +28,9 @@
 #include "gcenv.inl"
 #include "gceventstatus.h"
 
+// TODO: Satori, we are not using this code, but something causes the warning and breaks the build.
+#pragma warning(disable:4723)
+
 #ifdef __INTELLISENSE__
 #if defined(FEATURE_SVR_GC)
 

@@ -344,20 +344,6 @@ namespace System.Collections.Concurrent
                 {
                     throw new ArgumentException(SR.ConcurrentDictionary_SourceContainsDuplicateKeys);
                 }
-
-        private void InitializeFromCollection(IEnumerable<KeyValuePair<TKey, TValue>> collection)
-        {
-            foreach (KeyValuePair<TKey, TValue> pair in collection)
-            {
-                if (pair.Key is null)
-                {
-                    ThrowHelper.ThrowKeyNullException();
-                }
-
-                if (!TryAddInternal(_tables, pair.Key, null, pair.Value, updateIfExists: false, acquireLock: false, out _))
-                {
-                    throw new ArgumentException(SR.ConcurrentDictionary_SourceContainsDuplicateKeys);
-                }
             }
 
             if (_budget == 0)

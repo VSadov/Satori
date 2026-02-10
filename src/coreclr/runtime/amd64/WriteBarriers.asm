@@ -358,7 +358,7 @@ LEAF_ENTRY RhpCheckedAssignRef, _TEXT
         mov     r8,  rcx
         shr     r8,  30                    ; dst page index
         cmp     byte ptr [rax + r8], 0
-        jne     CheckedEntry
+        jne     RhpCheckedEntry
 
 NotInHeap:
 ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
@@ -375,13 +375,13 @@ LEAF_ENTRY RhpAssignRef, _TEXT
 ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
     ; check if src is in heap
         mov     rax, [g_card_bundle_table] ; fetch the page byte map
-    ALTERNATE_ENTRY CheckedEntry
+    ALTERNATE_ENTRY RhpCheckedEntry
         mov     r8,  rdx
         shr     r8,  30                    ; dst page index
         cmp     byte ptr [rax + r8], 0
         je      JustAssign              ; src not in heap
 else
-    ALTERNATE_ENTRY CheckedEntry
+    ALTERNATE_ENTRY RhpCheckedEntry
 endif
 
     ; check for escaping assignment
@@ -576,7 +576,7 @@ ALTERNATE_ENTRY RhpByRefAssignRefAVLocation2
         add     rdi, 8h
         add     rsi, 8h
 
-        call    CheckedEntry
+        call    RhpCheckedEntry
 
         pop     r11
         pop     r10

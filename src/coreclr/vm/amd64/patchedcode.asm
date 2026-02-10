@@ -204,7 +204,7 @@ else  ;FEATURE_SATORI_GC     ###################################################
 
 EXTERN g_card_table:QWORD
 EXTERN g_card_bundle_table:QWORD
-EXTERN g_sw_ww_table:QWORD
+EXTERN g_write_watch_table:QWORD
 
 ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 EXTERN  g_sw_ww_enabled_for_gc_heap:BYTE
@@ -289,7 +289,7 @@ endif
 
     ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
     ;         needs to suspend EE, not sure if skipping mode check would worth that much.
-        mov     r11, qword ptr [g_sw_ww_table]
+        mov     r11, qword ptr [g_write_watch_table]
 
     ; check the barrier state. this must be done after the assignment (in program order)
     ; if state == 2 we do not set or dirty cards.
@@ -344,7 +344,7 @@ endif
 
      CardSet:
     ; check if concurrent marking is still not in progress
-        cmp     qword ptr [g_sw_ww_table], 0h
+        cmp     qword ptr [g_write_watch_table], 0h
         jne     DirtyCard
         ret
 

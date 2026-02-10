@@ -55,8 +55,6 @@ set(COMMON_RUNTIME_SOURCES
     ${GC_DIR}/objecthandle.cpp
     ${GC_DIR}/softwarewritewatch.cpp
     ${CLR_SRC_NATIVE_DIR}/minipal/xoshiro128pp.c
-    ${CLR_SRC_NATIVE_DIR}/minipal/cpufeatures.c
-    ${CLR_SRC_NATIVE_DIR}/minipal/time.c
 
     ${GC_DIR}/satori/SatoriGC.cpp
     ${GC_DIR}/satori/SatoriHandlePartitioner.cpp
