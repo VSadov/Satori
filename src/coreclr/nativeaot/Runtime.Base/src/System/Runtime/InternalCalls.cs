@@ -245,7 +245,7 @@ namespace System.Runtime
         [DllImport(RuntimeLibrary)]
         internal static extern void RhpSignalFinalizationComplete(uint fCount, int observedFullGcCount);
 
-        [DllImport(Redhawk.BaseName)]
+        [DllImport(RuntimeLibrary)]
         internal static extern unsafe void RhpGetNextFinalizableObject(void* pResult);
     }
 }

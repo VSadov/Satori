@@ -436,7 +436,7 @@ NoBarrierXchg
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
         lsr     x17, x14, #30                       ;; dst page index
         ldrb    w12, [x16, x17]
-        cbnz    x12, CheckedEntry
+        cbnz    x12, RhpCheckedEntry
 
 NotInHeap
     ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
@@ -464,12 +464,12 @@ NotInHeap
     ;; 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
-    ALTERNATE_ENTRY CheckedEntry
+    ALTERNATE_ENTRY RhpCheckedEntry
         lsr     x17, x15, #30                   ;; source page index
         ldrb    w12, [x16, x17]
         cbz     x12, JustAssign                 ;; null or external (immutable) object
 #else
-    ALTERNATE_ENTRY CheckedEntry
+    ALTERNATE_ENTRY RhpCheckedEntry
         cbz     x15, JustAssign                 ;; assigning null
 #endif
         and     x16,  x15, #0xFFFFFFFFFFE00000  ;; source region
@@ -635,6 +635,8 @@ RecordEscape
         mov     x15, x1                     ;; x15 = val
         b       RhpAssignRefArm64
     LEAF_END RhpAssignRef
+
+#ifdef FEATURE_NATIVEAOT
 
 ;; RhpCheckedLockCmpXchg(Object** dest, Object* value, Object* comparand)
 ;;
@@ -1019,6 +1021,8 @@ RecordEscape_Xchg
   ;;    and     x16,  x1, #0xFFFFFFFFFFE00000   ;; source region
         b       AssignAndMarkCards_Xchg
     LEAF_END RhpCheckedXchg
+
+#endif // FEATURE_NATIVEAOT
 
 #endif
 

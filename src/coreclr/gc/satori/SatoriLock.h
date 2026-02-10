@@ -189,8 +189,11 @@ public:
     static void CollisionBackoff(uint32_t collisions)
     {
         _ASSERTE(collisions > 0);
+        if (collisions > MaxExponentialBackoffBits)
+        {
+            collisions = MaxExponentialBackoffBits;
+        }
 
-        collisions = min(collisions, MaxExponentialBackoffBits);
         // we will backoff for some random number of iterations that roughly grows as collisions^2
         // no need for much randomness here, randomness is "good to have", we could do without it,
         // so we will just hash in the stack location.

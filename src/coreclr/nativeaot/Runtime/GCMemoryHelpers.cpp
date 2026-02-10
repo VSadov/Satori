@@ -8,7 +8,6 @@
 #include "common.h"
 #include "gcenv.h"
 #include "gcheaputilities.h"
-#include "PalRedhawkCommon.h"
 #include "PalLimitedContext.h"
 #include "CommonMacros.inl"
 #include "GCMemoryHelpers.inl"

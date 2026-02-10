@@ -357,7 +357,7 @@ LEAF_ENTRY RhpCheckedAssignRef, _TEXT
         mov     r8, rdi
         shr     r8,  30                           // dst page index
         cmp     byte ptr [rax + r8], 0
-        jne     C_FUNC(CheckedEntry)
+        jne     C_FUNC(RhpCheckedEntry)
 
 NotInHeap:
 ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
@@ -375,13 +375,13 @@ LEAF_ENTRY RhpAssignRef, _TEXT
     // check if src is in heap
         mov     rax, [C_VAR(g_card_bundle_table)] // fetch the page byte map
 
-    ALTERNATE_ENTRY CheckedEntry
+    ALTERNATE_ENTRY RhpCheckedEntry
         mov     r8,  rsi
         shr     r8,  30                           // src page index
         cmp     byte ptr [rax + r8], 0
         je      JustAssign                        // src not in heap
 #else
-    ALTERNATE_ENTRY CheckedEntry
+    ALTERNATE_ENTRY RhpCheckedEntry
 #endif
 
     // check for escaping assignment
@@ -588,7 +588,7 @@ ALTERNATE_ENTRY RhpByRefAssignRefAVLocation2
         lea     r10, [rsi + 8]
         mov     rsi, [rsi]
 
-        call    CheckedEntry
+        call    RhpCheckedEntry
 
         pop     r11
         pop     r10

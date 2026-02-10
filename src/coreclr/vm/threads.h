@@ -5392,15 +5392,11 @@ inline BOOL IsWriteBarrierCopyEnabled()
 #ifdef DACCESS_COMPILE
     return FALSE;
 #else // DACCESS_COMPILE
-#if defined(HOST_OSX) && defined(HOST_ARM64)
-    return TRUE;
-#else
 #if FEATURE_SATORI_GC
-    // TODO: Satori Barrier relocation is used only on OSX/ARM64
-    return false;
+    // TODO: Satori barriers currently do not require relocation or writeable code.
+    return FALSE;
 #else
     return g_pConfig->IsWriteBarrierCopyEnabled();
-#endif
 #endif
 #endif // DACCESS_COMPILE
 }

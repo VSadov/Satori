@@ -305,17 +305,9 @@ C_FUNC(JIT_PatchedCodeLast):
 LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
         ret
 LEAF_END JIT_PatchedCodeLast, _TEXT
+#endif
 
 #else  //FEATURE_SATORI_GC      ##############################################################################
-
-.macro ALTERNATE_ENTRY Name
-#if defined(__APPLE__)
-        .alt_entry C_FUNC(\Name)
-#else
-        .global C_FUNC(\Name)
-#endif
-C_FUNC(\Name):
-.endm
 
 // Mark start of the code region that we patch at runtime
 LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
@@ -401,7 +393,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
 
         // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
         //         needs to suspend EE, not sure if skipping mode check would worth that much.
-        PREPARE_EXTERNAL_VAR g_sw_ww_table, rcx
+        PREPARE_EXTERNAL_VAR g_write_watch_table, rcx
         mov     r11, [rcx]
 
         // set rdi per contract with JIT_ByRefWriteBarrier

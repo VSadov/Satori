@@ -706,14 +706,52 @@ RecordEscape
         b       AssignAndMarkCards
     WRITE_BARRIER_END JIT_WriteBarrier
 
-#endif  // FEATURE_SATORI_GC
-
+        ; Begin patchable literal pool
+        ALIGN 64  ; Align to power of two at least as big as patchable literal pool so that it fits optimally in cache line
+    WRITE_BARRIER_ENTRY JIT_WriteBarrier_Table
+wbs_card_table
+        PATCH_LABEL JIT_WriteBarrier_Patch_Label_CardTable
+            DCQ 0
+wbs_card_bundle_table
+        PATCH_LABEL JIT_WriteBarrier_Patch_Label_CardBundleTable
+            DCQ 0
+wbs_sw_ww_table
+        PATCH_LABEL JIT_WriteBarrier_Patch_Label_WriteWatchTable
+            DCQ 0
+        PATCH_LABEL JIT_WriteBarrier_Patch_Label_Lower
+            DCQ 0
+        PATCH_LABEL JIT_WriteBarrier_Patch_Label_Upper
+            DCQ 0
+        PATCH_LABEL JIT_WriteBarrier_Patch_Label_LowestAddress
+            DCQ 0
+        PATCH_LABEL JIT_WriteBarrier_Patch_Label_HighestAddress
+            DCQ 0
+        PATCH_LABEL JIT_WriteBarrier_Patch_Label_RegionToGeneration
+            DCQ 0
+        PATCH_LABEL JIT_WriteBarrier_Patch_Label_RegionShr
+            DCQ 0
+#ifdef WRITE_BARRIER_CHECK
+        PATCH_LABEL JIT_WriteBarrier_Patch_Label_GCShadow
+            DCQ 0
+        PATCH_LABEL JIT_WriteBarrier_Patch_Label_GCShadowEnd
+            DCQ 0
+#endif
+    WRITE_BARRIER_END JIT_WriteBarrier_Table
 
 ; ------------------------------------------------------------------
 ; End of the writeable code region
     LEAF_ENTRY JIT_PatchedCodeLast
         ret      lr
     LEAF_END
+
+    WRITE_BARRIER_ENTRY JIT_WriteBarrier_SATORI
+    ;; TODO: Satori, when we need barrier replacement
+        mov   x14, 0
+        stlr  x15, [x14]
+        ret   lr
+    WRITE_BARRIER_END JIT_WriteBarrier_SATORI
+
+#endif  // FEATURE_SATORI_GC
 
 ; Must be at very end of file
     END
