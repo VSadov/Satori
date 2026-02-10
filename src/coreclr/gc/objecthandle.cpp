@@ -1983,7 +1983,7 @@ void Ref_RejuvenateHandles(uint32_t condemned, uint32_t maxgen, ScanContext* sc)
     WRAPPER_NO_CONTRACT;
 
 #if FEATURE_SATORI_GC
-    __UNREACHABLE();
+    UNREACHABLE();
 #endif
 
     LOG((LF_GC, LL_INFO10000, "Rejuvenating handles.\n"));

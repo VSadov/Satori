@@ -537,9 +537,8 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         g_sw_ww_enabled_for_gc_heap = true;
         if (!is_runtime_suspended)
         {
-            // If runtime is not suspended, force all threads to see the changed state before
-            // observing future allocations.
-            PalFlushProcessWriteBuffers();
+            // If runtime is not suspended, force all threads to see the changed state before observing future allocations.
+            minipal_memory_barrier_process_wide();
         }
 
         return;

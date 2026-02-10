@@ -509,8 +509,8 @@ CHECK CheckValue(TYPENAME &val)
 //--------------------------------------------------------------------------------
 
 #if defined(__clang_analyzer__)
-#define COMPILER_ASSUME_MSG(_condition, _message) if (!(_condition)) __UNREACHABLE();
-#define COMPILER_ASSUME_MSGF(_condition, args) if (!(_condition)) __UNREACHABLE();
+#define COMPILER_ASSUME_MSG(_condition, _message) if (!(_condition)) UNREACHABLE();
+#define COMPILER_ASSUME_MSGF(_condition, args) if (!(_condition)) UNREACHABLE();
 #else
 
 #if defined(DACCESS_COMPILE)

@@ -1763,7 +1763,7 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref)
 
 #if FEATURE_SATORI_GC
     // this whole thing is unnecessary in Satori
-    __UNREACHABLE();
+    UNREACHABLE();
 #else
 
     *dst = ref;

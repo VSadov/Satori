@@ -193,7 +193,7 @@ void SatoriTrimmer::StopAndWait()
         case TRIMMER_STATE_RUNNING:
             return;
         default:
-            __UNREACHABLE();
+            UNREACHABLE();
             return;
         }
     }

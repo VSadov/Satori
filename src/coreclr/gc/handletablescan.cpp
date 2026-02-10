@@ -788,7 +788,7 @@ void BlockResetAgeMapForBlocksWorker(uint32_t *pdwGen, uint32_t dwClumpMask, Sca
     STATIC_CONTRACT_MODE_COOPERATIVE;
 
 #if FEATURE_SATORI_GC
-    __UNREACHABLE();
+    UNREACHABLE();
 #endif
 
     // fetch the table segment we are working in

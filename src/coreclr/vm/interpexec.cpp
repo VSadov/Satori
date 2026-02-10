@@ -4284,12 +4284,19 @@ do                                                                      \
                         GCHeapMemoryBarrier();
                         while (pCopyEntry->countBytes != 0)
                         {
+#if FEATURE_SATORI_GC
+                            GCHeapUtilities::GetGCHeap()->BulkMoveWithWriteBarrier(pContinuationData, LOCAL_VAR_ADDR(pCopyEntry->startOffset, uint8_t), pCopyEntry->countBytes);
+
+#else
                             InlinedForwardGCSafeCopyHelper(pContinuationData, LOCAL_VAR_ADDR(pCopyEntry->startOffset, uint8_t), pCopyEntry->countBytes);
+#endif
                             bytesTotal += pCopyEntry->countBytes;
                             pContinuationData += pCopyEntry->countBytes;
                             pCopyEntry++;
                         }
+#ifndef FEATURE_SATORI_GC
                         InlinedSetCardsAfterBulkCopyHelper((Object**)pContinuationDataStart, bytesTotal);
+#endif
                     }
 
                     int32_t returnValueSize = pAsyncSuspendData->asyncMethodReturnTypePrimitiveSize;

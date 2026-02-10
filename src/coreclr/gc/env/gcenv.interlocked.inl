@@ -39,7 +39,7 @@ FORCEINLINE T Interlocked::Increment(T volatile *addend)
 }
 
 template <>
-__forceinline size_t Interlocked::Increment(size_t volatile* addend)
+FORCEINLINE size_t Interlocked::Increment(size_t volatile* addend)
 {
 #ifdef _MSC_VER
     return (size_t)_InterlockedIncrement64((volatile long long*)addend);
@@ -69,7 +69,7 @@ FORCEINLINE T Interlocked::Decrement(T volatile *addend)
 }
 
 template <>
-__forceinline size_t Interlocked::Decrement(size_t volatile* addend)
+FORCEINLINE size_t Interlocked::Decrement(size_t volatile* addend)
 {
 #ifdef _MSC_VER
     return (size_t)_InterlockedDecrement64((volatile long long*)addend);
@@ -100,7 +100,7 @@ FORCEINLINE T Interlocked::Exchange(T volatile *destination, T value)
 }
 
 template <>
-__forceinline int8_t Interlocked::Exchange<int8_t>(int8_t volatile* destination, int8_t value)
+FORCEINLINE int8_t Interlocked::Exchange<int8_t>(int8_t volatile* destination, int8_t value)
 {
 #ifdef _MSC_VER
     return (int8_t)_InterlockedExchange8((char*)destination, value);
@@ -133,7 +133,7 @@ FORCEINLINE T Interlocked::CompareExchange(T volatile *destination, T exchange, 
 }
 
 template <>
-__forceinline size_t Interlocked::CompareExchange<size_t>(size_t volatile * destination, size_t exchange, size_t comparand)
+FORCEINLINE size_t Interlocked::CompareExchange<size_t>(size_t volatile * destination, size_t exchange, size_t comparand)
 {
 #ifdef _MSC_VER
     return _InterlockedCompareExchange64((volatile long long*)destination, exchange, comparand);
@@ -145,7 +145,7 @@ __forceinline size_t Interlocked::CompareExchange<size_t>(size_t volatile * dest
 }
 
 template <>
-__forceinline int8_t Interlocked::CompareExchange<int8_t>(int8_t volatile* destination, int8_t exchange, int8_t comparand)
+FORCEINLINE int8_t Interlocked::CompareExchange<int8_t>(int8_t volatile* destination, int8_t exchange, int8_t comparand)
 {
 #ifdef _MSC_VER
     return (int8_t)_InterlockedCompareExchange8((char*)destination, exchange, comparand);
@@ -157,7 +157,7 @@ __forceinline int8_t Interlocked::CompareExchange<int8_t>(int8_t volatile* desti
 }
 
 template <>
-__forceinline uint8_t Interlocked::CompareExchange<uint8_t>(uint8_t volatile* destination, uint8_t exchange, uint8_t comparand)
+FORCEINLINE uint8_t Interlocked::CompareExchange<uint8_t>(uint8_t volatile* destination, uint8_t exchange, uint8_t comparand)
 {
 #ifdef _MSC_VER
     return (uint8_t)_InterlockedCompareExchange8((char*)destination, exchange, comparand);
