@@ -4,6 +4,8 @@
     <DisableProjectBuild Condition="'$(TargetsMobile)' == 'true'">true</DisableProjectBuild>
     <!-- Profiler APIs aren't supported on Mono -->
     <DisableProjectBuild Condition="'$(RuntimeFlavor)' == 'mono'">true</DisableProjectBuild>
+    <!-- GC-related Profiler APIs are Satori NYI -->
+    <DisableProjectBuild>true</DisableProjectBuild>
   </PropertyGroup>
   <ItemGroup>
     <MergedWrapperProjectReference Include="*/**/*.csproj" Exclude="common/**/*.csproj;unittest/unloadlibrary.csproj" />

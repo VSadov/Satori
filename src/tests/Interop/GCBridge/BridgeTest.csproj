@@ -3,6 +3,8 @@
     <!-- Needed for CLRTestTargetUnsupported, CMakeProjectReference, GC.WaitForPendingFinalizers -->
     <RequiresProcessIsolation>true</RequiresProcessIsolation>
     <DisableProjectBuild Condition="'$(RuntimeFlavor)' == 'Mono'">true</DisableProjectBuild>
+    <!-- Satori NYI -->
+    <DisableProjectBuild>true</DisableProjectBuild>
     <GCStressIncompatible>true</GCStressIncompatible>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>

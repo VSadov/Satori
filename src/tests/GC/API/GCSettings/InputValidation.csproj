@@ -3,6 +3,8 @@
     <!-- Needed for mechanical merging of all remaining tests, this particular project may not actually need process isolation -->
     <RequiresProcessIsolation>true</RequiresProcessIsolation>
     <CLRTestExecutionArguments />
+    <!-- Satori NYI multiple latency modes -->
+    <DisableProjectBuild>true</DisableProjectBuild>
   </PropertyGroup>
   <PropertyGroup>
     <DebugType>PdbOnly</DebugType>

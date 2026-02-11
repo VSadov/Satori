@@ -6,6 +6,8 @@
     <GCStressIncompatible>true</GCStressIncompatible>
     <UnloadabilityIncompatible>true</UnloadabilityIncompatible>
     <DisableProjectBuild Condition="'$(RuntimeFlavor)' == 'Mono'">true</DisableProjectBuild>
+    <!-- Satori NYI tests DOTNET_gcServer which makes no difference in Satori -->
+    <DisableProjectBuild>true</DisableProjectBuild>
     <DefineConstants>$(DefineConstants);IS_TESTER_APP</DefineConstants>
   </PropertyGroup>
   <ItemGroup>

@@ -6,6 +6,8 @@
   <PropertyGroup>
     <DebugType>PdbOnly</DebugType>
     <GCStressIncompatible>true</GCStressIncompatible>
+    <!-- Satori NYI (incompatible, opt out or fix the test)  -->
+    <DisableProjectBuild>true</DisableProjectBuild>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Collect1.cs" />

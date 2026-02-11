@@ -5,6 +5,8 @@
     <CLRTestExecutionArguments />
     <GCStressIncompatible>true</GCStressIncompatible>
     <IsLongRunningGCTest>true</IsLongRunningGCTest>
+    <!-- Satori NYI -->
+    <DisableProjectBuild>true</DisableProjectBuild>
   </PropertyGroup>
   <PropertyGroup>
     <DebugType>PdbOnly</DebugType>

@@ -7,6 +7,8 @@
     <!-- Collectible ALCs are not supported -->
     <NativeAotIncompatible>true</NativeAotIncompatible>
     <CLRTestTargetUnsupported Condition="'$(RuntimeFlavor)' != 'coreclr'">true</CLRTestTargetUnsupported>
+    <!-- Satori NYI works, but fails to cleanup the file afterwards -->
+    <DisableProjectBuild>true</DisableProjectBuild>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />

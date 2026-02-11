@@ -7,6 +7,8 @@
     <!-- Consider enable it for Mono whenever the implementation is ready -->
     <!-- https://github.com/dotnet/runtime/issues/73167 -->
     <CLRTestTargetUnsupported Condition="'$(RuntimeFlavor)' != 'coreclr'">true</CLRTestTargetUnsupported>
+    <!-- Satori NYI -->
+    <DisableProjectBuild>true</DisableProjectBuild>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <PropertyGroup>
