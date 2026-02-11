@@ -3,6 +3,8 @@
     <!-- Needed for GCStressIncompatible, GC.WaitForPendingFinalizers -->
     <RequiresProcessIsolation>true</RequiresProcessIsolation>
     <GCStressIncompatible>true</GCStressIncompatible>
+    <!-- Satori NYI test may depend on internal implementation details of loh compaction  -->
+    <DisableProjectBuild>true</DisableProjectBuild>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="lohpin.cs" />

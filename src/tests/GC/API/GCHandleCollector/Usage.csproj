@@ -2,6 +2,8 @@
   <PropertyGroup>
     <!-- Needed for GCStressIncompatible, GC.WaitForPendingFinalizers -->
     <RequiresProcessIsolation>true</RequiresProcessIsolation>
+    <!-- Satori NYI -->
+    <DisableProjectBuild>true</DisableProjectBuild>
   </PropertyGroup>
   <PropertyGroup>
     <DebugType>PdbOnly</DebugType>
