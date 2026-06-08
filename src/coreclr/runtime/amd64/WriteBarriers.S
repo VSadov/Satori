@@ -588,7 +588,7 @@ ALTERNATE_ENTRY RhpByRefAssignRefAVLocation2
         lea     r10, [rsi + 8]
         mov     rsi, [rsi]
 
-        call    RhpCheckedEntry
+        call    C_FUNC(RhpCheckedEntry)
 
         pop     r11
         pop     r10
