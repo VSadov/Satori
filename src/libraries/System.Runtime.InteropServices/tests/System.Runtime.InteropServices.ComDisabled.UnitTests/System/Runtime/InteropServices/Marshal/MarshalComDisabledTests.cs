@@ -167,7 +167,9 @@ namespace System.Runtime.InteropServices.Tests
         [ActiveIssue("Satori: noisy test fails in baseline too")]
         public void BindToMoniker_ThrowsNotSupportedException()
         {
+#pragma warning disable IL2026 // With COM disabled, this always throws so it's safe
             Assert.Throws<NotSupportedException>(() => Marshal.BindToMoniker("test"));
+#pragma warning restore IL2026
         }
 
         [Fact]

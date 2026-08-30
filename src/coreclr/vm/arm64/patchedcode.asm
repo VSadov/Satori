@@ -40,31 +40,8 @@
     LEAF_END
 
 ;-----------------------------------------------------------------------------
-; void JIT_ByRefWriteBarrier
-; On entry:
-;   x13  : the source address (points to object reference to write)
-;   x14  : the destination address (object reference written here)
-;
-; On exit:
-;   x12  : trashed
-;   x13  : incremented by 8
-;   x14  : incremented by 8
-;   x15  : trashed
-;   x17  : trashed (ip1)
-;
-;   NOTE: Keep in sync with RBM_CALLEE_TRASH_WRITEBARRIER_BYREF and RBM_CALLEE_GCTRASH_WRITEBARRIER_BYREF
-;         if you add more trashed registers.
-;
-    WRITE_BARRIER_ENTRY JIT_ByRefWriteBarrier
-
-        ldr      x15, [x13], 8
-        b        JIT_CheckedWriteBarrier
-
-    WRITE_BARRIER_END JIT_ByRefWriteBarrier
-
 #ifndef FEATURE_SATORI_GC
 
-;-----------------------------------------------------------------------------
 ; Simple WriteBarriers
 ; void JIT_CheckedWriteBarrier(Object** dst, Object* src)
 ; On entry:
@@ -73,12 +50,9 @@
 ;
 ; On exit:
 ;   x12  : trashed
-;   x14  : incremented by 8
+;   x14  : preserved (the destination address is not modified)
 ;   x15  : trashed
 ;   x17  : trashed (ip1)
-;
-;   NOTE: Keep in sync with RBM_CALLEE_TRASH_WRITEBARRIER_BYREF and RBM_CALLEE_GCTRASH_WRITEBARRIER_BYREF
-;         if you add more trashed registers.
 ;
     WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
         ldr      x12,  wbs_lowest_address
@@ -88,7 +62,7 @@
         blo      JIT_WriteBarrier
 
 NotInHeap
-        str      x15, [x14], 8
+        str      x15, [x14]
         ret      lr
     WRITE_BARRIER_END JIT_CheckedWriteBarrier
 
@@ -103,12 +77,9 @@ NotInHeap
 ;
 ; On exit:
 ;   x12  : trashed
-;   x14  : incremented by 8
+;   x14  : preserved (the destination address is not modified)
 ;   x15  : trashed
 ;   x17  : trashed (ip1)
-;
-;   NOTE: Keep in sync with RBM_CALLEE_TRASH_WRITEBARRIER_BYREF and RBM_CALLEE_GCTRASH_WRITEBARRIER_BYREF
-;         if you add more trashed registers.
 ;
     WRITE_BARRIER_ENTRY JIT_WriteBarrier
 ; This must be greater than the largest JIT_WriteBarrier_ function.
@@ -312,10 +283,6 @@ WriteWatchForGCHeapEnd$name
     MACRO
         WRITE_BARRIER_RETURN_STUB $name
 exit$name
-        ; Increment by 8 to implement JIT_ByRefWriteBarrier contract.
-        ; TODO: Consider duplicating the logic to get rid of this redundant 'add'
-        ; for JIT_WriteBarrier/JIT_CheckedWriteBarrier
-            add  x14, x14, 8
             ret  lr
     MEND
 
@@ -511,7 +478,7 @@ exit$name
 ;
 ; On exit:
 ;   x12  : trashed
-;   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
+;   x14  : trashed (incremented by 8)
 ;   x15  : trashed
 ;   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 ;
@@ -534,7 +501,7 @@ NotInHeap
 ;
 ; On exit:
 ;   x12  : trashed
-;   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
+;   x14  : trashed (incremented by 8)
 ;   x15  : trashed
 ;   x16  : trashed (ip0)
 ;   x17  : trashed (ip1)

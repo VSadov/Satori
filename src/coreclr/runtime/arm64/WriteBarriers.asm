@@ -191,34 +191,7 @@ INVALIDGCVALUE  EQU 0xCCCCCCCD
         ;; Exit label
     MEND
 
-;; void JIT_ByRefWriteBarrier
-;; On entry:
-;;   x13 : the source address (points to object reference to write)
-;;   x14 : the destination address (object reference written here)
-;;
-;; On exit:
-;;   x13 : incremented by 8
-;;   x14 : incremented by 8
-;;   x15  : trashed
-;;   x12, x17  : trashed
-;;
-;;   NOTE: Keep in sync with RBM_CALLEE_TRASH_WRITEBARRIER_BYREF and RBM_CALLEE_GCTRASH_WRITEBARRIER_BYREF
-;;         if you add more trashed registers.
-;;
-;; WARNING: Code in EHHelpers.cpp makes assumptions about write barrier code, in particular:
-;; - Function "InWriteBarrierHelper" assumes an AV due to passed in null pointer will happen at RhpByRefAssignRefAVLocation1
-;; - Function "UnwindSimpleHelperToCaller" assumes no registers were pushed and LR contains the return address
-    LEAF_ENTRY RhpByRefAssignRefArm64
-
-    ALTERNATE_ENTRY RhpByRefAssignRefAVLocation1
-    ALTERNATE_ENTRY RhpByRefAssignRefAVLocation2
-        ldr     x15, [x13], 8
-        b       RhpCheckedAssignRefArm64
-
-    LEAF_END RhpByRefAssignRefArm64
-
-
-;; JIT_CheckedWriteBarrier(Object** dst, Object* src)
+;; RhpCheckedAssignRef(Object** dst, Object* src)
 ;;
 ;; Write barrier for writes to objects that may reside
 ;; on the managed heap.
@@ -230,7 +203,7 @@ INVALIDGCVALUE  EQU 0xCCCCCCCD
 ;;
 ;; On exit:
 ;;   x12, x17 : trashed
-;;   x14      : incremented by 8
+;;   x14      : preserved (the destination address is not modified)
     LEAF_ENTRY RhpCheckedAssignRefArm64
 
         ;; is destReg within the heap?
@@ -242,12 +215,12 @@ INVALIDGCVALUE  EQU 0xCCCCCCCD
 
 NotInHeap
     ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
-        str     x15, [x14], 8
+        str     x15, [x14]
         ret
 
     LEAF_END RhpCheckedAssignRefArm64
 
-;; JIT_WriteBarrier(Object** dst, Object* src)
+;; RhpAssignRef(Object** dst, Object* src)
 ;;
 ;; Write barrier for writes to objects that are known to
 ;; reside on the managed heap.
@@ -258,7 +231,7 @@ NotInHeap
 ;;
 ;; On exit:
 ;;   x12, x17 : trashed
-;;   x14 : incremented by 8
+;;   x14 : preserved (the destination address is not modified)
     LEAF_ENTRY RhpAssignRefArm64
 
     ALTERNATE_ENTRY RhpAssignRefAVLocation
@@ -266,7 +239,6 @@ NotInHeap
 
         INSERT_UNCHECKED_WRITE_BARRIER_CORE x14, x15
 
-        add     x14, x14, 8
         ret
 
     LEAF_END RhpAssignRefArm64
@@ -395,25 +367,6 @@ NoBarrierXchg
 #endif // FEATURE_NATIVEAOT
 
 #else  ;;FEATURE_SATORI_GC   ######################################################
-
-;; void JIT_ByRefWriteBarrier
-;; On entry:
-;;   x13  : the source address (points to object reference to write)
-;;   x14  : the destination address (object reference written here)
-;;
-;; On exit:
-;;   x13  : incremented by 8
-;;   x14  : incremented by 8
-;;   x15  : trashed
-;;   x12, x17  : trashed
-;;
-    LEAF_ENTRY RhpByRefAssignRefArm64, _TEXT
-
-   ALTERNATE_ENTRY RhpByRefAssignRefAVLocation1
-        ldr     x15, [x13], 8
-        b       RhpCheckedAssignRefArm64
-
-    LEAF_END RhpByRefAssignRefArm64
 
 ;; JIT_CheckedWriteBarrier(Object** dst, Object* src)
 ;;

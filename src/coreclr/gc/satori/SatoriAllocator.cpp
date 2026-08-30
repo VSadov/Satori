@@ -130,14 +130,14 @@ tryAgain:
         // If someone else is reserving, we will allow 1 msec of retrying before reserving a page eagerly.
         if (newPageDeadline == 0)
         {
-            newPageDeadline = GCToOSInterface::QueryPerformanceCounter() + GCToOSInterface::QueryPerformanceFrequency() / 1000;
+            newPageDeadline = minipal_hires_ticks() + minipal_hires_tick_frequency() / 1000;
         }
 
         if (m_singePageAdders != 0 ||
             Interlocked::CompareExchange(&m_singePageAdders, 1, 0) != 0)
         {
             // someone is adding.
-            if (GCToOSInterface::QueryPerformanceCounter() - newPageDeadline > 0)
+            if (minipal_hires_ticks() - newPageDeadline > 0)
             {
                 // timed out
                 Interlocked::Increment(&m_singePageAdders);

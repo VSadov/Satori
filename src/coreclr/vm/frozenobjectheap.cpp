@@ -30,11 +30,6 @@ Object* FrozenObjectHeapManager::TryAllocateObject(PTR_MethodTable type, size_t 
     }
         CONTRACTL_END
 
-#ifndef FEATURE_BASICFREEZE
-        // GC is required to support frozen segments
-        return nullptr;
-#else // FEATURE_BASICFREEZE
-
     Object* obj = nullptr;
 
 #if FEATURE_SATORI_GC
@@ -142,7 +137,6 @@ Object* FrozenObjectHeapManager::TryAllocateObject(PTR_MethodTable type, size_t 
     PublishFrozenObject(obj);
 
     return obj;
-#endif // !FEATURE_BASICFREEZE
 }
 
 // Reserve sizeHint bytes of memory for the given frozen segment.

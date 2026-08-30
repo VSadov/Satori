@@ -519,52 +519,6 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
 LEAF_END_MARKED JIT_WriteBarrier, _TEXT
 
 
-// JIT_ByRefWriteBarrier has weird symantics, see usage in StubLinkerX86.cpp
-//
-// Entry:
-//   RDI - address of ref-field (assigned to)
-//   RSI - address of the data  (source)
-// Exit:
-//   RCX is trashed
-//   RAX is trashed
-//   RDI, RSI are incremented by SIZEOF(LPVOID)
-LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
-     // See if dst is in GCHeap
-        PREPARE_EXTERNAL_VAR g_card_bundle_table, rax   // fetch the page byte map
-        mov     rax, [rax]
-        mov     rcx,  rdi
-        shr     rcx,  30                    // dst page index
-        cmp     byte ptr [rax + rcx], 0
-        jne     InHeap
-
-        mov     rcx, [rsi]
-        mov     [rdi], rcx
-        add     rdi, 8
-        add     rsi, 8
-        ret
-
-    InHeap:
-        // JIT_WriteBarrier may trash these registers 
-        push    rdx
-        push    r8
-        push    r9
-        push    r10
-        push    r11
-
-        // save preadjusted rsi
-        lea     r10, [rsi + 8]
-        mov     rsi, [rsi]
-
-        call    C_FUNC(CheckedEntry)
-
-        pop     r11
-        pop     r10
-        pop     r9
-        pop     r8
-        pop     rdx
-        ret
-LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
-
 // Mark start of the code region that we patch at runtime
 LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
         ret

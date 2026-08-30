@@ -5,7 +5,6 @@
     <!-- Satori NYI -->
     <DisableProjectBuild>true</DisableProjectBuild>
     <CLRTestPriority>0</CLRTestPriority>
-    <GCStressIncompatible>true</GCStressIncompatible>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RequiresProcessIsolation>true</RequiresProcessIsolation>
   </PropertyGroup>
@@ -14,5 +13,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Refresh.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(TestLibraryProjectPath)" />
   </ItemGroup>
 </Project>

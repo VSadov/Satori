@@ -47,6 +47,9 @@ usage()
   echo "                                  [Default: Builds the entire repo.]"
   echo "  --usemonoruntime                Product a .NET runtime with Mono as the underlying runtime."
   echo "  --clrinterpreter                Enables CoreCLR interpreter for Release builds of targets where it is a Debug only feature."
+  echo "  --dynamiccodecompiled           Enable or disable dynamic code compilation support. Accepts true or false."
+  echo "                                  Also enables the interpreter when dynamic code compilation is disabled."
+  echo "                                  [Default: true for most platforms, false for ios/tvos/browser/wasi]"
   echo "  --verbosity (-v)                MSBuild verbosity: q[uiet], m[inimal], n[ormal], d[etailed], and diag[nostic]."
   echo "                                  [Default: Minimal]"
   echo "  --use-bootstrap                 Use the results of building the bootstrap subset to build published tools on the target machine."
@@ -83,7 +86,7 @@ usage()
   echo "  --gcc                      Optional argument to build using gcc in PATH (default)."
   echo "  --gccx.y                   Optional argument to build using gcc version x.y."
   echo "  --portablebuild            Optional argument: set to false to force a non-portable build."
-  echo "  --keepnativesymbols        Optional argument: set to true to keep native symbols/debuginfo in generated binaries."
+  echo "  --keepnativesymbols        Optional argument: set to keep native symbols/debuginfo in generated binaries."
   echo "  --ninja                    Optional argument: use Ninja instead of Make (default: true, use --ninja false to disable)."
   echo "  --pgoinstrument            Optional argument: build PGO-instrumented runtime"
   echo "  --fsanitize                Optional argument: Specify native sanitizers to instrument the native build with. Supported values are: 'address'."
@@ -161,6 +164,7 @@ crossBuild=0
 portableBuild=1
 bootstrap=0
 bootstrapConfig='Debug'
+dynamiccodecompiled=""
 
 source $scriptroot/common/native/init-os-and-arch.sh
 
@@ -171,7 +175,7 @@ useNinja=true
 
 # Check if an action is passed in
 declare -a actions=("b" "build" "r" "restore" "rebuild" "testnobuild" "sign" "publish" "clean")
-actInt=($(comm -12 <(printf '%s\n' "${actions[@]/#/-}" | sort) <(printf '%s\n' "${@/#--/-}" | sort)))
+actInt=($(LC_ALL=C comm -12 <(printf '%s\n' "${actions[@]/#/-}" | LC_ALL=C sort) <(printf '%s\n' "${@/#--/-}" | LC_ALL=C sort)))
 firstArgumentChecked=0
 
 while [[ $# -gt 0 ]]; do
@@ -274,6 +278,8 @@ while [[ $# -gt 0 ]]; do
           os="linux" ;;
         freebsd)
           os="freebsd" ;;
+        openbsd)
+          os="openbsd" ;;
         osx)
           os="osx" ;;
         maccatalyst)
@@ -390,6 +396,20 @@ while [[ $# -gt 0 ]]; do
       shift 1
       ;;
 
+     -dynamiccodecompiled)
+      if [ -z ${2+x} ]; then
+        echo "No value for dynamiccodecompiled is supplied. See help (--help) for supported values." 1>&2
+        exit 1
+      fi
+      dynamiccodecompiled="$(echo "$2" | tr "[:upper:]" "[:lower:]")"
+      if [[ "$dynamiccodecompiled" != "true" && "$dynamiccodecompiled" != "false" ]]; then
+        echo "Unsupported value '$2' for dynamiccodecompiled."
+        echo "The allowed values are true and false."
+        exit 1
+      fi
+      shift 2
+      ;;
+
      -librariesconfiguration|-lc)
       if [ -z ${2+x} ]; then
         echo "No libraries configuration supplied. See help (--help) for supported libraries configurations." 1>&2
@@ -444,7 +464,7 @@ while [[ $# -gt 0 ]]; do
 
      -clang*)
       compiler="${opt/#-/}" # -clang-9 => clang-9 or clang-9 => (unchanged)
-      arguments+=("/p:Compiler=$compiler" "/p:CppCompilerAndLinker=$compiler")
+      arguments+=("/p:CppCompilerAndLinker=$compiler")
       shift 1
       ;;
 
@@ -459,7 +479,7 @@ while [[ $# -gt 0 ]]; do
 
      -gcc*)
       compiler="${opt/#-/}" # -gcc-9 => gcc-9 or gcc-9 => (unchanged)
-      arguments+=("/p:Compiler=$compiler" "/p:CppCompilerAndLinker=$compiler")
+      arguments+=("/p:CppCompilerAndLinker=$compiler")
       shift 1
       ;;
 
@@ -486,15 +506,8 @@ while [[ $# -gt 0 ]]; do
       ;;
 
      -keepnativesymbols)
-      if [ -z ${2+x} ]; then
-        echo "No value for keepNativeSymbols is supplied. See help (--help) for supported values." 1>&2
-        exit 1
-      fi
-      passedKeepNativeSymbols="$(echo "$2" | tr "[:upper:]" "[:lower:]")"
-      if [ "$passedKeepNativeSymbols" = true ]; then
-        arguments+=("/p:KeepNativeSymbols=true")
-      fi
-      shift 2
+      arguments+=("/p:KeepNativeSymbols=true")
+      shift 1
       ;;
 
 
@@ -571,6 +584,22 @@ fi
 if [[ "$os" == "wasi" ]]; then
     # override default arch for wasi, we only support wasm
     arch=wasm
+fi
+
+# Default dynamiccodecompiled based on target OS if not explicitly set
+if [[ -z "$dynamiccodecompiled" ]]; then
+    case "$os" in
+        maccatalyst|ios|iossimulator|tvos|tvossimulator|browser|wasi)
+            dynamiccodecompiled="false"
+            ;;
+        *)
+            dynamiccodecompiled="true"
+            ;;
+    esac
+fi
+arguments+=("/p:FeatureDynamicCodeCompiled=$dynamiccodecompiled")
+if [[ "$dynamiccodecompiled" == "false" ]]; then
+    arguments+=("/p:FeatureInterpreter=true")
 fi
 
 if [[ "${TreatWarningsAsErrors:-}" == "false" ]]; then

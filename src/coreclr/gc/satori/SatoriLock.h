@@ -213,7 +213,7 @@ private:
 
     static uint16_t GetTickCount()
     {
-        return (uint16_t)GCToOSInterface::GetLowPrecisionTimeStamp();
+        return (uint16_t)minipal_lowres_ticks();
     }
 
     // same idea as in CollisionBackoff, but with expected small range
