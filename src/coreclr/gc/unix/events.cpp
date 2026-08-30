@@ -328,16 +328,20 @@ SatoriGate::SatoriGate()
 // returns true if was woken up. false if timed out
 bool SatoriGate::TimedWait(int timeout)
 {
-    timespec t;
-    uint64_t nanoseconds = (uint64_t)timeout * tccMilliSecondsToNanoSeconds;
-    t.tv_sec = nanoseconds / tccSecondsToNanoSeconds;
-    t.tv_nsec = nanoseconds % tccSecondsToNanoSeconds;
+    assert(timeout >= 0);
 
+    timespec t;
+    t.tv_sec  = (uint32_t)timeout / 1000;
+    t.tv_nsec = ((uint32_t)timeout % 1000) * 1000 * 1000;
+
+    // the timespec is a relative timeout with CLOCK_MONOTONIC clock by default.
     long waitResult = syscall(SYS_futex, &m_state, FUTEX_WAIT_PRIVATE, s_blocking, &t, NULL, 0);
 
-    // woken, not blocking, interrupted, timeout
-    assert(waitResult == 0 || errno == EAGAIN || errno == ETIMEDOUT || errno == EINTR);
+    // possible results: woken, not blocking, interrupted, timeout
+    assert(waitResult == 0 || errno == EAGAIN || errno == EINTR || errno == ETIMEDOUT);
 
+    // normal/immediate/spurious wakes are not timeouts
+    // in release treat unexpected results as spurious wakes
     bool woken = waitResult == 0 || errno != ETIMEDOUT;
     if (woken)
     {
@@ -357,13 +361,13 @@ void SatoriGate::Wait()
 void SatoriGate::WakeAll()
 {
     m_state = s_open;
-    syscall(SYS_futex, &m_state, FUTEX_WAKE_PRIVATE, INT_MAX);
+    syscall(SYS_futex, &m_state, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
 }
 
 void SatoriGate::WakeOne()
 {
     m_state = s_open;
-    syscall(SYS_futex, &m_state, FUTEX_WAKE_PRIVATE, 1);
+    syscall(SYS_futex, &m_state, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
 }
 #else
 SatoriGate::SatoriGate()
