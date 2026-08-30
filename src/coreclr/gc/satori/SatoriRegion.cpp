@@ -1073,7 +1073,9 @@ void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion*
     region->EscapeRecursively(src);
     if (region->m_escapedSize > Satori::MAX_ESCAPE_SIZE)
     {
-        region->StopEscapeTracking();
+        // NB: this is called from the write barrier, which does not preserve
+        //     vector registers, thus the scalar variant.
+        region->StopEscapeTracking(/* calledFromBarrier */ true);
     }
 }
 
@@ -2227,10 +2229,23 @@ bool SatoriRegion::NothingMarked()
     return true;
 }
 
-void SatoriRegion::ClearMarks()
+NOINLINE void SatoriRegion::ClearMarks()
 {
     _ASSERTE(this->HasUnmarkedDemotedObjects() == false);
     memset((void*)&m_bitmap[BITMAP_START], 0, (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
+}
+
+// Same as ClearMarks, but does not use vector registers.
+// This is reachable from the write barrier (EscapeFn -> StopEscapeTracking) which does
+// not save vector registers, thus we do not want to use memsetand instead we store through
+// the volatile element type, which prevents the compiler from coalescing the stores.
+NOINLINE void SatoriRegion::ClearMarksScalar()
+{
+    _ASSERTE(this->HasUnmarkedDemotedObjects() == false);
+    for (int i = BITMAP_START; i < BITMAP_LENGTH; i++)
+    {
+        m_bitmap[i] = 0;
+    }
 }
 
 void SatoriRegion::ClearIndex()

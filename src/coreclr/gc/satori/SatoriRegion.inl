@@ -159,12 +159,19 @@ inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag)
     VolatileStore(&m_generation, 0);
 }
 
-inline void SatoriRegion::StopEscapeTracking()
+inline void SatoriRegion::StopEscapeTracking(bool calledFromBarrier)
 {
     if (IsEscapeTracking())
     {
         _ASSERTE(!HasPinnedObjects());
-        ClearMarks();
+        if (calledFromBarrier)
+        {
+            ClearMarksScalar();
+        }
+        else
+        {
+            ClearMarks();
+        }
 
         // must clear ownership after clearing marks
         // to make sure concurrent marking does not use dirty mark table
