@@ -310,13 +310,20 @@ LEAF_END JIT_PatchedCodeLast, _TEXT
 #else  //FEATURE_SATORI_GC      ##############################################################################
 
 // Mark start of the code region that we patch at runtime
+#if defined(__APPLE__)
+        .global C_FUNC(JIT_PatchedCodeStart)
+C_FUNC(JIT_PatchedCodeStart):
+        .cfi_startproc
+        ret
+#else
 LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
         ret
 LEAF_END JIT_PatchedCodeStart, _TEXT
+#endif
 
 
 // void JIT_CheckedWriteBarrier(Object** dst, Object* src)
-LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
+WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
 
      // See if dst is in GCHeap
         PREPARE_EXTERNAL_VAR g_card_bundle_table, rax   // fetch the page byte map
@@ -326,11 +333,11 @@ LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
         cmp     byte ptr [rax + r8], 0
         jne     C_FUNC(CheckedEntry)
 
-    NotInHeap:
+    LOCAL_LABEL(NotInHeap):
         // See comment above about possible AV
         mov     [rdi], rsi
         ret
-LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
+WRITE_BARRIER_END JIT_CheckedWriteBarrier
 
 
 //
@@ -338,7 +345,7 @@ LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
 //   rsi - object
 //
 .balign 16
-LEAF_ENTRY JIT_WriteBarrier, _TEXT
+WRITE_BARRIER_ENTRY JIT_WriteBarrier
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
     // check if src is in heap
         PREPARE_EXTERNAL_VAR g_card_bundle_table, rax   // fetch the page byte map
@@ -347,7 +354,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         mov     r8, rsi
         shr     r8, 30                                  //  src page index
         cmp     byte ptr [rax + r8], 0
-        je      JustAssign                              // src not in heap
+        je      LOCAL_LABEL(JustAssign)                 // src not in heap
 #else
     ALTERNATE_ENTRY CheckedEntry
 #endif
@@ -357,7 +364,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         mov     rdx, rsi
         and     rdx, 0xFFFFFFFFFFE00000  // source region
 #ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
-        jz      JustAssign              // assigning null
+        jz      LOCAL_LABEL(JustAssign)                 // assigning null
 #endif
 #ifdef TARGET_OSX
         mov     rax,  gs:[0]            // thread tag
@@ -365,22 +372,22 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         mov     rax,  fs:[0]            // thread tag
 #endif
         cmp     qword ptr [rdx], rax     
-        jne     AssignAndMarkCards      // not local to this thread
+        jne     LOCAL_LABEL(AssignAndMarkCards)         // not local to this thread
 
     // 2) check if the src and dst are from the same region
         mov     rax, rdi
         and     rax, 0xFFFFFFFFFFE00000 // target aligned to region
         cmp     rax, rdx
-        jnz     RecordEscape            // cross region assignment. definitely escaping
+        jnz     LOCAL_LABEL(RecordEscape)               // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
         mov     rax, rdi
         and     rax, 0x1FFFFF
         shr     rax, 3
         bt      qword ptr [rdx], rax
-        jb      RecordEscape            // target is exposed. record an escape.
+        jb      LOCAL_LABEL(RecordEscape)               // target is exposed. record an escape.
 
-    JustAssign:
+    LOCAL_LABEL(JustAssign):
         mov     [rdi], rsi              // no card marking, src is not a heap object
 
         // set rdi, rsi per contract with JIT_ByRefWriteBarrier
@@ -388,7 +395,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         mov     rsi, r10
         ret
 
-    AssignAndMarkCards:
+    LOCAL_LABEL(AssignAndMarkCards):
         mov     [rdi], rsi
 
         // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
@@ -403,30 +410,30 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         // check the barrier state. this must be done after the assignment (in program order)
         // if state == 2 we do not set or dirty cards.
         cmp     r11, 2
-        jne     DoCards
+        jne     LOCAL_LABEL(DoCards)
         // set rsi per contract with JIT_ByRefWriteBarrier
         mov     rsi, r10
-    Exit:
+    LOCAL_LABEL(Exit):
         ret
 
-    DoCards:
+    LOCAL_LABEL(DoCards):
     // if same region, just check if barrier is not concurrent
         xor     rsi, rax
         shr     rsi, 21
         // set rsi per contract with JIT_ByRefWriteBarrier
         mov     rsi, r10
-        jz      CheckConcurrent         // same region, just check if barrier is not concurrent
+        jz      LOCAL_LABEL(CheckConcurrent)            // same region, just check if barrier is not concurrent
 
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [rdx + 16], 2
-        jl     MarkCards
+        jl     LOCAL_LABEL(MarkCards)
 
-    CheckConcurrent:
+    LOCAL_LABEL(CheckConcurrent):
     // if concurrent, load card location
         cmp     r11, 0
-        je      Exit
+        je      LOCAL_LABEL(Exit)
 
-    MarkCards:
+    LOCAL_LABEL(MarkCards):
     // fetch card location for rax  (saved rdi)
         PREPARE_EXTERNAL_VAR g_card_table, r9 
         mov     r9,  [r9]  // fetch the page map
@@ -441,43 +448,43 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
 
      // check if concurrent marking is in progress
         cmp     r11, 0
-        jne     DirtyCard
+        jne     LOCAL_LABEL(DirtyCard)
 
      // SETTING CARD
-     SetCard:
+     LOCAL_LABEL(SetCard):
         cmp     byte ptr [rax + rdx], 0
-        jne     Exit
+        jne     LOCAL_LABEL(Exit)
         mov     byte ptr [rax + rdx], 1
-     SetGroup:
+     LOCAL_LABEL(SetGroup):
         cmp     byte ptr [r8], 0
-        jne     CardSet
+        jne     LOCAL_LABEL(CardSet)
         mov     byte ptr [r8], 1
-     SetPage:
+     LOCAL_LABEL(SetPage):
         cmp     byte ptr [rax], 0
-        jne     CardSet
+        jne     LOCAL_LABEL(CardSet)
         mov     byte ptr [rax], 1
 
-     CardSet:
+     LOCAL_LABEL(CardSet):
      // check if concurrent marking is still not in progress
         cmp     qword ptr [rcx], 0
-        jne     DirtyCard
+        jne     LOCAL_LABEL(DirtyCard)
         ret
 
      // DIRTYING CARD
-     DirtyCard:
+     LOCAL_LABEL(DirtyCard):
         mov     byte ptr [rax + rdx], 4
-     DirtyGroup:
+     LOCAL_LABEL(DirtyGroup):
         cmp     byte ptr [r8], 4
-        je      Exit
+        je      LOCAL_LABEL(Exit)
         mov     byte ptr [r8], 4
-     DirtyPage:
+     LOCAL_LABEL(DirtyPage):
         cmp     byte ptr [rax], 4
-        je      Exit
+        je      LOCAL_LABEL(Exit)
         mov     byte ptr [rax], 4
         ret
 
     // this is expected to be rare.
-    RecordEscape:
+    LOCAL_LABEL(RecordEscape):
 
     // 4) check if the source is escaped
         mov     rax, rsi
@@ -485,7 +492,7 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         and     rax, 0x1FFFFF
         shr     rax, 3
         bt      qword ptr [rdx], rax
-        jb      AssignAndMarkCards            // source is already escaped.
+        jb      LOCAL_LABEL(AssignAndMarkCards)         // source is already escaped.
 
         // Align rsp
         mov  r9, rsp
@@ -515,8 +522,8 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
         pop     rsi
         pop     rdi
         pop     rsp
-        jmp     AssignAndMarkCards
-LEAF_END_MARKED JIT_WriteBarrier, _TEXT
+        jmp     LOCAL_LABEL(AssignAndMarkCards)
+WRITE_BARRIER_END JIT_WriteBarrier
 
 
 // JIT_ByRefWriteBarrier has weird symantics, see usage in StubLinkerX86.cpp
@@ -566,8 +573,16 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
 LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
 
 // Mark start of the code region that we patch at runtime
+#if defined(__APPLE__)
+        .private_extern C_FUNC(JIT_PatchedCodeLast)
+        .alt_entry C_FUNC(JIT_PatchedCodeLast)
+C_FUNC(JIT_PatchedCodeLast):
+        .cfi_endproc
+        ret
+#else
 LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
         ret
 LEAF_END JIT_PatchedCodeLast, _TEXT
+#endif
 
 #endif  // FEATURE_SATORI_GC
