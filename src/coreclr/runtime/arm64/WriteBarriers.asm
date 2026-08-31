@@ -380,7 +380,7 @@ NoBarrierXchg
 ;;
 ;; On exit:
 ;;   x12  : trashed
-;;   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
+;;   x14  : preserved (the destination address is not modified)
 ;;   x15  : trashed
 ;;   x16  : trashed (ip0)
 ;;   x17  : trashed (ip1)
@@ -393,7 +393,7 @@ NoBarrierXchg
 
 NotInHeap
     ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
-        str  x15, [x14], #8
+        str  x15, [x14]
         ret  lr
     LEAF_END RhpCheckedAssignRefArm64
 
@@ -408,7 +408,7 @@ NotInHeap
 ;;
 ;; On exit:
 ;;   x12  : trashed
-;;   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
+;;   x14  : preserved (the destination address is not modified)
 ;;   x15  : trashed
 ;;   x16  : trashed (ip0)
 ;;   x17  : trashed (ip1)
@@ -446,7 +446,7 @@ NotInHeap
     ;; UNORDERED! assignment of unescaped, null or external (immutable) object
 JustAssign
     ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
-        str      x15, [x14], #8
+        str      x15, [x14]
         ret      lr
 
 AssignAndMarkCards
@@ -461,7 +461,6 @@ AssignAndMarkCards
         tbz     x17, #1, DoCards
 
 ExitNoCards
-        add     x14, x14, 8
         ret     lr
 
 DoCards
@@ -517,7 +516,6 @@ CardSet
 
 Exit
         ldp  x2,  x3, [sp], 16
-        add  x14, x14, 8
         ret  lr
 
     ; DIRTYING CARD FOR X14

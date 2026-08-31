@@ -408,7 +408,7 @@ LOCAL_LABEL(NoBarrierXchg):
 //
 // On exit:
 //   x12  : trashed
-//   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
+//   x14  : preserved (the destination address is not modified)
 //   x15  : trashed
 //   x16  : trashed (ip0)
 //   x17  : trashed (ip1)
@@ -422,7 +422,7 @@ LEAF_ENTRY RhpCheckedAssignRefArm64, _TEXT
 
     LOCAL_LABEL(NotInHeap):
     ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
-        str  x15, [x14], #8
+        str  x15, [x14]
         ret  lr
 LEAF_END RhpCheckedAssignRefArm64, _TEXT
 
@@ -437,7 +437,7 @@ LEAF_END RhpCheckedAssignRefArm64, _TEXT
 //
 // On exit:
 //   x12  : trashed
-//   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
+//   x14  : preserved (the destination address is not modified)
 //   x15  : trashed
 //   x16  : trashed (ip0)
 //   x17  : trashed (ip1)
@@ -480,7 +480,7 @@ ALTERNATE_ENTRY RhpCheckedEntry
     // UNORDERED! assignment of unescaped, null or external (immutable) object
     LOCAL_LABEL(JustAssign):
 ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
-        str  x15, [x14], #8
+        str  x15, [x14]
         ret  lr
 
     LOCAL_LABEL(AssignAndMarkCards):
@@ -495,7 +495,6 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         tbz     x17, #1, LOCAL_LABEL(DoCards)
 
     LOCAL_LABEL(ExitNoCards):
-        add     x14, x14, 8
         ret     lr
 
     LOCAL_LABEL(DoCards):
@@ -551,7 +550,6 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
 
     LOCAL_LABEL(Exit):
         ldp  x2,  x3, [sp], 16
-        add  x14, x14, 8
         ret  lr
 
     // DIRTYING CARD FOR X14

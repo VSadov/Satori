@@ -478,7 +478,7 @@ exit$name
 ;
 ; On exit:
 ;   x12  : trashed
-;   x14  : trashed (incremented by 8)
+;   x14  : preserved (the destination address is not modified)
 ;   x15  : trashed
 ;   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 ;
@@ -490,7 +490,7 @@ exit$name
         cbnz    x12, CheckedEntry
 
 NotInHeap
-        str  x15, [x14], #8
+        str  x15, [x14]
         ret  lr
     WRITE_BARRIER_END JIT_CheckedWriteBarrier
 
@@ -501,7 +501,7 @@ NotInHeap
 ;
 ; On exit:
 ;   x12  : trashed
-;   x14  : trashed (incremented by 8)
+;   x14  : preserved (the destination address is not modified)
 ;   x15  : trashed
 ;   x16  : trashed (ip0)
 ;   x17  : trashed (ip1)
@@ -538,7 +538,7 @@ CheckedEntry
 
     ; UNORDERED! assignment of unescaped, null or external (immutable) object
 JustAssign
-        str  x15, [x14], #8
+        str  x15, [x14]
         ret  lr
 
 AssignAndMarkCards
@@ -552,7 +552,6 @@ AssignAndMarkCards
         tbz     x17, #1, DoCards
 
 ExitNoCards
-        add     x14, x14, 8
         ret     lr
 
 DoCards
@@ -608,7 +607,6 @@ CardSet
 
 Exit
         ldp  x2,  x3, [sp], 16
-        add  x14, x14, 8
         ret  lr
 
     ; DIRTYING CARD FOR X14
