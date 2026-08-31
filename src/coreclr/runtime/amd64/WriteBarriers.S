@@ -265,7 +265,7 @@ LEAF_ENTRY RhpCheckedAssignRef, _TEXT
         cmp     byte ptr [rax + r8], 0
         jne     C_FUNC(RhpCheckedEntry)
 
-NotInHeap:
+LOCAL_LABEL(NotInHeap):
 ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
     mov     [rdi], rsi
     ret
@@ -285,7 +285,7 @@ LEAF_ENTRY RhpAssignRef, _TEXT
         mov     r8,  rsi
         shr     r8,  30                           // src page index
         cmp     byte ptr [rax + r8], 0
-        je      JustAssign                        // src not in heap
+        je      LOCAL_LABEL(JustAssign)                 // src not in heap
 #else
     ALTERNATE_ENTRY RhpCheckedEntry
 #endif
@@ -296,7 +296,7 @@ LEAF_ENTRY RhpAssignRef, _TEXT
         and     rdx, 0xFFFFFFFFFFE00000  // source region
 
 #ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
-        jz      JustAssign              // assigning null
+        jz      LOCAL_LABEL(JustAssign)                 // assigning null
 #endif
 
 #ifdef TARGET_OSX
@@ -305,22 +305,22 @@ LEAF_ENTRY RhpAssignRef, _TEXT
         mov     rax,  fs:[0]            // thread tag
 #endif
         cmp     qword ptr [rdx], rax     
-        jne     AssignAndMarkCards      // no card marking, src is not a heap object
+        jne     LOCAL_LABEL(AssignAndMarkCards)         // no card marking, src is not a heap object
 
     // 2) check if the src and dst are from the same region
         mov     rax, rdi
         and     rax, 0xFFFFFFFFFFE00000
         cmp     rax, rdx
-        jnz     RecordEscape            // cross region assignment. definitely escaping
+        jnz     LOCAL_LABEL(RecordEscape)               // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
         mov     rax, rdi
         and     rax, 0x1FFFFF
         shr     rax, 3
         bt      qword ptr [rdx], rax
-        jb      RecordEscape            // target is exposed. record an escape.
+        jb      LOCAL_LABEL(RecordEscape)               // target is exposed. record an escape.
 
-    JustAssign:
+    LOCAL_LABEL(JustAssign):
 ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
         mov     [rdi], rsi              // no card marking, src is not a heap object
         // set rdi, rsi per contract with JIT_ByRefWriteBarrier
@@ -328,7 +328,7 @@ ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
         mov     rsi, r10
         ret
 
-    AssignAndMarkCards:
+    LOCAL_LABEL(AssignAndMarkCards):
 ALTERNATE_ENTRY RhpAssignRefAVLocation
         mov     [rdi], rsi
 
@@ -343,30 +343,30 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         // check the barrier state. this must be done after the assignment (in program order)
         // if state == 2 we do not set or dirty cards.
         cmp     r11, 2
-        jne     DoCards
+        jne     LOCAL_LABEL(DoCards)
         // set rsi per contract with JIT_ByRefWriteBarrier
         mov     rsi, r10
-    Exit:
+    LOCAL_LABEL(Exit):
         ret
 
-    DoCards:
+    LOCAL_LABEL(DoCards):
     // if same region, just check if barrier is not concurrent
         xor     rsi, rax
         shr     rsi, 21
         // set rsi per contract with JIT_ByRefWriteBarrier
         mov     rsi, r10
-        jz      CheckConcurrent         // same region, just check if barrier is not concurrent
+        jz      LOCAL_LABEL(CheckConcurrent)            // same region, just check if barrier is not concurrent
 
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [rdx + 16], 2
-        jl      MarkCards
+        jl      LOCAL_LABEL(MarkCards)
 
-    CheckConcurrent:
+    LOCAL_LABEL(CheckConcurrent):
     // if concurrent, load card location
         cmp     r11, 0
-        je      Exit
+        je      LOCAL_LABEL(Exit)
 
-    MarkCards:
+    LOCAL_LABEL(MarkCards):
         mov     r9 , [C_VAR(g_card_table)]     // fetch the page map
         mov     rdx, rax
         shr     rax, 30
@@ -379,43 +379,43 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
 
      // check if concurrent marking is in progress
         cmp     r11, 0
-        jne     DirtyCard
+        jne     LOCAL_LABEL(DirtyCard)
 
      // SETTING CARD
-     SetCard:
+     LOCAL_LABEL(SetCard):
         cmp     byte ptr [rax + rdx], 0
-        jne     Exit
+        jne     LOCAL_LABEL(Exit)
         mov     byte ptr [rax + rdx], 1
-     SetGroup:
+     LOCAL_LABEL(SetGroup):
         cmp     byte ptr [r8], 0
-        jne     CardSet
+        jne     LOCAL_LABEL(CardSet)
         mov     byte ptr [r8], 1
-     SetPage:
+     LOCAL_LABEL(SetPage):
         cmp     byte ptr [rax], 0
-        jne     CardSet
+        jne     LOCAL_LABEL(CardSet)
         mov     byte ptr [rax], 1
 
-     CardSet:
+     LOCAL_LABEL(CardSet):
      // check if concurrent marking is still not in progress
         cmp     qword ptr [C_VAR(g_write_watch_table)], 0
-        jne     DirtyCard
+        jne     LOCAL_LABEL(DirtyCard)
         ret
 
      // DIRTYING CARD
-     DirtyCard:
+     LOCAL_LABEL(DirtyCard):
         mov     byte ptr [rax + rdx], 4
-     DirtyGroup:
+     LOCAL_LABEL(DirtyGroup):
         cmp     byte ptr [r8], 4
-        je      Exit
+        je      LOCAL_LABEL(Exit)
         mov     byte ptr [r8], 4
-     DirtyPage:
+     LOCAL_LABEL(DirtyPage):
         cmp     byte ptr [rax], 4
-        je      Exit
+        je      LOCAL_LABEL(Exit)
         mov     byte ptr [rax], 4
         ret
 
     // this is expected to be rare.
-    RecordEscape:
+    LOCAL_LABEL(RecordEscape):
 
         // 4) check if the source is escaped
         mov     rax, rsi
@@ -423,7 +423,7 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         and     rax, 0x1FFFFF
         shr     rax, 3
         bt      qword ptr [rdx], rax
-        jb      AssignAndMarkCards            // source is already escaped.
+        jb      LOCAL_LABEL(AssignAndMarkCards)         // source is already escaped.
 
         // Align rsp
         mov  r9, rsp
@@ -453,7 +453,7 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         pop     rsi
         pop     rdi
         pop     rsp
-        jmp     AssignAndMarkCards
+        jmp     LOCAL_LABEL(AssignAndMarkCards)
 LEAF_END RhpAssignRef, _TEXT
 
 LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
@@ -466,7 +466,7 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         mov     rdx, rdi
         shr     rdx, 30                    // round to page size ( >> PAGE_BITS )
         cmp     byte ptr [r11 + rdx], 0
-        je      JustAssign_CmpXchg              // dst not in heap
+        je      LOCAL_LABEL(JustAssign_CmpXchg)         // dst not in heap
 
     // check for escaping assignment
     // 1) check if we own the source region
@@ -474,14 +474,14 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         mov     rdx, rsi
         shr     rdx, 30                  // round to page size ( >> PAGE_BITS )
         cmp     byte ptr [r11 + rdx], 0
-        je      JustAssign_CmpXchg              // src not in heap
+        je      LOCAL_LABEL(JustAssign_CmpXchg)         // src not in heap
 #endif
 
         mov     rdx, rsi
         and     rdx, 0xFFFFFFFFFFE00000  // source region
 
 #ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
-        jz      JustAssign_CmpXchg              // assigning null
+        jz      LOCAL_LABEL(JustAssign_CmpXchg)         // assigning null
 #endif
 
 #ifdef TARGET_OSX
@@ -490,28 +490,28 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         mov     r11,  fs:[0]            // thread tag
 #endif
         cmp     qword ptr [rdx], r11     
-        jne     AssignAndMarkCards_CmpXchg      // not local to this thread
+        jne     LOCAL_LABEL(AssignAndMarkCards_CmpXchg) // not local to this thread
 
     // 2) check if the src and dst are from the same region
         mov     r11, rdi
         and     r11, 0xFFFFFFFFFFE00000
         cmp     r11, rdx
-        jnz     RecordEscape_CmpXchg            // cross region assignment. definitely escaping
+        jnz     LOCAL_LABEL(RecordEscape_CmpXchg)       // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
         mov     r11, rdi
         and     r11, 0x1FFFFF
         shr     r11, 3
         bt      qword ptr [rdx], r11
-        jb      RecordEscape_CmpXchg            // target is exposed. record an escape.
+        jb      LOCAL_LABEL(RecordEscape_CmpXchg)       // target is exposed. record an escape.
 
-    JustAssign_CmpXchg:
+    LOCAL_LABEL(JustAssign_CmpXchg):
         lock cmpxchg    [rdi], rsi     // no card marking, src is not a heap object
         ret
 
-    AssignAndMarkCards_CmpXchg:
+    LOCAL_LABEL(AssignAndMarkCards_CmpXchg):
         lock cmpxchg    [rdi], rsi
-        jne             Exit_CmpXchg
+        jne             LOCAL_LABEL(Exit_CmpXchg)
 
         // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
         //         needs to suspend EE, not sure if skipping mode check would worth that much.
@@ -520,27 +520,27 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         // check the barrier state. this must be done after the assignment (in program order)
         // if state == 2 we do not set or dirty cards.
         cmp     r10, 2
-        jne     DoCards_CmpXchg
-    Exit_CmpXchg:
+        jne     LOCAL_LABEL(DoCards_CmpXchg)
+    LOCAL_LABEL(Exit_CmpXchg):
         ret
 
-    DoCards_CmpXchg:
+    LOCAL_LABEL(DoCards_CmpXchg):
     // if same region, just check if barrier is not concurrent
         xor     rsi, rdi
         shr     rsi, 21
-        jz      CheckConcurrent_CmpXchg         // same region, just check if barrier is not concurrent
+        jz      LOCAL_LABEL(CheckConcurrent_CmpXchg)    // same region, just check if barrier is not concurrent
 
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [rdx + 16], 2
-        jl      MarkCards_CmpXchg
+        jl      LOCAL_LABEL(MarkCards_CmpXchg)
 
-    CheckConcurrent_CmpXchg:
+    LOCAL_LABEL(CheckConcurrent_CmpXchg):
     // if concurrent, load card location
         cmp     r10, 0
-        jne     MarkCards_CmpXchg
+        jne     LOCAL_LABEL(MarkCards_CmpXchg)
         ret
 
-    MarkCards_CmpXchg:
+    LOCAL_LABEL(MarkCards_CmpXchg):
     // fetch card location for rdi
         mov     r9 , [C_VAR(g_card_table)]     // fetch the page map
         mov     rdx,  rdi
@@ -554,45 +554,45 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
 
      // check if concurrent marking is in progress
         cmp     r10, 0
-        jne     DirtyCard_CmpXchg
+        jne     LOCAL_LABEL(DirtyCard_CmpXchg)
 
     // SETTING CARD FOR rdi
-     SetCard_CmpXchg:
+     LOCAL_LABEL(SetCard_CmpXchg):
         cmp     byte ptr [r11 + rdx], 0
-        jne     Exit_CmpXchg
+        jne     LOCAL_LABEL(Exit_CmpXchg)
         mov     byte ptr [r11 + rdx], 1
-     SetGroup_CmpXchg:
+     LOCAL_LABEL(SetGroup_CmpXchg):
         cmp     byte ptr [rsi], 0
-        jne     CardSet_CmpXchg
+        jne     LOCAL_LABEL(CardSet_CmpXchg)
         mov     byte ptr [rsi], 1
-     SetPage_CmpXchg:
+     LOCAL_LABEL(SetPage_CmpXchg):
         cmp     byte ptr [r11], 0
-        jne     CardSet_CmpXchg
+        jne     LOCAL_LABEL(CardSet_CmpXchg)
         mov     byte ptr [r11], 1
 
-     CardSet_CmpXchg:
+     LOCAL_LABEL(CardSet_CmpXchg):
      // check if concurrent marking is still not in progress
         cmp     qword ptr [C_VAR(g_write_watch_table)], 0
-        jne     DirtyCard_CmpXchg
+        jne     LOCAL_LABEL(DirtyCard_CmpXchg)
         ret
 
     // DIRTYING CARD FOR rdi
-     DirtyCard_CmpXchg:
+     LOCAL_LABEL(DirtyCard_CmpXchg):
         cmp     byte ptr [r11 + rdx], 4
-        je      Exit_CmpXchg
+        je      LOCAL_LABEL(Exit_CmpXchg)
         mov     byte ptr [r11 + rdx], 4
-     DirtyGroup_CmpXchg:
+     LOCAL_LABEL(DirtyGroup_CmpXchg):
         cmp     byte ptr [rsi], 4
-        je      Exit_CmpXchg
+        je      LOCAL_LABEL(Exit_CmpXchg)
         mov     byte ptr [rsi], 4
-     DirtyPage_CmpXchg:
+     LOCAL_LABEL(DirtyPage_CmpXchg):
         cmp     byte ptr [r11], 4
-        je      Exit_CmpXchg
+        je      LOCAL_LABEL(Exit_CmpXchg)
         mov     byte ptr [r11], 4
         ret
 
     // this is expected to be rare.
-    RecordEscape_CmpXchg:
+    LOCAL_LABEL(RecordEscape_CmpXchg):
 
         // 4) check if the source is escaped
         mov     r11, rsi
@@ -600,7 +600,7 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         and     r11, 0x1FFFFF
         shr     r11, 3
         bt      qword ptr [rdx], r11
-        jb      AssignAndMarkCards_CmpXchg            // source is already escaped.
+        jb      LOCAL_LABEL(AssignAndMarkCards_CmpXchg) // source is already escaped.
 
         // Align rsp
         mov  r9, rsp
@@ -622,7 +622,7 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         pop     rdi
         pop     rax
         pop     rsp
-        jmp     AssignAndMarkCards_CmpXchg
+        jmp     LOCAL_LABEL(AssignAndMarkCards_CmpXchg)
 LEAF_END RhpCheckedLockCmpXchg, _TEXT
 
 LEAF_ENTRY RhpCheckedXchg, _TEXT
@@ -635,7 +635,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         mov     rdx, rdi
         shr     rdx, 30                    // round to page size ( >> PAGE_BITS )
         cmp     byte ptr [r11 + rdx], 0
-        je      JustAssign_Xchg              // dst not in heap
+        je      LOCAL_LABEL(JustAssign_Xchg)            // dst not in heap
 
     // check for escaping assignment
     // 1) check if we own the source region
@@ -643,14 +643,14 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         mov     rdx, rsi
         shr     rdx, 30                 // round to page size ( >> PAGE_BITS )
         cmp     byte ptr [r11 + rdx], 0
-        je      JustAssign_Xchg              // src not in heap
+        je      LOCAL_LABEL(JustAssign_Xchg)            // src not in heap
 #endif
 
         mov     rdx, rsi
         and     rdx, 0xFFFFFFFFFFE00000  // source region
 
 #ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
-        jz      JustAssign_Xchg              // assigning null
+        jz      LOCAL_LABEL(JustAssign_Xchg)            // assigning null
 #endif
 #ifdef TARGET_OSX
         mov     r11,  gs:[0]            // thread tag
@@ -658,26 +658,26 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         mov     r11,  fs:[0]            // thread tag
 #endif
         cmp     qword ptr [rdx], r11     
-        jne     AssignAndMarkCards_Xchg      // not local to this thread
+        jne     LOCAL_LABEL(AssignAndMarkCards_Xchg)    // not local to this thread
 
     // 2) check if the src and dst are from the same region
         mov     r11, rdi
         and     r11, 0xFFFFFFFFFFE00000
         cmp     r11, rdx
-        jnz     RecordEscape_Xchg            // cross region assignment. definitely escaping
+        jnz     LOCAL_LABEL(RecordEscape_Xchg)          // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
         mov     r11, rdi
         and     r11, 0x1FFFFF
         shr     r11, 3
         bt      qword ptr [rdx], r11
-        jb      RecordEscape_Xchg            // target is exposed. record an escape.
+        jb      LOCAL_LABEL(RecordEscape_Xchg)          // target is exposed. record an escape.
 
-    JustAssign_Xchg:
+    LOCAL_LABEL(JustAssign_Xchg):
         xchg    [rdi], rax              // no card marking, src is not a heap object
         ret
 
-    AssignAndMarkCards_Xchg:
+    LOCAL_LABEL(AssignAndMarkCards_Xchg):
         xchg    [rdi], rax
 
         // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
@@ -687,27 +687,27 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         // check the barrier state. this must be done after the assignment (in program order)
         // if state == 2 we do not set or dirty cards.
         cmp     r10, 2
-        jne     DoCards_Xchg
-    Exit_Xchg:
+        jne     LOCAL_LABEL(DoCards_Xchg)
+    LOCAL_LABEL(Exit_Xchg):
         ret
 
-    DoCards_Xchg:
+    LOCAL_LABEL(DoCards_Xchg):
     // if same region, just check if barrier is not concurrent
         xor     rsi, rdi
         shr     rsi, 21
-        jz      CheckConcurrent_Xchg         // same region, just check if barrier is not concurrent
+        jz      LOCAL_LABEL(CheckConcurrent_Xchg)       // same region, just check if barrier is not concurrent
 
     // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
         cmp     dword ptr [rdx + 16], 2
-        jl      MarkCards_Xchg
+        jl      LOCAL_LABEL(MarkCards_Xchg)
 
-    CheckConcurrent_Xchg:
+    LOCAL_LABEL(CheckConcurrent_Xchg):
     // if concurrent, load card location
         cmp     r10, 0
-        jne     MarkCards_Xchg
+        jne     LOCAL_LABEL(MarkCards_Xchg)
         ret
 
-    MarkCards_Xchg:
+    LOCAL_LABEL(MarkCards_Xchg):
     // fetch card location for rdi
         mov     r9 , [C_VAR(g_card_table)]     // fetch the page map
         mov     rdx,  rdi
@@ -721,45 +721,45 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
 
      // check if concurrent marking is in progress
         cmp     r10, 0
-        jne     DirtyCard_Xchg
+        jne     LOCAL_LABEL(DirtyCard_Xchg)
 
     // SETTING CARD FOR rdi
-     SetCard_Xchg:
+     LOCAL_LABEL(SetCard_Xchg):
         cmp     byte ptr [r11 + rdx], 0
-        jne     Exit_Xchg
+        jne     LOCAL_LABEL(Exit_Xchg)
         mov     byte ptr [r11 + rdx], 1
-     SetGroup_Xchg:
+     LOCAL_LABEL(SetGroup_Xchg):
         cmp     byte ptr [rsi], 0
-        jne     CardSet_Xchg
+        jne     LOCAL_LABEL(CardSet_Xchg)
         mov     byte ptr [rsi], 1
-     SetPage_Xchg:
+     LOCAL_LABEL(SetPage_Xchg):
         cmp     byte ptr [r11], 0
-        jne     CardSet_Xchg
+        jne     LOCAL_LABEL(CardSet_Xchg)
         mov     byte ptr [r11], 1
 
-     CardSet_Xchg:
+     LOCAL_LABEL(CardSet_Xchg):
      // check if concurrent marking is still not in progress
         cmp     qword ptr [C_VAR(g_write_watch_table)], 0
-        jne     DirtyCard_Xchg
+        jne     LOCAL_LABEL(DirtyCard_Xchg)
         ret
 
     // DIRTYING CARD FOR rdi
-     DirtyCard_Xchg:
+     LOCAL_LABEL(DirtyCard_Xchg):
         cmp     byte ptr [r11 + rdx], 4
-        je      Exit_Xchg
+        je      LOCAL_LABEL(Exit_Xchg)
         mov     byte ptr [r11 + rdx], 4
-     DirtyGroup_Xchg:
+     LOCAL_LABEL(DirtyGroup_Xchg):
         cmp     byte ptr [rsi], 4
-        je      Exit_Xchg
+        je      LOCAL_LABEL(Exit_Xchg)
         mov     byte ptr [rsi], 4
-     DirtyPage_Xchg:
+     LOCAL_LABEL(DirtyPage_Xchg):
         cmp     byte ptr [r11], 4
-        je      Exit_Xchg
+        je      LOCAL_LABEL(Exit_Xchg)
         mov     byte ptr [r11], 4
         ret
 
     // this is expected to be rare.
-    RecordEscape_Xchg:
+    LOCAL_LABEL(RecordEscape_Xchg):
 
         // 4) check if the source is escaped
         mov     r11, rsi
@@ -767,7 +767,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         and     r11, 0x1FFFFF
         shr     r11, 3
         bt      qword ptr [rdx], r11
-        jb      AssignAndMarkCards_Xchg            // source is already escaped.
+        jb      LOCAL_LABEL(AssignAndMarkCards_Xchg)    // source is already escaped.
 
         // Align rsp
         mov  r9, rsp
@@ -789,7 +789,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         pop     rdi
         pop     rax
         pop     rsp
-        jmp     AssignAndMarkCards_Xchg
+        jmp     LOCAL_LABEL(AssignAndMarkCards_Xchg)
 LEAF_END RhpCheckedXchg, _TEXT
 
 
