@@ -104,7 +104,8 @@ public:
 
     inline bool IsBarrierConcurrent()
     {
-        return m_isBarrierConcurrent;
+        // NB: while switching the barrier is not concurrent yet.
+        return m_barrierState == BARRIER_STATE_CONCURRENT;
     }
 
     inline bool IsNextGcFullGc()
@@ -186,6 +187,13 @@ private:
     static const int CC_CLEAN_STATE_CLEANING = 3;
     static const int CC_CLEAN_STATE_DONE = 4;
 
+    // Toggling the barrier to concurrent involves a process-wide fence, which is expensive.
+    // Only the thread that claims BARRIER_STATE_SWITCHING does it, the rest just leave and
+    // come back later, since they may not mark until the barrier is concurrent.
+    static const int BARRIER_STATE_NOT_CONCURRENT = 0;
+    static const int BARRIER_STATE_SWITCHING = 1;
+    static const int BARRIER_STATE_CONCURRENT = 2;
+
     volatile int m_ccStackMarkState;
     volatile int m_ccStackMarkingThreadsNum;
 
@@ -202,7 +210,7 @@ private:
     bool m_isRelocating;
     bool m_isLowLatencyMode;
     bool m_promoteAllRegions;
-    volatile bool m_isBarrierConcurrent;
+    volatile int m_barrierState;
 
     int m_prevCondemnedGeneration;
 
