@@ -91,6 +91,8 @@ extern "C"
 #  include <mach/thread_state.h>
 }
 
+#include <minipal/cpufeatures.h>
+
 #define CHECK_MACH(_msg, machret) do {                                      \
         if (machret != KERN_SUCCESS)                                        \
         {                                                                   \
@@ -180,8 +182,16 @@ static int s_flushUsingMemBarrier = 0;
 // Helper memory page used by the FlushProcessWriteBuffers
 static uint8_t* g_helperPage = 0;
 
-// Mutex to make the FlushProcessWriteBuffersMutex thread safe
+// Mutex to make the FlushProcessWriteBuffersMutex thread safe, and to serialize
+// the Apple implementation when it needs it.
 static pthread_mutex_t g_flushProcessWriteBuffersMutex;
+
+#ifdef TARGET_APPLE
+// Set when running under the Apple Rosetta x64 emulator, where the thread_get_state
+// based implementation must not run concurrently.
+// See the comment in GCToOSInterface::Initialize.
+static bool s_serializeUsingMutex = false;
+#endif // TARGET_APPLE
 
 // The number of CPUs that are configured in the OS.
 uint32_t g_configuredCpuCount = 0;
@@ -278,6 +288,25 @@ bool GCToOSInterface::Initialize()
         }
     }
 #endif // !TARGET_APPLE
+
+#ifdef TARGET_APPLE
+    // Apple platforms do not support membarrier, so we use thread_get_state instead.
+    //
+    // Under the Rosetta x64 emulator that implementation has to be serialized. Servicing
+    // thread_get_state for a translated thread requires Rosetta to reconstruct the guest
+    // x86 state from the host arm64 state, and it cannot do so while the target thread is
+    // itself inside the Rosetta runtime doing the same thing. Concurrent calls therefore
+    // deadlock, or trip an assert in guest_gpr_state_from_host_state.
+    if (minipal_detect_rosetta())
+    {
+        if (pthread_mutex_init(&g_flushProcessWriteBuffersMutex, NULL) != 0)
+        {
+            return false;
+        }
+
+        s_serializeUsingMutex = true;
+    }
+#endif // TARGET_APPLE
 #endif // !TARGET_WASM
 
     InitializeCGroup();
@@ -475,6 +504,13 @@ void GCToOSInterface::FlushProcessWriteBuffers()
 #ifdef TARGET_APPLE
     else
     {
+        if (s_serializeUsingMutex)
+        {
+            int status = pthread_mutex_lock(&g_flushProcessWriteBuffersMutex);
+            (void)status; // unused in release config
+            assert(status == 0 && "Failed to lock the flushProcessWriteBuffersMutex lock");
+        }
+
         mach_msg_type_number_t cThreads;
         thread_act_t *pThreads;
         kern_return_t machret = task_threads(mach_task_self(), &pThreads, &cThreads);
@@ -519,6 +555,13 @@ void GCToOSInterface::FlushProcessWriteBuffers()
         // Deallocate the thread list now we're done with it.
         machret = vm_deallocate(mach_task_self(), (vm_address_t)pThreads, cThreads * sizeof(thread_act_t));
         CHECK_MACH("vm_deallocate()", machret);
+
+        if (s_serializeUsingMutex)
+        {
+            int status = pthread_mutex_unlock(&g_flushProcessWriteBuffersMutex);
+            (void)status; // unused in release config
+            assert(status == 0 && "Failed to unlock the flushProcessWriteBuffersMutex lock");
+        }
     }
 #endif // TARGET_APPLE
 #endif // !TARGET_WASM
