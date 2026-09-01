@@ -566,7 +566,7 @@ LEAF_ENTRY RhpByRefAssignRef, _TEXT
         mov     rcx,  rdi
         shr     rcx,  30                    // dst page index
         cmp     byte ptr [rax + rcx], 0
-        jne     InHeap
+        jne     LOCAL_LABEL(InHeap)
 
 ALTERNATE_ENTRY RhpByRefAssignRefAVLocation1
         mov     rcx, [rsi]
@@ -576,7 +576,7 @@ ALTERNATE_ENTRY RhpByRefAssignRefAVLocation2
         add     rsi, 8
         ret
 
-    InHeap:
+    LOCAL_LABEL(InHeap):
         // JIT_WriteBarrier may trash these registers 
         push    rdx
         push    r8
@@ -588,7 +588,7 @@ ALTERNATE_ENTRY RhpByRefAssignRefAVLocation2
         lea     r10, [rsi + 8]
         mov     rsi, [rsi]
 
-        call    RhpCheckedEntry
+        call    C_FUNC(RhpCheckedEntry)
 
         pop     r11
         pop     r10

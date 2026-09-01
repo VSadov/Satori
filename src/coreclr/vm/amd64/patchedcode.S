@@ -535,14 +535,14 @@ WRITE_BARRIER_END JIT_WriteBarrier
 //   RCX is trashed
 //   RAX is trashed
 //   RDI, RSI are incremented by SIZEOF(LPVOID)
-LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
+WRITE_BARRIER_ENTRY JIT_ByRefWriteBarrier
      // See if dst is in GCHeap
         PREPARE_EXTERNAL_VAR g_card_bundle_table, rax   // fetch the page byte map
         mov     rax, [rax]
         mov     rcx,  rdi
         shr     rcx,  30                    // dst page index
         cmp     byte ptr [rax + rcx], 0
-        jne     InHeap
+        jne     LOCAL_LABEL(InHeap)
 
         mov     rcx, [rsi]
         mov     [rdi], rcx
@@ -550,7 +550,7 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
         add     rsi, 8
         ret
 
-    InHeap:
+    LOCAL_LABEL(InHeap):
         // JIT_WriteBarrier may trash these registers 
         push    rdx
         push    r8
@@ -570,7 +570,7 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
         pop     r8
         pop     rdx
         ret
-LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
+WRITE_BARRIER_END JIT_ByRefWriteBarrier
 
 // Mark start of the code region that we patch at runtime
 #if defined(__APPLE__)
