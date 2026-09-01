@@ -414,15 +414,18 @@ bool SatoriGate::TimedWait(int timeout)
         0 :
         pthread_cond_timedwait(m_cv, m_cs, &endTime);
 #endif // HAVE_CLOCK_GETTIME_NSEC_NP
-    pthread_mutex_unlock(m_cs);
-    assert(waitResult == 0 || waitResult == ETIMEDOUT);
 
     bool woken = waitResult == 0;
     if (woken)
     {
-        // consume the wake
+        // consume the wake while holding the lock, so that the check above and
+        // the consumption are atomic with respect to the wakers.
+        // NB: as on other platforms the wake could be spurious.
         m_state = s_blocking;
     }
+
+    pthread_mutex_unlock(m_cs);
+    assert(waitResult == 0 || waitResult == ETIMEDOUT);
 
     return woken;
 }
@@ -436,24 +439,30 @@ void SatoriGate::Wait()
         0 :
         pthread_cond_wait(m_cv, m_cs);
 
+    // consume the wake while holding the lock, so that the check above and
+    // the consumption are atomic with respect to the wakers.
+    // NB: as on other platforms the wake could be spurious.
+    m_state = s_blocking;
     pthread_mutex_unlock(m_cs);
     assert(waitResult == 0);
-
-    m_state = s_blocking;
 }
 
 void SatoriGate::WakeAll()
 {
-    m_state = SatoriGate::s_open;
+    // NB: the state must be published while holding the lock, otherwise a waiter
+    //     could read the old state and start waiting after the signal is sent,
+    //     which would result in a missed wake.
     pthread_mutex_lock(m_cs);
+    m_state = SatoriGate::s_open;
     pthread_cond_broadcast(m_cv);
     pthread_mutex_unlock(m_cs);
 }
 
 void SatoriGate::WakeOne()
 {
-    m_state = SatoriGate::s_open;
+    // NB: see the comment in WakeAll about publishing the state under the lock.
     pthread_mutex_lock(m_cs);
+    m_state = SatoriGate::s_open;
     pthread_cond_signal(m_cv);
     pthread_mutex_unlock(m_cs);
 }
