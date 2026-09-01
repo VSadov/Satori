@@ -641,7 +641,7 @@ void EEStartupHelper()
 
         IfFailGo(EEConfig::Setup());
 
-
+        g_EnableFastHeapDumps = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableFastHeapDumps);
 #ifdef HOST_WINDOWS
         InitializeCrashDump();
 
@@ -717,6 +717,10 @@ void EEStartupHelper()
         }
 #endif
 
+#ifdef FEATURE_PERFMAP
+        PerfMap::Initialize();
+#endif
+
 #ifdef FEATURE_PERFTRACING
         DiagnosticServerAdapter::Initialize();
         DiagnosticServerAdapter::PauseForDiagnosticsMonitor();
@@ -742,7 +746,6 @@ void EEStartupHelper()
 #endif
 
 #ifdef FEATURE_PERFMAP
-        PerfMap::Initialize();
         InitThreadManagerPerfMapData();
 #endif
 
@@ -830,6 +833,10 @@ void EEStartupHelper()
         COMDelegate::Init();
 
         ExecutionManager::Init();
+
+#ifdef FEATURE_PERFMAP
+        PerfMap::SignalDependenciesReady();
+#endif
 
         JitHost::Init();
 
@@ -2222,4 +2229,3 @@ void ContractRegressionCheck()
 }
 
 #endif // ENABLE_CONTRACTS_IMPL
-

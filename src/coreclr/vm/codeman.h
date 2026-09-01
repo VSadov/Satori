@@ -610,7 +610,7 @@ public:
     // All public functions are thread-safe.
 
     // These are wrapper functions over the UnwindInfoTable functions that are specific to JIT compile code
-    static void PublishUnwindInfoForMethod(TADDR baseAddress, T_RUNTIME_FUNCTION* unwindInfo, int unwindInfoCount);
+    static void PublishUnwindInfoForMethod(TADDR baseAddress, T_RUNTIME_FUNCTION* methodUnwindData, int methodUnwindDataCount);
     static void UnpublishUnwindInfoForMethod(TADDR entryPoint);
 
     static void Initialize();
@@ -619,7 +619,7 @@ public:
 private:
     // These are lower level functions that assume you have found the list of UnwindInfoTable entries
     // These are used by the high-level method functions above
-    static void AddToUnwindInfoTable(UnwindInfoTable** unwindInfoPtr, T_RUNTIME_FUNCTION* data, TADDR rangeStart, TADDR rangeEnd);
+    void AddToUnwindInfoTable(T_RUNTIME_FUNCTION* data, int count);
     static void RemoveFromUnwindInfoTable(UnwindInfoTable** unwindInfoPtr, TADDR baseAddress, TADDR entryPoint);
 
 public:
@@ -628,9 +628,12 @@ public:
 private:
     void UnRegister();
     void Register();
-    UnwindInfoTable(ULONG_PTR rangeStart, ULONG_PTR rangeEnd, ULONG size);
+    UnwindInfoTable(ULONG_PTR rangeStart, ULONG_PTR rangeEnd);
 
 private:
+    void FlushPendingEntries(LONG waitForSeq);
+    LONG FlushPendingEntriesUnderGate();
+
     PVOID               hHandle;          // OS handle for a published RUNTIME_FUNCTION table
     ULONG_PTR           iRangeStart;      // Start of memory described by this table
     ULONG_PTR           iRangeEnd;        // End of memory described by this table
@@ -638,6 +641,33 @@ private:
     ULONG               cTableCurCount;
     ULONG               cTableMaxCount;
     int                 cDeletedEntries;    // Number of slots we removed.
+
+    // Pending buffer for out-of-order entries that haven't been published to the OS yet.
+    // These entries are accumulated and batch-merged into pTable to amortize the cost of
+    // RtlDeleteGrowableFunctionTable + RtlAddGrowableFunctionTable.
+    static const ULONG  cPendingMaxCount = 32;
+    T_RUNTIME_FUNCTION  pendingTable[cPendingMaxCount];
+    ULONG               cPendingCount;
+
+    // Per-table locks. Each UnwindInfoTable corresponds to one RangeSection, and
+    // independent RangeSections can publish/unpublish concurrently.
+    Crst                m_publishLock; // Protects the main table and OS registration.
+    Crst                m_pendingLock; // Protects the pending table only.
+
+    Volatile<LONG>      m_flushInProgress;
+
+    // Sequence counters used to ensure callers wait until their entries are
+    // published to the OS before returning.
+    // m_flushLock + m_flushCV form a lightweight condition variable pair.
+    Volatile<LONG>      m_pendingSeq;
+    LONG                m_publishedSeq;   // Protected by m_flushLock.
+    SRWLOCK             m_flushLock;
+    CONDITION_VARIABLE  m_flushCV;
+
+    // Whether initial OS registration failed, used to return early in AddToUnwindInfoTable.
+    // We cannot just check if hHandle is null because it's temporarily set to NULL
+    // during the flusher's merge path.
+    Volatile<bool>      m_registrationFailed;
 #endif // defined(TARGET_AMD64) && defined(TARGET_WINDOWS)
 };
 
@@ -2268,10 +2298,14 @@ public:
     };
 
     // Returns default scan flag for current thread
-    static ScanFlag GetScanFlags();
+    static ScanFlag GetScanFlags(Thread *pThread = NULL);
 
-    // Returns whether currentPC is in managed code. Returns false for jump stubs on WIN64.
+    // Returns whether currentPC is in managed code. Returns false for jump stubs.
     static BOOL IsManagedCode(PCODE currentPC);
+
+    // Returns whether currentPC is in managed code. Returns false for jump stubs.
+    // Does not acquire the reader lock. Caller must ensure it is safe.
+    static BOOL IsManagedCodeNoLock(PCODE currentPC);
 
     // Returns true if currentPC is ready to run codegen
     static BOOL IsReadyToRunCode(PCODE currentPC);

@@ -3666,6 +3666,14 @@ NOINLINE static void NotifyFunctionEnterHelper(StackFrameIterator *pThis, Thread
 {
     MethodDesc *pMD = pThis->m_crawl.GetFunction();
 
+    if (pExInfo->m_reportedFunctionEnterWasForFunclet && (pMD == pExInfo->m_pMDToReportFunctionLeave))
+    {
+        // In case of a funclet, the pMD represents the parent of the funclet. We only want to report entering and leaving
+        // the method once. So we ignore transitions from the funclet to the parent method or the funclet into another funclet
+        // of the same parent method.
+        return;
+    }
+
     if (pExInfo->m_passNumber == 1)
     {
         if (pExInfo->m_pMDToReportFunctionLeave != NULL)
@@ -3684,6 +3692,7 @@ NOINLINE static void NotifyFunctionEnterHelper(StackFrameIterator *pThis, Thread
     }
 
     pExInfo->m_pMDToReportFunctionLeave = pMD;
+    pExInfo->m_reportedFunctionEnterWasForFunclet = pThis->m_crawl.IsFunclet();
 }
 
 static void NotifyFunctionEnter(StackFrameIterator *pThis, Thread *pThread, ExInfo *pExInfo)
@@ -3923,14 +3932,20 @@ CLR_BOOL SfiNextWorker(StackFrameIterator* pThis, uint* uExCollideClauseIdx, CLR
     if (pThis->GetFrameState() == StackFrameIterator::SFITER_NATIVE_MARKER_FRAME)
     {
         EECodeInfo codeInfo(preUnwindControlPC);
+        // If we are unwinding from a funclet, we don't care about the reverse pinvoke frame of the parent method
+        // that we would get from the GC info. It applies to the parent method only. The funclet itself cannot be
+        // invoked via a reverse pinvoke.
+        if (!doingFuncletUnwind)
+        {
 #ifdef USE_GC_INFO_DECODER
-        GcInfoDecoder gcInfoDecoder(codeInfo.GetGCInfoToken(), DECODE_REVERSE_PINVOKE_VAR);
-        isPropagatingToNativeCode = gcInfoDecoder.GetReversePInvokeFrameStackSlot() != NO_REVERSE_PINVOKE_FRAME;
+            GcInfoDecoder gcInfoDecoder(codeInfo.GetGCInfoToken(), DECODE_REVERSE_PINVOKE_VAR);
+            isPropagatingToNativeCode = gcInfoDecoder.GetReversePInvokeFrameStackSlot() != NO_REVERSE_PINVOKE_FRAME;
 #else // USE_GC_INFO_DECODER
-        hdrInfo *hdrInfoBody;
-        codeInfo.DecodeGCHdrInfo(&hdrInfoBody);
-        isPropagatingToNativeCode = hdrInfoBody->revPInvokeOffset != INVALID_REV_PINVOKE_OFFSET;
+            hdrInfo *hdrInfoBody;
+            codeInfo.DecodeGCHdrInfo(&hdrInfoBody);
+            isPropagatingToNativeCode = hdrInfoBody->revPInvokeOffset != INVALID_REV_PINVOKE_OFFSET;
 #endif // USE_GC_INFO_DECODER
+        }
         bool isPropagatingToExternalNativeCode = false;
 
         EH_LOG((LL_INFO100, "SfiNext: reached native frame at IP=%p, SP=%p, isPropagatingToNativeCode=%d\n",

@@ -1107,6 +1107,13 @@ bool ObjectAllocator::CanAllocateLclVarOnStack(unsigned int         lclNum,
             return false;
         }
 
+        // Bail out if the array is definitely too large - we don't want to even start building its layout.
+        if (ClassLayoutBuilder::IsArrayTooLarge(comp, clsHnd, (unsigned)length, m_StackAllocMaxSize))
+        {
+            *reason = "[array is too large]";
+            return false;
+        }
+
         ClassLayout* const layout = comp->typGetArrayLayout(clsHnd, (unsigned)length);
         classSize                 = layout->GetSize();
     }
@@ -3517,6 +3524,21 @@ void ObjectAllocator::CheckForGuardedAllocationOrCopy(BasicBlock* block,
             RecordAppearance(lclNum, block, stmt, use);
         }
     }
+    else if (!data->IsIntegralConst(0))
+    {
+        // Store into a tracked enumerator local from an unrecognized source
+        // (e.g. a virtual GetEnumerator call that did not devirtualize, into
+        // a local Roslyn shares between two enumerator scopes). Record it so
+        // CheckCanClone's multiple-defs check bails out of unsafe cloning.
+        // Null/zero stores are skipped: the inliner emits these as GC cleanup
+        // of dead temps. See https://github.com/dotnet/runtime/issues/127075.
+        //
+        unsigned pseudoIndex = BAD_VAR_NUM;
+        if (m_EnumeratorLocalToPseudoIndexMap.TryGetValue(lclNum, &pseudoIndex))
+        {
+            RecordAppearance(lclNum, block, stmt, use);
+        }
+    }
 }
 
 //------------------------------------------------------------------------------
@@ -3822,6 +3844,20 @@ bool ObjectAllocator::CheckCanClone(CloneInfo* info)
     assert(!info->m_checkedCanClone);
     JITDUMP("** Seeing if we can clone to guarantee non-escape under V%02u\n", info->m_local);
     BasicBlock* const allocBlock = info->m_allocBlock;
+
+    // Cloning redirects the allocation block's sole outgoing edge to the fast path,
+    // so the allocation block must be a block kind that has a single target.
+    //
+    // If the allocation block ends in a conditional (say the def of the enumerator var
+    // is in the allocation block, and is followed by a GDV guard), we can't simply
+    // redirect, so bail out.
+    //
+    if (!allocBlock->HasTarget())
+    {
+        JITDUMP("allocation block " FMT_BB " is a %s, and so has no unique target edge\n", allocBlock->bbNum,
+                bbKindNames[allocBlock->GetKind()]);
+        return false;
+    }
 
     // The allocation site must not be in a loop (stack allocation limitation)
     //

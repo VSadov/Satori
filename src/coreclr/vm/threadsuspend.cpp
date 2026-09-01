@@ -20,6 +20,8 @@
 #include "exinfo.h"
 #endif
 
+bool IsCallDescrWorkerInternalReturnAddress(PCODE pCode);
+
 #define HIJACK_NONINTERRUPTIBLE_THREADS
 
 bool ThreadSuspend::s_fSuspendRuntimeInProgress = false;
@@ -2194,6 +2196,10 @@ void Thread::RareDisablePreemptiveGC()
 
         if (ThreadStore::IsTrappingThreadsForSuspension())
         {
+            // Mark that this thread is trapped for suspension.
+            // Used by the sample profiler to determine this thread was in managed code.
+            SetThreadState(TS_SuspensionTrapped);
+
             EnablePreemptiveGC();
 
 #ifdef PROFILING_SUPPORTED
@@ -2232,6 +2238,9 @@ void Thread::RareDisablePreemptiveGC()
 
             // disable preemptive gc.
             m_fPreemptiveGCDisabled.StoreWithoutBarrier(1);
+
+            // Clear the suspension trapped flag now that we're resuming.
+            ResetThreadState(TS_SuspensionTrapped);
 
             // check again if we have something to do
             continue;
@@ -4590,6 +4599,19 @@ void Thread::HijackThread(ExecutionState *esb X86_ARG(ReturnKind returnKind) X86
     // Remember the place that the return would have gone
     m_pvHJRetAddr = *esb->m_ppvRetAddrPtr;
 
+#ifndef TARGET_X86
+    // Except for x86, no registers are scanned as part of the HijackFrame on top of the stack.
+    // This still allows scanning of the return value because the registers in question are
+    // scanned as part of the calling method's roots. The problem arises if we are returning to
+    // CallDescrWorkerInternal, which is hand written assembly with no GC info, so a returned
+    // objectref would be neither reported nor updated by a GC.
+    if (IsCallDescrWorkerInternalReturnAddress((PCODE)(TADDR)m_pvHJRetAddr))
+    {
+        STRESS_LOG2(LF_SYNC, LL_INFO100, "Thread::HijackThread(%p): Early out - return address %p is CallDescrWorkerInternal.\n", this, m_pvHJRetAddr);
+        return;
+    }
+#endif // !TARGET_X86
+
     IS_VALID_CODE_PTR((FARPROC) (TADDR)m_pvHJRetAddr);
     // TODO [DAVBR]: For the full fix for VsWhidbey 450273, the below
     // may be uncommented once isLegalManagedCodeCaller works properly
@@ -5725,16 +5747,17 @@ retry_for_debugger:
 //          It is unsafe to use blocking APIs or allocate in this method.
 BOOL CheckActivationSafePoint(SIZE_T ip)
 {
-    Thread *pThread = GetThreadNULLOk();
+    Thread *pThread = GetThreadAsyncSafe();
 
     // The criteria for safe activation is to be running managed code.
     // Also we are not interested in handling interruption if we are already in preemptive mode nor if we are single stepping
     BOOL isActivationSafePoint = pThread != NULL &&
         (pThread->m_StateNC & Thread::TSNC_DebuggerIsStepping) == 0 &&
         pThread->PreemptiveGCDisabled() &&
-        ExecutionManager::IsManagedCode(ip);
+        (ExecutionManager::GetScanFlags(pThread) != ExecutionManager::ScanReaderLock) &&
+        ExecutionManager::IsManagedCodeNoLock(ip);
 
-    if (!isActivationSafePoint)
+    if (!isActivationSafePoint && pThread != NULL)
     {
         pThread->m_hasPendingActivation = false;
     }
@@ -5937,8 +5960,11 @@ bool Thread::InjectActivation(ActivationReason reason)
             hThread,
             (ULONG_PTR)reason,
             SpecialUserModeApcWithContextFlags);
-    _ASSERTE(success);
-    return true;
+    if (!success)
+    {
+        m_hasPendingActivation = false;
+    }
+    return success;
 #elif defined(TARGET_UNIX)
     _ASSERTE((reason == ActivationReason::SuspendForGC) || (reason == ActivationReason::ThreadAbort) || (reason == ActivationReason::SuspendForDebugger));
 
