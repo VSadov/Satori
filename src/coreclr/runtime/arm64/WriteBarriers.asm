@@ -807,7 +807,7 @@ DirtyPageCmpXchg
         ldrb    w3, [x16]
         tbnz    w3, #2, ExitCmpXchg
         strb    w17, [x16]
-        b       Exit
+        b       ExitCmpXchg
 
     ;; this is expected to be rare.
 RecordEscape_Cmp_Xchg
@@ -1018,7 +1018,7 @@ RecordEscape_Xchg
         ldp     x0, x1,  [sp, 16 * 1]
         ldp     x29,x30, [sp], 16 * 2
 
-  ;;    and     x16,  x1, #0xFFFFFFFFFFE00000   ;; source region
+        and     x16,  x1, #0xFFFFFFFFFFE00000   ;; source region
         b       AssignAndMarkCards_Xchg
     LEAF_END RhpCheckedXchg
 

@@ -914,7 +914,6 @@ namespace System.Net.WebSockets
                             if (_receiveBufferCount > 0)
                             {
                                 int receiveBufferBytesToCopy = Math.Min(limit, _receiveBufferCount);
-                                Debug.Assert(receiveBufferBytesToCopy > 0);
 
                                 _receiveBuffer.Span.Slice(_receiveBufferOffset, receiveBufferBytesToCopy).CopyTo(
                                     header.Compressed ? _inflater!.Span : payloadBuffer.Span);
@@ -1348,6 +1347,11 @@ namespace System.Net.WebSockets
 
                 // Consume the mask bytes
                 ConsumeFromBuffer(4);
+            }
+            else if (_isServer)
+            {
+                resultHeader = default;
+                return SR.net_Websockets_ServerReceivedUnmaskedFrame;
             }
 
             // Do basic validation of the header

@@ -74,6 +74,12 @@ set(COMMON_RUNTIME_SOURCES
     ${GC_DIR}/satori/SatoriGate.cpp
 )
 
+if (CLR_CMAKE_TARGET_UNIX AND NOT CLR_CMAKE_TARGET_ARCH_WASM)
+    list(APPEND COMMON_RUNTIME_SOURCES
+        ${RUNTIME_DIR}/asyncsafethreadmap.cpp
+    )
+endif()
+
 set(SERVER_GC_SOURCES
 # TODO: VS Satori
 #    ${GC_DIR}/gceesvr.cpp
