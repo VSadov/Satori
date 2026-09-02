@@ -14,9 +14,9 @@ namespace standalone
             ::GCToEEInterface::SuspendEE(reason);
         }
 
-        void RestartEE(bool bFinishedGC)
+        void RestartEE(bool bUnused)
         {
-            ::GCToEEInterface::RestartEE(bFinishedGC);
+            ::GCToEEInterface::RestartEE(/* bUnused */ true);
         }
 
         void GcScanCurrentStackRoots(promote_func* fn, ScanContext* sc)
@@ -62,6 +62,11 @@ namespace standalone
         void TriggerClientBridgeProcessing(MarkCrossReferencesArgs* args)
         {
             return ::GCToEEInterface::TriggerClientBridgeProcessing(args);
+        }
+
+        bool IsClientBridgeProcessingActive()
+        {
+            return ::GCToEEInterface::IsClientBridgeProcessingActive();
         }
 
         void SyncBlockCacheWeakPtrScan(HANDLESCANPROC scanProc, uintptr_t lp1, uintptr_t lp2)

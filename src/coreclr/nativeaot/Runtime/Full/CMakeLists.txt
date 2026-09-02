@@ -22,22 +22,111 @@ if (CLR_CMAKE_TARGET_WIN32)
   endif()
 endif (CLR_CMAKE_TARGET_WIN32)
 
-# TODO: Satori WKS does not really exist, do the same as SVR
-add_library(Runtime.WorkstationGC STATIC ${COMMON_RUNTIME_SOURCES} ${FULL_RUNTIME_SOURCES} ${SERVER_GC_SOURCES} ${RUNTIME_ARCH_ASM_OBJECTS})
-add_dependencies(Runtime.WorkstationGC aot_eventing_headers)
-target_link_libraries(Runtime.WorkstationGC PRIVATE aotminipal)
+if(NATIVEAOT_PRIVATE_LIBUNWIND_SOURCES)
+  add_library(Runtime.PrivateLibunwind OBJECT ${NATIVEAOT_PRIVATE_LIBUNWIND_SOURCES})
 
-add_library(Runtime.ServerGC STATIC ${COMMON_RUNTIME_SOURCES} ${FULL_RUNTIME_SOURCES} ${SERVER_GC_SOURCES} ${RUNTIME_ARCH_ASM_OBJECTS})
-add_dependencies(Runtime.ServerGC aot_eventing_headers)
-target_link_libraries(Runtime.ServerGC PRIVATE aotminipal)
+  set(NATIVEAOT_PRIVATE_LIBUNWIND_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/Runtime.PrivateLibunwind.o")
+  set(NATIVEAOT_PRIVATE_LIBUNWIND_SYMBOLS "${CMAKE_CURRENT_BINARY_DIR}/Runtime.PrivateLibunwind.localize")
+  set(NATIVEAOT_PRIVATE_LIBUNWIND_SYMBOLS_UNSORTED "${CMAKE_CURRENT_BINARY_DIR}/Runtime.PrivateLibunwind.localize.unsorted")
+  # The relocatable object includes runtime-owned objects so their references to
+  # libunwind implementation symbols are resolved before localization. The
+  # localize list is generated only from the bundled libunwind source objects.
+  set(NATIVEAOT_PRIVATE_LIBUNWIND_SYMBOL_OBJECTS "$<FILTER:$<TARGET_OBJECTS:Runtime.PrivateLibunwind>,EXCLUDE,.*(UnwindHelpers|UnixNativeCodeManager)\\.cpp\\.o$>")
 
+  add_custom_command(
+    OUTPUT "${NATIVEAOT_PRIVATE_LIBUNWIND_OBJECT}"
+    COMMAND "${CMAKE_COMMAND}" -E rm -f
+            "${NATIVEAOT_PRIVATE_LIBUNWIND_OBJECT}"
+            "${NATIVEAOT_PRIVATE_LIBUNWIND_SYMBOLS_UNSORTED}"
+    # Generate the objcopy symbol list from libunwind-owned object files only.
+    COMMAND sh -c "nm_tool=\"$1\" && shift && \"$nm_tool\" --extern-only --defined-only --format=just-symbols \"$@\" > \"$0\""
+            "${NATIVEAOT_PRIVATE_LIBUNWIND_SYMBOLS_UNSORTED}"
+            "${CMAKE_NM}"
+            ${NATIVEAOT_PRIVATE_LIBUNWIND_SYMBOL_OBJECTS}
+    COMMAND sort -u -o
+            "${NATIVEAOT_PRIVATE_LIBUNWIND_SYMBOLS}"
+            "${NATIVEAOT_PRIVATE_LIBUNWIND_SYMBOLS_UNSORTED}"
+    COMMAND "${CMAKE_COMMAND}" -E rm -f
+            "${NATIVEAOT_PRIVATE_LIBUNWIND_SYMBOLS_UNSORTED}"
+    COMMAND "${CMAKE_LINKER}" -r $<TARGET_OBJECTS:Runtime.PrivateLibunwind> -o "${NATIVEAOT_PRIVATE_LIBUNWIND_OBJECT}"
+    COMMAND "${CMAKE_OBJCOPY}"
+            "--localize-symbols=${NATIVEAOT_PRIVATE_LIBUNWIND_SYMBOLS}"
+            "${NATIVEAOT_PRIVATE_LIBUNWIND_OBJECT}"
+    DEPENDS
+      Runtime.PrivateLibunwind
+      $<TARGET_OBJECTS:Runtime.PrivateLibunwind>
+    BYPRODUCTS "${NATIVEAOT_PRIVATE_LIBUNWIND_SYMBOLS}"
+    COMMENT "Privatizing NativeAOT libunwind symbols"
+    COMMAND_EXPAND_LISTS
+    VERBATIM
+  )
+  set_source_files_properties("${NATIVEAOT_PRIVATE_LIBUNWIND_OBJECT}" PROPERTIES
+    EXTERNAL_OBJECT TRUE
+    GENERATED TRUE)
+endif()
+
+# TODO: VS Satori
+# Satori is a functional replacement for the classic GC and its sources are part of
+# COMMON_RUNTIME_SOURCES, so GC_WKS_SVR_SOURCES is empty and these object libraries
+# have nothing to build. Kept (commented) so both GCs can be built side by side later.
+# The GC data descriptors reflect classic gc_heap internals (gcpriv.h) and likewise
+# cannot be built against Satori.
+#
+# add_library(Runtime.GC.Workstation OBJECT ${GC_WKS_SVR_SOURCES})
+# if(FEATURE_PERFTRACING)
+#   add_dependencies(Runtime.GC.Workstation aot_eventing_headers)
+# endif()
+# set_target_properties(Runtime.GC.Workstation PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 0)
+#
+# add_library(Runtime.GC.Server OBJECT ${GC_WKS_SVR_SOURCES})
+# if(FEATURE_PERFTRACING)
+#   add_dependencies(Runtime.GC.Server aot_eventing_headers)
+# endif()
+# target_compile_definitions(Runtime.GC.Server PRIVATE FEATURE_SVR_GC SERVER_GC)
+# set_target_properties(Runtime.GC.Server PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 0)
+#
+# if (CLR_CMAKE_TARGET_WIN32)
+#   # Embed debug info in the object files (/Z7) rather than referencing an external
+#   # compiler PDB. CMake does not assign a compile PDB to OBJECT libraries, so the
+#   # objects archived into Runtime.WorkstationGC/Runtime.ServerGC would otherwise
+#   # reference a vc140.pdb that is absent when these static libs are statically
+#   # linked by the AOT compiler publish projects, producing LNK4099.
+#   set_target_properties(Runtime.GC.Workstation PROPERTIES MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+#   set_target_properties(Runtime.GC.Server PROPERTIES MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+# endif (CLR_CMAKE_TARGET_WIN32)
+
+add_library(Runtime.WorkstationGC STATIC
+    ${COMMON_RUNTIME_SOURCES}
+    ${FULL_RUNTIME_SOURCES}
+    ${NATIVEAOT_PRIVATE_LIBUNWIND_OBJECT}
+    ${RUNTIME_ARCH_ASM_OBJECTS})
+if(FEATURE_PERFTRACING)
+  add_dependencies(Runtime.WorkstationGC aot_eventing_headers)
+endif()
+target_link_libraries(Runtime.WorkstationGC PRIVATE aotminipal nativeaot_cdac_contract_descriptor)
+
+add_library(Runtime.ServerGC STATIC
+    ${COMMON_RUNTIME_SOURCES}
+    ${FULL_RUNTIME_SOURCES}
+    ${NATIVEAOT_PRIVATE_LIBUNWIND_OBJECT}
+    ${RUNTIME_ARCH_ASM_OBJECTS})
+if(FEATURE_PERFTRACING)
+  add_dependencies(Runtime.ServerGC aot_eventing_headers)
+endif()
+target_link_libraries(Runtime.ServerGC PRIVATE aotminipal nativeaot_cdac_contract_descriptor)
 add_library(standalonegc-disabled STATIC ${STANDALONEGC_DISABLED_SOURCES})
-add_dependencies(standalonegc-disabled aot_eventing_headers)
+if(FEATURE_PERFTRACING)
+  add_dependencies(standalonegc-disabled aot_eventing_headers)
+endif()
 add_library(standalonegc-enabled STATIC ${STANDALONEGC_ENABLED_SOURCES})
-add_dependencies(standalonegc-enabled aot_eventing_headers)
-if(CLR_CMAKE_TARGET_WIN32)
-  add_dependencies(standalonegc-disabled aot_etw_headers)
-  add_dependencies(standalonegc-enabled aot_etw_headers)
+if(FEATURE_PERFTRACING)
+  add_dependencies(standalonegc-enabled aot_eventing_headers)
+endif()
+if(FEATURE_EVENT_TRACE)
+  if(CLR_CMAKE_TARGET_WIN32)
+    add_dependencies(standalonegc-disabled aot_etw_headers)
+    add_dependencies(standalonegc-enabled aot_etw_headers)
+  endif()
 endif()
 
 if (CLR_CMAKE_TARGET_ARCH_ARM64 OR CLR_CMAKE_TARGET_ARCH_AMD64)
@@ -45,8 +134,9 @@ if (CLR_CMAKE_TARGET_ARCH_ARM64 OR CLR_CMAKE_TARGET_ARCH_AMD64)
   add_library(Runtime.VxsortDisabled STATIC ${DUMMY_VXSORT_SOURCES})
 endif (CLR_CMAKE_TARGET_ARCH_ARM64 OR CLR_CMAKE_TARGET_ARCH_AMD64)
 
-target_compile_definitions(Runtime.ServerGC PRIVATE -DFEATURE_SVR_GC)
-target_compile_definitions(Runtime.WorkstationGC PRIVATE -DFEATURE_SVR_GC)
+target_compile_definitions(Runtime.ServerGC PRIVATE FEATURE_SVR_GC)
+# TODO: Satori WKS does not really exist, do the same as SVR
+target_compile_definitions(Runtime.WorkstationGC PRIVATE FEATURE_SVR_GC)
 
 if (CLR_CMAKE_TARGET_WIN32)
   set_target_properties(aotminipal PROPERTIES

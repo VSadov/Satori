@@ -87,7 +87,8 @@ public:
     size_t FreeSpaceInTopNBuckets(int n);
 
     void StartEscapeTrackingRelease(size_t threadTag);
-    void StopEscapeTracking();
+    // when calledFromBarrier is true, the callee must not touch vector registers.
+    void StopEscapeTracking(bool calledFromBarrier = false);
     bool IsEscapeTracking();
     bool MaybeEscapeTrackingAcquire();
     bool IsEscapeTrackedByCurrentThread();
@@ -208,7 +209,11 @@ public:
 #endif
 
     bool NothingMarked();
-    void ClearMarks();
+    // NB: both variants must not be inlined, so that vector code from one does not
+    //     end up on the call path of the other. ClearMarksScalar is reachable from
+    //     the write barrier - see comments in the implementation.
+    NOINLINE void ClearMarks();
+    NOINLINE void ClearMarksScalar();
     void ClearIndex();
     void ClearFreeLists();
 

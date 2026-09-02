@@ -163,7 +163,7 @@ namespace System.Net.NameResolution.PalTests
             Assert.NotNull(name);
         }
 
-        [ConditionalFact(nameof(Ipv6LocalHostNameLookupNotBrokenByNrpRule))]
+        [ConditionalFact(typeof(NameResolutionPalTests), nameof(Ipv6LocalHostNameLookupNotBrokenByNrpRule))]
         [SkipOnPlatform(TestPlatforms.Wasi, "WASI has no getnameinfo")]
         public void TryGetNameInfo_LocalHost_IPv6()
         {
@@ -265,7 +265,7 @@ namespace System.Net.NameResolution.PalTests
             Assert.NotNull(addresses);
         }
 
-        [Theory][OuterLoop("Satori: disabling for local runs")]
+[ConditionalTheory(typeof(NameResolutionPalTests), nameof(Ipv6LocalHostNameLookupNotBrokenByNrpRule))][OuterLoop("Satori: disabling for local runs")]
         [InlineData(false)]
         [InlineData(true)]
         [SkipOnPlatform(TestPlatforms.Wasi, "WASI has no getnameinfo")]

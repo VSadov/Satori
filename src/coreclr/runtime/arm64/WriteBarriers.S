@@ -189,32 +189,7 @@
         // Exit label
     .endm
 
-// void JIT_ByRefWriteBarrier
-// On entry:
-//   x13  : the source address (points to object reference to write)
-//   x14  : the destination address (object reference written here)
-//
-// On exit:
-//   x13  : incremented by 8
-//   x14  : incremented by 8
-//   x15  : trashed
-//   x12, x17  : trashed
-//
-//   NOTE: Keep in sync with RBM_CALLEE_TRASH_WRITEBARRIER_BYREF and RBM_CALLEE_GCTRASH_WRITEBARRIER_BYREF
-//         if you add more trashed registers.
-//
-// WARNING: Code in EHHelpers.cpp makes assumptions about write barrier code, in particular:
-// - Function "InWriteBarrierHelper" assumes an AV due to passed in null pointer will happen at RhpByRefAssignRefAVLocation1
-// - Function "UnwindSimpleHelperToCaller" assumes no registers were pushed and LR contains the return address
-LEAF_ENTRY RhpByRefAssignRefArm64, _TEXT
-
-    ALTERNATE_ENTRY RhpByRefAssignRefAVLocation1
-        ldr     x15, [x13], 8
-        b       C_FUNC(RhpCheckedAssignRefArm64)
-
-LEAF_END RhpByRefAssignRefArm64, _TEXT
-
-// JIT_CheckedWriteBarrier(Object** dst, Object* src)
+// RhpCheckedAssignRef(Object** dst, Object* src)
 //
 // Write barrier for writes to objects that may reside
 // on the managed heap.
@@ -226,7 +201,7 @@ LEAF_END RhpByRefAssignRefArm64, _TEXT
 //
 // On exit:
 //   x12, x17 : trashed
-//   x14      : incremented by 8
+//   x14      : preserved (the destination address is not modified)
  LEAF_ENTRY RhpCheckedAssignRefArm64, _TEXT
 
         // is destReg within the heap?
@@ -248,11 +223,11 @@ LOCAL_LABEL(NotInHeap):
 #ifdef TARGET_APPLE
 .cfi_startproc
 #endif
-        str     x15, [x14], 8
+        str     x15, [x14]
         ret
 LEAF_END RhpCheckedAssignRefArm64, _TEXT
 
-// JIT_WriteBarrier(Object** dst, Object* src)
+// RhpAssignRef(Object** dst, Object* src)
 //
 // Write barrier for writes to objects that are known to
 // reside on the managed heap.
@@ -263,7 +238,7 @@ LEAF_END RhpCheckedAssignRefArm64, _TEXT
 //
 // On exit:
 //  x12, x17 : trashed
-//  x14 : incremented by 8
+//  x14 : preserved (the destination address is not modified)
 LEAF_ENTRY RhpAssignRefArm64, _TEXT
 
     ALTERNATE_ENTRY RhpAssignRefAVLocation
@@ -271,7 +246,6 @@ LEAF_ENTRY RhpAssignRefArm64, _TEXT
 
         INSERT_UNCHECKED_WRITE_BARRIER_CORE x14, x15
 
-        add     x14, x14, 8
         ret
 
 LEAF_END RhpAssignRefArm64, _TEXT
@@ -422,26 +396,6 @@ LOCAL_LABEL(NoBarrierXchg):
 .arch_extension lse
 #endif
 
-// void JIT_ByRefWriteBarrier
-// On entry:
-//   x13  : the source address (points to object reference to write)
-//   x14  : the destination address (object reference written here)
-//
-// On exit:
-//   x13  : incremented by 8
-//   x14  : incremented by 8
-//   x15  : trashed
-//   x12, x17  : trashed
-//
-LEAF_ENTRY RhpByRefAssignRefArm64, _TEXT
-
-    ALTERNATE_ENTRY RhpByRefAssignRefAVLocation1
-    ALTERNATE_ENTRY RhpByRefAssignRefAVLocation2
-        ldr     x15, [x13], 8
-        b       C_FUNC(RhpCheckedAssignRefArm64)
-
-LEAF_END RhpByRefAssignRefArm64, _TEXT
-
 // JIT_CheckedWriteBarrier(Object** dst, Object* src)
 //
 // Write barrier for writes to objects that may reside
@@ -454,7 +408,7 @@ LEAF_END RhpByRefAssignRefArm64, _TEXT
 //
 // On exit:
 //   x12  : trashed
-//   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
+//   x14  : preserved (the destination address is not modified)
 //   x15  : trashed
 //   x16  : trashed (ip0)
 //   x17  : trashed (ip1)
@@ -468,7 +422,7 @@ LEAF_ENTRY RhpCheckedAssignRefArm64, _TEXT
 
     LOCAL_LABEL(NotInHeap):
     ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
-        str  x15, [x14], #8
+        str  x15, [x14]
         ret  lr
 LEAF_END RhpCheckedAssignRefArm64, _TEXT
 
@@ -483,7 +437,7 @@ LEAF_END RhpCheckedAssignRefArm64, _TEXT
 //
 // On exit:
 //   x12  : trashed
-//   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
+//   x14  : preserved (the destination address is not modified)
 //   x15  : trashed
 //   x16  : trashed (ip0)
 //   x17  : trashed (ip1)
@@ -526,7 +480,7 @@ ALTERNATE_ENTRY RhpCheckedEntry
     // UNORDERED! assignment of unescaped, null or external (immutable) object
     LOCAL_LABEL(JustAssign):
 ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
-        str  x15, [x14], #8
+        str  x15, [x14]
         ret  lr
 
     LOCAL_LABEL(AssignAndMarkCards):
@@ -541,7 +495,6 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         tbz     x17, #1, LOCAL_LABEL(DoCards)
 
     LOCAL_LABEL(ExitNoCards):
-        add     x14, x14, 8
         ret     lr
 
     LOCAL_LABEL(DoCards):
@@ -597,7 +550,6 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
 
     LOCAL_LABEL(Exit):
         ldp  x2,  x3, [sp], 16
-        add  x14, x14, 8
         ret  lr
 
     // DIRTYING CARD FOR X14

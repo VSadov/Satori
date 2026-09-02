@@ -40,6 +40,33 @@ FORCEINLINE uint8_t Cas128(int64_t volatile *pDst, int64_t iValueHigh, int64_t i
 {
     return _InterlockedCompareExchange128(pDst, iValueHigh, iValueLow, pComparand);
 }
+#elif defined(HOST_AMD64)
+// Emit CMPXCHG16B directly instead of using __sync_bool_compare_and_swap_16.
+// The builtin is only expanded inline when the compiler is told the target
+// supports the instruction (-mcx16); otherwise it is lowered to a call to
+// __sync_val_compare_and_swap_16, which may not be lock-free. Emitting the
+// instruction here keeps the operation lock-free without raising the baseline
+// ISA for the rest of the build.
+//
+// Semantics match _InterlockedCompareExchange128: returns 1 if the exchange
+// happened, otherwise 0 and *pComparand is updated with the observed value.
+// (The __sync_bool_* builtin does not report the observed value; callers here
+// re-read the location on failure, so either behavior is acceptable.)
+FORCEINLINE uint8_t Cas128(int64_t volatile *pDst, int64_t iValueHigh, int64_t iValueLow, int64_t *pComparand)
+{
+    uint8_t result;
+    __asm__ __volatile__ (
+        "lock cmpxchg16b %[dst]"
+        : [dst] "+m" (*pDst),
+          "+d" (pComparand[1]),   // RDX:RAX is the comparand, and receives
+          "+a" (pComparand[0]),   // the current value when the swap fails
+          [res] "=@ccz" (result)
+        : "c" (iValueHigh),       // RCX:RBX is the value to store
+          "b" (iValueLow)
+        : "cc", "memory");
+
+    return result;
+}
 #else
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Watomic-alignment"
