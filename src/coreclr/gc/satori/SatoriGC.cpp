@@ -750,78 +750,7 @@ bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
         return false;
     }
 
-    _ASSERTE(curRegion->IsEscapeTrackedByCurrentThread());
-
-    // if dst is within the curRegion and is not exposed, we are done
-    if ((dst ^ curRegion->Start()) < Satori::REGION_SIZE_GRANULARITY)
-    {
-        if (!curRegion->AnyExposed(dst, len))
-        {
-            // thread-local assignment
-            return true;
-        }
-    }
-
-    if (!SatoriHeap::IsInHeap(dst))
-    {
-        // dest not in heap, must be stack, so, local
-        return true;
-    }
-
-    if ((src ^ curRegion->Start()) < Satori::REGION_SIZE_GRANULARITY)
-    {
-        // if src is in current region, the elements could be escaping
-        if (!curRegion->AnyExposed(src, len))
-        {
-            // one-element array copy is embarrasingly common. specialcase that.
-            if (len == sizeof(size_t))
-            {
-                SatoriObject* obj = *(SatoriObject**)src;
-                if (obj->SameRegion(curRegion))
-                {
-                    curRegion->EscapeRecursively(obj);
-                }
-            }
-            else
-            {
-                SatoriObject* containingSrcObj = curRegion->FindObject(src);
-                containingSrcObj->ForEachObjectRef(
-                    [&](SatoriObject** ref)
-                    {
-                        SatoriObject* child = *ref;
-                        if (child->SameRegion(curRegion))
-                        {
-                            curRegion->EscapeRecursively(child);
-                        }
-                    },
-                    src,
-                    src + len
-                );
-            }
-        }
-
-        return false;
-    }
-
-    if (SatoriHeap::IsInHeap(src))
-    {
-        // src is not in current region but in heap,
-        // it can't escape anything that belongs to the current thread, but it is not a local assignment.
-        return false;
-    }
-
-    // This is a very rare case where we are copying refs out of non-heap area like stack or native heap.
-    // We do not have a containing type and that is somewhat inconvenient.
-    // 
-    // There are not many scenarios that lead here. In particular, boxing uses a newly
-    // allocated and not yet escaped target, so it does not end up here.
-    // One possible way to get here is a copy-back after a reflection call with a boxed nullable
-    // argument that happen to escape.
-    // 
-    // We could handle this is by conservatively escaping any value that matches an unescaped pointer in curRegion.
-    // However, considering how uncommon this is, we will just give up tracking.
-    curRegion->StopEscapeTracking();
-    return false;
+    return curRegion->CheckEscapeRange(dst, src, len);
 }
 
 void SatoriGC::SetCardsAfterBulkCopy(size_t dst, size_t src, size_t len)
