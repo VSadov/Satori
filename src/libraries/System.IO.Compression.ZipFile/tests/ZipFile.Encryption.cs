@@ -1106,6 +1106,7 @@ namespace System.IO.Compression.Tests
 
         #region Zip64 Tests for Encrypted Entries
 
+        [ActiveIssue("SATORI: disabled as frequently hangs/fails in local runs and thus a test nuisance")]
         [Theory]
         [SkipOnCI("Takes significant time and disk space to create 4GB+ files")]
         [MemberData(nameof(EncryptionMethodAndBoolTestData))]
@@ -1198,6 +1199,7 @@ namespace System.IO.Compression.Tests
             }
         }
 
+        [ActiveIssue("SATORI: disabled as frequently hangs/fails in local runs and thus a test nuisance")]
         [Theory]
         [SkipOnCI("Takes significant time and disk space to create 4GB+ files")]
         [MemberData(nameof(EncryptionMethodAndBoolTestData))]

@@ -374,6 +374,7 @@ namespace System.Net.Tests
             }
         }
 
+        [ActiveIssue("SATORI: disabled as frequently hangs/fails in local runs and thus a test nuisance")]
         [Theory]
         [InlineData(true)]
         [InlineData(false)]

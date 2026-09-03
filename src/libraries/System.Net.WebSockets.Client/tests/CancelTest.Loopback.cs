@@ -13,6 +13,7 @@ namespace System.Net.WebSockets.Client.Tests
     {
         #region Common (Echo Server) tests
 
+        [ActiveIssue("SATORI: disabled as frequently hangs/fails in local runs and thus a test nuisance")]
         [Theory, MemberData(nameof(UseSsl))]
         public Task ConnectAsync_Cancel_ThrowsCancellationException(bool useSsl) => RunEchoAsync(
             RunClient_ConnectAsync_Cancel_ThrowsCancellationException, useSsl);

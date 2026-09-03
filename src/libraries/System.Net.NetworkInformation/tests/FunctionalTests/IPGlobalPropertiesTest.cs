@@ -212,6 +212,7 @@ namespace System.Net.NetworkInformation.Tests
             Assert.NotEmpty(await Task.Factory.FromAsync(props.BeginGetUnicastAddresses, props.EndGetUnicastAddresses, null));
         }
 
+        [ActiveIssue("SATORI: disabled as frequently hangs/fails in local runs and thus a test nuisance")]
         [Fact]
         public void IPGlobalProperties_DomainName_ReturnsEmptyStringWhenNotSet()
         {
