@@ -569,62 +569,63 @@ CheckConcurrent
         cbz     x17, ExitNoCards
 
 MarkCards
-    ; need couple temps. Save before using.
-        stp     x2,  x3,  [sp, -16]!
+    ; only x12, x15, x16 and x17 may be trashed here, so we keep the card offset in x12,
+    ; the group address in x15, the page in x16, and reuse x17 for both the loaded byte
+    ; and the value being stored. That avoids needing any extra temps.
 
     ; fetch card location for x14
         ldr     x12, wbs_card_table                  ; fetch the page map
         lsr     x16, x14, #30
         ldr     x16, [x12, x16, lsl #3]              ; page
-        sub     x2,  x14, x16   ; offset in page
-        lsr     x15, x2,  #20   ; group index
-        lsr     x2,  x2,  #9    ; card offset
-        lsl     x15, x15, #1    ; group offset (index * 2)
+        sub     x12, x14, x16   ; offset in page
+        lsr     x15, x12, #20   ; group index
+        lsr     x12, x12, #9    ; card offset
+        add     x15, x16, x15, lsl #1   ; group address (page + index * 2)
 
     ; check if concurrent marking is in progress
         cbnz    x17, DirtyCard
 
     ; SETTING CARD FOR X14
 SetCard
-        ldrb    w3, [x16, x2]
-        cbnz    w3, Exit
+        ldrb    w17, [x16, x12]
+        cbnz    w17, Exit
         mov     w17, #1
-        strb    w17, [x16, x2]
+        strb    w17, [x16, x12]
 SetGroup
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
-        cbnz    w3, CardSet
-        strb    w17, [x12, x15]
+        ldrb    w17, [x15, #0x80]
+        cbnz    w17, CardSet
+        mov     w17, #1
+        strb    w17, [x15, #0x80]
 SetPage
-        ldrb    w3, [x16]
-        cbnz    w3, CardSet
+        ldrb    w17, [x16]
+        cbnz    w17, CardSet
+        mov     w17, #1
         strb    w17, [x16]
 
 CardSet
     ; check if concurrent marking is still not in progress
-        ldr     x12, wbs_sw_ww_table            ; !wbs_sw_ww_table -> !concurrent
-        cbnz    x12, DirtyCard
+    ; (uses x17 so that the card offset in x12 stays live for DirtyCard)
+        ldr     x17, wbs_sw_ww_table            ; !wbs_sw_ww_table -> !concurrent
+        cbnz    x17, DirtyCard
 
 Exit
-        ldp  x2,  x3, [sp], 16
         ret  lr
 
     ; DIRTYING CARD FOR X14
 DirtyCard
+        add     x12, x16, x12   ; card address
         mov     w17, #4
-        add     x2, x2, x16
         ; must be after the field write to allow concurrent clean
-        stlrb   w17, [x2]
+        stlrb   w17, [x12]
 DirtyGroup
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
-        tbnz    w3, #2, Exit
-        strb    w17, [x12, x15]
+        ldrb    w12, [x15, #0x80]
+        tbnz    w12, #2, Exit
+        strb    w17, [x15, #0x80]
 DirtyPage
-        ldrb    w3, [x16]
-        tbnz    w3, #2, Exit
+        ldrb    w12, [x16]
+        tbnz    w12, #2, Exit
         strb    w17, [x16]
-        b       Exit
+        ret  lr
 
     ; this is expected to be rare.
 RecordEscape

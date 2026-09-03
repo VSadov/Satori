@@ -478,62 +478,63 @@ CheckConcurrent
         cbz     x17, ExitNoCards
 
 MarkCards
-    ; need couple temps. Save before using.
-        stp     x2,  x3,  [sp, -16]!
+    ; only x12, x15, x16 and x17 may be trashed here, so we keep the card offset in x12,
+    ; the group address in x15, the page in x16, and reuse x17 for both the loaded byte
+    ; and the value being stored. That avoids needing any extra temps.
 
     ; fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  ; fetch the page map
         lsr     x16, x14, #30
         ldr     x16, [x12, x16, lsl #3]              ; page
-        sub     x2,  x14, x16   ; offset in page
-        lsr     x15, x2,  #20   ; group index
-        lsr     x2,  x2,  #9    ; card offset
-        lsl     x15, x15, #1    ; group offset (index * 2)
+        sub     x12, x14, x16   ; offset in page
+        lsr     x15, x12, #20   ; group index
+        lsr     x12, x12, #9    ; card offset
+        add     x15, x16, x15, lsl #1   ; group address (page + index * 2)
 
     ; check if concurrent marking is in progress
         cbnz    x17, DirtyCard
 
     ; SETTING CARD FOR X14
 SetCard
-        ldrb    w3, [x16, x2]
-        cbnz    w3, Exit
+        ldrb    w17, [x16, x12]
+        cbnz    w17, Exit
         mov     w17, #1
-        strb    w17, [x16, x2]
+        strb    w17, [x16, x12]
 SetGroup
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
-        cbnz    w3, CardSet
-        strb    w17, [x12, x15]
+        ldrb    w17, [x15, #0x80]
+        cbnz    w17, CardSet
+        mov     w17, #1
+        strb    w17, [x15, #0x80]
 SetPage
-        ldrb    w3, [x16]
-        cbnz    w3, CardSet
+        ldrb    w17, [x16]
+        cbnz    w17, CardSet
+        mov     w17, #1
         strb    w17, [x16]
 
 CardSet
     ; check if concurrent marking is still not in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12
-        cbnz    x12, DirtyCard
+    ; (uses x17 so that the card offset in x12 stays live for DirtyCard)
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
+        cbnz    x17, DirtyCard
 
 Exit
-        ldp  x2,  x3, [sp], 16
         ret  lr
 
     ; DIRTYING CARD FOR X14
 DirtyCard
+        add     x12, x16, x12   ; card address
         mov     w17, #4
-        add     x2, x2, x16
         ; must be after the field write to allow concurrent clean
-        stlrb   w17, [x2]
+        stlrb   w17, [x12]
 DirtyGroup
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
-        tbnz    w3, #2, Exit
-        strb    w17, [x12, x15]
+        ldrb    w12, [x15, #0x80]
+        tbnz    w12, #2, Exit
+        strb    w17, [x15, #0x80]
 DirtyPage
-        ldrb    w3, [x16]
-        tbnz    w3, #2, Exit
+        ldrb    w12, [x16]
+        tbnz    w12, #2, Exit
         strb    w17, [x16]
-        b       Exit
+        ret  lr
 
     ;; this is expected to be rare.
 RecordEscape
@@ -706,8 +707,8 @@ CheckConcurrentCmpXchg
         cbz     x17, Exit_Cmp_XchgNoCards
 
 MarkCardsCmpXchg
-    ; need couple temps. Save before using.
-        stp     x2,  x3,  [sp, -16]!
+    ; x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
+    ; here, so they can be used as temps without saving.
 
     ; fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  ; fetch the page map
@@ -716,7 +717,7 @@ MarkCardsCmpXchg
         sub     x2,  x14, x16   ; offset in page
         lsr     x15, x2,  #20   ; group index
         lsr     x2,  x2,  #9    ; card offset
-        lsl     x15, x15, #1    ; group offset (index * 2)
+        add     x15, x16, x15, lsl #1   ; group address (page + index * 2)
 
     ; check if concurrent marking is in progress
         cbnz    x17, DirtyCardCmpXchg
@@ -728,10 +729,9 @@ SetCardCmpXchg
         mov     w17, #1
         strb    w17, [x16, x2]
 SetGroupCmpXchg
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         cbnz    w3, CardSetCmpXchg
-        strb    w17, [x12, x15]
+        strb    w17, [x15, #0x80]
 SetPageCmpXchg
         ldrb    w3, [x16]
         cbnz    w3, CardSetCmpXchg
@@ -743,7 +743,6 @@ CardSetCmpXchg
         cbnz    x12, DirtyCardCmpXchg
 
 ExitCmpXchg
-        ldp  x2,  x3, [sp], 16
         ret  lr
 
     ; DIRTYING CARD FOR X14
@@ -753,15 +752,14 @@ DirtyCardCmpXchg
         ; must be after the field write to allow concurrent clean
         stlrb   w17, [x2]
 DirtyGroupCmpXchg
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         tbnz    w3, #2, ExitCmpXchg
-        strb    w17, [x12, x15]
+        strb    w17, [x15, #0x80]
 DirtyPageCmpXchg
         ldrb    w3, [x16]
         tbnz    w3, #2, ExitCmpXchg
         strb    w17, [x16]
-        b       ExitCmpXchg
+        ret     lr
 
     ;; this is expected to be rare.
 RecordEscape_Cmp_Xchg
@@ -891,8 +889,8 @@ CheckConcurrentXchg
         cbz     x17, ExitNoCardsXchg
 
 MarkCardsXchg
-    ; need couple temps. Save before using.
-        stp     x2,  x3,  [sp, -16]!
+    ; x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
+    ; here, so they can be used as temps without saving.
 
     ; fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  ; fetch the page map
@@ -901,7 +899,7 @@ MarkCardsXchg
         sub     x2,  x14, x16   ; offset in page
         lsr     x15, x2,  #20   ; group index
         lsr     x2,  x2,  #9    ; card offset
-        lsl     x15, x15, #1    ; group offset (index * 2)
+        add     x15, x16, x15, lsl #1   ; group address (page + index * 2)
 
     ; check if concurrent marking is in progress
         cbnz    x17, DirtyCardXchg
@@ -913,10 +911,9 @@ SetCardXchg
         mov     w17, #1
         strb    w17, [x16, x2]
 SetGroupXchg
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         cbnz    w3, CardSetXchg
-        strb    w17, [x12, x15]
+        strb    w17, [x15, #0x80]
 SetPageXchg
         ldrb    w3, [x16]
         cbnz    w3, CardSetXchg
@@ -928,7 +925,6 @@ CardSetXchg
         cbnz    x12, DirtyCardXchg
 
 ExitXchg
-        ldp  x2,  x3, [sp], 16
         ret  lr
 
     ; DIRTYING CARD FOR X14
@@ -938,15 +934,14 @@ DirtyCardXchg
         ; must be after the field write to allow concurrent clean
         stlrb   w17, [x2]
 DirtyGroupXchg
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         tbnz    w3, #2, ExitXchg
-        strb    w17, [x12, x15]
+        strb    w17, [x15, #0x80]
 DirtyPageXchg
         ldrb    w3, [x16]
         tbnz    w3, #2, ExitXchg
         strb    w17, [x16]
-        b       ExitXchg
+        ret     lr
 
     ;; this is expected to be rare.
 RecordEscape_Xchg
