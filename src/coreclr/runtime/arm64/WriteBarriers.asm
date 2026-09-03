@@ -546,18 +546,21 @@ RecordEscape
         lsr         x17, x17, x12
         tbnz        x17, #0, AssignAndMarkCards        ;; source is already escaped.
 
-        ;; because of the barrier call convention
-        ;; we need to preserve caller-saved x0 through x15 and x29/x30
+        ;; because of the barrier call convention we need to preserve x0-x11, x13, x14, x15 and x30.
+        ;; x12, x16 and x17 are trashable per the barrier contract, and x12 is rewritten before
+        ;; being read again. x29 is callee-saved, so EscapeFn preserves it for us.
+        ;; also save q0, in case it is used for stack clearing.
+        ;; Hopefully EscapeFn cannot corrupt other vector regs, since there is no float math or vectorizable code in there.
 
-        stp     x29,x30, [sp, -16 * 9]!
-        stp     x0, x1,  [sp, 16 * 1]
-        stp     x2, x3,  [sp, 16 * 2]
-        stp     x4, x5,  [sp, 16 * 3]
-        stp     x6, x7,  [sp, 16 * 4]
-        stp     x8, x9,  [sp, 16 * 5]
-        stp     x10,x11, [sp, 16 * 6]
-        stp     x12,x13, [sp, 16 * 7]
-        stp     x14,x15, [sp, 16 * 8]
+        stp     x30, x0, [sp, -16 * 9]!
+        stp     x1,  x2, [sp, 16 * 1]
+        stp     x3,  x4, [sp, 16 * 2]
+        stp     x5,  x6, [sp, 16 * 3]
+        stp     x7,  x8, [sp, 16 * 4]
+        stp     x9,  x10,[sp, 16 * 5]
+        stp     x11, x13,[sp, 16 * 6]
+        stp     x14, x15,[sp, 16 * 7]
+        str     q0,      [sp, 16 * 8]
 
         ;; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         ;; mov  x0, x14  EscapeFn does not use dst, it is just to avoid arg shuffle on x64
@@ -566,15 +569,15 @@ RecordEscape
         ldr  x12, [x16, #8]                 ;; EscapeFn address
         blr  x12
 
-        ldp     x0, x1,  [sp, 16 * 1]
-        ldp     x2, x3,  [sp, 16 * 2]
-        ldp     x4, x5,  [sp, 16 * 3]
-        ldp     x6, x7,  [sp, 16 * 4]
-        ldp     x8, x9,  [sp, 16 * 5]
-        ldp     x10,x11, [sp, 16 * 6]
-        ldp     x12,x13, [sp, 16 * 7]
-        ldp     x14,x15, [sp, 16 * 8]
-        ldp     x29,x30, [sp], 16 * 9
+        ldr     q0,      [sp, 16 * 8]
+        ldp     x14, x15,[sp, 16 * 7]
+        ldp     x11, x13,[sp, 16 * 6]
+        ldp     x9,  x10,[sp, 16 * 5]
+        ldp     x7,  x8, [sp, 16 * 4]
+        ldp     x5,  x6, [sp, 16 * 3]
+        ldp     x3,  x4, [sp, 16 * 2]
+        ldp     x1,  x2, [sp, 16 * 1]
+        ldp     x30, x0, [sp], 16 * 9
 
         and     x16, x15, #0xFFFFFFFFFFE00000  ;; source region
         b       AssignAndMarkCards
@@ -771,20 +774,19 @@ RecordEscape_Cmp_Xchg
         lsr         x17, x17, x12
         tbnz        x17, #0, AssignAndMarkCards_Cmp_Xchg        ;; source is already escaped.
 
-        ;; we need to preserve our parameters x0, x1, x2 and x29/x30
+        ;; we need to preserve our parameters x0, x1, x2 and x30.
+        ;; x29 is callee-saved, so EscapeFn preserves it for us.
 
-        stp     x29,x30, [sp, -16 * 3]!
-        stp     x0, x1,  [sp, 16 * 1]
-        str     x2,      [sp, 16 * 2]
+        stp     x30, x0, [sp, -16 * 2]!
+        stp     x1,  x2, [sp, 16 * 1]
 
         ;; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         mov  x2, x16                        ;; source region
         ldr  x12, [x16, #8]                 ;; EscapeFn address
         blr  x12
 
-        ldp     x0, x1,  [sp, 16 * 1]
-        ldr     x2,      [sp, 16 * 2]
-        ldp     x29,x30, [sp], 16 * 3
+        ldp     x1,  x2, [sp, 16 * 1]
+        ldp     x30, x0, [sp], 16 * 2
 
         ;; x10 should be not 0 to indicate that can`t skip cards.
         mov     x10,#1
