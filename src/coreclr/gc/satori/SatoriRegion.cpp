@@ -79,6 +79,13 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
 
     _ASSERTE(BITMAP_START * sizeof(size_t) == offsetof(SatoriRegion, m_firstObject) / sizeof(size_t) / 8);
 
+    // The header overlaps the mark bitmap and must fit in the part of the bitmap that maps
+    // the header itself (i.e. below BITMAP_START), otherwise it would corrupt live mark bits.
+    // NB: this is not implied by the assert above - that one ties BITMAP_START to the location
+    //     of the first object, it does not constrain the size of the header.
+    static_assert(offsetof(SatoriRegion, m_freeListTails) + sizeof(SatoriRegion::m_freeListTails) <= BITMAP_START * sizeof(size_t),
+        "SatoriRegion header does not fit in the unused part of the mark bitmap.");
+
     // clear the header if was used before
     size_t zeroUpTo = min(used, (size_t)&result->m_syncBlock);
     memset((void*)address, 0, zeroUpTo - address);
