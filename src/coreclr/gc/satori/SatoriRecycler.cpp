@@ -2099,7 +2099,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
 
             srcChunk = nullptr;
             // mark children in the range
-            o->ForEachObjectRef(markChildFn, start, end);
+            o->ForEachObjectRef(markChildFn, start, end, /* includeCollectibleAllocator */ true);
         }
         else
         {
@@ -2300,7 +2300,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
 
             srcChunk = nullptr;
             // mark children in the range
-            o->ForEachObjectRef(markChildFn, start, end);
+            o->ForEachObjectRef(markChildFn, start, end, /* includeCollectibleAllocator */ true);
         }
         else
         {
@@ -2577,7 +2577,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
 
                                             parentRegion->ContainingPage()->DirtyCardForAddressConcurrent((size_t)ref);
                                         }
-                                    }, start, end);
+                                    }, start, end, /* includeCollectibleAllocator */ true);
                                 }
                                 o = o->Next();
                             } while (o->Start() < objLimit);
@@ -2811,7 +2811,7 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
 
                                                 parentRegion->ContainingPage()->DirtyCardForAddressConcurrent((size_t)ref);
                                             }
-                                        }, start, end);
+                                        }, start, end, /* includeCollectibleAllocator */ true);
                                 }
                                 o = o->Next();
                             } while (o->Start() < objLimit);
@@ -2971,7 +2971,7 @@ void SatoriRecycler::MarkThroughCards()
                                                 this->PushToMarkQueuesSlow(dstChunk, child);
                                             }
                                         }
-                                    }, start, end);
+                                    }, start, end, /* includeCollectibleAllocator */ true);
                                 o = o->Next();
                             } while (o->Start() < objLimit);
                         }
@@ -3109,7 +3109,7 @@ void SatoriRecycler::CleanCards()
                                                     this->PushToMarkQueuesSlow(dstChunk, child);
                                                 }
                                             }
-                                        }, start, end);
+                                        }, start, end, /* includeCollectibleAllocator */ true);
                                 }
                                 o = o->Next();
                             } while (o->Start() < objLimit);
@@ -3232,8 +3232,13 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                             }
                                         }
                                     },
-                                    max(start, o->Start() + 1),  // do not include allocator object.
-                                    end
+                                    start,
+                                    end,
+                                    // the fake allocator ref location is not in the heap and we set cards for
+                                    // the ref location below, so it must not be included.
+                                    // (updating the ref would have no effect anyway - the allocator is reached
+                                    //  via a handle, which is updated separately)
+                                    /* includeCollectibleAllocator */ false
                                 );
                                 o = o->Next();
                             } while (o->Start() < objLimit);
