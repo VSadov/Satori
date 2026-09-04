@@ -743,6 +743,14 @@ void SatoriGC::EnumerateConfigurationValues(void* context, ConfigurationValueFun
 
 bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
 {
+    // Assigning outside of the heap is most likely to stack.
+    // Nothing can be formally shared until it is published via the heap, so there is
+    // nothing to escape and no ordering contract to worry about.
+    if (!SatoriHeap::IsInHeap(dst))
+    {
+        return true;
+    }
+
     SatoriRegion* curRegion = (SatoriRegion*)GCToEEInterface::GetAllocContext()->gc_reserved_1;
     if (!curRegion || !curRegion->IsEscapeTracking())
     {

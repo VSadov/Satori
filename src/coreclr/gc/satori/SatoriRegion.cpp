@@ -1057,13 +1057,10 @@ bool SatoriRegion::CheckEscapeRange(size_t dst, size_t src, size_t len)
         return false;
     }
 
-    if (!SatoriHeap::IsInHeap(dst))
-    {
-        // dest not in heap, must be stack, so, local
-        return true;
-    }
+    // dst is in the heap - the caller has checked that before getting here.
+    _ASSERTE(SatoriHeap::IsInHeap(dst));
 
-    // src is in current region. (dst is some other region)
+    // src is in current region. dst is some other region
     if ((src ^ Start()) < Satori::REGION_SIZE_GRANULARITY)
     {
         // if src is not yet exposed, escape ref children in the copy range
@@ -1089,8 +1086,8 @@ bool SatoriRegion::CheckEscapeRange(size_t dst, size_t src, size_t len)
 
     if (SatoriHeap::IsInHeap(src))
     {
-        // src is not in current region but in heap,
-        // it can't escape anything that belongs to the current thread, but it is not a local assignment.
+        // This is heap-to-heap move and source is accessible to other threads already. 
+        // No worries about escaping and this is not a thread-local assignment.
         return false;
     }
 
