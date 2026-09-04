@@ -414,16 +414,17 @@ inline void SatoriObject::ForEachObjectRef(F lambda, size_t size, bool includeCo
 }
 
 template <typename F>
-inline void SatoriObject::ForEachObjectRef(F lambda, size_t start, size_t end)
+inline void SatoriObject::ForEachObjectRef(F lambda, size_t start, size_t end, bool includeCollectibleAllocator)
 {
     MethodTable* mt = RawGetMethodTable();
 
-    if (start <= Start() && mt->Collectible())
+    if (includeCollectibleAllocator && start <= Start() && mt->Collectible())
     {
         uint8_t* loaderAllocator = GCToEEInterface::GetLoaderAllocatorObjectForGC(this);
         // NB: Allocator ref location is fake. The allocator is accessed via a handle indirection.
         //     It is ok to "update" the ref, but it will have no effect.
         //     The real update is when the handle is updated, which should happen separately.
+        //     Callers that do arithmetic on the ref location must not ask for this.
         lambda((SatoriObject**)&loaderAllocator);
     }
 

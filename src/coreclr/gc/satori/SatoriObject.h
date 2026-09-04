@@ -105,7 +105,7 @@ public:
     void ForEachObjectRef(F lambda, size_t size, bool includeCollectibleAllocator = false);
 
     template <typename F>
-    void ForEachObjectRef(F lambda, size_t start, size_t end);
+    void ForEachObjectRef(F lambda, size_t start, size_t end, bool includeCollectibleAllocator = false);
 
 private:
     static MethodTable* s_emptyObjectMt;
