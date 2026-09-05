@@ -503,10 +503,13 @@ gc_alloc_context * GCToEEInterface::GetAllocContext()
 {
     WRAPPER_NO_CONTRACT;
 
+#ifndef FEATURE_SATORI_GC
+    // Satori does not ask for a context when it may not exist.
     if (!::GetThreadNULLOk())
     {
         return nullptr;
     }
+#endif
 
     return &t_runtime_thread_locals.alloc_context.m_GCAllocContext;
 }
