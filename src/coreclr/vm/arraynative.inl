@@ -36,6 +36,8 @@ FORCEINLINE void InlinedForwardGCSafeCopyHelper(void *dest, const void *src, siz
     _ASSERTE(IS_ALIGNED(src, sizeof(SIZE_T)));
     _ASSERTE(IS_ALIGNED(len, sizeof(SIZE_T)));
 
+    _ASSERTE(CheckPointer(dest));
+    _ASSERTE(CheckPointer(src));
 
     SIZE_T *dptr = (SIZE_T *)dest;
     SIZE_T *sptr = (SIZE_T *)src;
@@ -168,6 +170,8 @@ FORCEINLINE void InlinedBackwardGCSafeCopyHelper(void *dest, const void *src, si
     _ASSERTE(IS_ALIGNED(src, sizeof(SIZE_T)));
     _ASSERTE(IS_ALIGNED(len, sizeof(SIZE_T)));
 
+    _ASSERTE(CheckPointer(dest));
+    _ASSERTE(CheckPointer(src));
 
     SIZE_T *dptr = (SIZE_T *)((BYTE *)dest + len);
     SIZE_T *sptr = (SIZE_T *)((BYTE *)src + len);
@@ -303,8 +307,15 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
     _ASSERTE(IS_ALIGNED(src, sizeof(SIZE_T)));
     _ASSERTE(IS_ALIGNED(len, sizeof(SIZE_T)));
 
+    _ASSERTE(CheckPointer(dest));
+    _ASSERTE(CheckPointer(src));
 
-    GCHeapMemoryBarrier();
+    const bool notInHeap = ((BYTE*)dest < g_lowest_address || (BYTE*)dest >= g_highest_address);
+
+    if (!notInHeap)
+    {
+        GCHeapMemoryBarrier();
+    }
 
     // To be able to copy forwards, the destination buffer cannot start inside the source buffer
     if ((size_t)dest - (size_t)src >= len)
@@ -316,7 +327,10 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
         InlinedBackwardGCSafeCopyHelper(dest, src, len);
     }
 
-    InlinedSetCardsAfterBulkCopyHelper((Object**)dest, len);
+    if (!notInHeap)
+    {
+        InlinedSetCardsAfterBulkCopyHelper((Object**)dest, len);
+    }
 #endif // FEATURE_SATORI_GC
 }
 
