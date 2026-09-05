@@ -781,20 +781,19 @@ void SatoriGC::SetCardsAfterBulkCopy(size_t dst, size_t src, size_t len)
 
 void SatoriGC::BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteCount)
 {
-    if (dst == src || byteCount == 0)
-        return;
+    // callers filter out empty and trivial moves
+    _ASSERTE(dst != src);
+    _ASSERTE(byteCount != 0);
 
     // Make sure everything is pointer aligned
     _ASSERTE(((size_t)dst & (sizeof(size_t) - 1)) == 0);
     _ASSERTE(((size_t)src & (sizeof(size_t) - 1)) == 0);
     _ASSERTE(((size_t)byteCount & (sizeof(size_t) - 1)) == 0);
 
-    bool localAssignment = false;
-    if (byteCount >= sizeof(size_t))
-    {
-        localAssignment = CheckEscapeSatoriRange((size_t)dst, (size_t)src, byteCount);
-    }
+    // nonzero and pointer-aligned, thus at least one pointer in size
+    _ASSERTE(byteCount >= sizeof(size_t));
 
+    bool localAssignment = CheckEscapeSatoriRange((size_t)dst, (size_t)src, byteCount);
     if (!localAssignment)
     {
 #if !defined(TARGET_X86) && !defined(TARGET_AMD64)
@@ -802,14 +801,21 @@ void SatoriGC::BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteC
 #endif
     }
 
-    // NOTE! memmove needs to copy with size_t granularity
-    // I do not see how it would not, since everything is aligned.
-    // If we need to handle unaligned moves, we may need to write our own memmove
-    memmove(dst, src, byteCount);
+    // Copy with size_t granularity, so that references are never torn.
+    // The ranges may overlap, so the direction matters - when moving to a lower
+    // address we must copy forward, otherwise backward.
+    // NB: the comparison is unsigned, so nonoverlapping cases pass either check.
+    if ((size_t)dst - (size_t)src >= byteCount)
+    {
+        SatoriUtil::ForwardGCSafeCopy(dst, src, byteCount);
+    }
+    else
+    {
+        SatoriUtil::BackwardGCSafeCopy(dst, src, byteCount);
+    }
 
-    if (byteCount >= sizeof(size_t) &&
-       (!(localAssignment || m_heap->Recycler()->IsNextGcFullGc()) ||
-           m_heap->Recycler()->IsBarrierConcurrent()))
+    if (!(localAssignment || m_heap->Recycler()->IsNextGcFullGc()) ||
+        m_heap->Recycler()->IsBarrierConcurrent())
     {
         SetCardsAfterBulkCopy((size_t)dst, (size_t)src, byteCount);
     }

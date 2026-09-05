@@ -204,6 +204,264 @@ public:
 #endif
     }
 
+    // Copies of InlinedForwardGCSafeCopyHelper/InlinedBackwardGCSafeCopyHelper from
+    // vm/arraynative.inl - the VM headers are not reachable from the (standalone) GC.
+    //
+    // Unlike memmove these copy in pointer-sized chunks, so that a reference is never
+    // torn and could be observed by another thread only as old or new value.
+    //
+    // Requirements:
+    //   dest, src and len must be pointer-aligned, len != 0, dest != src.
+    //   Forward: the destination must not start inside the source  (dest < src or no overlap).
+    //   Backward: the source must not start inside the destination (dest > src or no overlap).
+    //   NB: the checks below are unsigned, thus a "negative" difference passes.
+    static FORCEINLINE void ForwardGCSafeCopy(void* dest, const void* src, size_t len)
+    {
+        _ASSERTE(dest != nullptr);
+        _ASSERTE(src != nullptr);
+        _ASSERTE(dest != src);
+        _ASSERTE(len != 0);
+
+        // To be able to copy forwards, the destination buffer cannot start inside the source buffer
+        _ASSERTE((size_t)dest - (size_t)src >= len);
+
+        _ASSERTE(((size_t)dest & (sizeof(size_t) - 1)) == 0);
+        _ASSERTE(((size_t)src & (sizeof(size_t) - 1)) == 0);
+        _ASSERTE((len & (sizeof(size_t) - 1)) == 0);
+
+        size_t* dptr = (size_t*)dest;
+        size_t* sptr = (size_t*)src;
+
+        while (true)
+        {
+            if ((len & sizeof(size_t)) != 0)
+            {
+                *dptr = *sptr;
+
+                len ^= sizeof(size_t);
+                if (len == 0)
+                {
+                    return;
+                }
+                ++sptr;
+                ++dptr;
+            }
+
+#if defined(HOST_AMD64) && (defined(_MSC_VER) || defined(__GNUC__))
+            if ((len & (2 * sizeof(size_t))) != 0)
+            {
+                __m128 v = _mm_loadu_ps((float*)sptr);
+                _mm_storeu_ps((float*)dptr, v);
+
+                len ^= 2 * sizeof(size_t);
+                if (len == 0)
+                {
+                    return;
+                }
+                sptr += 2;
+                dptr += 2;
+            }
+
+            // Align the destination pointer to 16 bytes for the next set of 16-byte copies
+            if (((size_t)dptr & sizeof(size_t)) != 0)
+            {
+                *dptr = *sptr;
+
+                ++sptr;
+                ++dptr;
+                len -= sizeof(size_t);
+                if (len < 4 * sizeof(size_t))
+                {
+                    continue;
+                }
+            }
+
+            // Copy 32 bytes at a time
+            _ASSERTE(len >= 4 * sizeof(size_t));
+            do
+            {
+                __m128 v = _mm_loadu_ps((float*)sptr);
+                _mm_store_ps((float*)dptr, v);
+                v = _mm_loadu_ps((float*)(sptr + 2));
+                _mm_store_ps((float*)(dptr + 2), v);
+
+                sptr += 4;
+                dptr += 4;
+                len -= 4 * sizeof(size_t);
+            } while (len >= 4 * sizeof(size_t));
+            if (len == 0)
+            {
+                return;
+            }
+#else
+            if ((len & (2 * sizeof(size_t))) != 0)
+            {
+                // Read two values and write two values to hint the use of wide loads and stores
+                size_t p0 = sptr[0];
+                size_t p1 = sptr[1];
+                dptr[0] = p0;
+                dptr[1] = p1;
+
+                len ^= 2 * sizeof(size_t);
+                if (len == 0)
+                {
+                    return;
+                }
+                sptr += 2;
+                dptr += 2;
+            }
+
+            // Copy 16 (on 32-bit systems) or 32 (on 64-bit systems) bytes at a time
+            _ASSERTE(len >= 4 * sizeof(size_t));
+            while (true)
+            {
+                // Read two values and write two values to hint the use of wide loads and stores
+                size_t p0 = sptr[0];
+                size_t p1 = sptr[1];
+                dptr[0] = p0;
+                dptr[1] = p1;
+                p0 = sptr[2];
+                p1 = sptr[3];
+                dptr[2] = p0;
+                dptr[3] = p1;
+
+                len -= 4 * sizeof(size_t);
+                if (len == 0)
+                {
+                    return;
+                }
+                sptr += 4;
+                dptr += 4;
+            }
+#endif
+        }
+    }
+
+    static FORCEINLINE void BackwardGCSafeCopy(void* dest, const void* src, size_t len)
+    {
+        _ASSERTE(dest != nullptr);
+        _ASSERTE(src != nullptr);
+        _ASSERTE(dest != src);
+        _ASSERTE(len != 0);
+
+        // To be able to copy backwards, the source buffer cannot start inside the destination buffer
+        _ASSERTE((size_t)src - (size_t)dest >= len);
+
+        _ASSERTE(((size_t)dest & (sizeof(size_t) - 1)) == 0);
+        _ASSERTE(((size_t)src & (sizeof(size_t) - 1)) == 0);
+        _ASSERTE((len & (sizeof(size_t) - 1)) == 0);
+
+        size_t* dptr = (size_t*)((uint8_t*)dest + len);
+        size_t* sptr = (size_t*)((uint8_t*)src + len);
+
+        while (true)
+        {
+            if ((len & sizeof(size_t)) != 0)
+            {
+                --sptr;
+                --dptr;
+
+                *dptr = *sptr;
+
+                len ^= sizeof(size_t);
+                if (len == 0)
+                {
+                    return;
+                }
+            }
+
+#if defined(HOST_AMD64) && (defined(_MSC_VER) || defined(__GNUC__))
+            if ((len & (2 * sizeof(size_t))) != 0)
+            {
+                sptr -= 2;
+                dptr -= 2;
+
+                __m128 v = _mm_loadu_ps((float*)sptr);
+                _mm_storeu_ps((float*)dptr, v);
+
+                len ^= 2 * sizeof(size_t);
+                if (len == 0)
+                {
+                    return;
+                }
+            }
+
+            // Align the destination pointer to 16 bytes for the next set of 16-byte copies
+            if (((size_t)dptr & sizeof(size_t)) != 0)
+            {
+                --sptr;
+                --dptr;
+
+                *dptr = *sptr;
+
+                len -= sizeof(size_t);
+                if (len < 4 * sizeof(size_t))
+                {
+                    continue;
+                }
+            }
+
+            // Copy 32 bytes at a time
+            _ASSERTE(len >= 4 * sizeof(size_t));
+            do
+            {
+                sptr -= 4;
+                dptr -= 4;
+
+                __m128 v = _mm_loadu_ps((float*)(sptr + 2));
+                _mm_store_ps((float*)(dptr + 2), v);
+                v = _mm_loadu_ps((float*)sptr);
+                _mm_store_ps((float*)dptr, v);
+
+                len -= 4 * sizeof(size_t);
+            } while (len >= 4 * sizeof(size_t));
+            if (len == 0)
+            {
+                return;
+            }
+#else
+            if ((len & (2 * sizeof(size_t))) != 0)
+            {
+                sptr -= 2;
+                dptr -= 2;
+
+                // Read two values and write two values to hint the use of wide loads and stores
+                size_t p1 = sptr[1];
+                size_t p0 = sptr[0];
+                dptr[1] = p1;
+                dptr[0] = p0;
+
+                len ^= 2 * sizeof(size_t);
+                if (len == 0)
+                {
+                    return;
+                }
+            }
+
+            // Copy 16 (on 32-bit systems) or 32 (on 64-bit systems) bytes at a time
+            _ASSERTE(len >= 4 * sizeof(size_t));
+            do
+            {
+                sptr -= 4;
+                dptr -= 4;
+
+                // Read two values and write two values to hint the use of wide loads and stores
+                size_t p0 = sptr[2];
+                size_t p1 = sptr[3];
+                dptr[2] = p0;
+                dptr[3] = p1;
+                p0 = sptr[0];
+                p1 = sptr[1];
+                dptr[0] = p0;
+                dptr[1] = p1;
+
+                len -= 4 * sizeof(size_t);
+            } while (len != 0);
+            return;
+#endif
+        }
+    }
+
     // TUNING: Needs tuning?
     // When doing regular allocation we clean this much memory
     // if we do cleaning, and if available.
