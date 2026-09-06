@@ -116,6 +116,7 @@
 #include "regdisp.h"
 #include "mscoree.h"
 #include "gcheaputilities.h"
+#include "gchelpers.inl"
 #include "gchandleutilities.h"
 #include "gcinfotypes.h"
 #include <clrhost.h>
@@ -3198,21 +3199,15 @@ public:
             // if not in the table, or not the case that it was unprotected and GC happened, return true.
             if((val & ~3) != (size_t) ref || (val & 3) != 1)
                 return(true);
+
             // If the pointer lives in the GC heap, than it is protected, and thus valid.
-            //if (dac_cast<TADDR>(g_lowest_address) <= val && val < dac_cast<TADDR>(g_highest_address))
-            //    return(true);
-
-            // TODO: Satori
-            if (IsInHeapSatori((Object**)val))
-            {
-                return true;
-            }
-
-            if (dac_cast<TADDR>(g_lowest_address) <= val && val < dac_cast<TADDR>(g_highest_address))
+            if (IsPossiblyInHeap((void*)val))
                 return(true);
+
             // Same for frozen segments
             if (GCHeapUtilities::GetGCHeap()->IsInFrozenSegment(*(Object**)ref))
                 return(true);
+
             return(false);
         }
 
