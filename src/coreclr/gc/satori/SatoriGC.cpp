@@ -743,13 +743,10 @@ void SatoriGC::EnumerateConfigurationValues(void* context, ConfigurationValueFun
 
 bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
 {
-    // Assigning outside of the heap is most likely to stack.
-    // Nothing can be formally shared until it is published via the heap, so there is
-    // nothing to escape and no ordering contract to worry about.
-    if (!SatoriHeap::IsInHeap(dst))
-    {
-        return true;
-    }
+    // Assigning outside of the heap (most likely to stack) is handled by the callers.
+    // Nothing can be formally shared that way, so there is nothing to escape
+    // and no ordering contract to worry about.
+    _ASSERTE(SatoriHeap::IsInHeap(dst));
 
     SatoriRegion* curRegion = (SatoriRegion*)GCToEEInterface::GetAllocContext()->gc_reserved_1;
     if (!curRegion || !curRegion->IsEscapeTracking())
@@ -784,6 +781,9 @@ void SatoriGC::BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteC
     // callers filter out empty and trivial moves
     _ASSERTE(dst != src);
     _ASSERTE(byteCount != 0);
+
+    // callers handle the case when the destination is not in the heap
+    _ASSERTE(SatoriHeap::IsInHeap((size_t)dst));
 
     // Make sure everything is pointer aligned
     _ASSERTE(((size_t)dst & (sizeof(size_t) - 1)) == 0);

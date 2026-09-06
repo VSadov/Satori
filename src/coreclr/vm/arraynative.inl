@@ -284,6 +284,32 @@ FORCEINLINE void InlinedBackwardGCSafeCopyHelper(void *dest, const void *src, si
     }
 }
 
+// Checks if the address may belong to the GC heap, without calling into the GC.
+//
+// "false" reliably means "not in the heap", "true" may be a false positive.
+// NB: the two implementations differ in precision.
+//     The segmented check is a [lowest, highest) range test - the range may contain
+//     gaps that do not belong to the heap.
+//     The Satori check is an exact page map lookup - Satori pages are reservation
+//     units that are never shared with native/stack allocations.
+FORCEINLINE bool IsPossiblyInHeap(void* address)
+{
+#if FEATURE_SATORI_GC
+    // Satori uses g_card_bundle_table to publish the page byte map - the same map that
+    // the write barriers use to check if a location is in the heap.
+    // (see: SatoriHeap::IsInHeap and the "check if dst is in heap" parts of the barriers)
+
+    // must match Satori::PAGE_BITS, same as the shift that barriers use.
+    const int SATORI_PAGE_BITS = 30;
+
+    // one byte per page (1Gb), nonzero if the page is a part of the heap.
+    uint8_t* pageByteMap = (uint8_t*)VolatileLoadWithoutBarrier(&g_card_bundle_table);
+    return pageByteMap[(size_t)address >> SATORI_PAGE_BITS] != 0;
+#else
+    return (BYTE*)address >= g_lowest_address && (BYTE*)address < g_highest_address;
+#endif
+}
+
 FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t len)
 {
     CONTRACTL
@@ -294,9 +320,6 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
     }
     CONTRACTL_END;
 
-#if FEATURE_SATORI_GC
-    GCHeapUtilities::GetGCHeap()->BulkMoveWithWriteBarrier(dest, src, len);
-#else
     _ASSERTE(dest != nullptr);
     _ASSERTE(src != nullptr);
     _ASSERTE(dest != src);
@@ -310,9 +333,29 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
     _ASSERTE(CheckPointer(dest));
     _ASSERTE(CheckPointer(src));
 
-    const bool notInHeap = ((BYTE*)dest < g_lowest_address || (BYTE*)dest >= g_highest_address);
+    const bool inHeap = IsPossiblyInHeap(dest);
 
-    if (!notInHeap)
+#if FEATURE_SATORI_GC
+    if (inHeap)
+    {
+        GCHeapUtilities::GetGCHeap()->BulkMoveWithWriteBarrier(dest, src, len);
+        return;
+    }
+
+    // The destination is not in the heap - most likely the stack.
+    // Nothing can be published this way, so there is no need for escape tracking,
+    // ordering or cards. Just copy.
+    // NB: the source may still be shared, so the copy must not tear references.
+    if ((size_t)dest - (size_t)src >= len)
+    {
+        InlinedForwardGCSafeCopyHelper(dest, src, len);
+    }
+    else
+    {
+        InlinedBackwardGCSafeCopyHelper(dest, src, len);
+    }
+#else
+    if (inHeap)
     {
         GCHeapMemoryBarrier();
     }
@@ -327,7 +370,7 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
         InlinedBackwardGCSafeCopyHelper(dest, src, len);
     }
 
-    if (!notInHeap)
+    if (inHeap)
     {
         InlinedSetCardsAfterBulkCopyHelper((Object**)dest, len);
     }

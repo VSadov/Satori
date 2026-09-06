@@ -4675,6 +4675,7 @@ do                                                                      \
                         while (pCopyEntry->countBytes != 0)
                         {
 #if FEATURE_SATORI_GC
+                            // NB: the destination is the continuation object, thus in the heap.
                             GCHeapUtilities::GetGCHeap()->BulkMoveWithWriteBarrier(pContinuationData, LOCAL_VAR_ADDR(pCopyEntry->startOffset, uint8_t), pCopyEntry->countBytes);
 
 #else
