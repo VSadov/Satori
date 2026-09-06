@@ -1651,12 +1651,6 @@ SatoriPage* PageForAddressCheckedSatori(void* address)
     return nullptr;
 }
 
-// same as SatoriGC::IsHeapPointer, just to avoid dependency on SatoriGC instance.
-bool IsInHeapSatori(void* ptr)
-{
-    return PageForAddressCheckedSatori(ptr) != nullptr;
-}
-
 void CheckEscapeSatori(Object** dst, Object* ref)
 {
     SatoriObject* obj = (SatoriObject*)ref;

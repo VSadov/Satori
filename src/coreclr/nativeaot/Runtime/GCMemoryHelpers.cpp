@@ -40,32 +40,6 @@ FCIMPLEND
     #define GCHeapMemoryBarrier() MemoryBarrier()
 #endif
 
-// Checks if the address may belong to the GC heap, without calling into the GC.
-//
-// "false" reliably means "not in the heap", "true" may be a false positive.
-// NB: the two implementations differ in precision.
-//     The segmented check is a [lowest, highest) range test - the range may contain
-//     gaps that do not belong to the heap.
-//     The Satori check is an exact page map lookup - Satori pages are reservation
-//     units that are never shared with native/stack allocations.
-FORCEINLINE bool IsPossiblyInHeap(void* address)
-{
-#ifdef FEATURE_SATORI_GC
-    // Satori uses g_card_bundle_table to publish the page byte map - the same map that
-    // the write barriers use to check if a location is in the heap.
-    // (see: SatoriHeap::IsInHeap and the "check if dst is in heap" parts of the barriers)
-
-    // must match Satori::PAGE_BITS, same as the shift that barriers use.
-    const int SATORI_PAGE_BITS = 30;
-
-    // one byte per page (1Gb), nonzero if the page is a part of the heap.
-    uint8_t* pageByteMap = (uint8_t*)VolatileLoadWithoutBarrier(&g_card_bundle_table);
-    return pageByteMap[(size_t)address >> SATORI_PAGE_BITS] != 0;
-#else
-    return (uint8_t*)address >= g_lowest_address && (uint8_t*)address < g_highest_address;
-#endif
-}
-
 // Move memory, in a way that is compatible with a move onto the heap, but
 // does not require the destination pointer to be on the heap.
 

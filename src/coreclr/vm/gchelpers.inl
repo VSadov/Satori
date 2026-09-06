@@ -32,6 +32,35 @@ static const int card_byte_shift = 10;
 const static int REGION_BITS = 21;
 const static size_t REGION_SIZE_GRANULARITY = 1 << REGION_BITS;
 
+// Checks if the address may belong to the GC heap, without calling into the GC.
+//
+// "false" reliably means "not in the heap", "true" may be a false positive.
+// NB: the two implementations differ in precision.
+//     The segmented check is a [lowest, highest) range test - the range may contain
+//     gaps that do not belong to the heap.
+//     The Satori check is an exact page map lookup - Satori pages are reservation
+//     units that are never shared with native/stack allocations.
+FORCEINLINE bool IsPossiblyInHeap(void* address)
+{
+#if FEATURE_SATORI_GC
+    // Satori uses g_card_bundle_table to publish the page byte map - the same map that
+    // the write barriers use to check if a location is in the heap.
+    // (see: SatoriHeap::IsInHeap and the "check if dst is in heap" parts of the barriers)
+
+    // must match Satori::PAGE_BITS, same as the shift that barriers use.
+    const int SATORI_PAGE_BITS = 30;
+
+    // one byte per page (1Gb), nonzero if the page is a part of the heap.
+    // NB: the map is a fixed-size array inside the heap instance. Satori publishes it
+    //     once, at init, and never moves or reallocates it, thus an ordinary read.
+    //     (the later StompResize only re-publishes the highest address)
+    uint8_t* pageByteMap = (uint8_t*)g_card_bundle_table;
+    return pageByteMap[(size_t)address >> SATORI_PAGE_BITS] != 0;
+#else
+    return (BYTE*)address >= g_lowest_address && (BYTE*)address < g_highest_address;
+#endif
+}
+
 #if !FEATURE_SATORI_GC
 FORCEINLINE void InlinedSetCardsAfterBulkCopyHelper(Object** start, size_t len)
 {
