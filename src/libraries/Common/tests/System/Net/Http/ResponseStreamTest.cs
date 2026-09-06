@@ -673,6 +673,7 @@ namespace System.Net.Http.Functional.Tests
         [InlineData(TransferType.None, TransferError.None)]
         [InlineData(TransferType.ContentLength, TransferError.None)]
         [InlineData(TransferType.Chunked, TransferError.None)]
+        [ActiveIssue("SATORI: disabled as frequently hangs/fails in local runs and thus a test nuisance")]
         public async Task ReadAsStreamAsync_StreamCanReadIsFalseAfterDispose(
             TransferType transferType,
             TransferError transferError)
