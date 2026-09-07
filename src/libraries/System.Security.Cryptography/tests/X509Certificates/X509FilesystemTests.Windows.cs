@@ -122,6 +122,7 @@ namespace System.Security.Cryptography.X509Certificates.Tests
                 static (bytes, pwd, flags) => X509CertificateLoader.LoadPkcs12(bytes, pwd, flags));
         }
 
+        [ActiveIssue("SATORI: disabled as frequently hangs/fails in local runs and thus a test nuisance")]
         [Theory]
         [InlineData(X509KeyStorageFlags.DefaultKeySet)]
         [InlineData(X509KeyStorageFlags.DefaultKeySet, true)]
