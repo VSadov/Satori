@@ -493,7 +493,7 @@ LEAF_ENTRY RhpAssignRefArm64, _TEXT
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
 ALTERNATE_ENTRY RhpCheckedEntry
-        lsr     x17, x15, #30                   // source page index
+        lsr     x17, x15, #30                   // src page index
         ldrb    w12, [x16, x17]
         cbz     x12, LOCAL_LABEL(JustAssign)    // null or external (immutable) object
 #else
@@ -523,7 +523,7 @@ ALTERNATE_ENTRY RhpCheckedEntry
         lsr         x17, x17, x12
         tbnz        x17, #0, LOCAL_LABEL(RecordEscape) // target is exposed. record an escape.
 
-    // UNORDERED! assignment of unescaped, null or external (immutable) object
+    // UNORDERED! src is external/null, or the assignment is completely threadlocal
     LOCAL_LABEL(JustAssign):
 ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
         str  x15, [x14], #8
@@ -545,12 +545,12 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         ret     lr
 
     LOCAL_LABEL(DoCards):
-    // if same region, just check if barrier is not concurrent
+    // if src and dst are in the same region, cards are not needed, unless concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
         beq     LOCAL_LABEL(CheckConcurrent)    // same region, just check if barrier is not concurrent
 
-    // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
         ldr     w12, [x16, 16]                  // source region + 16 -> generation
         tbz     x12, #1, LOCAL_LABEL(MarkCards)
 
@@ -778,12 +778,12 @@ LOCAL_LABEL(DoCardsCmpXchg):
         tbnz    x17, #1, LOCAL_LABEL(Exit_Cmp_XchgNoCards)
 
     LOCAL_LABEL(DoCardsCmpXchg1):
-    // if same region, just check if barrier is not concurrent
+    // if src and dst are in the same region, cards are not needed, unless concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
         beq     LOCAL_LABEL(CheckConcurrentCmpXchg)    // same region, just check if barrier is not concurrent
 
-    // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
         ldr     w12, [x16, 16]                  // source region + 16 -> generation
         tbz     x12, #1, LOCAL_LABEL(MarkCardsCmpXchg)
 
@@ -973,12 +973,12 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         ret     lr
 
     LOCAL_LABEL(DoCardsXchg):
-    // if same region, just check if barrier is not concurrent
+    // if src and dst are in the same region, cards are not needed, unless concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
         beq     LOCAL_LABEL(CheckConcurrentXchg)    // same region, just check if barrier is not concurrent
 
-    // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
         ldr     w12, [x16, 16]                  // source region + 16 -> generation
         tbz     x12, #1, LOCAL_LABEL(MarkCardsXchg)
 

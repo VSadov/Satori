@@ -582,7 +582,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         ldr     x16, LOCAL_LABEL(wbs_card_bundle_table)
     C_FUNC(CheckedEntry):
-        lsr     x17, x15, #30                   // source page index
+        lsr     x17, x15, #30                   // src page index
         ldrb    w12, [x16, x17]
         cbz     x12, LOCAL_LABEL(JustAssign)    // null or external (immutable) object
 #else
@@ -612,7 +612,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         lsr         x17, x17, x12
         tbnz        x17, #0, LOCAL_LABEL(RecordEscape) // target is exposed. record an escape.
 
-    // UNORDERED! assignment of unescaped, null or external (immutable) object
+    // UNORDERED! src is external/null, or the assignment is completely threadlocal
     LOCAL_LABEL(JustAssign):
         str  x15, [x14], #8
         ret  lr
@@ -632,12 +632,12 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         ret     lr
 
     LOCAL_LABEL(DoCards):
-    // if same region, just check if barrier is not concurrent
+    // if src and dst are in the same region, cards are not needed, unless concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
         beq     LOCAL_LABEL(CheckConcurrent)    // same region, just check if barrier is not concurrent
 
-    // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
         ldr     w12, [x16, 16]                  // source region + 16 -> generation
         tbz     x12, #1, LOCAL_LABEL(MarkCards)
 
