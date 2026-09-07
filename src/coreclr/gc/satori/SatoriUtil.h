@@ -30,6 +30,13 @@
 #include "common.h"
 #include "../gc.h"
 
+// ForwardGCSafeCopy/BackwardGCSafeCopy below use SSE intrinsics on amd64.
+// MSVC gets these via <intrin.h> (included by gcenv.base.h), clang/gcc need
+// <xmmintrin.h> explicitly. The condition must match the uses below.
+#if defined(HOST_AMD64) && defined(__GNUC__)
+#include <xmmintrin.h>
+#endif
+
 namespace Satori
 {
     class StackOnly {
