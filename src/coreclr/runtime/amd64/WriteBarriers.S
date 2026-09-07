@@ -305,7 +305,7 @@ LEAF_ENTRY RhpAssignRef, _TEXT
         mov     rax,  fs:[0]            // thread tag
 #endif
         cmp     qword ptr [rdx], rax     
-        jne     LOCAL_LABEL(AssignAndMarkCards)         // no card marking, src is not a heap object
+        jne     LOCAL_LABEL(AssignAndMarkCards)         // not local to this thread
 
     // 2) check if the src and dst are from the same region
         mov     rax, rdi
@@ -322,7 +322,7 @@ LEAF_ENTRY RhpAssignRef, _TEXT
 
     LOCAL_LABEL(JustAssign):
 ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
-        mov     [rdi], rsi              // no card marking, src is not a heap object
+        mov     [rdi], rsi              // src is external/null, or the assignment is completely threadlocal
         ret
 
     LOCAL_LABEL(AssignAndMarkCards):
@@ -341,17 +341,17 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         ret
 
     LOCAL_LABEL(DoCards):
-    // if same region, just check if barrier is not concurrent
+    // if src and dst are in the same region, cards are not needed, unless concurrent
         xor     rsi, rdi
         shr     rsi, 21
         jz      LOCAL_LABEL(CheckConcurrent)            // same region, just check if barrier is not concurrent
 
-    // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
         cmp     dword ptr [rdx + 16], 2
         jl      LOCAL_LABEL(MarkCards)
 
     LOCAL_LABEL(CheckConcurrent):
-    // if concurrent, load card location
+    // if not concurrent, exit
         cmp     r11, 0
         je      LOCAL_LABEL(Exit)
 
@@ -492,7 +492,7 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         jb      LOCAL_LABEL(RecordEscape_CmpXchg)       // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign_CmpXchg):
-        lock cmpxchg    [rdi], rsi     // no card marking, src is not a heap object
+        lock cmpxchg    [rdi], rsi     // dst not in heap, src is external/null, or the assignment is completely threadlocal
         ret
 
     LOCAL_LABEL(AssignAndMarkCards_CmpXchg):
@@ -511,17 +511,17 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         ret
 
     LOCAL_LABEL(DoCards_CmpXchg):
-    // if same region, just check if barrier is not concurrent
+    // if src and dst are in the same region, cards are not needed, unless concurrent
         xor     rsi, rdi
         shr     rsi, 21
         jz      LOCAL_LABEL(CheckConcurrent_CmpXchg)    // same region, just check if barrier is not concurrent
 
-    // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
         cmp     dword ptr [rdx + 16], 2
         jl      LOCAL_LABEL(MarkCards_CmpXchg)
 
     LOCAL_LABEL(CheckConcurrent_CmpXchg):
-    // if concurrent, load card location
+    // if not concurrent, exit
         cmp     r10, 0
         jne     LOCAL_LABEL(MarkCards_CmpXchg)
         ret
@@ -660,7 +660,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         jb      LOCAL_LABEL(RecordEscape_Xchg)          // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign_Xchg):
-        xchg    [rdi], rax              // no card marking, src is not a heap object
+        xchg    [rdi], rax              // dst not in heap, src is external/null, or the assignment is completely threadlocal
         ret
 
     LOCAL_LABEL(AssignAndMarkCards_Xchg):
@@ -678,17 +678,17 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         ret
 
     LOCAL_LABEL(DoCards_Xchg):
-    // if same region, just check if barrier is not concurrent
+    // if src and dst are in the same region, cards are not needed, unless concurrent
         xor     rsi, rdi
         shr     rsi, 21
         jz      LOCAL_LABEL(CheckConcurrent_Xchg)       // same region, just check if barrier is not concurrent
 
-    // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
         cmp     dword ptr [rdx + 16], 2
         jl      LOCAL_LABEL(MarkCards_Xchg)
 
     LOCAL_LABEL(CheckConcurrent_Xchg):
-    // if concurrent, load card location
+    // if not concurrent, exit
         cmp     r10, 0
         jne     LOCAL_LABEL(MarkCards_Xchg)
         ret
