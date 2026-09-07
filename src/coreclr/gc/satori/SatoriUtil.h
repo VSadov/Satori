@@ -205,7 +205,8 @@ public:
     }
 
     // Copies of InlinedForwardGCSafeCopyHelper/InlinedBackwardGCSafeCopyHelper from
-    // vm/arraynative.inl - the VM headers are not reachable from the (standalone) GC.
+    // classlibnative/bcltype/arraynative.inl - the VM headers are not reachable from
+    // the (standalone) GC.
     //
     // Unlike memmove these copy in pointer-sized chunks, so that a reference is never
     // torn and could be observed by another thread only as old or new value.
