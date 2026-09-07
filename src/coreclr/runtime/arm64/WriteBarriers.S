@@ -559,61 +559,62 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         cbz     x17, LOCAL_LABEL(ExitNoCards)
 
     LOCAL_LABEL(MarkCards):
-    // need couple temps. Save before using.
-        stp     x2,  x3,  [sp, -16]!
+    // only x12, x15, x16 and x17 may be trashed here, so we keep the card offset in x12,
+    // the group address in x15, the page in x16, and reuse x17 for both the loaded byte
+    // and the value being stored. That avoids needing any extra temps.
 
     // fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  // fetch the page map
         lsr     x16, x14, #30
         ldr     x16, [x12, x16, lsl #3]              // page
-        sub     x2,  x14, x16   // offset in page
-        lsr     x15, x2,  #20   // group index
-        lsr     x2,  x2,  #9    // card offset
-        lsl     x15, x15, #1    // group offset (index * 2)
+        sub     x12, x14, x16   // offset in page
+        lsr     x15, x12, #20   // group index
+        lsr     x12, x12, #9    // card offset
+        add     x15, x16, x15, lsl #1   // group address (page + index * 2)
 
     // check if concurrent marking is in progress
         cbnz    x17, LOCAL_LABEL(DirtyCard)
 
     // SETTING CARD FOR X14
     LOCAL_LABEL(SetCard):
-        ldrb    w3, [x16, x2]
-        cbnz    w3, LOCAL_LABEL(Exit)
+        ldrb    w17, [x16, x12]
+        cbnz    w17, LOCAL_LABEL(Exit)
         mov     w17, #1
-        strb    w17, [x16, x2]
+        strb    w17, [x16, x12]
     LOCAL_LABEL(SetGroup):
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
-        cbnz    w3, LOCAL_LABEL(CardSet)
-        strb    w17, [x12, x15]
+        ldrb    w17, [x15, #0x80]
+        cbnz    w17, LOCAL_LABEL(CardSet)
+        mov     w17, #1
+        strb    w17, [x15, #0x80]
     LOCAL_LABEL(SetPage):
-        ldrb    w3, [x16]
-        cbnz    w3, LOCAL_LABEL(CardSet)
+        ldrb    w17, [x16]
+        cbnz    w17, LOCAL_LABEL(CardSet)
+        mov     w17, #1
         strb    w17, [x16]
 
     LOCAL_LABEL(CardSet):
     // check if concurrent marking is still not in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12
-        cbnz    x12, LOCAL_LABEL(DirtyCard)
+    // (uses x17 so that the card offset in x12 stays live for DirtyCard)
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
+        cbnz    x17, LOCAL_LABEL(DirtyCard)
 
     LOCAL_LABEL(Exit):
-        ldp  x2,  x3, [sp], 16
         add  x14, x14, 8
         ret  lr
 
     // DIRTYING CARD FOR X14
     LOCAL_LABEL(DirtyCard):
+        add     x12, x16, x12   // card address
         mov     w17, #4
-        add     x2, x2, x16
         // must be after the field write to allow concurrent clean
-        stlrb   w17, [x2]
+        stlrb   w17, [x12]
     LOCAL_LABEL(DirtyGroup):
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
-        tbnz    w3, #2, LOCAL_LABEL(Exit)
-        strb    w17, [x12, x15]
+        ldrb    w12, [x15, #0x80]
+        tbnz    w12, #2, LOCAL_LABEL(Exit)
+        strb    w17, [x15, #0x80]
     LOCAL_LABEL(DirtyPage):
-        ldrb    w3, [x16]
-        tbnz    w3, #2, LOCAL_LABEL(Exit)
+        ldrb    w12, [x16]
+        tbnz    w12, #2, LOCAL_LABEL(Exit)
         strb    w17, [x16]
         b       LOCAL_LABEL(Exit)
 
@@ -791,8 +792,8 @@ LOCAL_LABEL(DoCardsCmpXchg):
         cbz     x17, LOCAL_LABEL(Exit_Cmp_XchgNoCards)
 
     LOCAL_LABEL(MarkCardsCmpXchg):
-    // need couple temps. Save before using.
-        stp     x2,  x3,  [sp, -16]!
+    // x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
+    // here, so they can be used as temps without saving.
 
     // fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  // fetch the page map
@@ -801,7 +802,7 @@ LOCAL_LABEL(DoCardsCmpXchg):
         sub     x2,  x14, x16   // offset in page
         lsr     x15, x2,  #20   // group index
         lsr     x2,  x2,  #9    // card offset
-        lsl     x15, x15, #1    // group offset (index * 2)
+        add     x15, x16, x15, lsl #1   // group address (page + index * 2)
 
     // check if concurrent marking is in progress
         cbnz    x17, LOCAL_LABEL(DirtyCardCmpXchg)
@@ -813,10 +814,9 @@ LOCAL_LABEL(DoCardsCmpXchg):
         mov     w17, #1
         strb    w17, [x16, x2]
     LOCAL_LABEL(SetGroupCmpXchg):
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         cbnz    w3, LOCAL_LABEL(CardSetCmpXchg)
-        strb    w17, [x12, x15]
+        strb    w17, [x15, #0x80]
     LOCAL_LABEL(SetPageCmpXchg):
         ldrb    w3, [x16]
         cbnz    w3, LOCAL_LABEL(CardSetCmpXchg)
@@ -828,7 +828,6 @@ LOCAL_LABEL(DoCardsCmpXchg):
         cbnz    x12, LOCAL_LABEL(DirtyCardCmpXchg)
 
     LOCAL_LABEL(ExitCmpXchg):
-        ldp  x2,  x3, [sp], 16
         ret  lr
 
     // DIRTYING CARD FOR X14
@@ -838,15 +837,14 @@ LOCAL_LABEL(DoCardsCmpXchg):
         // must be after the field write to allow concurrent clean
         stlrb   w17, [x2]
     LOCAL_LABEL(DirtyGroupCmpXchg):
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         tbnz    w3, #2, LOCAL_LABEL(ExitCmpXchg)
-        strb    w17, [x12, x15]
-    LOCAL_LABEL(DirtyPagCmpXchge):
+        strb    w17, [x15, #0x80]
+    LOCAL_LABEL(DirtyPageCmpXchg):
         ldrb    w3, [x16]
         tbnz    w3, #2, LOCAL_LABEL(ExitCmpXchg)
         strb    w17, [x16]
-        b       LOCAL_LABEL(ExitCmpXchg)
+        ret     lr
 
     // this is expected to be rare.
     LOCAL_LABEL(RecordEscape_Cmp_Xchg):
@@ -989,8 +987,8 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         cbz     x17, LOCAL_LABEL(ExitNoCardsXchg)
 
     LOCAL_LABEL(MarkCardsXchg):
-    // need couple temps. Save before using.
-        stp     x2,  x3,  [sp, -16]!
+    // x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
+    // here, so they can be used as temps without saving.
 
     // fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  // fetch the page map
@@ -999,7 +997,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         sub     x2,  x14, x16   // offset in page
         lsr     x15, x2,  #20   // group index
         lsr     x2,  x2,  #9    // card offset
-        lsl     x15, x15, #1    // group offset (index * 2)
+        add     x15, x16, x15, lsl #1   // group address (page + index * 2)
 
     // check if concurrent marking is in progress
         cbnz    x17, LOCAL_LABEL(DirtyCardXchg)
@@ -1011,10 +1009,9 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         mov     w17, #1
         strb    w17, [x16, x2]
     LOCAL_LABEL(SetGroupXchg):
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         cbnz    w3, LOCAL_LABEL(CardSetXchg)
-        strb    w17, [x12, x15]
+        strb    w17, [x15, #0x80]
     LOCAL_LABEL(SetPageXchg):
         ldrb    w3, [x16]
         cbnz    w3, LOCAL_LABEL(CardSetXchg)
@@ -1026,7 +1023,6 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         cbnz    x12, LOCAL_LABEL(DirtyCardXchg)
 
     LOCAL_LABEL(ExitXchg):
-        ldp  x2,  x3, [sp], 16
         ret  lr
 
     // DIRTYING CARD FOR X14
@@ -1036,15 +1032,14 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         // must be after the field write to allow concurrent clean
         stlrb   w17, [x2]
     LOCAL_LABEL(DirtyGroupXchg):
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         tbnz    w3, #2, LOCAL_LABEL(ExitXchg)
-        strb    w17, [x12, x15]
-    LOCAL_LABEL(DirtyPagXchge):
+        strb    w17, [x15, #0x80]
+    LOCAL_LABEL(DirtyPageXchg):
         ldrb    w3, [x16]
         tbnz    w3, #2, LOCAL_LABEL(ExitXchg)
         strb    w17, [x16]
-        b       LOCAL_LABEL(ExitXchg)
+        ret     lr
 
     // this is expected to be rare.
     LOCAL_LABEL(RecordEscape_Xchg):
