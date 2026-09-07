@@ -61,6 +61,28 @@ FORCEINLINE bool IsPossiblyInHeap(void* address)
 #endif
 }
 
+#if FEATURE_SATORI_GC
+// Satori publishes the state of the write barrier in the g_write_watch_table slot:
+//    0 - not concurrent, cards are needed
+//    1 - concurrent marking, cards must be dirtied
+//    2 - not concurrent and the next GC is a full GC, thus cards are not needed
+// (see: SatoriRecycler::ToggleWriteBarrier and the barrier state checks in the barriers)
+//
+// NB: GCHeapUtilities::SoftwareWriteWatchIsEnabled must not be used to make these
+//     decisions in Satori - it only tells whether the barrier is concurrent and
+//     says nothing about whether cards are needed.
+FORCEINLINE bool BarrierIsConcurrentSatori()
+{
+    return (size_t)VolatileLoadWithoutBarrier(&g_write_watch_table) == 1;
+}
+
+// Tells if the barrier needs to deal with cards.
+FORCEINLINE bool CardsAreNeededSatori()
+{
+    return (size_t)VolatileLoadWithoutBarrier(&g_write_watch_table) != 2;
+}
+#endif // FEATURE_SATORI_GC
+
 #if !FEATURE_SATORI_GC
 FORCEINLINE void InlinedSetCardsAfterBulkCopyHelper(Object** start, size_t len)
 {

@@ -814,11 +814,13 @@ void SatoriGC::BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteC
         SatoriUtil::BackwardGCSafeCopy(dst, src, byteCount);
     }
 
-    if (!(localAssignment || m_heap->Recycler()->IsNextGcFullGc()) ||
-        m_heap->Recycler()->IsBarrierConcurrent())
+    // A thread-local assignment needs no cards.
+    if (localAssignment || !m_heap->Recycler()->CardsAreNeeded())
     {
-        SetCardsAfterBulkCopy((size_t)dst, (size_t)src, byteCount);
+        return;
     }
+
+    SetCardsAfterBulkCopy((size_t)dst, (size_t)src, byteCount);
 }
 
 int SatoriGC::RefreshMemoryLimit()

@@ -53,21 +53,26 @@
 
 static const int MIN_GEN1_BUDGET = 2 * Satori::REGION_SIZE_GRANULARITY;
 
-void ToggleWriteBarrier(bool concurrent, bool skipCards, bool eeSuspended)
+// Publishes the barrier state to the barriers via the g_write_watch_table slot.
+void ToggleWriteBarrier(int barrierState, bool eeSuspended)
 {
+    // only the states that have a published counterpart could be set
+    _ASSERTE(barrierState == SatoriRecycler::BARRIER_STATE_NOT_CONCURRENT ||
+             barrierState == SatoriRecycler::BARRIER_STATE_CONCURRENT ||
+             barrierState == SatoriRecycler::BARRIER_STATE_SKIPPING_CARDS);
+
     WriteBarrierParameters args = {};
 
-    if (concurrent)
+    if (barrierState == SatoriRecycler::BARRIER_STATE_CONCURRENT)
     {
         args.operation = WriteBarrierOp::StartConcurrentMarkingSatori;
-        args.write_watch_table = (uint8_t*)1; // barrier state --> concurrent
     }
     else
     {
         args.operation = WriteBarrierOp::StopConcurrentMarkingSatori;
-        args.write_watch_table = skipCards ? (uint8_t*)2 : (uint8_t*)0;
     }
 
+    args.write_watch_table = (uint8_t*)(size_t)barrierState;
     args.is_runtime_suspended = eeSuspended;
     GCToEEInterface::StompWriteBarrier(&args);
 }
@@ -552,19 +557,23 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
     }
 
     // make sure the barrier is toggled to concurrent before marking
-    if (m_barrierState != BARRIER_STATE_CONCURRENT)
+    int origBarrierState = m_barrierState;
+    if (origBarrierState != BARRIER_STATE_CONCURRENT)
     {
         // Toggling is a ProcessWide fence, which is expensive, and on some platforms
         // is serialized with other process-wide fences. There is no point in every helper
         // doing it, so claim the right to toggle and let just one thread do the work.
-        int state = Interlocked::CompareExchange(&m_barrierState, BARRIER_STATE_SWITCHING, BARRIER_STATE_NOT_CONCURRENT);
-        if (state == BARRIER_STATE_NOT_CONCURRENT)
+        // NB: the barrier could be in either of the two non-concurrent states and
+        //     switching to concurrent stops skipping cards in any case, so we claim
+        //     the switch from whatever non-concurrent state we have observed.
+        if (origBarrierState != BARRIER_STATE_SWITCHING &&
+            Interlocked::CompareExchange(&m_barrierState, BARRIER_STATE_SWITCHING, origBarrierState) == origBarrierState)
         {
-            ToggleWriteBarrier(true, /* skipCards */ false, /* eeSuspended */ false);
+            ToggleWriteBarrier(BARRIER_STATE_CONCURRENT, /* eeSuspended */ false);
             // the toggle above is a fence, so the switch is published to everyone by now.
             VolatileStore((int*)&m_barrierState, BARRIER_STATE_CONCURRENT);
         }
-        else if (state == BARRIER_STATE_SWITCHING)
+        else if (m_barrierState != BARRIER_STATE_CONCURRENT)
         {
             // Another thread is switching the barrier and we may not mark until that is done.
             // Rather than waiting for it, leave and come back later - there is more work to do.
@@ -1308,8 +1317,9 @@ void SatoriRecycler::BlockingCollectImpl()
     AdjustHeuristics();
     
     // Here we know if the next GC will surely be a full GC.
-    ToggleWriteBarrier(false, /* skipCards */ m_nextGcIsFullGc, /* eeSuspended */ true);
-    m_barrierState = BARRIER_STATE_NOT_CONCURRENT;
+    int newBarrierState = m_nextGcIsFullGc ? BARRIER_STATE_SKIPPING_CARDS : BARRIER_STATE_NOT_CONCURRENT;
+    ToggleWriteBarrier(newBarrierState, /* eeSuspended */ true);
+    m_barrierState = newBarrierState;
 
     // tell EE that we are starting
     // this needs to be called on a "GC" thread while EE is stopped.
