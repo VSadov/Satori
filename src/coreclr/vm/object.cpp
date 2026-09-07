@@ -1315,7 +1315,7 @@ void* __cdecl GCSafeMemCpy(void * dest, const void * src, size_t len)
     STATIC_CONTRACT_FORBID_FAULT;
 
 #ifdef FEATURE_SATORI_GC
-    if (IsInHeapSatori((Object**)dest))
+    if (IsPossiblyInHeap(dest))
 #else
     if (!(((*(BYTE**)&dest) <  g_lowest_address ) ||
           ((*(BYTE**)&dest) >= g_highest_address)))
