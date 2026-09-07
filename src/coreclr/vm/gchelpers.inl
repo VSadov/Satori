@@ -54,7 +54,15 @@ FORCEINLINE bool IsPossiblyInHeap(void* address)
     // NB: the map is a fixed-size array inside the heap instance. Satori publishes it
     //     once, at init, and never moves or reallocates it, thus an ordinary read.
     //     (the later StompResize only re-publishes the highest address)
+    // NB: this can run before the GC publishes the map - in checked builds vm/common.h
+    //     redefines memcpy to GCSafeMemCpy, which checks the destination, so this runs
+    //     from the very first memcpy during EE startup. Treat "no map" as "not in heap".
     uint8_t* pageByteMap = (uint8_t*)g_card_bundle_table;
+    if (pageByteMap == nullptr)
+    {
+        return false;
+    }
+
     return pageByteMap[(size_t)address >> SATORI_PAGE_BITS] != 0;
 #else
     return (BYTE*)address >= g_lowest_address && (BYTE*)address < g_highest_address;
