@@ -155,6 +155,7 @@ public:
 
     bool IsExposed(SatoriObject** location);
     bool AnyExposed(size_t from, size_t length);
+    bool CheckEscapeRange(size_t dst, size_t src, size_t len);
     void EscapeRecursively(SatoriObject* obj);
     void EscapeAll();
     void EscapeShallow(SatoriObject* o, size_t size);
@@ -233,7 +234,8 @@ private:
     static const int BITMAP_LENGTH = Satori::REGION_SIZE_GRANULARITY / sizeof(size_t) / sizeof(size_t) / 8;
 
     // The first actually useful index is offsetof(m_firstObject) / sizeof(size_t) / 8,
-    static const int BITMAP_START = (BITMAP_LENGTH + (Satori::INDEX_LENGTH + 2) / 2 + 1) / sizeof(size_t) / 8;
+    // which is the map itself (BITMAP_LENGTH + 1 words), the index and the syncblock.
+    static const int BITMAP_START = (BITMAP_LENGTH + 1 + (Satori::INDEX_LENGTH + 2) / 2 + 1) / sizeof(size_t) / 8;
 
     union
     {

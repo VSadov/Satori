@@ -53,6 +53,21 @@ class SatoriRecycler
     friend class MarkContext;
 
 public:
+    // Toggling the barrier to concurrent involves a process-wide fence, which is expensive.
+    // Only the thread that claims BARRIER_STATE_SWITCHING does it, the rest just leave and
+    // come back later, since they may not mark until the barrier is concurrent.
+    //
+    // NB: except for SWITCHING, which is internal to the GC, the values match what is
+    //     published to the barriers in the g_write_watch_table slot.
+    //     (see: ToggleWriteBarrier)
+    static const int BARRIER_STATE_NOT_CONCURRENT = 0;
+    static const int BARRIER_STATE_CONCURRENT = 1;
+    // Not concurrent and the next GC is a full GC, thus cards are not needed.
+    static const int BARRIER_STATE_SKIPPING_CARDS = 2;
+    // Transient, while a thread is toggling the barrier. Has no counterpart in the
+    // published state - the barrier is still in the previous state until the toggle is done.
+    static const int BARRIER_STATE_SWITCHING = 3;
+
     void Initialize(SatoriHeap* heap);
 
     void AddEphemeralRegion(SatoriRegion* region);
@@ -106,6 +121,17 @@ public:
     {
         // NB: while switching the barrier is not concurrent yet.
         return m_barrierState == BARRIER_STATE_CONCURRENT;
+    }
+
+    // Tells if the barrier needs to deal with cards.
+    // Cards are not needed when the next GC is a full GC - it will not use the remembered set.
+    // However, concurrent marking needs cards regardless, so that the writes that happen
+    // while marking are not missed.
+    // NB: both conditions are folded into the barrier state, which is updated atomically,
+    //     so that they could not be observed in an inconsistent combination.
+    inline bool CardsAreNeeded()
+    {
+        return m_barrierState != BARRIER_STATE_SKIPPING_CARDS;
     }
 
     inline bool IsNextGcFullGc()
@@ -186,13 +212,6 @@ private:
     static const int CC_CLEAN_STATE_SETTING_UP = 2;
     static const int CC_CLEAN_STATE_CLEANING = 3;
     static const int CC_CLEAN_STATE_DONE = 4;
-
-    // Toggling the barrier to concurrent involves a process-wide fence, which is expensive.
-    // Only the thread that claims BARRIER_STATE_SWITCHING does it, the rest just leave and
-    // come back later, since they may not mark until the barrier is concurrent.
-    static const int BARRIER_STATE_NOT_CONCURRENT = 0;
-    static const int BARRIER_STATE_SWITCHING = 1;
-    static const int BARRIER_STATE_CONCURRENT = 2;
 
     volatile int m_ccStackMarkState;
     volatile int m_ccStackMarkingThreadsNum;

@@ -743,6 +743,11 @@ void SatoriGC::EnumerateConfigurationValues(void* context, ConfigurationValueFun
 
 bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
 {
+    // Assigning outside of the heap (most likely to stack) is handled by the callers.
+    // Nothing can be formally shared that way, so there is nothing to escape
+    // and no ordering contract to worry about.
+    _ASSERTE(SatoriHeap::IsInHeap(dst));
+
     SatoriRegion* curRegion = (SatoriRegion*)GCToEEInterface::GetAllocContext()->gc_reserved_1;
     if (!curRegion || !curRegion->IsEscapeTracking())
     {
@@ -750,78 +755,7 @@ bool SatoriGC::CheckEscapeSatoriRange(size_t dst, size_t src, size_t len)
         return false;
     }
 
-    _ASSERTE(curRegion->IsEscapeTrackedByCurrentThread());
-
-    // if dst is within the curRegion and is not exposed, we are done
-    if ((dst ^ curRegion->Start()) < Satori::REGION_SIZE_GRANULARITY)
-    {
-        if (!curRegion->AnyExposed(dst, len))
-        {
-            // thread-local assignment
-            return true;
-        }
-    }
-
-    if (!SatoriHeap::IsInHeap(dst))
-    {
-        // dest not in heap, must be stack, so, local
-        return true;
-    }
-
-    if ((src ^ curRegion->Start()) < Satori::REGION_SIZE_GRANULARITY)
-    {
-        // if src is in current region, the elements could be escaping
-        if (!curRegion->AnyExposed(src, len))
-        {
-            // one-element array copy is embarrasingly common. specialcase that.
-            if (len == sizeof(size_t))
-            {
-                SatoriObject* obj = *(SatoriObject**)src;
-                if (obj->SameRegion(curRegion))
-                {
-                    curRegion->EscapeRecursively(obj);
-                }
-            }
-            else
-            {
-                SatoriObject* containingSrcObj = curRegion->FindObject(src);
-                containingSrcObj->ForEachObjectRef(
-                    [&](SatoriObject** ref)
-                    {
-                        SatoriObject* child = *ref;
-                        if (child->SameRegion(curRegion))
-                        {
-                            curRegion->EscapeRecursively(child);
-                        }
-                    },
-                    src,
-                    src + len
-                );
-            }
-        }
-
-        return false;
-    }
-
-    if (SatoriHeap::IsInHeap(src))
-    {
-        // src is not in current region but in heap,
-        // it can't escape anything that belongs to the current thread, but it is not a local assignment.
-        return false;
-    }
-
-    // This is a very rare case where we are copying refs out of non-heap area like stack or native heap.
-    // We do not have a containing type and that is somewhat inconvenient.
-    // 
-    // There are not many scenarios that lead here. In particular, boxing uses a newly
-    // allocated and not yet escaped target, so it does not end up here.
-    // One possible way to get here is a copy-back after a reflection call with a boxed nullable
-    // argument that happen to escape.
-    // 
-    // We could handle this is by conservatively escaping any value that matches an unescaped pointer in curRegion.
-    // However, considering how uncommon this is, we will just give up tracking.
-    curRegion->StopEscapeTracking();
-    return false;
+    return curRegion->CheckEscapeRange(dst, src, len);
 }
 
 void SatoriGC::SetCardsAfterBulkCopy(size_t dst, size_t src, size_t len)
@@ -844,20 +778,22 @@ void SatoriGC::SetCardsAfterBulkCopy(size_t dst, size_t src, size_t len)
 
 void SatoriGC::BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteCount)
 {
-    if (dst == src || byteCount == 0)
-        return;
+    // callers filter out empty and trivial moves
+    _ASSERTE(dst != src);
+    _ASSERTE(byteCount != 0);
+
+    // callers handle the case when the destination is not in the heap
+    _ASSERTE(SatoriHeap::IsInHeap((size_t)dst));
 
     // Make sure everything is pointer aligned
     _ASSERTE(((size_t)dst & (sizeof(size_t) - 1)) == 0);
     _ASSERTE(((size_t)src & (sizeof(size_t) - 1)) == 0);
     _ASSERTE(((size_t)byteCount & (sizeof(size_t) - 1)) == 0);
 
-    bool localAssignment = false;
-    if (byteCount >= sizeof(size_t))
-    {
-        localAssignment = CheckEscapeSatoriRange((size_t)dst, (size_t)src, byteCount);
-    }
+    // nonzero and pointer-aligned, thus at least one pointer in size
+    _ASSERTE(byteCount >= sizeof(size_t));
 
+    bool localAssignment = CheckEscapeSatoriRange((size_t)dst, (size_t)src, byteCount);
     if (!localAssignment)
     {
 #if !defined(TARGET_X86) && !defined(TARGET_AMD64)
@@ -865,17 +801,26 @@ void SatoriGC::BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteC
 #endif
     }
 
-    // NOTE! memmove needs to copy with size_t granularity
-    // I do not see how it would not, since everything is aligned.
-    // If we need to handle unaligned moves, we may need to write our own memmove
-    memmove(dst, src, byteCount);
-
-    if (byteCount >= sizeof(size_t) &&
-       (!(localAssignment || m_heap->Recycler()->IsNextGcFullGc()) ||
-           m_heap->Recycler()->IsBarrierConcurrent()))
+    // Copy with size_t granularity, so that references are never torn.
+    // The ranges may overlap, so the direction matters - when moving to a lower
+    // address we must copy forward, otherwise backward.
+    // NB: the comparison is unsigned, so nonoverlapping cases pass either check.
+    if ((size_t)dst - (size_t)src >= byteCount)
     {
-        SetCardsAfterBulkCopy((size_t)dst, (size_t)src, byteCount);
+        SatoriUtil::ForwardGCSafeCopy(dst, src, byteCount);
     }
+    else
+    {
+        SatoriUtil::BackwardGCSafeCopy(dst, src, byteCount);
+    }
+
+    // A thread-local assignment needs no cards.
+    if (localAssignment || !m_heap->Recycler()->CardsAreNeeded())
+    {
+        return;
+    }
+
+    SetCardsAfterBulkCopy((size_t)dst, (size_t)src, byteCount);
 }
 
 int SatoriGC::RefreshMemoryLimit()

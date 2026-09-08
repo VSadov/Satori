@@ -23,6 +23,7 @@ namespace System.Xml.Tests
 
         protected abstract void ReadFully(string xml, CancellationToken ct);
 
+        [ActiveIssue("SATORI: disabled as these assert on a ratio of two short wall-clock measurements and thus fail spuriously on a loaded machine")]
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotCoreClrInterpreter))]
         public void AttributeDuplicatesCheck_LongUris_SameLocalName_AboveThreshold()
         {
@@ -31,6 +32,7 @@ namespace System.Xml.Tests
                 n => GenerateDoc(n, attrCount: MaxAttrDuplWalkCount, longUris: true, distinctLocalNames: false));
         }
 
+        [ActiveIssue("SATORI: disabled as these assert on a ratio of two short wall-clock measurements and thus fail spuriously on a loaded machine")]
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotCoreClrInterpreter))]
         public void AttributeDuplicatesCheck_ShortUris_SameLocalName_BelowThreshold()
         {
@@ -39,6 +41,7 @@ namespace System.Xml.Tests
                 n => GenerateDoc(n, attrCount: MaxAttrDuplWalkCount - 1, longUris: false, distinctLocalNames: false));
         }
 
+        [ActiveIssue("SATORI: disabled as these assert on a ratio of two short wall-clock measurements and thus fail spuriously on a loaded machine")]
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotCoreClrInterpreter))]
         public void AttributeDuplicatesCheck_LongUris_DistinctLocalNames_AboveThreshold()
         {
@@ -47,6 +50,7 @@ namespace System.Xml.Tests
                 n => GenerateDoc(n, attrCount: MaxAttrDuplWalkCount, longUris: true, distinctLocalNames: true));
         }
 
+        [ActiveIssue("SATORI: disabled as these assert on a ratio of two short wall-clock measurements and thus fail spuriously on a loaded machine")]
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotCoreClrInterpreter))]
         public void AttributeDuplicatesCheck_LongUris_SameLocalName_WellAboveThreshold()
         {
@@ -55,6 +59,7 @@ namespace System.Xml.Tests
                 n => GenerateDoc(n, attrCount: MaxAttrDuplWalkCount * 4, longUris: true, distinctLocalNames: false));
         }
 
+        [ActiveIssue("SATORI: disabled as these assert on a ratio of two short wall-clock measurements and thus fail spuriously on a loaded machine")]
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotCoreClrInterpreter))]
         public void AttributeDuplicatesCheck_ShortUris_DistinctLocalNames_BelowThreshold()
         {
@@ -65,6 +70,7 @@ namespace System.Xml.Tests
 
         // We're doing full string.Equals on DEBUG on top of Ref.Equal which makes it quadratic.
 #if !DEBUG
+        [ActiveIssue("SATORI: disabled as these assert on a ratio of two short wall-clock measurements and thus fail spuriously on a loaded machine")]
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotCoreClrInterpreter))]
         public void AttributeDuplicatesCheck_LongUris_SameLocalName_BelowThreshold()
         {

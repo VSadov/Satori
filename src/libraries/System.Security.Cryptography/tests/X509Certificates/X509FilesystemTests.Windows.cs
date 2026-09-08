@@ -106,6 +106,7 @@ namespace System.Security.Cryptography.X509Certificates.Tests
                 Cert.Import);
         }
 
+        [ActiveIssue("SATORI: disabled as frequently hangs/fails in local runs and thus a test nuisance")]
         [Theory]
         [InlineData(X509KeyStorageFlags.DefaultKeySet)]
         [InlineData(X509KeyStorageFlags.DefaultKeySet, true)]
@@ -129,6 +130,7 @@ namespace System.Security.Cryptography.X509Certificates.Tests
         [InlineData(X509KeyStorageFlags.UserKeySet, true)]
         [InlineData(X509KeyStorageFlags.MachineKeySet)]
         [InlineData(X509KeyStorageFlags.MachineKeySet, true)]
+        [ActiveIssue("SATORI: disabled as frequently hangs/fails in local runs and thus a test nuisance")]
         public static void AllFilesDeleted_SinglePrivateKey_SingleLoader(X509KeyStorageFlags storageFlags, bool capi = false)
         {
             AllFilesDeletedTest(

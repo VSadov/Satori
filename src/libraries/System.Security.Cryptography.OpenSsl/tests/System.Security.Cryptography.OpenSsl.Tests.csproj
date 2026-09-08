@@ -3,6 +3,10 @@
     <TargetFrameworks>$(NetCoreAppCurrent)-unix;$(NetCoreAppCurrent)-browser</TargetFrameworks>
     <!-- The library is not supported on Android / Apple (PNSE) -->
     <IgnoreForCI Condition="'$(TargetOS)' == 'android' or '$(TargetOS)' == 'ios' or '$(TargetOS)' == 'tvos' or '$(TargetOS)' == 'osx' or '$(TargetOS)' == 'maccatalyst'">true</IgnoreForCI>
+    <!-- SATORI: where the library is unsupported every test here throws PlatformNotSupportedException.
+         IgnoreForCI above only gates archiving the tests for CI, so a local "-test" run still executes
+         the suite and reports the whole assembly as failed. Build it, but do not run it. -->
+    <TestDependsOn Condition="'$(IgnoreForCI)' == 'true'">$([MSBuild]::Unescape($(TestDependsOn.Replace(';RunTests', ''))))</TestDependsOn>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- https://github.com/dotnet/runtime/issues/126862 -->
     <EnableTrimAnalyzer>false</EnableTrimAnalyzer>

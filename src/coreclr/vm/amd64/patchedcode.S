@@ -388,11 +388,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         jb      LOCAL_LABEL(RecordEscape)               // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign):
-        mov     [rdi], rsi              // no card marking, src is not a heap object
-
-        // set rdi, rsi per contract with JIT_ByRefWriteBarrier
-        add     rdi, 8
-        mov     rsi, r10
+        mov     [rdi], rsi              // src is external/null, or the assignment is completely threadlocal
         ret
 
     LOCAL_LABEL(AssignAndMarkCards):
@@ -403,43 +399,35 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         PREPARE_EXTERNAL_VAR g_write_watch_table, rcx
         mov     r11, [rcx]
 
-        // set rdi per contract with JIT_ByRefWriteBarrier
-        mov     rax, rdi
-        add     rdi, 8
-
         // check the barrier state. this must be done after the assignment (in program order)
         // if state == 2 we do not set or dirty cards.
         cmp     r11, 2
         jne     LOCAL_LABEL(DoCards)
-        // set rsi per contract with JIT_ByRefWriteBarrier
-        mov     rsi, r10
     LOCAL_LABEL(Exit):
         ret
 
     LOCAL_LABEL(DoCards):
-    // if same region, just check if barrier is not concurrent
-        xor     rsi, rax
+    // if src and dst are in the same region, cards are not needed, unless concurrent
+        xor     rsi, rdi
         shr     rsi, 21
-        // set rsi per contract with JIT_ByRefWriteBarrier
-        mov     rsi, r10
         jz      LOCAL_LABEL(CheckConcurrent)            // same region, just check if barrier is not concurrent
 
-    // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
         cmp     dword ptr [rdx + 16], 2
         jl     LOCAL_LABEL(MarkCards)
 
     LOCAL_LABEL(CheckConcurrent):
-    // if concurrent, load card location
+    // if not concurrent, exit
         cmp     r11, 0
         je      LOCAL_LABEL(Exit)
 
     LOCAL_LABEL(MarkCards):
-    // fetch card location for rax  (saved rdi)
+    // fetch card location for rdi
         PREPARE_EXTERNAL_VAR g_card_table, r9 
         mov     r9,  [r9]  // fetch the page map
-        mov     rdx, rax
-        shr     rax, 30
-        mov     rax, qword ptr [r9 + rax * 8] // page
+        mov     rdx, rdi
+        shr     rdi, 30
+        mov     rax, qword ptr [r9 + rdi * 8] // page
         sub     rdx, rax   // offset in page
         mov     r8,  rdx
         shr     rdx, 9     // card offset
@@ -497,16 +485,14 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         // Align rsp
         mov  r9, rsp
         and  rsp, -16
-        sub  rsp, 8
 
-        // save rsp, rdi, rsi, rdx and r10 (possibly preadjusted rsi)
+        // save rsp, rdi, rsi and rdx
         push r9
         push rdi
         push rsi
         push rdx
-        push r10
 
-        // also save xmm0, in case it is used for stack clearing, as JIT_ByRefWriteBarrier should not trash xmm0
+        // also save xmm0, in case it is used for stack clearing.
         // Hopefully EscapeFn cannot corrupt other xmm regs, since there is no float math or vectorizable code in there.
         sub     rsp, 16
         movdqa  [rsp], xmm0
@@ -517,7 +503,6 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         movdqa  xmm0, [rsp]
         add     rsp, 16
 
-        pop     r10
         pop     rdx
         pop     rsi
         pop     rdi

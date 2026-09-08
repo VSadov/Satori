@@ -447,7 +447,7 @@ LEAF_ENTRY RhpAssignRefArm64, _TEXT
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
 ALTERNATE_ENTRY RhpCheckedEntry
-        lsr     x17, x15, #30                   // source page index
+        lsr     x17, x15, #30                   // src page index
         ldrb    w12, [x16, x17]
         cbz     x12, LOCAL_LABEL(JustAssign)    // null or external (immutable) object
 #else
@@ -477,7 +477,7 @@ ALTERNATE_ENTRY RhpCheckedEntry
         lsr         x17, x17, x12
         tbnz        x17, #0, LOCAL_LABEL(RecordEscape) // target is exposed. record an escape.
 
-    // UNORDERED! assignment of unescaped, null or external (immutable) object
+    // UNORDERED! src is external/null, or the assignment is completely threadlocal
     LOCAL_LABEL(JustAssign):
 ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
         str  x15, [x14]
@@ -498,12 +498,12 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         ret     lr
 
     LOCAL_LABEL(DoCards):
-    // if same region, just check if barrier is not concurrent
+    // if src and dst are in the same region, cards are not needed, unless concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
         beq     LOCAL_LABEL(CheckConcurrent)    // same region, just check if barrier is not concurrent
 
-    // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
         ldr     w12, [x16, 16]                  // source region + 16 -> generation
         tbz     x12, #1, LOCAL_LABEL(MarkCards)
 
@@ -512,62 +512,63 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         cbz     x17, LOCAL_LABEL(ExitNoCards)
 
     LOCAL_LABEL(MarkCards):
-    // need couple temps. Save before using.
-        stp     x2,  x3,  [sp, -16]!
+    // only x12, x15, x16 and x17 may be trashed here, so we keep the card offset in x12,
+    // the group address in x15, the page in x16, and reuse x17 for both the loaded byte
+    // and the value being stored. That avoids needing any extra temps.
 
     // fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  // fetch the page map
         lsr     x16, x14, #30
         ldr     x16, [x12, x16, lsl #3]              // page
-        sub     x2,  x14, x16   // offset in page
-        lsr     x15, x2,  #20   // group index
-        lsr     x2,  x2,  #9    // card offset
-        lsl     x15, x15, #1    // group offset (index * 2)
+        sub     x12, x14, x16   // offset in page
+        lsr     x15, x12, #20   // group index
+        lsr     x12, x12, #9    // card offset
+        add     x15, x16, x15, lsl #1   // group address (page + index * 2)
 
     // check if concurrent marking is in progress
         cbnz    x17, LOCAL_LABEL(DirtyCard)
 
     // SETTING CARD FOR X14
     LOCAL_LABEL(SetCard):
-        ldrb    w3, [x16, x2]
-        cbnz    w3, LOCAL_LABEL(Exit)
+        ldrb    w17, [x16, x12]
+        cbnz    w17, LOCAL_LABEL(Exit)
         mov     w17, #1
-        strb    w17, [x16, x2]
+        strb    w17, [x16, x12]
     LOCAL_LABEL(SetGroup):
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
-        cbnz    w3, LOCAL_LABEL(CardSet)
-        strb    w17, [x12, x15]
+        ldrb    w17, [x15, #0x80]
+        cbnz    w17, LOCAL_LABEL(CardSet)
+        mov     w17, #1
+        strb    w17, [x15, #0x80]
     LOCAL_LABEL(SetPage):
-        ldrb    w3, [x16]
-        cbnz    w3, LOCAL_LABEL(CardSet)
+        ldrb    w17, [x16]
+        cbnz    w17, LOCAL_LABEL(CardSet)
+        mov     w17, #1
         strb    w17, [x16]
 
     LOCAL_LABEL(CardSet):
     // check if concurrent marking is still not in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12
-        cbnz    x12, LOCAL_LABEL(DirtyCard)
+    // (uses x17 so that the card offset in x12 stays live for DirtyCard)
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
+        cbnz    x17, LOCAL_LABEL(DirtyCard)
 
     LOCAL_LABEL(Exit):
-        ldp  x2,  x3, [sp], 16
         ret  lr
 
     // DIRTYING CARD FOR X14
     LOCAL_LABEL(DirtyCard):
+        add     x12, x16, x12   // card address
         mov     w17, #4
-        add     x2, x2, x16
         // must be after the field write to allow concurrent clean
-        stlrb   w17, [x2]
+        stlrb   w17, [x12]
     LOCAL_LABEL(DirtyGroup):
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
-        tbnz    w3, #2, LOCAL_LABEL(Exit)
-        strb    w17, [x12, x15]
+        ldrb    w12, [x15, #0x80]
+        tbnz    w12, #2, LOCAL_LABEL(Exit)
+        strb    w17, [x15, #0x80]
     LOCAL_LABEL(DirtyPage):
-        ldrb    w3, [x16]
-        tbnz    w3, #2, LOCAL_LABEL(Exit)
+        ldrb    w12, [x16]
+        tbnz    w12, #2, LOCAL_LABEL(Exit)
         strb    w17, [x16]
-        b       LOCAL_LABEL(Exit)
+        ret  lr
 
     // this is expected to be rare.
     LOCAL_LABEL(RecordEscape):
@@ -580,18 +581,21 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         lsr         x17, x17, x12
         tbnz        x17, #0, LOCAL_LABEL(AssignAndMarkCards)        // source is already escaped.
 
-        // because of the barrier call convention
-        // we need to preserve caller-saved x0 through x15 and x29/x30
+        // because of the barrier call convention we need to preserve x0-x11, x13, x14, x15 and x30.
+        // x12, x16 and x17 are trashable per the barrier contract, and x12 is rewritten before
+        // being read again. x29 is callee-saved, so EscapeFn preserves it for us.
+        // also save q0, in case it is used for stack clearing.
+        // Hopefully EscapeFn cannot corrupt other vector regs, since there is no float math or vectorizable code in there.
 
-        stp     x29,x30, [sp, -16 * 9]!
-        stp     x0, x1,  [sp, 16 * 1]
-        stp     x2, x3,  [sp, 16 * 2]
-        stp     x4, x5,  [sp, 16 * 3]
-        stp     x6, x7,  [sp, 16 * 4]
-        stp     x8, x9,  [sp, 16 * 5]
-        stp     x10,x11, [sp, 16 * 6]
-        stp     x12,x13, [sp, 16 * 7]
-        stp     x14,x15, [sp, 16 * 8]
+        stp     x30, x0, [sp, -16 * 9]!
+        stp     x1,  x2, [sp, 16 * 1]
+        stp     x3,  x4, [sp, 16 * 2]
+        stp     x5,  x6, [sp, 16 * 3]
+        stp     x7,  x8, [sp, 16 * 4]
+        stp     x9,  x10,[sp, 16 * 5]
+        stp     x11, x13,[sp, 16 * 6]
+        stp     x14, x15,[sp, 16 * 7]
+        str     q0,      [sp, 16 * 8]
 
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         // mov  x0, x14  EscapeFn does not use dst, it is just to avoid arg shuffle on x64
@@ -600,15 +604,15 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         ldr  x12, [x16, #8]                 // EscapeFn address
         blr  x12
 
-        ldp     x0, x1,  [sp, 16 * 1]
-        ldp     x2, x3,  [sp, 16 * 2]
-        ldp     x4, x5,  [sp, 16 * 3]
-        ldp     x6, x7,  [sp, 16 * 4]
-        ldp     x8, x9,  [sp, 16 * 5]
-        ldp     x10,x11, [sp, 16 * 6]
-        ldp     x12,x13, [sp, 16 * 7]
-        ldp     x14,x15, [sp, 16 * 8]
-        ldp     x29,x30, [sp], 16 * 9
+        ldr     q0,      [sp, 16 * 8]
+        ldp     x14, x15,[sp, 16 * 7]
+        ldp     x11, x13,[sp, 16 * 6]
+        ldp     x9,  x10,[sp, 16 * 5]
+        ldp     x7,  x8, [sp, 16 * 4]
+        ldp     x5,  x6, [sp, 16 * 3]
+        ldp     x3,  x4, [sp, 16 * 2]
+        ldp     x1,  x2, [sp, 16 * 1]
+        ldp     x30, x0, [sp], 16 * 9
 
         and     x16, x15, #0xFFFFFFFFFFE00000  // source region
         b       LOCAL_LABEL(AssignAndMarkCards)
@@ -729,12 +733,12 @@ LOCAL_LABEL(DoCardsCmpXchg):
         tbnz    x17, #1, LOCAL_LABEL(Exit_Cmp_XchgNoCards)
 
     LOCAL_LABEL(DoCardsCmpXchg1):
-    // if same region, just check if barrier is not concurrent
+    // if src and dst are in the same region, cards are not needed, unless concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
         beq     LOCAL_LABEL(CheckConcurrentCmpXchg)    // same region, just check if barrier is not concurrent
 
-    // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
         ldr     w12, [x16, 16]                  // source region + 16 -> generation
         tbz     x12, #1, LOCAL_LABEL(MarkCardsCmpXchg)
 
@@ -743,8 +747,8 @@ LOCAL_LABEL(DoCardsCmpXchg):
         cbz     x17, LOCAL_LABEL(Exit_Cmp_XchgNoCards)
 
     LOCAL_LABEL(MarkCardsCmpXchg):
-    // need couple temps. Save before using.
-        stp     x2,  x3,  [sp, -16]!
+    // x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
+    // here, so they can be used as temps without saving.
 
     // fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  // fetch the page map
@@ -753,7 +757,7 @@ LOCAL_LABEL(DoCardsCmpXchg):
         sub     x2,  x14, x16   // offset in page
         lsr     x15, x2,  #20   // group index
         lsr     x2,  x2,  #9    // card offset
-        lsl     x15, x15, #1    // group offset (index * 2)
+        add     x15, x16, x15, lsl #1   // group address (page + index * 2)
 
     // check if concurrent marking is in progress
         cbnz    x17, LOCAL_LABEL(DirtyCardCmpXchg)
@@ -765,10 +769,9 @@ LOCAL_LABEL(DoCardsCmpXchg):
         mov     w17, #1
         strb    w17, [x16, x2]
     LOCAL_LABEL(SetGroupCmpXchg):
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         cbnz    w3, LOCAL_LABEL(CardSetCmpXchg)
-        strb    w17, [x12, x15]
+        strb    w17, [x15, #0x80]
     LOCAL_LABEL(SetPageCmpXchg):
         ldrb    w3, [x16]
         cbnz    w3, LOCAL_LABEL(CardSetCmpXchg)
@@ -780,7 +783,6 @@ LOCAL_LABEL(DoCardsCmpXchg):
         cbnz    x12, LOCAL_LABEL(DirtyCardCmpXchg)
 
     LOCAL_LABEL(ExitCmpXchg):
-        ldp  x2,  x3, [sp], 16
         ret  lr
 
     // DIRTYING CARD FOR X14
@@ -790,15 +792,14 @@ LOCAL_LABEL(DoCardsCmpXchg):
         // must be after the field write to allow concurrent clean
         stlrb   w17, [x2]
     LOCAL_LABEL(DirtyGroupCmpXchg):
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         tbnz    w3, #2, LOCAL_LABEL(ExitCmpXchg)
-        strb    w17, [x12, x15]
-    LOCAL_LABEL(DirtyPagCmpXchge):
+        strb    w17, [x15, #0x80]
+    LOCAL_LABEL(DirtyPageCmpXchg):
         ldrb    w3, [x16]
         tbnz    w3, #2, LOCAL_LABEL(ExitCmpXchg)
         strb    w17, [x16]
-        b       LOCAL_LABEL(ExitCmpXchg)
+        ret     lr
 
     // this is expected to be rare.
     LOCAL_LABEL(RecordEscape_Cmp_Xchg):
@@ -811,20 +812,19 @@ LOCAL_LABEL(DoCardsCmpXchg):
         lsr         x17, x17, x12
         tbnz        x17, #0, LOCAL_LABEL(AssignAndMarkCards_Cmp_Xchg)        // source is already escaped.
 
-        // we need to preserve our parameters x0, x1, x2 and x29/x30
+        // we need to preserve our parameters x0, x1, x2 and x30.
+        // x29 is callee-saved, so EscapeFn preserves it for us.
 
-        stp     x29,x30, [sp, -16 * 3]!
-        stp     x0, x1,  [sp, 16 * 1]
-        str     x2,      [sp, 16 * 2]
+        stp     x30, x0, [sp, -16 * 2]!
+        stp     x1,  x2, [sp, 16 * 1]
 
         // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         mov  x2, x16                       // source region
         ldr  x12, [x16, #8]                // EscapeFn address
         blr  x12
 
-        ldp     x0, x1,  [sp, 16 * 1]
-        ldr     x2,      [sp, 16 * 2]
-        ldp     x29,x30, [sp], 16 * 3
+        ldp     x1,  x2, [sp, 16 * 1]
+        ldp     x30, x0, [sp], 16 * 2
 
         // x10 should be not 0 to indicate that can`t skip cards.
         mov     x10,#1
@@ -927,12 +927,12 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         ret     lr
 
     LOCAL_LABEL(DoCardsXchg):
-    // if same region, just check if barrier is not concurrent
+    // if src and dst are in the same region, cards are not needed, unless concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
         beq     LOCAL_LABEL(CheckConcurrentXchg)    // same region, just check if barrier is not concurrent
 
-    // if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
         ldr     w12, [x16, 16]                  // source region + 16 -> generation
         tbz     x12, #1, LOCAL_LABEL(MarkCardsXchg)
 
@@ -941,8 +941,8 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         cbz     x17, LOCAL_LABEL(ExitNoCardsXchg)
 
     LOCAL_LABEL(MarkCardsXchg):
-    // need couple temps. Save before using.
-        stp     x2,  x3,  [sp, -16]!
+    // x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
+    // here, so they can be used as temps without saving.
 
     // fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  // fetch the page map
@@ -951,7 +951,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         sub     x2,  x14, x16   // offset in page
         lsr     x15, x2,  #20   // group index
         lsr     x2,  x2,  #9    // card offset
-        lsl     x15, x15, #1    // group offset (index * 2)
+        add     x15, x16, x15, lsl #1   // group address (page + index * 2)
 
     // check if concurrent marking is in progress
         cbnz    x17, LOCAL_LABEL(DirtyCardXchg)
@@ -963,10 +963,9 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         mov     w17, #1
         strb    w17, [x16, x2]
     LOCAL_LABEL(SetGroupXchg):
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         cbnz    w3, LOCAL_LABEL(CardSetXchg)
-        strb    w17, [x12, x15]
+        strb    w17, [x15, #0x80]
     LOCAL_LABEL(SetPageXchg):
         ldrb    w3, [x16]
         cbnz    w3, LOCAL_LABEL(CardSetXchg)
@@ -978,7 +977,6 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         cbnz    x12, LOCAL_LABEL(DirtyCardXchg)
 
     LOCAL_LABEL(ExitXchg):
-        ldp  x2,  x3, [sp], 16
         ret  lr
 
     // DIRTYING CARD FOR X14
@@ -988,15 +986,14 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         // must be after the field write to allow concurrent clean
         stlrb   w17, [x2]
     LOCAL_LABEL(DirtyGroupXchg):
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         tbnz    w3, #2, LOCAL_LABEL(ExitXchg)
-        strb    w17, [x12, x15]
-    LOCAL_LABEL(DirtyPagXchge):
+        strb    w17, [x15, #0x80]
+    LOCAL_LABEL(DirtyPageXchg):
         ldrb    w3, [x16]
         tbnz    w3, #2, LOCAL_LABEL(ExitXchg)
         strb    w17, [x16]
-        b       LOCAL_LABEL(ExitXchg)
+        ret     lr
 
     // this is expected to be rare.
     LOCAL_LABEL(RecordEscape_Xchg):

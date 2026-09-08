@@ -275,6 +275,7 @@ namespace System.Net.NetworkInformation.Tests
             Assert.True(NetworkInterface.GetIsNetworkAvailable());
         }
 
+        [ActiveIssue("SATORI: disabled as frequently hangs/fails in local runs and thus a test nuisance")]
         [ConditionalTheory]
         [SkipOnPlatform(TestPlatforms.OSX | TestPlatforms.FreeBSD | TestPlatforms.OpenBSD, "Expected behavior is different on OSX, FreeBSD, or OpenBSD")]
         [SkipOnPlatform(TestPlatforms.iOS | TestPlatforms.MacCatalyst | TestPlatforms.tvOS, "Not supported on Browser, iOS, MacCatalyst, or tvOS.")]

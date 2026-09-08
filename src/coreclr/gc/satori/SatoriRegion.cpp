@@ -43,6 +43,7 @@
 #include "SatoriObject.inl"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
+#include "SatoriHeap.h"
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
 #include "SatoriQueue.h"
@@ -77,6 +78,13 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     }
 
     _ASSERTE(BITMAP_START * sizeof(size_t) == offsetof(SatoriRegion, m_firstObject) / sizeof(size_t) / 8);
+
+    // The header overlaps the mark bitmap and must fit in the part of the bitmap that maps
+    // the header itself (i.e. below BITMAP_START), otherwise it would corrupt live mark bits.
+    // NB: this is not implied by the assert above - that one ties BITMAP_START to the location
+    //     of the first object, it does not constrain the size of the header.
+    static_assert(offsetof(SatoriRegion, m_freeListTails) + sizeof(SatoriRegion::m_freeListTails) <= BITMAP_START * sizeof(size_t),
+        "SatoriRegion header does not fit in the unused part of the mark bitmap.");
 
     // clear the header if was used before
     size_t zeroUpTo = min(used, (size_t)&result->m_syncBlock);
@@ -1006,6 +1014,123 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
 
         o = PopFromMarkStack();
     } while (o);
+}
+
+// Checks whether assigning [src, src+len) into [dst, dst+len) is a thread-local
+// assignment, i.e. nothing becomes reachable from outside of the current thread.
+// "this" is the current thread's escape-tracking (gen0) region.
+// As a side effect records escapes for anything that does become reachable.
+bool SatoriRegion::CheckEscapeRange(size_t dst, size_t src, size_t len)
+{
+    _ASSERTE(IsEscapeTrackedByCurrentThread());
+
+    // dst is current region
+    if ((dst ^ Start()) < Satori::REGION_SIZE_GRANULARITY)
+    {
+        // if dst is not exposed, we are done
+        if (!AnyExposed(dst, len))
+        {
+            // thread-local assignment
+            return true;
+        }
+
+        // The destination is in this region and is exposed, thus whatever lands there becomes
+        // reachable from outside and must be escaped.
+        // The destination is a real object in our own region, so we can get its ref map and
+        // know exactly which of the copied words are references - no need to guess and no need
+        // to validate the values, they are references by construction.
+        SatoriObject* containingDstObj = FindObject(dst);
+        containingDstObj->ForEachObjectRef(
+            [&](SatoriObject** dstRef)
+            {
+                // the value that will land in this slot comes from the same offset in src
+                SatoriObject* child = *(SatoriObject**)((size_t)dstRef - dst + src);
+                if (child->SameRegion(this))
+                {
+                    EscapeRecursively(child);
+                }
+            },
+            dst,
+            dst + len
+        );
+
+        return false;
+    }
+
+    // dst is in the heap - the caller has checked that before getting here.
+    _ASSERTE(SatoriHeap::IsInHeap(dst));
+
+    // src is in current region. dst is some other region
+    if ((src ^ Start()) < Satori::REGION_SIZE_GRANULARITY)
+    {
+        // if src is not yet exposed, escape ref children in the copy range
+        if (!AnyExposed(src, len))
+        {
+            SatoriObject* containingSrcObj = FindObject(src);
+            containingSrcObj->ForEachObjectRef(
+                [&](SatoriObject** ref)
+                {
+                    SatoriObject* child = *ref;
+                    if (child->SameRegion(this))
+                    {
+                        EscapeRecursively(child);
+                    }
+                },
+                src,
+                src + len
+            );
+        }
+
+        return false;
+    }
+
+    if (SatoriHeap::IsInHeap(src))
+    {
+        // This is heap-to-heap move and source is accessible to other threads already. 
+        // No worries about escaping and this is not a thread-local assignment.
+        return false;
+    }
+
+    // This is a case where we are copying refs out of non-heap area like stack or native heap.
+    // We do not know which of the copied words are refs, so we conservatively escape any value
+    // that matches a live object in this region. A non-ref word that happens to have a matching
+    // bit pattern may cause an extra escape, which is safe - it only costs some tracking
+    // precision, and is much cheaper than giving up escape tracking for the whole region.
+    //
+    // Note: we only ever probe this region, which is owned by the current thread, so walking it
+    // (and updating its index in FindObject) is safe here.
+    //
+    // FindObject must not be given a location inside the unconsumed allocation budget, since
+    // that range is not parseable as a sequence of objects. A real object ref can never point
+    // there, but an arbitrary word can, so we have to exclude that range explicitly.
+    // No allocation can happen concurrently in this region, so the range is stable here.
+    size_t allocGapStart = IsAllocating() ? m_allocStart : 0;
+    size_t allocGapEnd = IsAllocating() ? m_allocEnd : 0;
+
+    // hoisted out of the loop - EscapeRecursively does not change these, but the compiler
+    // can't know that and would have to reload them on every iteration.
+    size_t firstObject = FirstObject()->Start();
+    // leave a word of headroom so that probing the escape bit (which is at +1 word) stays in region.
+    size_t candidateLimit = min(End(), Start() + Satori::REGION_SIZE_GRANULARITY) - sizeof(size_t);
+
+    for (size_t i = 0; i < len; i += sizeof(size_t))
+    {
+        SatoriObject* candidate = *(SatoriObject**)(src + i);
+        size_t candidateLocation = (size_t)candidate;
+        if (candidateLocation >= firstObject &&
+            candidateLocation < candidateLimit &&
+            // cheap bitmap check - if it is already escaped there is nothing to do.
+            !IsEscaped(candidate) &&
+            !(candidateLocation >= allocGapStart && candidateLocation < allocGapEnd) &&
+            // NB: this is nearly always a hit - a value within the region range is nearly always a pointer to a live object.
+            FindObject(candidateLocation) == candidate &&
+            !candidate->IsFree())
+        {
+            EscapeRecursively(candidate);
+        }
+    }
+
+    return false;
 }
 
 void SatoriRegion::EscapeAll()

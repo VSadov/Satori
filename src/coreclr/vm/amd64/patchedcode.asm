@@ -281,7 +281,7 @@ endif
         jb      RecordEscape            ; target is exposed. record an escape.
 
     JustAssign:
-        mov     [rcx], rdx              ; no card marking, src is not a heap object
+        mov     [rcx], rdx              ; src is external/null, or the assignment is completely threadlocal
         ret
 
     AssignAndMarkCards:
@@ -299,18 +299,18 @@ endif
         ret
 
     DoCards:
-    ; if same region, just check if barrier is not concurrent
+    ; if src and dst are in the same region, cards are not needed, unless concurrent
         xor     rdx, rcx
         shr     rdx, 21
-        jz      CheckConcurrent
+        jz      CheckConcurrent         ; same region, just check if barrier is not concurrent
 
-    ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    ; dst is in another region - cards are needed if src is ephemeral (gen < 2)
         cmp     dword ptr [r8 + 16], 2
         jl      MarkCards
 
     CheckConcurrent:
         cmp     r11, 0h
-        je      Exit
+        je      Exit                    ; if not concurrent, exit
 
     MarkCards:
     ; fetch card location for rcx
@@ -382,7 +382,7 @@ endif
         push rdx
         push r8
 
-        ; also save xmm0, in case it is used for stack clearing, as JIT_ByRefWriteBarrier should not trash xmm0
+        ; also save xmm0, in case it is used for stack clearing.
         ; Hopefully EscapeFn cannot corrupt other xmm regs, since there is no float math or vectorizable code in there.
         sub     rsp, 16
         movdqa  [rsp], xmm0

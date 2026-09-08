@@ -418,7 +418,7 @@ NotInHeap
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
     ALTERNATE_ENTRY RhpCheckedEntry
-        lsr     x17, x15, #30                   ;; source page index
+        lsr     x17, x15, #30                   ;; src page index
         ldrb    w12, [x16, x17]
         cbz     x12, JustAssign                 ;; null or external (immutable) object
 #else
@@ -443,7 +443,7 @@ NotInHeap
         lsr     x17, x17, x12
         tbnz    x17, #0, RecordEscape           ;; target is exposed. record an escape.
 
-    ;; UNORDERED! assignment of unescaped, null or external (immutable) object
+    ;; UNORDERED! src is external/null, or the assignment is completely threadlocal
 JustAssign
     ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
         str      x15, [x14]
@@ -464,12 +464,12 @@ ExitNoCards
         ret     lr
 
 DoCards
-    ; if same region, just check if barrier is not concurrent
+    ; if src and dst are in the same region, cards are not needed, unless concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   ; target aligned to region
         cmp     x12, x16
         beq     CheckConcurrent    ; same region, just check if barrier is not concurrent
 
-    ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    ; dst is in another region - cards are needed if src is ephemeral (gen < 2)
         ldr     w12, [x16, 16]                  ; source region + 16 -> generation
         tbz     x12, #1, MarkCards
 
@@ -478,62 +478,63 @@ CheckConcurrent
         cbz     x17, ExitNoCards
 
 MarkCards
-    ; need couple temps. Save before using.
-        stp     x2,  x3,  [sp, -16]!
+    ; only x12, x15, x16 and x17 may be trashed here, so we keep the card offset in x12,
+    ; the group address in x15, the page in x16, and reuse x17 for both the loaded byte
+    ; and the value being stored. That avoids needing any extra temps.
 
     ; fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  ; fetch the page map
         lsr     x16, x14, #30
         ldr     x16, [x12, x16, lsl #3]              ; page
-        sub     x2,  x14, x16   ; offset in page
-        lsr     x15, x2,  #20   ; group index
-        lsr     x2,  x2,  #9    ; card offset
-        lsl     x15, x15, #1    ; group offset (index * 2)
+        sub     x12, x14, x16   ; offset in page
+        lsr     x15, x12, #20   ; group index
+        lsr     x12, x12, #9    ; card offset
+        add     x15, x16, x15, lsl #1   ; group address (page + index * 2)
 
     ; check if concurrent marking is in progress
         cbnz    x17, DirtyCard
 
     ; SETTING CARD FOR X14
 SetCard
-        ldrb    w3, [x16, x2]
-        cbnz    w3, Exit
+        ldrb    w17, [x16, x12]
+        cbnz    w17, Exit
         mov     w17, #1
-        strb    w17, [x16, x2]
+        strb    w17, [x16, x12]
 SetGroup
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
-        cbnz    w3, CardSet
-        strb    w17, [x12, x15]
+        ldrb    w17, [x15, #0x80]
+        cbnz    w17, CardSet
+        mov     w17, #1
+        strb    w17, [x15, #0x80]
 SetPage
-        ldrb    w3, [x16]
-        cbnz    w3, CardSet
+        ldrb    w17, [x16]
+        cbnz    w17, CardSet
+        mov     w17, #1
         strb    w17, [x16]
 
 CardSet
     ; check if concurrent marking is still not in progress
-        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x12
-        cbnz    x12, DirtyCard
+    ; (uses x17 so that the card offset in x12 stays live for DirtyCard)
+        PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
+        cbnz    x17, DirtyCard
 
 Exit
-        ldp  x2,  x3, [sp], 16
         ret  lr
 
     ; DIRTYING CARD FOR X14
 DirtyCard
+        add     x12, x16, x12   ; card address
         mov     w17, #4
-        add     x2, x2, x16
         ; must be after the field write to allow concurrent clean
-        stlrb   w17, [x2]
+        stlrb   w17, [x12]
 DirtyGroup
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
-        tbnz    w3, #2, Exit
-        strb    w17, [x12, x15]
+        ldrb    w12, [x15, #0x80]
+        tbnz    w12, #2, Exit
+        strb    w17, [x15, #0x80]
 DirtyPage
-        ldrb    w3, [x16]
-        tbnz    w3, #2, Exit
+        ldrb    w12, [x16]
+        tbnz    w12, #2, Exit
         strb    w17, [x16]
-        b       Exit
+        ret  lr
 
     ;; this is expected to be rare.
 RecordEscape
@@ -546,18 +547,21 @@ RecordEscape
         lsr         x17, x17, x12
         tbnz        x17, #0, AssignAndMarkCards        ;; source is already escaped.
 
-        ;; because of the barrier call convention
-        ;; we need to preserve caller-saved x0 through x15 and x29/x30
+        ;; because of the barrier call convention we need to preserve x0-x11, x13, x14, x15 and x30.
+        ;; x12, x16 and x17 are trashable per the barrier contract, and x12 is rewritten before
+        ;; being read again. x29 is callee-saved, so EscapeFn preserves it for us.
+        ;; also save q0, in case it is used for stack clearing.
+        ;; Hopefully EscapeFn cannot corrupt other vector regs, since there is no float math or vectorizable code in there.
 
-        stp     x29,x30, [sp, -16 * 9]!
-        stp     x0, x1,  [sp, 16 * 1]
-        stp     x2, x3,  [sp, 16 * 2]
-        stp     x4, x5,  [sp, 16 * 3]
-        stp     x6, x7,  [sp, 16 * 4]
-        stp     x8, x9,  [sp, 16 * 5]
-        stp     x10,x11, [sp, 16 * 6]
-        stp     x12,x13, [sp, 16 * 7]
-        stp     x14,x15, [sp, 16 * 8]
+        stp     x30, x0, [sp, -16 * 9]!
+        stp     x1,  x2, [sp, 16 * 1]
+        stp     x3,  x4, [sp, 16 * 2]
+        stp     x5,  x6, [sp, 16 * 3]
+        stp     x7,  x8, [sp, 16 * 4]
+        stp     x9,  x10,[sp, 16 * 5]
+        stp     x11, x13,[sp, 16 * 6]
+        stp     x14, x15,[sp, 16 * 7]
+        str     q0,      [sp, 16 * 8]
 
         ;; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         ;; mov  x0, x14  EscapeFn does not use dst, it is just to avoid arg shuffle on x64
@@ -566,15 +570,15 @@ RecordEscape
         ldr  x12, [x16, #8]                 ;; EscapeFn address
         blr  x12
 
-        ldp     x0, x1,  [sp, 16 * 1]
-        ldp     x2, x3,  [sp, 16 * 2]
-        ldp     x4, x5,  [sp, 16 * 3]
-        ldp     x6, x7,  [sp, 16 * 4]
-        ldp     x8, x9,  [sp, 16 * 5]
-        ldp     x10,x11, [sp, 16 * 6]
-        ldp     x12,x13, [sp, 16 * 7]
-        ldp     x14,x15, [sp, 16 * 8]
-        ldp     x29,x30, [sp], 16 * 9
+        ldr     q0,      [sp, 16 * 8]
+        ldp     x14, x15,[sp, 16 * 7]
+        ldp     x11, x13,[sp, 16 * 6]
+        ldp     x9,  x10,[sp, 16 * 5]
+        ldp     x7,  x8, [sp, 16 * 4]
+        ldp     x5,  x6, [sp, 16 * 3]
+        ldp     x3,  x4, [sp, 16 * 2]
+        ldp     x1,  x2, [sp, 16 * 1]
+        ldp     x30, x0, [sp], 16 * 9
 
         and     x16, x15, #0xFFFFFFFFFFE00000  ;; source region
         b       AssignAndMarkCards
@@ -689,12 +693,12 @@ DoCardsCmpXchg
     ; if state == 2 we do not set or dirty cards.
         tbnz     x17, #1, Exit_Cmp_XchgNoCards
 
-    ; if same region, just check if barrier is not concurrent
+    ; if src and dst are in the same region, cards are not needed, unless concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   ; target aligned to region
         cmp     x12, x16
         beq     CheckConcurrentCmpXchg    ; same region, just check if barrier is not concurrent
 
-    ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    ; dst is in another region - cards are needed if src is ephemeral (gen < 2)
         ldr     w12, [x16, 16]                  ; source region + 16 -> generation
         tbz     x12, #1, MarkCardsCmpXchg
 
@@ -703,8 +707,8 @@ CheckConcurrentCmpXchg
         cbz     x17, Exit_Cmp_XchgNoCards
 
 MarkCardsCmpXchg
-    ; need couple temps. Save before using.
-        stp     x2,  x3,  [sp, -16]!
+    ; x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
+    ; here, so they can be used as temps without saving.
 
     ; fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  ; fetch the page map
@@ -713,7 +717,7 @@ MarkCardsCmpXchg
         sub     x2,  x14, x16   ; offset in page
         lsr     x15, x2,  #20   ; group index
         lsr     x2,  x2,  #9    ; card offset
-        lsl     x15, x15, #1    ; group offset (index * 2)
+        add     x15, x16, x15, lsl #1   ; group address (page + index * 2)
 
     ; check if concurrent marking is in progress
         cbnz    x17, DirtyCardCmpXchg
@@ -725,10 +729,9 @@ SetCardCmpXchg
         mov     w17, #1
         strb    w17, [x16, x2]
 SetGroupCmpXchg
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         cbnz    w3, CardSetCmpXchg
-        strb    w17, [x12, x15]
+        strb    w17, [x15, #0x80]
 SetPageCmpXchg
         ldrb    w3, [x16]
         cbnz    w3, CardSetCmpXchg
@@ -740,7 +743,6 @@ CardSetCmpXchg
         cbnz    x12, DirtyCardCmpXchg
 
 ExitCmpXchg
-        ldp  x2,  x3, [sp], 16
         ret  lr
 
     ; DIRTYING CARD FOR X14
@@ -750,15 +752,14 @@ DirtyCardCmpXchg
         ; must be after the field write to allow concurrent clean
         stlrb   w17, [x2]
 DirtyGroupCmpXchg
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         tbnz    w3, #2, ExitCmpXchg
-        strb    w17, [x12, x15]
+        strb    w17, [x15, #0x80]
 DirtyPageCmpXchg
         ldrb    w3, [x16]
         tbnz    w3, #2, ExitCmpXchg
         strb    w17, [x16]
-        b       ExitCmpXchg
+        ret     lr
 
     ;; this is expected to be rare.
 RecordEscape_Cmp_Xchg
@@ -771,20 +772,19 @@ RecordEscape_Cmp_Xchg
         lsr         x17, x17, x12
         tbnz        x17, #0, AssignAndMarkCards_Cmp_Xchg        ;; source is already escaped.
 
-        ;; we need to preserve our parameters x0, x1, x2 and x29/x30
+        ;; we need to preserve our parameters x0, x1, x2 and x30.
+        ;; x29 is callee-saved, so EscapeFn preserves it for us.
 
-        stp     x29,x30, [sp, -16 * 3]!
-        stp     x0, x1,  [sp, 16 * 1]
-        str     x2,      [sp, 16 * 2]
+        stp     x30, x0, [sp, -16 * 2]!
+        stp     x1,  x2, [sp, 16 * 1]
 
         ;; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
         mov  x2, x16                        ;; source region
         ldr  x12, [x16, #8]                 ;; EscapeFn address
         blr  x12
 
-        ldp     x0, x1,  [sp, 16 * 1]
-        ldr     x2,      [sp, 16 * 2]
-        ldp     x29,x30, [sp], 16 * 3
+        ldp     x1,  x2, [sp, 16 * 1]
+        ldp     x30, x0, [sp], 16 * 2
 
         ;; x10 should be not 0 to indicate that can`t skip cards.
         mov     x10,#1
@@ -875,12 +875,12 @@ ExitNoCardsXchg
         ret     lr
 
 DoCardsXchg
-    ; if same region, just check if barrier is not concurrent
+    ; if src and dst are in the same region, cards are not needed, unless concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   ; target aligned to region
         cmp     x12, x16
         beq     CheckConcurrentXchg    ; same region, just check if barrier is not concurrent
 
-    ; if src is in gen2/3 and the barrier is not concurrent we do not need to mark cards
+    ; dst is in another region - cards are needed if src is ephemeral (gen < 2)
         ldr     w12, [x16, 16]                  ; source region + 16 -> generation
         tbz     x12, #1, MarkCardsXchg
 
@@ -889,8 +889,8 @@ CheckConcurrentXchg
         cbz     x17, ExitNoCardsXchg
 
 MarkCardsXchg
-    ; need couple temps. Save before using.
-        stp     x2,  x3,  [sp, -16]!
+    ; x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
+    ; here, so they can be used as temps without saving.
 
     ; fetch card location for x14
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_table, x12  ; fetch the page map
@@ -899,7 +899,7 @@ MarkCardsXchg
         sub     x2,  x14, x16   ; offset in page
         lsr     x15, x2,  #20   ; group index
         lsr     x2,  x2,  #9    ; card offset
-        lsl     x15, x15, #1    ; group offset (index * 2)
+        add     x15, x16, x15, lsl #1   ; group address (page + index * 2)
 
     ; check if concurrent marking is in progress
         cbnz    x17, DirtyCardXchg
@@ -911,10 +911,9 @@ SetCardXchg
         mov     w17, #1
         strb    w17, [x16, x2]
 SetGroupXchg
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         cbnz    w3, CardSetXchg
-        strb    w17, [x12, x15]
+        strb    w17, [x15, #0x80]
 SetPageXchg
         ldrb    w3, [x16]
         cbnz    w3, CardSetXchg
@@ -926,7 +925,6 @@ CardSetXchg
         cbnz    x12, DirtyCardXchg
 
 ExitXchg
-        ldp  x2,  x3, [sp], 16
         ret  lr
 
     ; DIRTYING CARD FOR X14
@@ -936,15 +934,14 @@ DirtyCardXchg
         ; must be after the field write to allow concurrent clean
         stlrb   w17, [x2]
 DirtyGroupXchg
-        add     x12, x16, #0x80
-        ldrb    w3, [x12, x15]
+        ldrb    w3, [x15, #0x80]
         tbnz    w3, #2, ExitXchg
-        strb    w17, [x12, x15]
+        strb    w17, [x15, #0x80]
 DirtyPageXchg
         ldrb    w3, [x16]
         tbnz    w3, #2, ExitXchg
         strb    w17, [x16]
-        b       ExitXchg
+        ret     lr
 
     ;; this is expected to be rare.
 RecordEscape_Xchg
