@@ -294,9 +294,6 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
     }
     CONTRACTL_END;
 
-#if FEATURE_SATORI_GC
-    GCHeapUtilities::GetGCHeap()->BulkMoveWithWriteBarrier(dest, src, len);
-#else
     _ASSERTE(dest != nullptr);
     _ASSERTE(src != nullptr);
     _ASSERTE(dest != src);
@@ -310,7 +307,32 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
     _ASSERTE(CheckPointer(dest));
     _ASSERTE(CheckPointer(src));
 
-    GCHeapMemoryBarrier();
+    const bool inHeap = IsPossiblyInHeap(dest);
+
+#if FEATURE_SATORI_GC
+    if (inHeap)
+    {
+        GCHeapUtilities::GetGCHeap()->BulkMoveWithWriteBarrier(dest, src, len);
+        return;
+    }
+
+    // The destination is not in the heap - most likely the stack.
+    // Nothing can be published this way, so there is no need for escape tracking,
+    // ordering or cards. Just copy.
+    // NB: the source may still be shared, so the copy must not tear references.
+    if ((size_t)dest - (size_t)src >= len)
+    {
+        InlinedForwardGCSafeCopyHelper(dest, src, len);
+    }
+    else
+    {
+        InlinedBackwardGCSafeCopyHelper(dest, src, len);
+    }
+#else
+    if (inHeap)
+    {
+        GCHeapMemoryBarrier();
+    }
 
     // To be able to copy forwards, the destination buffer cannot start inside the source buffer
     if ((size_t)dest - (size_t)src >= len)
@@ -322,7 +344,10 @@ FORCEINLINE void InlinedMemmoveGCRefsHelper(void *dest, const void *src, size_t 
         InlinedBackwardGCSafeCopyHelper(dest, src, len);
     }
 
-    InlinedSetCardsAfterBulkCopyHelper((Object**)dest, len);
+    if (inHeap)
+    {
+        InlinedSetCardsAfterBulkCopyHelper((Object**)dest, len);
+    }
 #endif // FEATURE_SATORI_GC
 }
 

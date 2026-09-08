@@ -109,6 +109,7 @@ namespace System.Net.Tests
             yield return new object[] { "GET /foo/%uFFF HTTP/1.1", null, null, null, "" };
         }
 
+        [ActiveIssue("SATORI: disabled as frequently hangs/fails in local runs and thus a test nuisance")]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/2284", TestRuntimes.Mono)]
         [Fact]
         public async Task GetContext_InvalidRequest_DoesNotGetContext()

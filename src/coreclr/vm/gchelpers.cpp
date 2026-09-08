@@ -1654,12 +1654,6 @@ SatoriPage* PageForAddressCheckedSatori(void* address)
     return nullptr;
 }
 
-// same as SatoriGC::IsHeapPointer, just to avoid dependency on SatoriGC instance.
-bool IsInHeapSatori(void* ptr)
-{
-    return PageForAddressCheckedSatori(ptr) != nullptr;
-}
-
 void CheckEscapeSatori(Object** dst, Object* ref)
 {
     SatoriObject* obj = (SatoriObject*)ref;
@@ -1699,11 +1693,16 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
     if (!obj || obj->IsExternal())
         return;
 
+    // if the barrier does not ask for cards, we are done.
+    if (!CardsAreNeededSatori())
+        return;
+
     // check for obj in the same region or in gen2
     if ((((size_t)dst ^ (size_t)obj) < Satori::REGION_SIZE_GRANULARITY) ||
         (obj->ContainingRegion()->Generation() == 2))
     {
-        if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
+        // such reference needs no card, unless the concurrent marker must see the write.
+        if (!BarrierIsConcurrentSatori())
             return;
     }
 
@@ -1711,10 +1710,11 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
     if (!page)
         return;
 
-    if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
+    if (!BarrierIsConcurrentSatori())
     {
         page->SetCardForAddress((size_t)dst);
-        if (!GCHeapUtilities::SoftwareWriteWatchIsEnabled())
+        // recheck - the barrier could turn concurrent while we were setting the card.
+        if (!BarrierIsConcurrentSatori())
             return;
     }
 

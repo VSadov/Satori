@@ -45,15 +45,28 @@ FCIMPLEND
 
 FCIMPL3(void, RhBulkMoveWithWriteBarrier, uint8_t* pDest, uint8_t* pSrc, size_t cbDest)
 {
-#ifdef FEATURE_SATORI_GC
-    GCHeapUtilities::GetGCHeap()->BulkMoveWithWriteBarrier(pDest, pSrc, cbDest);
-#else
     if (cbDest == 0 || pDest == pSrc)
         return;
 
-    const bool notInHeap = pDest < g_lowest_address || pDest >= g_highest_address;
+    const bool inHeap = IsPossiblyInHeap(pDest);
 
-    if (!notInHeap)
+#ifdef FEATURE_SATORI_GC
+    if (inHeap)
+    {
+        GCHeapUtilities::GetGCHeap()->BulkMoveWithWriteBarrier(pDest, pSrc, cbDest);
+        return;
+    }
+
+    // The destination is not in the heap - most likely the stack.
+    // Nothing can be published this way, so there is no need for escape tracking,
+    // ordering or cards. Just copy.
+    // NB: the source may still be shared, so the copy must not tear references.
+    if (pDest <= pSrc || pSrc + cbDest <= pDest)
+        InlineForwardGCSafeCopy(pDest, pSrc, cbDest);
+    else
+        InlineBackwardGCSafeCopy(pDest, pSrc, cbDest);
+#else
+    if (inHeap)
     {
         // It is possible that the bulk write is publishing object references accessible so far only
         // by the current thread to shared memory.
@@ -67,7 +80,7 @@ FCIMPL3(void, RhBulkMoveWithWriteBarrier, uint8_t* pDest, uint8_t* pSrc, size_t 
     else
         InlineBackwardGCSafeCopy(pDest, pSrc, cbDest);
 
-    if (!notInHeap)
+    if (inHeap)
     {
         InlinedBulkWriteBarrier(pDest, cbDest);
     }
