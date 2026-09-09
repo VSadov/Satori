@@ -83,6 +83,7 @@
 #include <mach/vm_param.h>
 #include <mach/mach_port.h>
 #include <mach/mach_host.h>
+#include <mach/mach_time.h>
 
 #include <mach/task.h>
 #include <mach/vm_map.h>
@@ -188,9 +189,28 @@ static pthread_mutex_t g_flushProcessWriteBuffersMutex;
 
 #ifdef TARGET_APPLE
 // Set when running under the Apple Rosetta x64 emulator, where the thread_get_state
-// based implementation must not run concurrently.
+// based implementation cannot be used at all.
 // See the comment in GCToOSInterface::Initialize.
-static bool s_serializeUsingMutex = false;
+static bool s_flushByWaiting = false;
+
+// How long to wait, in microseconds, for other cores to drain their store buffers,
+// expressed in mach ticks so that the wait loop is a plain integer compare.
+#define FLUSH_BARRIER_WAIT_USECS 5
+static uint64_t s_flushWaitTicks = 0;
+
+static void FlushBarrierPause()
+{
+#if defined(HOST_X86) || defined(HOST_AMD64)
+    __asm__ __volatile__(
+        "rep\n"
+        "nop");
+#elif defined(HOST_ARM64)
+    __asm__ __volatile__(
+        "dmb ishst\n"
+        "yield"
+        );
+#endif
+}
 #endif // TARGET_APPLE
 
 // The number of CPUs that are configured in the OS.
@@ -290,21 +310,44 @@ bool GCToOSInterface::Initialize()
 #endif // !TARGET_APPLE
 
 #ifdef TARGET_APPLE
-    // Apple platforms do not support membarrier, so we use thread_get_state instead.
+    // Apple platforms do not support membarrier, so we normally use thread_get_state.
     //
-    // Under the Rosetta x64 emulator that implementation has to be serialized. Servicing
-    // thread_get_state for a translated thread requires Rosetta to reconstruct the guest
-    // x86 state from the host arm64 state, and it cannot do so while the target thread is
-    // itself inside the Rosetta runtime doing the same thing. Concurrent calls therefore
-    // deadlock, or trip an assert in guest_gpr_state_from_host_state.
+    // That does not work under the Rosetta x64 emulator. Servicing thread_get_state for a
+    // translated thread requires Rosetta to reconstruct the guest x86 state from the host
+    // arm64 state, and it cannot always do so - notably while another thread is forking,
+    // when the task is quiesced. Such a call never completes and hangs both threads.
+    // thread_suspend fails the same way, for the same reason.
+    //
+    // Neither of the usual alternatives is workable. The mprotect helper page trick used
+    // on other Unix platforms relies on the kernel sending an IPI to every core to shoot
+    // down TLBs, and it is that interrupt which serializes the other cores; on arm64 TLB
+    // invalidation is a broadcast instruction handled in hardware, so no IPI is sent and
+    // no core is ever interrupted - it would be a silent no-op. Interrupting each thread
+    // with a signal does order correctly, but a thread that has signals blocked is still
+    // reported as running yet cannot run the handler, and System.Native blocks all signals
+    // across fork+exec.
+    //
+    // So under Rosetta simply wait instead. Rosetta executes translated code with the core
+    // in TSO mode, so the only thing that can delay one thread's store from being seen by
+    // another is that thread's store buffer, and store buffers drain autonomously and
+    // continuously - bounded by memory system latency, tens to low hundreds of nanoseconds.
+    // Five microseconds is more than an order of magnitude of margin. It is also the only
+    // approach with nothing to go wrong in: no thread state to reconstruct, no signal that
+    // can be blocked, and nothing to deadlock against.
     if (minipal_detect_rosetta())
     {
-        if (pthread_mutex_init(&g_flushProcessWriteBuffersMutex, NULL) != 0)
+        mach_timebase_info_data_t timebase;
+
+        if (mach_timebase_info(&timebase) != KERN_SUCCESS)
         {
             return false;
         }
 
-        s_serializeUsingMutex = true;
+        // ticks = usecs * 1000 * denom / numer, rounded up so we never wait less.
+        s_flushWaitTicks =
+            ((uint64_t)FLUSH_BARRIER_WAIT_USECS * 1000ull * timebase.denom + timebase.numer - 1) / timebase.numer;
+
+        s_flushByWaiting = true;
     }
 #endif // TARGET_APPLE
 #endif // !TARGET_WASM
@@ -502,15 +545,22 @@ void GCToOSInterface::FlushProcessWriteBuffers()
         assert(status == 0 && "Failed to unlock the flushProcessWriteBuffersMutex lock");
     }
 #ifdef TARGET_APPLE
+    else if (s_flushByWaiting)
+    {
+        // See the comment in GCToOSInterface::Initialize.
+        //
+        // Wait out the store buffers rather than trying to reach the other threads.
+        // mach_absolute_time is monotonic and does not stop while the machine is awake,
+        // so if this thread is itself descheduled we only ever wait longer, never less.
+        uint64_t start = mach_absolute_time();
+
+        while ((mach_absolute_time() - start) < s_flushWaitTicks)
+        {
+            FlushBarrierPause();
+        }
+    }
     else
     {
-        if (s_serializeUsingMutex)
-        {
-            int status = pthread_mutex_lock(&g_flushProcessWriteBuffersMutex);
-            (void)status; // unused in release config
-            assert(status == 0 && "Failed to lock the flushProcessWriteBuffersMutex lock");
-        }
-
         mach_msg_type_number_t cThreads;
         thread_act_t *pThreads;
         kern_return_t machret = task_threads(mach_task_self(), &pThreads, &cThreads);
@@ -555,13 +605,6 @@ void GCToOSInterface::FlushProcessWriteBuffers()
         // Deallocate the thread list now we're done with it.
         machret = vm_deallocate(mach_task_self(), (vm_address_t)pThreads, cThreads * sizeof(thread_act_t));
         CHECK_MACH("vm_deallocate()", machret);
-
-        if (s_serializeUsingMutex)
-        {
-            int status = pthread_mutex_unlock(&g_flushProcessWriteBuffersMutex);
-            (void)status; // unused in release config
-            assert(status == 0 && "Failed to unlock the flushProcessWriteBuffersMutex lock");
-        }
     }
 #endif // TARGET_APPLE
 #endif // !TARGET_WASM
