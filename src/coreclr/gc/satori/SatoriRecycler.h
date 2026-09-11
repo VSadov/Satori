@@ -161,6 +161,13 @@ public:
             &m_lastEphemeralGcInfo;
     };
 
+    // Two scenarios when worker threads should rather suspend thancontinue helping/pacing
+    bool AppThreadsShouldSuspend()
+    {
+        return m_gcState == GC_STATE_BLOCKING ||
+            m_ccStackMarkState == CC_MARK_STATE_SUSPENDING_EE;
+    }
+
 private:
     SatoriHeap* m_heap;
 
@@ -267,8 +274,9 @@ private:
     int64_t m_currentAllocBytesDeadThreads;
     int64_t m_totalAllocBytes;
 
-    int64_t m_perfCounterTicksPerMilli;
-    int64_t m_perfCounterTicksPerMicro;
+    int64_t m_osTicksPerMilli;
+    int64_t m_osTicksPerMicro;
+    int64_t m_timeStampTicksPerMilli;
 
     SatoriGate* m_workerGate;
 
@@ -306,7 +314,8 @@ private:
 
     static void WorkerThreadMainLoop(void* param);
     int MaxWorkers();
-    int64_t HelpQuantum();
+    int64_t HelpQuantumTimeStampTicks();
+    int64_t HelpQuantumOsTicks();
     void AskForHelp();
     void RunWithHelp(void(SatoriRecycler::* method)());
     bool HelpOnceCore(bool minQuantum);
