@@ -87,8 +87,9 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_noWorkSince = 0;
 
-    m_perfCounterTicksPerMilli = minipal_hires_tick_frequency() / 1000;
-    m_perfCounterTicksPerMicro = minipal_hires_tick_frequency() / 1000000;
+    m_osTicksPerMilli = minipal_hires_tick_frequency() / 1000;
+    m_osTicksPerMicro = minipal_hires_tick_frequency() / 1000000;
+    m_timeStampTicksPerMilli = SatoriUtil::GetTimeStampFrequency() / 1000;
 
     m_heap = heap;
     m_trimmer = new (nothrow) SatoriTrimmer(heap);
@@ -190,8 +191,9 @@ void SatoriRecycler::WorkerThreadMainLoop(void* param)
             }
 
             // spin for ~10 microseconds (GcSpin)
-            int64_t limit = SatoriUtil::GetTimeStamp() +
-                SatoriUtil::GetTimeStampFrequency() / 1000000 * SatoriUtil::GcSpin();
+            // the OS timer here - only the clock ends this wait, so it must not be the inline one
+            int64_t limit = minipal_hires_ticks() +
+                recycler->m_osTicksPerMicro * SatoriUtil::GcSpin();
 
             int i = 0;
             do
@@ -210,7 +212,7 @@ void SatoriRecycler::WorkerThreadMainLoop(void* param)
                     }
                 }
             }
-            while(SatoriUtil::GetTimeStamp() < limit);
+            while(minipal_hires_ticks() < limit);
 
             // Wait returns true if was woken up.
             if (!recycler->m_workerGate->TimedWait(10000))
@@ -422,13 +424,13 @@ void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
 size_t SatoriRecycler::GetNowMillis()
 {
     int64_t t = minipal_hires_ticks();
-    return (size_t)(t / m_perfCounterTicksPerMilli);
+    return (size_t)(t / m_osTicksPerMilli);
 }
 
 size_t SatoriRecycler::GetNowUsecs()
 {
     int64_t t = minipal_hires_ticks();
-    return (size_t)(t / m_perfCounterTicksPerMicro);
+    return (size_t)(t / m_osTicksPerMicro);
 }
 
 size_t SatoriRecycler::IncrementGen0Count()
@@ -525,9 +527,17 @@ bool IsWorkerThread()
     return GCToEEInterface::WasCurrentThreadCreatedByGC();
 }
 
-int64_t SatoriRecycler::HelpQuantum()
+int64_t SatoriRecycler::HelpQuantumTimeStampTicks()
 {
-        return SatoriUtil::GetTimeStampFrequency() / 1000 /
+        return m_timeStampTicksPerMilli /
+            (IsWorkerThread() ?
+                8:  // 125 usec
+                64); // 15 usec
+}
+
+int64_t SatoriRecycler::HelpQuantumOsTicks()
+{
+        return m_osTicksPerMilli /
             (IsWorkerThread() ?
                 8:  // 125 usec
                 64); // 15 usec
@@ -544,7 +554,7 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
     }
 
     int64_t timeStamp = SatoriUtil::GetTimeStamp();
-    int64_t deadline = timeStamp + (minQuantum ? 0: HelpQuantum());
+    int64_t deadline = timeStamp + (minQuantum ? 0: HelpQuantumTimeStampTicks());
 
     // this should be done before scanning stacks or cards
     // since the regions must be swept before we can use FindObject
@@ -588,7 +598,7 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
         MarkOwnStackOrDrainQueuesConcurrent(deadline);
     }
 
-    if (m_ccStackMarkState == CC_MARK_STATE_SUSPENDING_EE && !IsWorkerThread())
+    if (AppThreadsShouldSuspend() && !IsWorkerThread())
     {
         // this is a mutator thread and we are suspending them, leave and suspend.
         return true;
@@ -662,7 +672,9 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
         return true;
     }
 
-    int64_t start = SatoriUtil::GetTimeStamp();
+    // paired with m_noWorkSince, which gates the escalation below - the OS timer
+    // so that a stalled inline counter cannot suppress it
+    int64_t start = minipal_hires_ticks();
 
     bool moreWork = !m_concurrentCardsDone ||
         m_ccStackMarkState != CC_MARK_STATE_DONE ||
@@ -715,7 +727,7 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
         m_workList->IsEmpty())
     {
         // was it long enough since last time we saw work?
-        if (start - m_noWorkSince > HelpQuantum() * 4)
+        if (start - m_noWorkSince > HelpQuantumOsTicks() * 4)
         {
             // 4 help quantums without work, seems like we are done
             // we may have some helpers draining long chains and not sharing anything
@@ -745,17 +757,17 @@ void SatoriRecycler::HelpOnce()
                 return;
             }
 
-            int64_t start = SatoriUtil::GetTimeStamp();
+            int64_t start = minipal_hires_ticks();
 
             bool moreWork = HelpOnceCore(/*minQuantum*/ false);
             if (moreWork)
             {
-                m_noWorkSince = SatoriUtil::GetTimeStamp();
+                m_noWorkSince = minipal_hires_ticks();
             }
             else
             {
                 // TODO: VS is this possible? should we do something like block?
-                //if (!moreWork && start - m_noWorkSince > m_perfCounterTicksPerMilli)
+                //if (!moreWork && start - m_noWorkSince > m_osTicksPerMilli)
                 //{
                 //    printf("PANIC\n");
                 //}
@@ -767,10 +779,10 @@ void SatoriRecycler::HelpOnce()
             {
                 // if we did not use all the quantum in Low Latency mode,
                 // consume what roughly remains for pacing reasons.
-                int64_t deadline = start + HelpQuantum() / 2;
+                int64_t deadline = start + HelpQuantumOsTicks() / 2;
                 int iters = 1;
-                while (SatoriUtil::GetTimeStamp() < deadline &&
-                    m_ccStackMarkState != CC_MARK_STATE_SUSPENDING_EE)
+                while (minipal_hires_ticks() < deadline &&
+                    !AppThreadsShouldSuspend())
                 {
                     iters *= 2;
                     for (int i = 0; i < iters; i++)
@@ -786,7 +798,7 @@ void SatoriRecycler::HelpOnce()
     else if (!m_deferredSweepRegions->IsEmpty())
     {
         int64_t timeStamp = SatoriUtil::GetTimeStamp();
-        int64_t deadline = timeStamp + HelpQuantum();
+        int64_t deadline = timeStamp + HelpQuantumTimeStampTicks();
         DrainDeferredSweepQueueConcurrent(deadline);
     }
 }
@@ -798,7 +810,7 @@ void SatoriRecycler::ConcurrentWorkerFn()
     {
         if (HelpOnceCore(/*minQuantum*/ false))
         {
-            m_noWorkSince = SatoriUtil::GetTimeStamp();
+            m_noWorkSince = minipal_hires_ticks();
         }
         else if (m_concurrentCleaningState == CC_CLEAN_STATE_NOT_READY)
         {
@@ -926,8 +938,8 @@ void SatoriRecycler::BlockingMarkForConcurrent()
         }
 
         size_t blockingDuration = (minipal_hires_ticks() - blockingStart);
-        m_CurrentGcInfo->m_pauseDurations[1] = blockingDuration / m_perfCounterTicksPerMicro;
-        m_gcAccmulatingDurationUsecs[m_condemnedGeneration] += blockingDuration / m_perfCounterTicksPerMicro;
+        m_CurrentGcInfo->m_pauseDurations[1] = blockingDuration / m_osTicksPerMicro;
+        m_gcAccmulatingDurationUsecs[m_condemnedGeneration] += blockingDuration / m_osTicksPerMicro;
         UpdateGcCounters(blockingStart);
 
         GCToEEInterface::RestartEE(false);
@@ -1203,9 +1215,9 @@ void SatoriRecycler::BlockingCollect1()
     BlockingCollectImpl();
 
     size_t blockingDuration = (minipal_hires_ticks() - blockingStart);
-    m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_perfCounterTicksPerMicro;
-    m_gcDurationUsecs[1] = blockingDuration / m_perfCounterTicksPerMicro;
-    m_gcAccmulatingDurationUsecs[1] += blockingDuration / m_perfCounterTicksPerMicro;
+    m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_osTicksPerMicro;
+    m_gcDurationUsecs[1] = blockingDuration / m_osTicksPerMicro;
+    m_gcAccmulatingDurationUsecs[1] += blockingDuration / m_osTicksPerMicro;
 
     size_t fromStartMillis = GetNowMillis() - m_startMillis;
     m_CurrentGcInfo->m_pausePercentage = (uint32_t)(m_gcAccmulatingDurationUsecs[1] / (int64_t)fromStartMillis / 10);
@@ -1228,9 +1240,9 @@ void SatoriRecycler::BlockingCollect2()
     BlockingCollectImpl();
 
     size_t blockingDuration = (minipal_hires_ticks() - blockingStart);
-    m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_perfCounterTicksPerMicro;
-    m_gcDurationUsecs[2] = blockingDuration / m_perfCounterTicksPerMicro;
-    m_gcAccmulatingDurationUsecs[2] += blockingDuration / m_perfCounterTicksPerMicro;
+    m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_osTicksPerMicro;
+    m_gcDurationUsecs[2] = blockingDuration / m_osTicksPerMicro;
+    m_gcAccmulatingDurationUsecs[2] += blockingDuration / m_osTicksPerMicro;
 
     size_t fromStartMillis = GetNowMillis() - m_startMillis;
     m_CurrentGcInfo->m_pausePercentage = (uint32_t)( m_gcAccmulatingDurationUsecs[2] / (int64_t)fromStartMillis / 10);
@@ -4572,14 +4584,14 @@ bool& SatoriRecycler::IsLowLatencyMode()
 void SatoriRecycler::UpdateGcCounters(int64_t blockingStart)
 {
     // Compute Time in GC
-    int64_t currentPerfCounterTimer = minipal_hires_ticks();
+    int64_t osNow = minipal_hires_ticks();
 
-    int64_t totalTimeInCurrentGc = currentPerfCounterTimer - blockingStart;
-    int64_t timeSinceLastGcEnded = currentPerfCounterTimer - m_totalTimeAtLastGcEnd;
+    int64_t totalTimeInCurrentGc = osNow - blockingStart;
+    int64_t timeSinceLastGcEnded = osNow - m_totalTimeAtLastGcEnd;
 
     // should always hold unless we switch to a nonmonotonic timer.
     _ASSERTE(timeSinceLastGcEnded >= totalTimeInCurrentGc);
 
     m_percentTimeInGcSinceLastGc = timeSinceLastGcEnded != 0 ? (int)(totalTimeInCurrentGc * 100 / timeSinceLastGcEnded) : 0;
-    m_totalTimeAtLastGcEnd = currentPerfCounterTimer;
+    m_totalTimeAtLastGcEnd = osNow;
 }
