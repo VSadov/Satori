@@ -94,9 +94,14 @@ int64_t SatoriUtil::MeasureTimeStampFrequency()
 {
     // ~100 usec gets the rate within ~0.05%, which is far more than deadlines need.
     int64_t window = s_osTimeStampFrequency / 10000;
-    int64_t hwStart = ReadHwTimeStamp();
+
+    // Read the OS timer on the outside of the counter at both ends, so that the interval
+    // attributed to the counter is contained in the interval measured with the OS timer.
+    // Bracketing it the other way round makes the counter's interval the larger of the
+    // two and reports its rate high by whatever the two gaps cost - measured at +0.2%
+    // typical, and always in the same direction.
     int64_t osStart = minipal_hires_ticks();
-    int64_t osNow;
+    int64_t hwStart = ReadHwTimeStamp();
     int64_t reads = 0;
     int64_t sink = 0;
     do
@@ -106,10 +111,13 @@ int64_t SatoriUtil::MeasureTimeStampFrequency()
             sink += ReadHwTimeStamp();
         }
         reads += READ_BATCH;
-    } while ((osNow = minipal_hires_ticks()) - osStart < window);
+    } while (minipal_hires_ticks() - osStart < window);
 
+    int64_t hwEnd = ReadHwTimeStamp();
+    int64_t osNow = minipal_hires_ticks();
     s_readSink = sink;
-    int64_t hwElapsed = ReadHwTimeStamp() - hwStart;
+
+    int64_t hwElapsed = hwEnd - hwStart;
     int64_t osElapsed = osNow - osStart;
 
     // Overshooting the window by this much means we were interrupted, so the numbers
