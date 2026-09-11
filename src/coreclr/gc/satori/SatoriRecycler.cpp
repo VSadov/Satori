@@ -190,8 +190,8 @@ void SatoriRecycler::WorkerThreadMainLoop(void* param)
             }
 
             // spin for ~10 microseconds (GcSpin)
-            int64_t limit = minipal_hires_ticks() +
-                recycler->m_perfCounterTicksPerMicro * SatoriUtil::GcSpin();
+            int64_t limit = SatoriUtil::GetTimeStamp() +
+                SatoriUtil::GetTimeStampFrequency() / 1000000 * SatoriUtil::GcSpin();
 
             int i = 0;
             do
@@ -210,7 +210,7 @@ void SatoriRecycler::WorkerThreadMainLoop(void* param)
                     }
                 }
             }
-            while(minipal_hires_ticks() < limit);
+            while(SatoriUtil::GetTimeStamp() < limit);
 
             // Wait returns true if was woken up.
             if (!recycler->m_workerGate->TimedWait(10000))
@@ -527,7 +527,7 @@ bool IsWorkerThread()
 
 int64_t SatoriRecycler::HelpQuantum()
 {
-        return m_perfCounterTicksPerMilli /
+        return SatoriUtil::GetTimeStampFrequency() / 1000 /
             (IsWorkerThread() ?
                 8:  // 125 usec
                 64); // 15 usec
@@ -543,7 +543,7 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
         BlockingMarkForConcurrentImpl();
     }
 
-    int64_t timeStamp = minipal_hires_ticks();
+    int64_t timeStamp = SatoriUtil::GetTimeStamp();
     int64_t deadline = timeStamp + (minQuantum ? 0: HelpQuantum());
 
     // this should be done before scanning stacks or cards
@@ -662,7 +662,7 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
         return true;
     }
 
-    int64_t start = minipal_hires_ticks();
+    int64_t start = SatoriUtil::GetTimeStamp();
 
     bool moreWork = !m_concurrentCardsDone ||
         m_ccStackMarkState != CC_MARK_STATE_DONE ||
@@ -745,12 +745,12 @@ void SatoriRecycler::HelpOnce()
                 return;
             }
 
-            int64_t start = minipal_hires_ticks();
+            int64_t start = SatoriUtil::GetTimeStamp();
 
             bool moreWork = HelpOnceCore(/*minQuantum*/ false);
             if (moreWork)
             {
-                m_noWorkSince = minipal_hires_ticks();
+                m_noWorkSince = SatoriUtil::GetTimeStamp();
             }
             else
             {
@@ -769,7 +769,7 @@ void SatoriRecycler::HelpOnce()
                 // consume what roughly remains for pacing reasons.
                 int64_t deadline = start + HelpQuantum() / 2;
                 int iters = 1;
-                while (minipal_hires_ticks() < deadline &&
+                while (SatoriUtil::GetTimeStamp() < deadline &&
                     m_ccStackMarkState != CC_MARK_STATE_SUSPENDING_EE)
                 {
                     iters *= 2;
@@ -785,7 +785,7 @@ void SatoriRecycler::HelpOnce()
     }
     else if (!m_deferredSweepRegions->IsEmpty())
     {
-        int64_t timeStamp = minipal_hires_ticks();
+        int64_t timeStamp = SatoriUtil::GetTimeStamp();
         int64_t deadline = timeStamp + HelpQuantum();
         DrainDeferredSweepQueueConcurrent(deadline);
     }
@@ -798,7 +798,7 @@ void SatoriRecycler::ConcurrentWorkerFn()
     {
         if (HelpOnceCore(/*minQuantum*/ false))
         {
-            m_noWorkSince = minipal_hires_ticks();
+            m_noWorkSince = SatoriUtil::GetTimeStamp();
         }
         else if (m_concurrentCleaningState == CC_CLEAN_STATE_NOT_READY)
         {
@@ -1799,7 +1799,7 @@ bool SatoriRecycler::MarkDemotedAndDrainQueuesConcurrent(int64_t deadline)
                 MarkDemoted(curRegion, &markContext);
                 PushToEphemeralQueues(curRegion);
 
-                if ((minipal_hires_ticks() - deadline) > 0)
+                if ((SatoriUtil::GetTimeStamp() - deadline) > 0)
                 {
                     if (markContext.m_WorkChunk != nullptr)
                     {
@@ -2156,9 +2156,9 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
 
         // every once in a while check for the deadline.
         // check after processing one chunk to:
-        // - amortize cost of QueryPerformanceCounter() and
+        // - amortize cost of reading the timestamp and
         // - establish the minimum amount of work per help quantum
-        if ((minipal_hires_ticks() - deadline) > 0)
+        if ((SatoriUtil::GetTimeStamp() - deadline) > 0)
         {
             PushOrReturnWorkChunk(srcChunk);
             PushOrReturnWorkChunk(dstChunk);
@@ -2594,7 +2594,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                         }
 
                         _ASSERTE(deadline != 0);
-                        if (minipal_hires_ticks() - deadline > 0)
+                        if (SatoriUtil::GetTimeStamp() - deadline > 0)
                         {
                             // timed out, there could be more work
                             // save where we would restart if we see this page again
@@ -2828,7 +2828,7 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                         }
 
                         _ASSERTE(deadline != 0);
-                        if (minipal_hires_ticks() - deadline > 0)
+                        if (SatoriUtil::GetTimeStamp() - deadline > 0)
                         {
                             // timed out, there could be more work
                             // save where we would restart if we see this page again
@@ -4452,7 +4452,7 @@ bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
                 Interlocked::Decrement(&m_deferredSweepCount);
 
                 // ignore deadline on worker threads, we can't do anything else anyways.
-                if (!isWorkerGCThread && deadline && (minipal_hires_ticks() - deadline > 0))
+                if (!isWorkerGCThread && deadline && (SatoriUtil::GetTimeStamp() - deadline > 0))
                 {
                     break;
                 }

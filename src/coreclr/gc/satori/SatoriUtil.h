@@ -37,6 +37,13 @@
 #include <xmmintrin.h>
 #endif
 
+#if defined(HOST_ARM64) && defined(_MSC_VER)
+// the virtual counter of the ARM generic timer
+#ifndef ARM64_CNTVCT_EL0
+#define ARM64_CNTVCT_EL0 ARM64_SYSREG(3, 3, 14, 0, 2)
+#endif
+#endif
+
 namespace Satori
 {
     class StackOnly {
@@ -210,6 +217,36 @@ public:
         __builtin_prefetch(addr);
 #endif
     }
+
+    // A cheap monotonically increasing timestamp, for deadline checks and similar heuristics.
+    // This reads the hardware counter inline - typically just a few instructions.
+    //
+    // The counter may be slightly out of sync between cores and some parts are known to be
+    // unreliable, so do not use this where an occasional wrong reading is not tolerated.
+    // Durations that are reported or feed into heuristics should use the OS timer instead.
+    // The read is not serialized either, so it may drift within the out-of-order window.
+    //
+    // The unit is 1/GetTimeStampFrequency() of a second.
+    static FORCEINLINE int64_t GetTimeStamp()
+    {
+        // until the rate of the hardware counter is known, ask the OS instead.
+        if (s_timeStampFrequency == 0)
+        {
+            return GetTimeStampSlow();
+        }
+
+        return ReadHwTimeStamp();
+    }
+
+    // The number of GetTimeStamp() ticks per second.
+    static int64_t GetTimeStampFrequency()
+    {
+        return s_timeStampFrequency != 0 ? s_timeStampFrequency : s_osTimeStampFrequency;
+    }
+
+    // Chooses between the hardware counter and the OS timer and measures the rate of
+    // the former. Takes ~100 usec. Must be called before GetTimeStamp()/GetTimeStampFrequency().
+    static void Initialize();
 
     // Copies of InlinedForwardGCSafeCopyHelper/InlinedBackwardGCSafeCopyHelper from
     // vm/arraynative.inl - the VM headers are not reachable from the (standalone) GC.
@@ -642,6 +679,40 @@ public:
 
         return result;
     }
+
+private:
+    // the rate of the inline hardware counter, in Hz. 0 if we are not using it.
+    static int64_t s_timeStampFrequency;
+    static int64_t s_osTimeStampFrequency;
+
+    static int64_t MeasureTimeStampFrequency();
+
+    static FORCEINLINE int64_t ReadHwTimeStamp()
+    {
+#if defined(HOST_X86) || defined(HOST_AMD64)
+#ifdef _MSC_VER
+        return (int64_t)__rdtsc();
+#else
+        uint32_t lo, hi;
+        __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+        return (int64_t)(((uint64_t)hi << 32) | lo);
+#endif
+#elif defined(HOST_ARM64)
+#ifdef _MSC_VER
+        return (int64_t)_ReadStatusReg(ARM64_CNTVCT_EL0);
+#else
+        int64_t t;
+        __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(t));
+        return t;
+#endif
+#else
+        // unreachable - s_timeStampFrequency stays 0 when there is no inline counter.
+        return 0;
+#endif
+    }
+
+    NOINLINE
+    static int64_t GetTimeStampSlow();
 };
 
 #endif
