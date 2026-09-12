@@ -311,6 +311,7 @@ size_t SatoriGC::GetLastGCGenerationSize(int gen)
 
 HRESULT SatoriGC::Initialize()
 {
+    SatoriUtil::Initialize();
     SatoriObject::Initialize();
     SatoriHandlePartitioner::Initialize();
     m_heap = SatoriHeap::Create();
