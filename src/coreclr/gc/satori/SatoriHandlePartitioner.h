@@ -89,7 +89,7 @@ public:
                     {
                         lambda(partition);
 
-                        if (deadline && (GCToOSInterface::QueryPerformanceCounter() - deadline > 0))
+                        if (deadline && (SatoriUtil::GetTimeStamp() - deadline > 0))
                         {
                             // timed out, there could be more work
                             return true;
