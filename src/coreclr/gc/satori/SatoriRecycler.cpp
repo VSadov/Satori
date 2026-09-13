@@ -153,6 +153,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_concurrentCleaningState = CC_CLEAN_STATE_NOT_READY;
     m_concurrentHandlesDone = true;
     m_ccStackMarkingThreadsNum = 0;
+    m_reusableFilterThreadsNum = 0;
 
     m_isLowLatencyMode = SatoriUtil::IsLowLatencyMode();
 
@@ -299,6 +300,13 @@ size_t SatoriRecycler::RegionCount()
 SatoriRegion* SatoriRecycler::TryGetReusable()
 {
     SatoriRegion* reusable = m_reusableRegions->TryPopWithTryEnter();
+    if (reusable == nullptr)
+    {
+        // concurrent filtering parks already filtered regions here until prep.
+        // they are usable as-is, no reason to make the app wait for prep to hand them back.
+        reusable = m_reusableRegionsAlternate->TryPopWithTryEnter();
+    }
+
     if (reusable)
     {
         size_t occupancy = reusable->Occupancy();
@@ -312,6 +320,11 @@ SatoriRegion* SatoriRecycler::TryGetReusable()
 SatoriRegion* SatoriRecycler::TryGetReusableForLarge()
 {
     SatoriRegion* reusable = m_reusableRegions->TryDequeueIfHasFreeSpaceInTopBucket();
+    if (reusable == nullptr)
+    {
+        reusable = m_reusableRegionsAlternate->TryDequeueIfHasFreeSpaceInTopBucket();
+    }
+
     if (reusable)
     {
         size_t occupancy = reusable->Occupancy();
@@ -593,6 +606,14 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
         // otherwise the barrier became concurrent while we were checking - just continue.
     }
 
+    // Ahead of the drain: this is the bulk of the roots in low latency mode, and getting them
+    // in early is worth ~2x on the prep pause. Whatever is left when prep starts costs
+    // EE-stopped time, and prep has to wait for us to get out of here as well.
+    if (MarkDemotedInReusableConcurrent(deadline))
+    {
+        return true;
+    }
+
     if (m_ccStackMarkState != CC_MARK_STATE_DONE)
     {
         MarkOwnStackOrDrainQueuesConcurrent(deadline);
@@ -609,34 +630,55 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
         return true;
     }
 
-    if (!m_concurrentHandlesDone)
-    {
-        if (MarkHandles(deadline))
-        {
-            return true;
-        }
-        else
-        {
-            m_concurrentHandlesDone = true;
-        }
-    }
+    // Handles are claimed per partition and cards per group - neither has an inner deadline,
+    // so an app thread may overshoot its quantum. Only low latency cares: otherwise a
+    // compacting blocking GC dwarfs anything an app thread might overshoot here.
+    bool canTakeBigChunks = IsWorkerThread() || m_activeWorkers == 0 || !IsLowLatencyMode();
 
-    if (!m_concurrentCardsDone)
+    if (canTakeBigChunks)
     {
-        _ASSERTE(m_condemnedGeneration != 2);
-        if (MarkThroughCardsConcurrent(deadline))
+        if (!m_concurrentHandlesDone)
         {
-            return true;
+            if (MarkHandles(deadline))
+            {
+                return true;
+            }
+            else
+            {
+                m_concurrentHandlesDone = true;
+            }
         }
-        else
+
+        if (!m_concurrentCardsDone)
         {
-            m_concurrentCardsDone = true;
+            _ASSERTE(m_condemnedGeneration != 2);
+            if (MarkThroughCardsConcurrent(deadline))
+            {
+                return true;
+            }
+            else
+            {
+                m_concurrentCardsDone = true;
+            }
         }
     }
 
     // if stacks are not marked yet, start suspending EE
     if (m_ccStackMarkState == CC_MARK_STATE_NONE)
     {
+        // drain what the handle and card scans have queued first, so that their closure
+        // is marked while the EE still runs. If that does not finish, come back later.
+        if (DrainMarkQueuesConcurrent(nullptr, deadline))
+        {
+            return true;
+        }
+
+        // we may have skipped handles or cards above - prep must not start before those are done
+        if (!m_concurrentHandlesDone || !m_concurrentCardsDone)
+        {
+            return true;
+        }
+
         // only one thread will win and drive this stage, others may help.
         BlockingMarkForConcurrent();
     }
@@ -648,8 +690,16 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
         return true;
     }
 
+    // cleaning is per card group as well, but nothing below depends on it
     if (m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING)
     {
+        if (!canTakeBigChunks)
+        {
+            // the cleaning still has to happen, we just may not be the one doing it
+            DrainMarkQueuesConcurrent(nullptr, deadline);
+            return true;
+        }
+
         if (CleanCardsConcurrent(deadline))
         {
             return true;
@@ -660,8 +710,11 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
         }
     }
 
-    // if queues are empty we see no more work
-    return DrainMarkQueuesConcurrent(nullptr, deadline);
+    // if queues are empty we see no more work.
+    // whatever we skipped above is still work, even if not ours to do.
+    return DrainMarkQueuesConcurrent(nullptr, deadline) ||
+        !m_concurrentHandlesDone ||
+        !m_concurrentCardsDone;
 }
 
 bool SatoriRecycler::HelpOnceCore(bool minQuantum)
@@ -677,6 +730,7 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
     int64_t start = minipal_hires_ticks();
 
     bool moreWork = !m_concurrentCardsDone ||
+        !m_concurrentHandlesDone ||
         m_ccStackMarkState != CC_MARK_STATE_DONE ||
         m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING ||
         !m_workList->IsEmpty();
@@ -901,15 +955,22 @@ void SatoriRecycler::BlockingMarkForConcurrent()
     int targetState = CC_MARK_STATE_SUSPENDING_EE;
     if (Interlocked::CompareExchange(&m_ccStackMarkState, CC_MARK_STATE_SUSPENDING_EE, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
     {
+        // The state is published by the CAS above, so filtering that starts from now on will
+        // see it and do nothing. Wait for the ones already inside to leave before touching the
+        // queues. This is before suspending, so the wait is not a part of the pause.
+        while (m_reusableFilterThreadsNum)
+        {
+            YieldProcessor();
+        }
+
         size_t blockingStart = minipal_hires_ticks();
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
 
-        // swap reusable and alternate so that we could filter through reusables.
-        // the swap needs to be done when EE is stopped, but before marking has started.
-        SatoriRegionQueue* alternate = m_reusableRegionsAlternate;
-        _ASSERTE(alternate->IsEmpty());
-        m_reusableRegionsAlternate = m_reusableRegions;
-        m_reusableRegions = alternate;
+        // the concurrent pass has already filtered what is in the alternate, make it usable again.
+        // whatever is left in m_reusableRegions it did not reach - the loop below will filter that.
+        SatoriRegionQueue* leftovers = m_reusableRegions;
+        m_reusableRegions = m_reusableRegionsAlternate;
+        m_reusableRegionsAlternate = leftovers;
 
         // signal to everybody to start marking roots
         VolatileStore((int*)&m_ccStackMarkState, CC_MARK_STATE_MARKING);
@@ -936,6 +997,8 @@ void SatoriRecycler::BlockingMarkForConcurrent()
                 YieldProcessor();
             }
         }
+
+        _ASSERTE(m_reusableRegionsAlternate->IsEmpty());
 
         size_t blockingDuration = (minipal_hires_ticks() - blockingStart);
         m_CurrentGcInfo->m_pauseDurations[1] = blockingDuration / m_osTicksPerMicro;
@@ -1828,6 +1891,69 @@ bool SatoriRecycler::MarkDemotedAndDrainQueuesConcurrent(int64_t deadline)
         !m_ephemeralWithUnmarkedDemoted->IsEmpty();
 }
 
+// Demoted regions that are reusable sit in m_reusableRegions, which the prep stage can only
+// filter with EE stopped. Move them to the alternate queue and mark them here instead -
+// prep will splice the alternate back and only deal with what we did not get to.
+// Popping takes a lock, so this is for workers only - an app thread must not block here.
+bool SatoriRecycler::MarkDemotedInReusableConcurrent(int64_t deadline)
+{
+    _ASSERTE(!IsBlockingPhase());
+    _ASSERTE(deadline > 0);
+
+    if (!IsWorkerThread())
+    {
+        return false;
+    }
+
+    Interlocked::Increment(&m_reusableFilterThreadsNum);
+
+    // Paired with prep: it publishes the state, then reads this count. Both sides fence
+    // between their write and their read, so if prep sees 0 here, we see a state != NONE.
+    bool revisit = false;
+    if (m_ccStackMarkState == CC_MARK_STATE_NONE)
+    {
+        MarkContext markContext = MarkContext(this);
+        SatoriRegion* curRegion = m_reusableRegions->TryPop();
+        if (curRegion)
+        {
+            MaybeAskForHelp();
+            do
+            {
+                if (curRegion->HasUnmarkedDemotedObjects() &&
+                    curRegion->ReusableFor() != SatoriRegion::ReuseLevel::Gen0)
+                {
+                    MarkDemoted(curRegion, &markContext);
+                }
+
+                // reusables are kept with the top-bucket-free ones at the tail, which is the
+                // end TryGetReusableForLarge takes from. re-derive that, same as KeepRegion does.
+                if (curRegion->HasFreeSpaceInTopBucket())
+                {
+                    m_reusableRegionsAlternate->Enqueue(curRegion);
+                }
+                else
+                {
+                    m_reusableRegionsAlternate->Push(curRegion);
+                }
+
+                if ((SatoriUtil::GetTimeStamp() - deadline) > 0)
+                {
+                    revisit = !m_reusableRegions->IsEmpty();
+                    break;
+                }
+            } while ((curRegion = m_reusableRegions->TryPop()));
+        }
+
+        if (markContext.m_WorkChunk != nullptr)
+        {
+            m_workList->Push(markContext.m_WorkChunk);
+        }
+    }
+
+    Interlocked::Decrement(&m_reusableFilterThreadsNum);
+    return revisit;
+}
+
 void SatoriRecycler::MarkOwnStackAndDrainQueues()
 {
     MarkContext markContext = MarkContext(this);
@@ -1844,17 +1970,6 @@ void SatoriRecycler::MarkOwnStackAndDrainQueues()
             {
                 MaybeAskForHelp();
                 MarkOwnStack(aContext, &markContext);
-
-                // in concurrent prep stage we do not drain after self-scanning as we prefer to suspend quickly
-                if (!IsBlockingPhase())
-                {
-                    if (markContext.m_WorkChunk != nullptr)
-                    {
-                        m_workList->Push(markContext.m_WorkChunk);
-                    }
-
-                    return;
-                }
             }
         }
     }
@@ -1879,16 +1994,13 @@ void SatoriRecycler::MarkOwnStackOrDrainQueuesConcurrent(int64_t deadline)
                 MaybeAskForHelp();
                 MarkOwnStack(aContext, &markContext);
 
-                // in concurrent prep stage we do not drain after self-scanning as we prefer to suspend quickly
-                if (!IsBlockingPhase())
+                // prep is about to suspend us, so hand off what we found rather than draining it here
+                if (markContext.m_WorkChunk != nullptr)
                 {
-                    if (markContext.m_WorkChunk != nullptr)
-                    {
-                        m_workList->Push(markContext.m_WorkChunk);
-                    }
-
-                    return;
+                    m_workList->Push(markContext.m_WorkChunk);
                 }
+
+                return;
             }
         }
     }
@@ -1934,8 +2046,12 @@ void SatoriRecycler::MarkDemoted(SatoriRegion* curRegion, MarkContext* markConte
             for (int i = 0; i < gen2Objects->Count(); i++)
             {
                 SatoriObject* o = gen2Objects->Item(i);
-                o->SetMarkedAtomic();
-                markContext->PushToMarkQueues(o);
+                // demotion put these in a gen1 region, so they may already be marked
+                if (!o->IsMarked())
+                {
+                    o->SetMarkedAtomic();
+                    markContext->PushToMarkQueues(o);
+                }
             }
 
             gen2Objects = gen2Objects->Next();

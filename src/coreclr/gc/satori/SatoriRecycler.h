@@ -223,6 +223,10 @@ private:
     volatile int m_ccStackMarkState;
     volatile int m_ccStackMarkingThreadsNum;
 
+    // threads filtering m_reusableRegions concurrently. prep waits for these to leave
+    // before it may swap the queues.
+    volatile int m_reusableFilterThreadsNum;
+
     volatile int m_ccHelpersNum;
 
     int m_syncBlockCacheScanDone;
@@ -342,6 +346,7 @@ private:
     void MarkOwnStackAndDrainQueues();
     void MarkOwnStackOrDrainQueuesConcurrent(int64_t deadline);
     bool MarkDemotedAndDrainQueuesConcurrent(int64_t deadline);
+    bool MarkDemotedInReusableConcurrent(int64_t deadline);
     void PushOrReturnWorkChunk(SatoriWorkChunk * srcChunk);
     bool DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk = nullptr, int64_t deadline = 0);
 
