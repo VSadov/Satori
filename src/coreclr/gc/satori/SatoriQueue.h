@@ -117,6 +117,30 @@ public:
         _ASSERTE(m_count > oldCount);
     }
 
+    // Pushes with no locks or interlocked ops, stamping the item with the queue it will
+    // end up in. For building a thread-local queue to later Append to that eventual owner.
+    void PushUnsafe(T* item, SatoriQueue<T>* eventualQueue)
+    {
+        _ASSERTE(item->m_next == nullptr);
+        _ASSERTE(item->m_prev == nullptr);
+        _ASSERTE(item->m_containingQueue == nullptr);
+
+        m_count++;
+        if (m_head == nullptr)
+        {
+            _ASSERTE(m_tail == nullptr);
+            m_tail = item;
+        }
+        else
+        {
+            item->m_next = m_head;
+            m_head->m_prev = item;
+        }
+
+        m_head = item;
+        item->m_containingQueue = eventualQueue;
+    }
+
     T* TryPop()
     {
         if (IsEmpty())
@@ -240,6 +264,33 @@ public:
         return result;
     }
 
+    // Pops with no locks or interlocked ops. Only valid when this thread is the only one
+    // touching the queue. Leaves m_tail and the new head's m_prev stale, so the queue needs
+    // ResetAfterUnsafeDrain when done.
+    T* TryPopUnsafe()
+    {
+        T* result = m_head;
+        if (result == nullptr)
+        {
+            return nullptr;
+        }
+
+        m_head = result->m_next;
+        m_count--;
+
+        result->m_containingQueue = nullptr;
+        result->m_next = nullptr;
+        result->m_prev = nullptr;
+        return result;
+    }
+
+    void ResetAfterUnsafeDrain()
+    {
+        _ASSERTE(m_head == nullptr);
+        _ASSERTE(m_count == 0);
+        m_tail = nullptr;
+    }
+
     void Enqueue(T* item)
     {
         _ASSERTE(item->m_next == nullptr);
@@ -263,7 +314,7 @@ public:
         m_tail = item;
     }
 
-    // does not take locks, does not update contsaining queue.
+    // does not take locks, does not update containing queue.
     // only used for intermediate merging of queues before consuming.
     void AppendUnsafe(SatoriQueue<T>* other)
     {
@@ -284,6 +335,43 @@ public:
         {
             other->m_head->m_prev = m_tail;
             m_tail->m_next = other->m_head;
+        }
+
+        m_tail = other->m_tail;
+        other->m_head = other->m_tail = nullptr;
+        other->m_count = 0;
+    }
+
+    // Appends a queue that no other thread can see - typically built with PushUnsafe,
+    // which has already stamped the items with this queue as their owner.
+    void Append(SatoriQueue<T>* other)
+    {
+        T* otherHead = other->m_head;
+        if (otherHead == nullptr)
+        {
+            _ASSERTE(other->m_count == 0);
+            return;
+        }
+
+#if _DEBUG
+        // the items are ours until published, so this needs no lock
+        for (T* item = otherHead; item != nullptr; item = item->m_next)
+        {
+            _ASSERTE(item->m_containingQueue == this);
+        }
+#endif
+
+        SatoriLockHolder holder(&m_lock);
+        m_count += other->m_count;
+        if (m_tail == nullptr)
+        {
+            _ASSERTE(m_head == nullptr);
+            m_head = otherHead;
+        }
+        else
+        {
+            otherHead->m_prev = m_tail;
+            m_tail->m_next = otherHead;
         }
 
         m_tail = other->m_tail;

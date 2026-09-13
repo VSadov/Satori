@@ -411,6 +411,7 @@ private:
 
     void KeepRegion(SatoriRegion* curRegion);
     void DrainDeferredSweepQueue();
+    void DrainReusableQueue();
     bool DrainDeferredSweepQueueConcurrent(int64_t deadline = 0);
     void DrainDeferredSweepQueueWorkerFn();
     void SweepAndReturnRegion(SatoriRegion* curRegion);

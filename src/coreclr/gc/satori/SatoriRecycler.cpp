@@ -335,6 +335,8 @@ SatoriRegion* SatoriRecycler::TryGetReusableForLarge()
     return  reusable;
 }
 
+// NOTE: DrainReusableQueue implements the same routing as this, just batched.
+//       Changes here likely need to be mirrored there.
 void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
 {
     if (region->HasUnmarkedDemotedObjects())
@@ -1373,6 +1375,11 @@ void SatoriRecycler::BlockingCollectImpl()
     }
 
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
+
+    // Deliberately not RunWithHelp - the queue is a pointer chase, so discovery is serial
+    // no matter how many threads we throw at it, and helpers only add contention on the head.
+    DrainReusableQueue();
+    m_reusableRegions->ResetAfterUnsafeDrain();
 
     // all sweeping should be done by now
     if (m_occupancyReportingEnabled)
@@ -4533,22 +4540,71 @@ void SatoriRecycler::DrainDeferredSweepQueue()
         } while ((curDeferredRegion = m_deferredSweepRegions->TryPop()));
     }
 
-    // we are blocked, we no longer need reusables.
-    _ASSERTE(IsBlockingPhase());
-    SatoriRegion* curReusableRegion = m_reusableRegions->TryPop();
-    if (curReusableRegion)
-    {
-        MaybeAskForHelp();
-        do
-        {
-            curReusableRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
-            PushToEphemeralQueues(curReusableRegion);
-        } while ((curReusableRegion = m_reusableRegions->TryPop()));
-    }
-
     if (SatoriUtil::IsConservativeMode())
     {
         m_trimmer->WaitForStop();
+    }
+}
+
+// EE is stopped and sweeping is done, so nothing adds to the reusable queue here
+// and these are just regular gen1 regions now. Runs on one thread - see the call site.
+// NOTE: the routing below is a batched PushToEphemeralQueues.
+//       Changes here likely need to be mirrored there.
+void SatoriRecycler::DrainReusableQueue()
+{
+    _ASSERTE(IsBlockingPhase());
+
+    // sort into local queues and counters and publish each destination in one splice,
+    // rather than taking a queue lock per region.
+    SatoriRegionQueue demotedLocal(QueueKind::RecyclerDemoted);
+    SatoriRegionQueue finalizationTrackingLocal(QueueKind::RecyclerEphemeralFinalizationTracking);
+    SatoriRegionQueue ephemeralLocal(QueueKind::RecyclerEphemeral);
+    size_t estimatedReclaim = 0;
+    size_t promotionEstimate = 0;
+
+    SatoriRegion* curReusableRegion = m_reusableRegions->TryPopUnsafe();
+    while (curReusableRegion)
+    {
+        curReusableRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
+        if (curReusableRegion->HasUnmarkedDemotedObjects())
+        {
+            demotedLocal.PushUnsafe(curReusableRegion, m_ephemeralWithUnmarkedDemoted);
+        }
+        else
+        {
+            // no need to assume - we are in the GC and know its generation
+            estimatedReclaim += curReusableRegion->ReclaimSizeIfRelocated(m_condemnedGeneration == 2);
+
+            if (curReusableRegion->IsPromotionCandidate())
+            {
+                promotionEstimate++;
+            }
+
+            if (curReusableRegion->HasFinalizables())
+            {
+                finalizationTrackingLocal.PushUnsafe(curReusableRegion, m_ephemeralFinalizationTrackingRegions);
+            }
+            else
+            {
+                ephemeralLocal.PushUnsafe(curReusableRegion, m_ephemeralRegions);
+            }
+        }
+
+        curReusableRegion = m_reusableRegions->TryPopUnsafe();
+    }
+
+    m_ephemeralWithUnmarkedDemoted->Append(&demotedLocal);
+    m_ephemeralFinalizationTrackingRegions->Append(&finalizationTrackingLocal);
+    m_ephemeralRegions->Append(&ephemeralLocal);
+
+    if (estimatedReclaim > 0)
+    {
+        Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, estimatedReclaim);
+    }
+
+    if (promotionEstimate > 0)
+    {
+        Interlocked::ExchangeAdd64(&m_promotionEstimate, promotionEstimate);
     }
 }
 
