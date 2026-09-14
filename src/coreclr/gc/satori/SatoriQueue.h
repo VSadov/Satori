@@ -275,9 +275,17 @@ public:
             return nullptr;
         }
 
-        m_head = result->m_next;
-        m_count--;
+        T* next = result->m_next;
 
+        // items are far apart, so walking the list is a chain of cache misses.
+        // start fetching the link we will need next while the caller works on this one.
+        if (next != nullptr)
+        {
+            SatoriUtil::Prefetch(&next->m_next);
+        }
+
+        m_head = next;
+        m_count--;
         result->m_containingQueue = nullptr;
         result->m_next = nullptr;
         result->m_prev = nullptr;
