@@ -256,6 +256,11 @@ private:
 
     size_t m_gen1Budget;
     size_t m_totalLimit;
+
+    // how much more free space may be parked in reusable regions. set from the gen1 budget
+    // once it is known, and spent as regions are parked. 0 stops parking any more.
+    int m_reusableTargetPercent;
+    int64_t m_reusableLimit;
     bool m_nextGcIsFullGc;
 
     size_t m_condemnedRegionsCount;
@@ -410,6 +415,7 @@ private:
     void UpdateRegions(SatoriRegionQueue* queue);
 
     void KeepRegion(SatoriRegion* curRegion);
+    bool ShouldReuse(SatoriRegion* curRegion);
     void DrainDeferredSweepQueue();
     void DrainReusableQueue();
     bool DrainDeferredSweepQueueConcurrent(int64_t deadline = 0);

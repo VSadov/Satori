@@ -627,6 +627,21 @@ public:
         return gcSpin;
     }
 
+    // DOTNET_gcReusableTarget
+    // How much free space may be parked in reusable regions, as a percentage of the gen1
+    // budget. Reusables are drained into ephemeral queues when a blocking GC starts, so
+    // holding much more than the mutator consumes before then only adds to that drain.
+    static int ReusableTarget()
+    {
+        int target = (int)GCConfig::GetReusableTarget();
+        if (target < 0)
+        {
+            return 400;
+        }
+
+        return target;
+    }
+
     // DOTNET_gcGen2Target
     static int Gen2Target()
     {

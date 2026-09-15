@@ -141,6 +141,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_gen1CountAtLastGen2 = 0;
     m_gen1Budget = MIN_GEN1_BUDGET;
+    m_reusableTargetPercent = SatoriUtil::ReusableTarget();
+    m_reusableLimit = 0;
     m_totalLimit = MIN_GEN1_BUDGET;
     m_nextGcIsFullGc = true;
     m_prevCondemnedGeneration = 2;
@@ -1231,6 +1233,9 @@ void SatoriRecycler::AdjustHeuristics()
         m_gen1Budget = available;
     }
 
+    // the budget is final, allow parking reusables against it again
+    m_reusableLimit = (int64_t)(m_gen1Budget / 100 * m_reusableTargetPercent);
+
     // now figure if we will promote
     m_promoteAllRegions = false;
     size_t promotionEstimate = m_promotionEstimate;
@@ -1374,6 +1379,9 @@ void SatoriRecycler::BlockingCollectImpl()
         m_isRelocating = false;
     }
 
+    // regions swept below are drained a moment later and no allocation can use them.
+    // AdjustHeuristics reopens this once the new budget is known.
+    m_reusableLimit = 0;
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
 
     // Deliberately not RunWithHelp - the queue is a pointer chase, so discovery is serial
@@ -4458,6 +4466,15 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
     }
 }
 
+// Decides if a swept region should be parked for reuse rather than returned to the
+// ephemeral queues. Reusables stay usable until a blocking GC starts and drains them,
+// so parking more than the mutator can consume before then only adds to that drain.
+bool SatoriRecycler::ShouldReuse(SatoriRegion* curRegion)
+{
+    size_t freeSpace = curRegion->FreeSpaceInTopNBuckets(Satori::FREELIST_COUNT);
+    return Interlocked::ExchangeAdd64(&m_reusableLimit, -(int64_t)freeSpace) > 0;
+}
+
 void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
 {
     _ASSERTE(curRegion->Occupancy() > 0);
@@ -4473,7 +4490,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
             RecordDemotedOccupancy(curRegion->DemotedOccupancy());
         }
 
-        if (curRegion->Generation() == 1)
+        if (curRegion->Generation() == 1 && ShouldReuse(curRegion))
         {
 #if _DEBUG
             // just split 50%/50% for testing purposes.
