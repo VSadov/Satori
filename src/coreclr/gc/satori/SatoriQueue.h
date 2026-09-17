@@ -456,6 +456,9 @@ public:
 protected:
     QueueKind m_kind;
     SatoriLock m_lock;
+    // Contenders spin on the lock word, which keeps its line Shared on every one of them.
+    // Without this, each write to m_head inside the critical section has to invalidate them all.
+    uint8_t m_padding[64];
     T* m_head;
     T* m_tail;
     size_t m_count;
