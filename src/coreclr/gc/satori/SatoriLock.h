@@ -98,8 +98,16 @@ private:
     // One iteration is mapped to 64 spin count units.
     static const int SpinCountScaleShift = 6;
 
-    static const uint16_t DefaultMaxSpinCount = 22 << SpinCountScaleShift;
+    static const uint16_t DefaultMaxSpinCount = 50 << SpinCountScaleShift;
     static const uint16_t DefaultMinSpinCount = 1 << SpinCountScaleShift;
+
+    // Past this the per-iteration pause stops doubling and becomes a fixed amount of wall
+    // time instead - see IterationBackoffLong.
+    static const int MaxBackoffIteration = 6;
+
+    // The lock changing hands this many times while we waited is ordinary contention.
+    // Only past that are we being passed over rather than narrowly missing.
+    static const uint32_t OwnerChangedThreshold = 8;
 
     // We will use exponential backoff in rare cases when we need to change state atomically and cannot
     // make progress due to concurrent state changes by other threads.
@@ -118,8 +126,14 @@ private:
     static const uint32_t WaiterWatchdogTicks = 60;
 
 public:
+    // One microsecond in the units of SatoriUtil::GetTimeStamp(), whose rate is only known
+    // at runtime.
+    static int64_t s_ticksPerUsec;
+    static void InitPolicy();
+
     void Initialize()
     {
+        InitPolicy();
         _state = 0;
         _spinCount = DefaultMinSpinCount;
         _wakeWatchDog = 0;
@@ -230,6 +244,20 @@ private:
         {
             YieldProcessor();
         }
+    }
+
+    // Once the exponential pause has grown to its limit, keep going in fixed amounts of
+    // wall time rather than fixed counts of YieldProcessor(), which costs anywhere from
+    // nothing (browser, 32-bit ARM on MSVC) to a full memory barrier (LoongArch). Only the
+    // long iterations pay for the clock; the short ones above are far below a microsecond
+    // anyway.
+    static void IterationBackoffLong()
+    {
+        int64_t deadline = SatoriUtil::GetTimeStamp() + s_ticksPerUsec;
+        do
+        {
+            YieldProcessor();
+        } while (SatoriUtil::GetTimeStamp() - deadline < 0);
     }
 
     NOINLINE
