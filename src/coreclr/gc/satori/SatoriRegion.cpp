@@ -1104,7 +1104,10 @@ bool SatoriRegion::CheckEscapeRange(size_t dst, size_t src, size_t len)
     // that range is not parseable as a sequence of objects. A real object ref can never point
     // there, but an arbitrary word can, so we have to exclude that range explicitly.
     // No allocation can happen concurrently in this region, so the range is stable here.
-    size_t allocGapStart = IsAllocating() ? m_allocStart : 0;
+    // m_allocStart is the end of the reserved buffer, not the end of its initialized objects.
+    gc_alloc_context* context = GCToEEInterface::GetAllocContext();
+    _ASSERTE((SatoriRegion*)context->gc_reserved_1 == this);
+    size_t allocGapStart = IsAllocating() ? (size_t)context->alloc_ptr : 0;
     size_t allocGapEnd = IsAllocating() ? m_allocEnd : 0;
 
     // hoisted out of the loop - EscapeRecursively does not change these, but the compiler
