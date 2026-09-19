@@ -159,7 +159,7 @@ tryAgain:
         {
             if (page)
             {
-                putBack = page->MakeInitialRegion();
+                putBack = page->InitialRegion();
                 region = putBack->TrySplit(regionSize);
                 AddRegion(putBack);
                 Interlocked::Decrement(&m_singePageAdders);
@@ -176,7 +176,7 @@ tryAgain:
         SatoriPage* page = m_heap->AddLargePage(regionSize);
         if (page)
         {
-            region = page->MakeInitialRegion();
+            region = page->InitialRegion();
             _ASSERTE(region->Size() >= regionSize);
             if (region->Size() > regionSize)
             {

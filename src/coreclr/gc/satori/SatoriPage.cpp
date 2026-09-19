@@ -101,14 +101,25 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 
     // make sure the first useful card word is beyond the header.
     _ASSERTE(result->Start() + cardTableStart > (size_t)(result->m_regionMap) + regionCount);
+
+    // Initialize the first region before publishing the page in the heap map.
+    // Until then a failed commit can safely release the entire reservation.
+    size_t used = (size_t)&result->m_cardTable[cardTableSize];
+    if (SatoriRegion::InitializeAt(result, result->m_firstRegion, result->m_end - result->m_firstRegion,
+        result->m_initialCommit, used) == nullptr)
+    {
+        heap->DecBytesCommitted(commitSize);
+        GCToOSInterface::VirtualRelease(result, pageSize);
+        commitFailed = true;
+        return nullptr;
+    }
+
     return result;
 }
 
-SatoriRegion* SatoriPage::MakeInitialRegion()
+SatoriRegion* SatoriPage::InitialRegion()
 {
-    // page memory should be considered dirtied up to the end of the card table, the rest is clear.
-    size_t used = (size_t)&m_cardTable[m_cardTableSize];
-    return SatoriRegion::InitializeAt(this, m_firstRegion, m_end - m_firstRegion, m_initialCommit, used);
+    return (SatoriRegion*)m_firstRegion;
 }
 
 void SatoriPage::OnRegionInitialized(SatoriRegion* region)
