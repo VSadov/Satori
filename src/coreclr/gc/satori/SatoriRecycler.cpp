@@ -951,7 +951,7 @@ int SatoriRecycler::MaxWorkers()
     int workerCount = SatoriUtil::MaxWorkersCount();
     if (workerCount < 0)
     {
-        int cpuCount = GCToOSInterface::GetTotalProcessorCount();
+        int cpuCount = GCToEEInterface::GetCurrentProcessCpuCount();
 
         // TUNING: should this be more dynamic? check CPU load and such.
         workerCount = cpuCount - 1;
