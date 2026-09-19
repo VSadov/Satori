@@ -3952,11 +3952,19 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         }
     }
 
-    // transfer finalization trackers if we have any
-    relocationTarget->TakeFinalizerInfoFrom(relocationSource);
-
     // allocate space for relocated objects
     size_t dst = relocationTarget->Allocate(maxBytesToCopy, /*zeroInitialize*/ false);
+    if (dst == 0)
+    {
+        // Restore the target's free span and keep the source intact for sweeping.
+        relocationTarget->StopAllocating();
+        AddRelocationTarget(relocationTarget);
+        AddRelocationTarget(relocationSource);
+        return;
+    }
+
+    // transfer finalization trackers only after the destination is secured
+    relocationTarget->TakeFinalizerInfoFrom(relocationSource);
 
     // actually relocate src objects into the allocated space.
     size_t dstOrig = dst;
