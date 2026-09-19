@@ -35,9 +35,10 @@
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
 
-SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap)
+SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap, bool& commitFailed)
 {
     _ASSERTE(pageSize % Satori::PAGE_SIZE_GRANULARITY == 0);
+    commitFailed = false;
 
     SatoriPage* result = (SatoriPage*)GCToOSInterface::VirtualReserve((void*)address, pageSize, SatoriUtil::UseTHP());
     if (result == nullptr)
@@ -58,6 +59,8 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 
     if (!GCToOSInterface::VirtualCommit((void*)address, commitSize))
     {
+        GCToOSInterface::VirtualRelease(result, pageSize);
+        commitFailed = true;
         return nullptr;
     }
 
