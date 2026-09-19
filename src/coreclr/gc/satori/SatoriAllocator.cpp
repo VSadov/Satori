@@ -1245,7 +1245,7 @@ SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
         chunk = m_workChunks->TryPop();
     }
 
-    _ASSERTE(chunk->Count() == 0);
+    _ASSERTE(chunk == nullptr || chunk->Count() == 0);
     return chunk;
 }
 
@@ -1258,7 +1258,7 @@ SatoriWorkChunk* SatoriAllocator::GetWorkChunk()
         chunk = m_workChunks->TryPop();
     }
 
-    _ASSERTE(chunk->Count() == 0);
+    _ASSERTE(chunk == nullptr || chunk->Count() == 0);
     return chunk;
 }
 
