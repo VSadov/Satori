@@ -681,6 +681,7 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
         if (region == nullptr)
         {
             //OOM
+            m_regularAllocLock.Leave();
             return nullptr;
         }
 
