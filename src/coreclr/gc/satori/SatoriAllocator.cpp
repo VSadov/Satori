@@ -270,7 +270,7 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
             SatoriObject* result = (SatoriObject*)context->alloc_ptr;
             if ((flags & GC_ALLOC_FINALIZE) && !result->ContainingRegion()->RegisterForFinalization(result))
             {
-                result = nullptr;
+                return nullptr;
             }
 
             context->alloc_ptr += size;
