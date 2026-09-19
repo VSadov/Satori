@@ -1080,18 +1080,33 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 
 size_t GetAvailableMemory()
 {
+    bool isRestricted;
+    uint64_t total = GCToOSInterface::GetPhysicalMemoryLimit(&isRestricted);
     uint64_t available;
-    uint64_t total;
-    GCToOSInterface::GetMemoryStatus(0, nullptr, &available, &total);
+#ifdef TARGET_WINDOWS
+    uint64_t availableCommit;
+    GCToOSInterface::GetMemoryStatus(0, nullptr, &available, &availableCommit);
+#else
+    GCToOSInterface::GetMemoryStatus(0, nullptr, &available, nullptr);
+#endif
 
-    // we will not use the last 5% of physical memory
-    uint64_t reserve = total * 5 / 100;
-    if (available > reserve)
+    if (isRestricted)
     {
-        return available - reserve;
+        uint64_t restrictedAvailable;
+        GCToOSInterface::GetMemoryStatus(total, nullptr, &restrictedAvailable, nullptr);
+        available = min(available, restrictedAvailable);
     }
 
-    return 0;
+    // we will not use the last 5% of physical memory
+    uint64_t reserve = total / 20;
+    available = available > reserve ? available - reserve : 0;
+
+#ifdef TARGET_WINDOWS
+    // Windows reports commit headroom; Unix reports free swap, which is not a commit limit.
+    available = min(available, availableCommit);
+#endif
+
+    return (size_t)available;
 }
 
 void SatoriRecycler::AdjustHeuristics()
