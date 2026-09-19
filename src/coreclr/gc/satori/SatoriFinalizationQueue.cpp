@@ -48,7 +48,7 @@ static const size_t INITIAL_SIZE = 1 << 5;
 static const size_t INITIAL_SIZE = 1 << 12;
 #endif
 
-void SatoriFinalizationQueue::Initialize(SatoriHeap* heap)
+bool SatoriFinalizationQueue::Initialize(SatoriHeap* heap)
 {
     m_enqueue = 0;
     m_dequeue = 0;
@@ -63,13 +63,25 @@ void SatoriFinalizationQueue::Initialize(SatoriHeap* heap)
     size_t allocSize = size * sizeof(Entry);
     size_t regionSize = SatoriRegion::RegionSizeForAlloc(allocSize);
     SatoriRegion* region = m_heap->Allocator()->GetRegion(regionSize);
+    if (region == nullptr)
+    {
+        return false;
+    }
+
     m_data = (Entry*)region->Allocate(allocSize, /*zeroInitialize*/false);
+    if (m_data == nullptr)
+    {
+        m_heap->Allocator()->ReturnRegion(region);
+        return false;
+    }
 
     // format as empty
     for (size_t i = 0; i < size; i++)
     {
         m_data[i].version = i;
     }
+
+    return true;
 }
 
 int SatoriFinalizationQueue::OverflowedGen()

@@ -106,7 +106,10 @@ SatoriHeap* SatoriHeap::Create()
 
     heap->m_allocator.Initialize(heap);
     heap->m_recycler.Initialize(heap);
-    heap->m_finalizationQueue.Initialize(heap);
+    if (!heap->m_finalizationQueue.Initialize(heap))
+    {
+        return nullptr;
+    }
     return heap;
 }
 
