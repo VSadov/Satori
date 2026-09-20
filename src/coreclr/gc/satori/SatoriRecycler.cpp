@@ -4217,6 +4217,14 @@ void SatoriRecycler::Update()
 
     RunWithHelp(&SatoriRecycler::UpdateRegionsWorker);
 
+    // the drain above leaves tails stale, the queues are reusable only after this
+    for (int i = 0; i < Satori::FREELIST_COUNT; i++)
+    {
+        m_relocationTargets[i]->ResetAfterUnsafeDrain();
+    }
+
+    m_stayingRegions->ResetAfterUnsafeDrain();
+
     // promoting handles must be after handles are updated (since update needs to know unpromoted generations).
     // relocated regions can be freed after live regions are updated (since update gets new locations from relocated regions).
     // we will combine these two passes here after both prerequisites are complete.
@@ -4360,7 +4368,9 @@ void SatoriRecycler::UpdatePointersInPromotedObjects()
 
 void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
 {
-    SatoriRegion* curRegion = queue->TryPop();
+    // These queues are filled in Plan and Relocate and only drained here, so the pop needs
+    // no lock. ResetAfterUnsafeDrain below puts them back into a usable state.
+    SatoriRegion* curRegion = queue->TryPopDrainOnly();
     if (curRegion)
     {
         MaybeAskForHelp();
@@ -4462,7 +4472,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
             {
                 m_deferredSweepRegions->Enqueue(curRegion);
             }
-        } while ((curRegion = queue->TryPop()));
+        } while ((curRegion = queue->TryPopDrainOnly()));
     }
 }
 

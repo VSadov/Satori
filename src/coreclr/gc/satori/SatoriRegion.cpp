@@ -622,7 +622,12 @@ bool SatoriRegion::TryCoalesceWithNext()
         {
             if (queue->TryRemove(next))
             {
-                if(Coalesce(next))
+                // Coalescing decommits next's header, which a blocking GC may still be
+                // reading - its drain-only pops chase m_next through claimed regions.
+                // Taking `next` off the queue orders this check against the GC freeing it:
+                // if we do not see the blocking phase, `next` was freed by an earlier GC
+                // and no current drain can reach it.
+                if (!Recycler()->IsBlockingPhase() && Coalesce(next))
                 {
                     return true;
                 }

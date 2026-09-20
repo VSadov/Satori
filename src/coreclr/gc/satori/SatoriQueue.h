@@ -295,8 +295,55 @@ public:
     void ResetAfterUnsafeDrain()
     {
         _ASSERTE(m_head == nullptr);
-        _ASSERTE(m_count == 0);
         m_tail = nullptr;
+        m_count = 0;
+    }
+
+    // Concurrent pop for a queue that takes no pushes while the drain is in progress.
+    // With no producers an item cannot re-enter the queue, so a bare CAS on the head
+    // cannot see ABA and needs no lock.
+    //
+    // Back links and the tail are deliberately left stale: writing next->m_prev would
+    // touch a line this thread has no other reason to read, and the tail only matters to
+    // appends. The queue is unusable until ResetAfterUnsafeDrain, which the drain must
+    // call once its workers have joined.
+    //
+    // NB: a racing popper may read m_next out of an item another thread has already
+    //     claimed. That read is harmless - the CAS below will fail and retry - but it
+    //     does require the item to stay mapped for the duration of the drain.
+    //     This is why the drain may only run in the blocking phase: outside of it the
+    //     trimmer could coalesce an already claimed region and decommit its header.
+    T* TryPopDrainOnly()
+    {
+        T* result = VolatileLoadWithoutBarrier(&m_head);
+        while (result != nullptr)
+        {
+            T* next = result->m_next;
+            T* prev = Interlocked::CompareExchangePointer(&m_head, next, result);
+            if (prev == result)
+            {
+                // items are far apart, so walking the list is a chain of cache misses.
+                // start fetching the link the next popper will need.
+                if (next != nullptr)
+                {
+                    SatoriUtil::Prefetch(&next->m_next);
+                }
+
+#if _DEBUG
+                // the drain ends empty regardless, so outside of debugging the count is not
+                // worth a second contended line next to the head.
+                Interlocked::Decrement(&m_count);
+#endif
+                result->m_containingQueue = nullptr;
+                result->m_next = nullptr;
+                result->m_prev = nullptr;
+                return result;
+            }
+
+            result = prev;
+        }
+
+        return nullptr;
     }
 
     void Enqueue(T* item)
