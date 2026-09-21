@@ -3622,9 +3622,8 @@ void SatoriRecycler::Plan()
     }
 #endif
 
-    // these counters are since last blocking collection, clear them
+    // Gen1 allocations are accounted for by every blocking collection.
     m_gen1AddedSinceLastCollection = 0;
-    m_gen2AddedSinceLastCollection = 0;
 
     size_t estimatedReclaim = m_estimatedEphemeralReclaim;
     if (m_condemnedGeneration == 2)
@@ -3638,7 +3637,8 @@ void SatoriRecycler::Plan()
 
     if (m_promoteAllRegions)
     {
-        // we will be rebuilding gen2, one way or another
+        // Direct Gen2 allocations enter occupancy when Gen2 is rebuilt.
+        m_gen2AddedSinceLastCollection = 0;
         m_occupancyAcc[2] = 0;
         m_estimatedTenuredReclaim = 0;
         m_demotedOccupancyAcc = 0;
@@ -4092,13 +4092,13 @@ void SatoriRecycler::Update()
     _ASSERTE(m_occupancyAcc[1] == 0);
     _ASSERTE(m_estimatedEphemeralReclaim == 0);
     _ASSERTE(m_gen1AddedSinceLastCollection == 0);
-    _ASSERTE(m_gen2AddedSinceLastCollection == 0);
 
     _ASSERTE(m_promoteAllRegions || m_condemnedGeneration != 2);
     if (m_promoteAllRegions)
     {
         _ASSERTE(m_tenuredRegions->IsEmpty());
         _ASSERTE(m_tenuredFinalizationTrackingRegions->IsEmpty());
+        _ASSERTE(m_gen2AddedSinceLastCollection == 0);
         _ASSERTE(m_occupancyAcc[2] == 0);
         _ASSERTE(m_demotedOccupancyAcc == 0);
         _ASSERTE(m_estimatedTenuredReclaim == 0);
