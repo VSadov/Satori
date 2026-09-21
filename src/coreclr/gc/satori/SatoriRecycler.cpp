@@ -359,7 +359,7 @@ void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
     size_t estimatedReclaim = region->ReclaimSizeIfRelocated(m_nextGcIsFullGc);
     if (estimatedReclaim  > 0)
     {
-        Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, estimatedReclaim);
+        Interlocked::ExchangeAdd64(&m_estimatedTenuredReclaim, estimatedReclaim);
     }
 
     if (region->HasFinalizables())
