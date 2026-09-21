@@ -244,6 +244,13 @@ public:
         return s_timeStampFrequency != 0 ? s_timeStampFrequency : s_osTimeStampFrequency;
     }
 
+    // GetTimeStamp() ticks in one microsecond, for spinning in units of wall time.
+    // Never 0, so it can be used as a divisor.
+    static int64_t TimeStampTicksPerUsec()
+    {
+        return s_ticksPerUsec;
+    }
+
     // Chooses between the hardware counter and the OS timer and measures the rate of
     // the former. Takes ~100 usec. Must be called before GetTimeStamp()/GetTimeStampFrequency().
     static void Initialize();
@@ -699,6 +706,7 @@ private:
     // the rate of the inline hardware counter, in Hz. 0 if we are not using it.
     static int64_t s_timeStampFrequency;
     static int64_t s_osTimeStampFrequency;
+    static int64_t s_ticksPerUsec;
 
     static int64_t MeasureTimeStampFrequency();
 

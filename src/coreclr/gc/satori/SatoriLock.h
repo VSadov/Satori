@@ -126,14 +126,8 @@ private:
     static const uint32_t WaiterWatchdogTicks = 60;
 
 public:
-    // One microsecond in the units of SatoriUtil::GetTimeStamp(), whose rate is only known
-    // at runtime.
-    static int64_t s_ticksPerUsec;
-    static void InitPolicy();
-
     void Initialize()
     {
-        InitPolicy();
         _state = 0;
         _spinCount = DefaultMinSpinCount;
         _wakeWatchDog = 0;
@@ -253,7 +247,7 @@ private:
     // anyway.
     static void IterationBackoffLong()
     {
-        int64_t deadline = SatoriUtil::GetTimeStamp() + s_ticksPerUsec;
+        int64_t deadline = SatoriUtil::GetTimeStamp() + SatoriUtil::TimeStampTicksPerUsec();
         do
         {
             YieldProcessor();

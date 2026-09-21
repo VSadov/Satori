@@ -30,21 +30,6 @@
 #include "../env/gcenv.os.h"
 #include "SatoriLock.h"
 
-int64_t SatoriLock::s_ticksPerUsec = 1;
-
-void SatoriLock::InitPolicy()
-{
-    static bool initialized = false;
-    if (initialized)
-    {
-        return;
-    }
-    initialized = true;
-
-    s_ticksPerUsec = SatoriUtil::GetTimeStampFrequency() / (1000 * 1000);
-    if (s_ticksPerUsec < 1) { s_ticksPerUsec = 1; }
-}
-
 NOINLINE
 bool SatoriLock::EnterSlow(bool noBlock)
 {
