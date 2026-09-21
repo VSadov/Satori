@@ -63,6 +63,70 @@ class SatoriQueue
 {
 public:
 
+    // Off-to-the-side staging for items that will be handed to a queue in one splice.
+    // Has no lock of its own - the items are private to the building thread. They are
+    // already stamped with their eventual owner though, so TryRemove/Contains must not
+    // run against that owner while a batch is outstanding.
+    class Batch
+    {
+        friend class SatoriQueue<T>;
+
+    public:
+        Batch() : m_head(), m_tail(), m_count() {}
+
+        void Push(T* item, SatoriQueue<T>* eventualQueue)
+        {
+            _ASSERTE(item->m_next == nullptr);
+            _ASSERTE(item->m_prev == nullptr);
+            _ASSERTE(item->m_containingQueue == nullptr);
+
+            m_count++;
+            if (m_head == nullptr)
+            {
+                m_tail = item;
+            }
+            else
+            {
+                item->m_next = m_head;
+                m_head->m_prev = item;
+            }
+
+            m_head = item;
+            item->m_containingQueue = eventualQueue;
+        }
+
+        void Enqueue(T* item, SatoriQueue<T>* eventualQueue)
+        {
+            _ASSERTE(item->m_next == nullptr);
+            _ASSERTE(item->m_prev == nullptr);
+            _ASSERTE(item->m_containingQueue == nullptr);
+
+            m_count++;
+            if (m_tail == nullptr)
+            {
+                m_head = item;
+            }
+            else
+            {
+                item->m_prev = m_tail;
+                m_tail->m_next = item;
+            }
+
+            m_tail = item;
+            item->m_containingQueue = eventualQueue;
+        }
+
+        bool IsEmpty()
+        {
+            return m_head == nullptr;
+        }
+
+    private:
+        T* m_head;
+        T* m_tail;
+        size_t m_count;
+    };
+
     SatoriQueue(QueueKind kind) :
         m_kind(kind), m_lock(), m_head(), m_tail(), m_count()
     {
@@ -316,6 +380,7 @@ public:
     T* TryPopDrainOnly()
     {
         T* result = VolatileLoadWithoutBarrier(&m_head);
+        uint32_t collisions = 0;
         while (result != nullptr)
         {
             T* next = result->m_next;
@@ -340,7 +405,12 @@ public:
                 return result;
             }
 
-            result = prev;
+            // Collisions are rare, so this seldom fires, but a failed CAS still takes the
+            // head exclusively - backing off keeps a degenerate case from amplifying that.
+            SatoriLock::CollisionBackoff(++collisions);
+
+            // the pause makes the value the CAS returned stale, so re-read rather than reuse it
+            result = VolatileLoadWithoutBarrier(&m_head);
         }
 
         return nullptr;
@@ -430,6 +500,69 @@ public:
         }
 
         m_tail = other->m_tail;
+        other->m_head = other->m_tail = nullptr;
+        other->m_count = 0;
+    }
+
+    // Splices a locally built batch onto the tail in one lock acquisition.
+    // The batch items are already stamped with this queue as their owner.
+    void Append(Batch* other)
+    {
+        T* otherHead = other->m_head;
+        if (otherHead == nullptr)
+        {
+            _ASSERTE(other->m_count == 0);
+            return;
+        }
+
+        {
+            SatoriLockHolder holder(&m_lock);
+            m_count += other->m_count;
+            if (m_tail == nullptr)
+            {
+                _ASSERTE(m_head == nullptr);
+                m_head = otherHead;
+            }
+            else
+            {
+                otherHead->m_prev = m_tail;
+                m_tail->m_next = otherHead;
+            }
+
+            m_tail = other->m_tail;
+        }
+
+        other->m_head = other->m_tail = nullptr;
+        other->m_count = 0;
+    }
+
+    // Same, onto the head - for batches whose items should be consumed first.
+    void Prepend(Batch* other)
+    {
+        T* otherTail = other->m_tail;
+        if (otherTail == nullptr)
+        {
+            _ASSERTE(other->m_count == 0);
+            return;
+        }
+
+        {
+            SatoriLockHolder holder(&m_lock);
+            m_count += other->m_count;
+            if (m_head == nullptr)
+            {
+                _ASSERTE(m_tail == nullptr);
+                m_tail = otherTail;
+            }
+            else
+            {
+                otherTail->m_next = m_head;
+                m_head->m_prev = otherTail;
+            }
+
+            m_head = other->m_head;
+        }
+
         other->m_head = other->m_tail = nullptr;
         other->m_count = 0;
     }

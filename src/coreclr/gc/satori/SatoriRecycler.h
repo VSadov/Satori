@@ -365,7 +365,7 @@ private:
     void LongWeakPtrScanWorker();
 
     void ScanFinalizables();
-    void ScanFinalizableRegions(SatoriRegionQueue* regions, MarkContext* markContext);
+    void ScanFinalizableRegions(SatoriRegionQueue* regions, MarkContext* markContext, SatoriRegionQueue::Batch* pending, SatoriRegionQueue::Batch* eph, SatoriRegionQueue::Batch* ten);
     void ScanAllFinalizableRegionsWorker();
     void QueueCriticalFinalizablesWorker();
 
@@ -412,7 +412,7 @@ private:
     void UpdatePointersThroughCards();
     void UpdatePointersInObjectRanges();
     void UpdatePointersInPromotedObjects();
-    void UpdateRegions(SatoriRegionQueue* queue);
+    void UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::Batch* deferredFirst, SatoriRegionQueue::Batch* deferredRest);
 
     void KeepRegion(SatoriRegion* curRegion);
     bool ShouldReuse(SatoriRegion* curRegion);
