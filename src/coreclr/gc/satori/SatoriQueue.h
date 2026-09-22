@@ -72,7 +72,11 @@ public:
         friend class SatoriQueue<T>;
 
     public:
-        Batch() : m_head(), m_tail(), m_count() {}
+        Batch(SatoriQueue<T>* eventualQueue) :
+            m_queue(eventualQueue), m_head(), m_tail(), m_count()
+        {
+            _ASSERTE(eventualQueue != nullptr);
+        }
 
         // items in a dropped batch are stamped with an owner that never links them in,
         // so they are lost. every path out must splice the batch first.
@@ -81,7 +85,7 @@ public:
             _ASSERTE(m_head == nullptr);
         }
 
-        void Push(T* item, SatoriQueue<T>* eventualQueue)
+        void Push(T* item)
         {
             _ASSERTE(item->m_next == nullptr);
             _ASSERTE(item->m_prev == nullptr);
@@ -99,10 +103,10 @@ public:
             }
 
             m_head = item;
-            item->m_containingQueue = eventualQueue;
+            item->m_containingQueue = m_queue;
         }
 
-        void Enqueue(T* item, SatoriQueue<T>* eventualQueue)
+        void Enqueue(T* item)
         {
             _ASSERTE(item->m_next == nullptr);
             _ASSERTE(item->m_prev == nullptr);
@@ -120,15 +124,11 @@ public:
             }
 
             m_tail = item;
-            item->m_containingQueue = eventualQueue;
-        }
-
-        bool IsEmpty()
-        {
-            return m_head == nullptr;
+            item->m_containingQueue = m_queue;
         }
 
     private:
+        SatoriQueue<T>* m_queue;
         T* m_head;
         T* m_tail;
         size_t m_count;
@@ -454,6 +454,8 @@ public:
     // The batch items are already stamped with this queue as their owner.
     void Append(Batch* other)
     {
+        _ASSERTE(other->m_queue == this);
+
         T* otherHead = other->m_head;
         if (otherHead == nullptr)
         {
@@ -485,6 +487,8 @@ public:
     // Same, onto the head - for batches whose items should be consumed first.
     void Prepend(Batch* other)
     {
+        _ASSERTE(other->m_queue == this);
+
         T* otherTail = other->m_tail;
         if (otherTail == nullptr)
         {

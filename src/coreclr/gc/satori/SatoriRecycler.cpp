@@ -3512,9 +3512,9 @@ void SatoriRecycler::ScanAllFinalizableRegionsWorker()
     MarkContext c = MarkContext(this);
 
     // every scanned region gets rerouted, so stage the pushes and splice once per destination
-    SatoriRegionQueue::Batch pending;
-    SatoriRegionQueue::Batch eph;
-    SatoriRegionQueue::Batch ten;
+    SatoriRegionQueue::Batch pending(m_finalizationPendingRegions);
+    SatoriRegionQueue::Batch eph(m_ephemeralRegions);
+    SatoriRegionQueue::Batch ten(m_tenuredRegions);
 
     ScanFinalizableRegions(m_ephemeralFinalizationTrackingRegions, &c, &pending, &eph, &ten);
     _ASSERTE(m_reusableRegions->IsEmpty());
@@ -3560,17 +3560,17 @@ void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContex
 
             if (hasCF)
             {
-                pending->Push(region, m_finalizationPendingRegions);
+                pending->Push(region);
             }
             else
             {
                 if (region->Generation() == 2)
                 {
-                    ten->Push(region, m_tenuredRegions);
+                    ten->Push(region);
                 }
                 else
                 {
-                    eph->Push(region, m_ephemeralRegions);
+                    eph->Push(region);
                 }
             }
         } while ((region = queue->TryPopDrainOnly()));
@@ -3579,8 +3579,8 @@ void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContex
 
 void SatoriRecycler::QueueCriticalFinalizablesWorker()
 {
-    SatoriRegionQueue::Batch eph;
-    SatoriRegionQueue::Batch ten;
+    SatoriRegionQueue::Batch eph(m_ephemeralRegions);
+    SatoriRegionQueue::Batch ten(m_tenuredRegions);
 
     SatoriRegion* region = m_finalizationPendingRegions->TryPopDrainOnly();
     if (region)
@@ -3591,11 +3591,11 @@ void SatoriRecycler::QueueCriticalFinalizablesWorker()
             region->PendCfFinalizables(m_condemnedGeneration);
             if (region->Generation() == 2)
             {
-                ten.Push(region, m_tenuredRegions);
+                ten.Push(region);
             }
             else
             {
-                eph.Push(region, m_ephemeralRegions);
+                eph.Push(region);
             }
         } while ((region = m_finalizationPendingRegions->TryPopDrainOnly()));
 
@@ -4351,8 +4351,8 @@ void SatoriRecycler::UpdateRegionsWorker()
 {
     // nearly every region here ends up in the deferred sweep queue, so stage the pushes
     // off to the side and splice them in once rather than taking its lock per region.
-    SatoriRegionQueue::Batch deferredFirst;
-    SatoriRegionQueue::Batch deferredRest;
+    SatoriRegionQueue::Batch deferredFirst(m_deferredSweepRegions);
+    SatoriRegionQueue::Batch deferredRest(m_deferredSweepRegions);
 
     // update and return target regions
     for (int i = 0; i < Satori::FREELIST_COUNT; i++)
@@ -4524,11 +4524,11 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::
             // these we can sweep/return later
             if (curRegion->IsReuseCandidate())
             {
-                deferredFirst->Push(curRegion, m_deferredSweepRegions);
+                deferredFirst->Push(curRegion);
             }
             else
             {
-                deferredRest->Enqueue(curRegion, m_deferredSweepRegions);
+                deferredRest->Enqueue(curRegion);
             }
         } while ((curRegion = queue->TryPopDrainOnly()));
     }
@@ -4641,9 +4641,9 @@ void SatoriRecycler::DrainReusableQueue()
 
     // sort into local batches and counters and publish each destination in one splice,
     // rather than taking a queue lock per region.
-    SatoriRegionQueue::Batch demotedLocal;
-    SatoriRegionQueue::Batch finalizationTrackingLocal;
-    SatoriRegionQueue::Batch ephemeralLocal;
+    SatoriRegionQueue::Batch demotedLocal(m_ephemeralWithUnmarkedDemoted);
+    SatoriRegionQueue::Batch finalizationTrackingLocal(m_ephemeralFinalizationTrackingRegions);
+    SatoriRegionQueue::Batch ephemeralLocal(m_ephemeralRegions);
     size_t estimatedReclaim = 0;
     size_t promotionEstimate = 0;
 
@@ -4653,7 +4653,7 @@ void SatoriRecycler::DrainReusableQueue()
         curReusableRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
         if (curReusableRegion->HasUnmarkedDemotedObjects())
         {
-            demotedLocal.Push(curReusableRegion, m_ephemeralWithUnmarkedDemoted);
+            demotedLocal.Push(curReusableRegion);
         }
         else
         {
@@ -4667,11 +4667,11 @@ void SatoriRecycler::DrainReusableQueue()
 
             if (curReusableRegion->HasFinalizables())
             {
-                finalizationTrackingLocal.Push(curReusableRegion, m_ephemeralFinalizationTrackingRegions);
+                finalizationTrackingLocal.Push(curReusableRegion);
             }
             else
             {
-                ephemeralLocal.Push(curReusableRegion, m_ephemeralRegions);
+                ephemeralLocal.Push(curReusableRegion);
             }
         }
 
