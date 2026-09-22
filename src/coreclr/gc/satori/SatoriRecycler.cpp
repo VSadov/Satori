@@ -4639,11 +4639,11 @@ void SatoriRecycler::DrainReusableQueue()
 {
     _ASSERTE(IsBlockingPhase());
 
-    // sort into local queues and counters and publish each destination in one splice,
+    // sort into local batches and counters and publish each destination in one splice,
     // rather than taking a queue lock per region.
-    SatoriRegionQueue demotedLocal(QueueKind::RecyclerDemoted);
-    SatoriRegionQueue finalizationTrackingLocal(QueueKind::RecyclerEphemeralFinalizationTracking);
-    SatoriRegionQueue ephemeralLocal(QueueKind::RecyclerEphemeral);
+    SatoriRegionQueue::Batch demotedLocal;
+    SatoriRegionQueue::Batch finalizationTrackingLocal;
+    SatoriRegionQueue::Batch ephemeralLocal;
     size_t estimatedReclaim = 0;
     size_t promotionEstimate = 0;
 
@@ -4653,7 +4653,7 @@ void SatoriRecycler::DrainReusableQueue()
         curReusableRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
         if (curReusableRegion->HasUnmarkedDemotedObjects())
         {
-            demotedLocal.PushUnsafe(curReusableRegion, m_ephemeralWithUnmarkedDemoted);
+            demotedLocal.Push(curReusableRegion, m_ephemeralWithUnmarkedDemoted);
         }
         else
         {
@@ -4667,11 +4667,11 @@ void SatoriRecycler::DrainReusableQueue()
 
             if (curReusableRegion->HasFinalizables())
             {
-                finalizationTrackingLocal.PushUnsafe(curReusableRegion, m_ephemeralFinalizationTrackingRegions);
+                finalizationTrackingLocal.Push(curReusableRegion, m_ephemeralFinalizationTrackingRegions);
             }
             else
             {
-                ephemeralLocal.PushUnsafe(curReusableRegion, m_ephemeralRegions);
+                ephemeralLocal.Push(curReusableRegion, m_ephemeralRegions);
             }
         }
 

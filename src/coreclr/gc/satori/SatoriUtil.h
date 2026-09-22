@@ -71,6 +71,15 @@ namespace Satori
     // object starts are aligned to this
     static const size_t OBJECT_ALIGNMENT = sizeof(size_t);
 
+    // the unit of false sharing - what to align a hot field to, and how much to pad
+    // around it. 128 where the hardware pairs lines or the line is simply wider.
+    // NB: not CACHE_LINE_SIZE - that is a macro in the VM's per-arch cgencpu.h.
+#if defined(TARGET_AMD64) || defined(TARGET_X86)
+    static const size_t CACHE_LINE_GRANULARITY = 64;
+#else
+    static const size_t CACHE_LINE_GRANULARITY = 128;
+#endif
+
     // minimal free size that can be made parseable.
     // we use a trivial array object to fill holes, thus this is the size of a shortest array object.
     static const size_t MIN_FREE_SIZE = 3 * sizeof(size_t);

@@ -59,7 +59,7 @@ enum class QueueKind
 };
 
 template <class T>
-class SatoriQueue
+class DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY) SatoriQueue
 {
 public:
 
@@ -73,6 +73,13 @@ public:
 
     public:
         Batch() : m_head(), m_tail(), m_count() {}
+
+        // items in a dropped batch are stamped with an owner that never links them in,
+        // so they are lost. every path out must splice the batch first.
+        ~Batch()
+        {
+            _ASSERTE(m_head == nullptr);
+        }
 
         void Push(T* item, SatoriQueue<T>* eventualQueue)
         {
@@ -179,30 +186,6 @@ public:
 
         item->m_containingQueue = this;
         _ASSERTE(m_count > oldCount);
-    }
-
-    // Pushes with no locks or interlocked ops, stamping the item with the queue it will
-    // end up in. For building a thread-local queue to later Append to that eventual owner.
-    void PushUnsafe(T* item, SatoriQueue<T>* eventualQueue)
-    {
-        _ASSERTE(item->m_next == nullptr);
-        _ASSERTE(item->m_prev == nullptr);
-        _ASSERTE(item->m_containingQueue == nullptr);
-
-        m_count++;
-        if (m_head == nullptr)
-        {
-            _ASSERTE(m_tail == nullptr);
-            m_tail = item;
-        }
-        else
-        {
-            item->m_next = m_head;
-            m_head->m_prev = item;
-        }
-
-        m_head = item;
-        item->m_containingQueue = eventualQueue;
     }
 
     T* TryPop()
@@ -467,43 +450,6 @@ public:
         other->m_count = 0;
     }
 
-    // Appends a queue that no other thread can see - typically built with PushUnsafe,
-    // which has already stamped the items with this queue as their owner.
-    void Append(SatoriQueue<T>* other)
-    {
-        T* otherHead = other->m_head;
-        if (otherHead == nullptr)
-        {
-            _ASSERTE(other->m_count == 0);
-            return;
-        }
-
-#if _DEBUG
-        // the items are ours until published, so this needs no lock
-        for (T* item = otherHead; item != nullptr; item = item->m_next)
-        {
-            _ASSERTE(item->m_containingQueue == this);
-        }
-#endif
-
-        SatoriLockHolder holder(&m_lock);
-        m_count += other->m_count;
-        if (m_tail == nullptr)
-        {
-            _ASSERTE(m_head == nullptr);
-            m_head = otherHead;
-        }
-        else
-        {
-            otherHead->m_prev = m_tail;
-            m_tail->m_next = otherHead;
-        }
-
-        m_tail = other->m_tail;
-        other->m_head = other->m_tail = nullptr;
-        other->m_count = 0;
-    }
-
     // Splices a locally built batch onto the tail in one lock acquisition.
     // The batch items are already stamped with this queue as their owner.
     void Append(Batch* other)
@@ -634,11 +580,14 @@ public:
     }
 
 protected:
+    // m_kind is immutable and read off ContainingQueue() by threads that do not take the
+    // lock, so it sits here rather than with the fields below.
     QueueKind m_kind;
     SatoriLock m_lock;
+
     // Contenders spin on the lock word, which keeps its line Shared on every one of them.
     // Without this, each write to m_head inside the critical section has to invalidate them all.
-    uint8_t m_padding[64];
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     T* m_head;
     T* m_tail;
     size_t m_count;

@@ -241,10 +241,7 @@ private:
     }
 
     // Once the exponential pause has grown to its limit, keep going in fixed amounts of
-    // wall time rather than fixed counts of YieldProcessor(), which costs anywhere from
-    // nothing (browser, 32-bit ARM on MSVC) to a full memory barrier (LoongArch). Only the
-    // long iterations pay for the clock; the short ones above are far below a microsecond
-    // anyway.
+    // wall time rather than fixed counts of YieldProcessor()
     static void IterationBackoffLong()
     {
         int64_t deadline = SatoriUtil::GetTimeStamp() + SatoriUtil::TimeStampTicksPerUsec();
