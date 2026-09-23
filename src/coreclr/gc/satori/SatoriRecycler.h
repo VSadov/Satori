@@ -223,6 +223,10 @@ private:
     volatile int m_ccStackMarkState;
     volatile int m_ccStackMarkingThreadsNum;
 
+    // threads filtering m_reusableRegions concurrently. prep waits for these to leave
+    // before it may swap the queues.
+    volatile int m_reusableFilterThreadsNum;
+
     volatile int m_ccHelpersNum;
 
     int m_syncBlockCacheScanDone;
@@ -252,6 +256,11 @@ private:
 
     size_t m_gen1Budget;
     size_t m_totalLimit;
+
+    // how much more free space may be parked in reusable regions. set from the gen1 budget
+    // once it is known, and spent as regions are parked. 0 stops parking any more.
+    int m_reusableTargetPercent;
+    int64_t m_reusableLimit;
     bool m_nextGcIsFullGc;
 
     size_t m_condemnedRegionsCount;
@@ -342,6 +351,7 @@ private:
     void MarkOwnStackAndDrainQueues();
     void MarkOwnStackOrDrainQueuesConcurrent(int64_t deadline);
     bool MarkDemotedAndDrainQueuesConcurrent(int64_t deadline);
+    bool MarkDemotedInReusableConcurrent(int64_t deadline);
     void PushOrReturnWorkChunk(SatoriWorkChunk * srcChunk);
     bool DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk = nullptr, int64_t deadline = 0);
 
@@ -355,7 +365,7 @@ private:
     void LongWeakPtrScanWorker();
 
     void ScanFinalizables();
-    void ScanFinalizableRegions(SatoriRegionQueue* regions, MarkContext* markContext);
+    void ScanFinalizableRegions(SatoriRegionQueue* regions, MarkContext* markContext, SatoriRegionQueue::Batch* pending, SatoriRegionQueue::Batch* eph, SatoriRegionQueue::Batch* ten);
     void ScanAllFinalizableRegionsWorker();
     void QueueCriticalFinalizablesWorker();
 
@@ -402,10 +412,12 @@ private:
     void UpdatePointersThroughCards();
     void UpdatePointersInObjectRanges();
     void UpdatePointersInPromotedObjects();
-    void UpdateRegions(SatoriRegionQueue* queue);
+    void UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::Batch* deferredFirst, SatoriRegionQueue::Batch* deferredRest);
 
     void KeepRegion(SatoriRegion* curRegion);
+    bool ShouldReuse(SatoriRegion* curRegion);
     void DrainDeferredSweepQueue();
+    void DrainReusableQueue();
     bool DrainDeferredSweepQueueConcurrent(int64_t deadline = 0);
     void DrainDeferredSweepQueueWorkerFn();
     void SweepAndReturnRegion(SatoriRegion* curRegion);

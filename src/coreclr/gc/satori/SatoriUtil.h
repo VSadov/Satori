@@ -71,6 +71,15 @@ namespace Satori
     // object starts are aligned to this
     static const size_t OBJECT_ALIGNMENT = sizeof(size_t);
 
+    // the unit of false sharing - what to align a hot field to, and how much to pad
+    // around it. 128 where the hardware pairs lines or the line is simply wider.
+    // NB: not CACHE_LINE_SIZE - that is a macro in the VM's per-arch cgencpu.h.
+#if defined(TARGET_AMD64) || defined(TARGET_X86)
+    static const size_t CACHE_LINE_GRANULARITY = 64;
+#else
+    static const size_t CACHE_LINE_GRANULARITY = 128;
+#endif
+
     // minimal free size that can be made parseable.
     // we use a trivial array object to fill holes, thus this is the size of a shortest array object.
     static const size_t MIN_FREE_SIZE = 3 * sizeof(size_t);
@@ -242,6 +251,13 @@ public:
     static int64_t GetTimeStampFrequency()
     {
         return s_timeStampFrequency != 0 ? s_timeStampFrequency : s_osTimeStampFrequency;
+    }
+
+    // GetTimeStamp() ticks in one microsecond, for spinning in units of wall time.
+    // Never 0, so it can be used as a divisor.
+    static int64_t TimeStampTicksPerUsec()
+    {
+        return s_ticksPerUsec;
     }
 
     // Chooses between the hardware counter and the OS timer and measures the rate of
@@ -628,6 +644,21 @@ public:
         return gcSpin;
     }
 
+    // DOTNET_gcReusableTarget
+    // How much free space may be parked in reusable regions, as a percentage of the gen1
+    // budget. Reusables are drained into ephemeral queues when a blocking GC starts, so
+    // holding much more than the mutator consumes before then only adds to that drain.
+    static int ReusableTarget()
+    {
+        int target = (int)GCConfig::GetReusableTarget();
+        if (target < 0)
+        {
+            return 400;
+        }
+
+        return target;
+    }
+
     // DOTNET_gcGen2Target
     static int Gen2Target()
     {
@@ -685,6 +716,7 @@ private:
     // the rate of the inline hardware counter, in Hz. 0 if we are not using it.
     static int64_t s_timeStampFrequency;
     static int64_t s_osTimeStampFrequency;
+    static int64_t s_ticksPerUsec;
 
     static int64_t MeasureTimeStampFrequency();
 
