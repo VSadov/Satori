@@ -2068,6 +2068,47 @@ void SatoriRecycler::PushOrReturnWorkChunk(SatoriWorkChunk * chunk)
     }
 }
 
+SatoriWorkChunk* SatoriRecycler::TakeMarkRange(SatoriWorkChunk* chunk, SatoriObject*& o, size_t& start, size_t& end)
+{
+    chunk->GetRange(o, start, end);
+    size_t chunkSize = o->Size() > Satori::REGION_SIZE_GRANULARITY ?
+        Satori::REGION_SIZE_GRANULARITY : Satori::MARK_RANGE_THRESHOLD;
+    if (end - start <= chunkSize)
+    {
+        chunk->Clear();
+        return chunk;
+    }
+
+    size_t remainderStart = start + chunkSize;
+    SatoriWorkChunk* halfChunk = nullptr;
+    // Share when the worklist is empty and each half can hold a full mark range.
+    if (end - remainderStart >= 2 * chunkSize && m_workList->IsEmpty())
+    {
+        halfChunk = m_heap->Allocator()->TryGetWorkChunk();
+        if (halfChunk)
+        {
+            // Divide whole mark ranges evenly so splits do not create tiny tails.
+            size_t rangeCount = (end - remainderStart) / chunkSize;
+            size_t middle = remainderStart + ((rangeCount + 1) / 2) * chunkSize;
+            halfChunk->SetRange(o, middle, end);
+            // Push the farther half first to keep traversal depth-first.
+            m_workList->Push(halfChunk);
+            end = middle;
+        }
+    }
+
+    // If another chunk is unavailable, keep the entire remainder in this one.
+    chunk->SetRange(o, remainderStart, end);
+    m_workList->Push(chunk);
+    if (halfChunk)
+    {
+        MaybeAskForHelp();
+    }
+
+    end = remainderStart;
+    return nullptr;
+}
+
 bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_t deadline)
 {
     _ASSERTE(deadline > 0);
@@ -2123,27 +2164,14 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         if (srcChunk->IsRange())
         {
             size_t start, end;
-            srcChunk->GetRange(o, start, end);
-            size_t chunkSize = o->Size() > Satori::REGION_SIZE_GRANULARITY ?
-                Satori::REGION_SIZE_GRANULARITY : Satori::MARK_RANGE_THRESHOLD;
-            if (end - start > chunkSize)
+            srcChunk = TakeMarkRange(srcChunk, o, start, end);
+            if (!dstChunk)
             {
-                // Reuse the chunk for the remainder, which other workers can claim.
-                srcChunk->SetRange(o, start + chunkSize, end);
-                m_workList->Push(srcChunk);
-                end = start + chunkSize;
+                dstChunk = srcChunk;
             }
-            else
+            else if (srcChunk)
             {
-                srcChunk->Clear();
-                if (!dstChunk)
-                {
-                    dstChunk = srcChunk;
-                }
-                else
-                {
-                    m_heap->Allocator()->ReturnWorkChunk(srcChunk);
-                }
+                m_heap->Allocator()->ReturnWorkChunk(srcChunk);
             }
 
             srcChunk = nullptr;
@@ -2245,16 +2273,16 @@ void SatoriRecycler::ScheduleMarkAsChildRanges(SatoriObject* o)
     if (o->RawGetMethodTable()->ContainsGCPointersOrCollectible())
     {
         size_t start = o->Start();
-        size_t end = start + o->Size();
+        size_t remains = o->Size();
         SatoriWorkChunk* chunk = m_heap->Allocator()->TryGetWorkChunk();
         if (chunk == nullptr)
         {
-            o->ContainingRegion()->ContainingPage()->DirtyCardsForRange(start, end);
+            o->ContainingRegion()->ContainingPage()->DirtyCardsForRange(start, start + remains);
             return;
         }
 
-        // Consumers split off one range at a time without allocating more chunks.
-        chunk->SetRange(o, start, end);
+        // Consumers take one mark range and split larger remainders for sharing.
+        chunk->SetRange(o, start, start + remains);
         m_workList->Push(chunk);
     }
 }
@@ -2323,27 +2351,14 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         {
             SatoriObject* o;
             size_t start, end;
-            srcChunk->GetRange(o, start, end);
-            size_t chunkSize = o->Size() > Satori::REGION_SIZE_GRANULARITY ?
-                Satori::REGION_SIZE_GRANULARITY : Satori::MARK_RANGE_THRESHOLD;
-            if (end - start > chunkSize)
+            srcChunk = TakeMarkRange(srcChunk, o, start, end);
+            if (!dstChunk)
             {
-                // Reuse the chunk for the remainder, which other workers can claim.
-                srcChunk->SetRange(o, start + chunkSize, end);
-                m_workList->Push(srcChunk);
-                end = start + chunkSize;
+                dstChunk = srcChunk;
             }
-            else
+            else if (srcChunk)
             {
-                srcChunk->Clear();
-                if (!dstChunk)
-                {
-                    dstChunk = srcChunk;
-                }
-                else
-                {
-                    m_heap->Allocator()->ReturnWorkChunk(srcChunk);
-                }
+                m_heap->Allocator()->ReturnWorkChunk(srcChunk);
             }
 
             srcChunk = nullptr;

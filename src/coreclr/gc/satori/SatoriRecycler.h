@@ -343,6 +343,7 @@ private:
     void MarkOwnStackOrDrainQueuesConcurrent(int64_t deadline);
     bool MarkDemotedAndDrainQueuesConcurrent(int64_t deadline);
     void PushOrReturnWorkChunk(SatoriWorkChunk * srcChunk);
+    SatoriWorkChunk* TakeMarkRange(SatoriWorkChunk* chunk, SatoriObject*& o, size_t& start, size_t& end);
     bool DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk = nullptr, int64_t deadline = 0);
 
     bool HasDirtyCards();
