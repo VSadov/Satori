@@ -141,6 +141,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_gen1CountAtLastGen2 = 0;
     m_gen1Budget = MIN_GEN1_BUDGET;
+    m_reusableTargetPercent = SatoriUtil::ReusableTarget();
+    m_reusableLimit = 0;
     m_totalLimit = MIN_GEN1_BUDGET;
     m_nextGcIsFullGc = true;
     m_prevCondemnedGeneration = 2;
@@ -153,6 +155,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_concurrentCleaningState = CC_CLEAN_STATE_NOT_READY;
     m_concurrentHandlesDone = true;
     m_ccStackMarkingThreadsNum = 0;
+    m_reusableFilterThreadsNum = 0;
 
     m_isLowLatencyMode = SatoriUtil::IsLowLatencyMode();
 
@@ -299,6 +302,13 @@ size_t SatoriRecycler::RegionCount()
 SatoriRegion* SatoriRecycler::TryGetReusable()
 {
     SatoriRegion* reusable = m_reusableRegions->TryPopWithTryEnter();
+    if (reusable == nullptr)
+    {
+        // concurrent filtering parks already filtered regions here until prep.
+        // they are usable as-is, no reason to make the app wait for prep to hand them back.
+        reusable = m_reusableRegionsAlternate->TryPopWithTryEnter();
+    }
+
     if (reusable)
     {
         size_t occupancy = reusable->Occupancy();
@@ -312,6 +322,11 @@ SatoriRegion* SatoriRecycler::TryGetReusable()
 SatoriRegion* SatoriRecycler::TryGetReusableForLarge()
 {
     SatoriRegion* reusable = m_reusableRegions->TryDequeueIfHasFreeSpaceInTopBucket();
+    if (reusable == nullptr)
+    {
+        reusable = m_reusableRegionsAlternate->TryDequeueIfHasFreeSpaceInTopBucket();
+    }
+
     if (reusable)
     {
         size_t occupancy = reusable->Occupancy();
@@ -322,6 +337,8 @@ SatoriRegion* SatoriRecycler::TryGetReusableForLarge()
     return  reusable;
 }
 
+// NOTE: DrainReusableQueue implements the same routing as this, just batched.
+//       Changes here likely need to be mirrored there.
 void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
 {
     if (region->HasUnmarkedDemotedObjects())
@@ -593,6 +610,14 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
         // otherwise the barrier became concurrent while we were checking - just continue.
     }
 
+    // Ahead of the drain: this is the bulk of the roots in low latency mode, and getting them
+    // in early is worth ~2x on the prep pause. Whatever is left when prep starts costs
+    // EE-stopped time, and prep has to wait for us to get out of here as well.
+    if (MarkDemotedInReusableConcurrent(deadline))
+    {
+        return true;
+    }
+
     if (m_ccStackMarkState != CC_MARK_STATE_DONE)
     {
         MarkOwnStackOrDrainQueuesConcurrent(deadline);
@@ -609,34 +634,55 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
         return true;
     }
 
-    if (!m_concurrentHandlesDone)
-    {
-        if (MarkHandles(deadline))
-        {
-            return true;
-        }
-        else
-        {
-            m_concurrentHandlesDone = true;
-        }
-    }
+    // Handles are claimed per partition and cards per group - neither has an inner deadline,
+    // so an app thread may overshoot its quantum. Only low latency cares: otherwise a
+    // compacting blocking GC dwarfs anything an app thread might overshoot here.
+    bool canTakeBigChunks = IsWorkerThread() || m_activeWorkers == 0 || !IsLowLatencyMode();
 
-    if (!m_concurrentCardsDone)
+    if (canTakeBigChunks)
     {
-        _ASSERTE(m_condemnedGeneration != 2);
-        if (MarkThroughCardsConcurrent(deadline))
+        if (!m_concurrentHandlesDone)
         {
-            return true;
+            if (MarkHandles(deadline))
+            {
+                return true;
+            }
+            else
+            {
+                m_concurrentHandlesDone = true;
+            }
         }
-        else
+
+        if (!m_concurrentCardsDone)
         {
-            m_concurrentCardsDone = true;
+            _ASSERTE(m_condemnedGeneration != 2);
+            if (MarkThroughCardsConcurrent(deadline))
+            {
+                return true;
+            }
+            else
+            {
+                m_concurrentCardsDone = true;
+            }
         }
     }
 
     // if stacks are not marked yet, start suspending EE
     if (m_ccStackMarkState == CC_MARK_STATE_NONE)
     {
+        // drain what the handle and card scans have queued first, so that their closure
+        // is marked while the EE still runs. If that does not finish, come back later.
+        if (DrainMarkQueuesConcurrent(nullptr, deadline))
+        {
+            return true;
+        }
+
+        // we may have skipped handles or cards above - prep must not start before those are done
+        if (!m_concurrentHandlesDone || !m_concurrentCardsDone)
+        {
+            return true;
+        }
+
         // only one thread will win and drive this stage, others may help.
         BlockingMarkForConcurrent();
     }
@@ -648,8 +694,16 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
         return true;
     }
 
+    // cleaning is per card group as well, but nothing below depends on it
     if (m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING)
     {
+        if (!canTakeBigChunks)
+        {
+            // the cleaning still has to happen, we just may not be the one doing it
+            DrainMarkQueuesConcurrent(nullptr, deadline);
+            return true;
+        }
+
         if (CleanCardsConcurrent(deadline))
         {
             return true;
@@ -660,8 +714,11 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
         }
     }
 
-    // if queues are empty we see no more work
-    return DrainMarkQueuesConcurrent(nullptr, deadline);
+    // if queues are empty we see no more work.
+    // whatever we skipped above is still work, even if not ours to do.
+    return DrainMarkQueuesConcurrent(nullptr, deadline) ||
+        !m_concurrentHandlesDone ||
+        !m_concurrentCardsDone;
 }
 
 bool SatoriRecycler::HelpOnceCore(bool minQuantum)
@@ -677,6 +734,7 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
     int64_t start = GCToOSInterface::QueryPerformanceCounter();
 
     bool moreWork = !m_concurrentCardsDone ||
+        !m_concurrentHandlesDone ||
         m_ccStackMarkState != CC_MARK_STATE_DONE ||
         m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING ||
         !m_workList->IsEmpty();
@@ -901,15 +959,22 @@ void SatoriRecycler::BlockingMarkForConcurrent()
     int targetState = CC_MARK_STATE_SUSPENDING_EE;
     if (Interlocked::CompareExchange(&m_ccStackMarkState, CC_MARK_STATE_SUSPENDING_EE, CC_MARK_STATE_NONE) == CC_MARK_STATE_NONE)
     {
+        // The state is published by the CAS above, so filtering that starts from now on will
+        // see it and do nothing. Wait for the ones already inside to leave before touching the
+        // queues. This is before suspending, so the wait is not a part of the pause.
+        while (m_reusableFilterThreadsNum)
+        {
+            YieldProcessor();
+        }
+
         size_t blockingStart = GCToOSInterface::QueryPerformanceCounter();
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
 
-        // swap reusable and alternate so that we could filter through reusables.
-        // the swap needs to be done when EE is stopped, but before marking has started.
-        SatoriRegionQueue* alternate = m_reusableRegionsAlternate;
-        _ASSERTE(alternate->IsEmpty());
-        m_reusableRegionsAlternate = m_reusableRegions;
-        m_reusableRegions = alternate;
+        // the concurrent pass has already filtered what is in the alternate, make it usable again.
+        // whatever is left in m_reusableRegions it did not reach - the loop below will filter that.
+        SatoriRegionQueue* leftovers = m_reusableRegions;
+        m_reusableRegions = m_reusableRegionsAlternate;
+        m_reusableRegionsAlternate = leftovers;
 
         // signal to everybody to start marking roots
         VolatileStore((int*)&m_ccStackMarkState, CC_MARK_STATE_MARKING);
@@ -936,6 +1001,8 @@ void SatoriRecycler::BlockingMarkForConcurrent()
                 YieldProcessor();
             }
         }
+
+        _ASSERTE(m_reusableRegionsAlternate->IsEmpty());
 
         size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
         m_CurrentGcInfo->m_pauseDurations[1] = blockingDuration / m_osTicksPerMicro;
@@ -1166,6 +1233,9 @@ void SatoriRecycler::AdjustHeuristics()
         m_gen1Budget = available;
     }
 
+    // the budget is final, allow parking reusables against it again
+    m_reusableLimit = (int64_t)(m_gen1Budget / 100 * m_reusableTargetPercent);
+
     // now figure if we will promote
     m_promoteAllRegions = false;
     size_t promotionEstimate = m_promotionEstimate;
@@ -1309,7 +1379,16 @@ void SatoriRecycler::BlockingCollectImpl()
         m_isRelocating = false;
     }
 
+    // regions swept below are drained a moment later and no allocation can use them.
+    // AdjustHeuristics reopens this once the new budget is known.
+    m_reusableLimit = 0;
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
+    m_deferredSweepRegions->ResetAfterUnsafeDrain();
+
+    // Deliberately not RunWithHelp - the queue is a pointer chase, so discovery is serial
+    // no matter how many threads we throw at it, and helpers only add contention on the head.
+    DrainReusableQueue();
+    m_reusableRegions->ResetAfterUnsafeDrain();
 
     // all sweeping should be done by now
     if (m_occupancyReportingEnabled)
@@ -1514,6 +1593,9 @@ void SatoriRecycler::MarkStrongReferences()
     SatoriHandlePartitioner::StartNextScan();
 
     RunWithHelp(&SatoriRecycler::MarkStrongReferencesWorker);
+
+    // the demoted drain above is lock-free, restore the queue before it takes pushes again
+    m_ephemeralWithUnmarkedDemoted->ResetAfterUnsafeDrain();
 }
 
 void SatoriRecycler::MarkStrongReferencesWorker()
@@ -1828,6 +1910,69 @@ bool SatoriRecycler::MarkDemotedAndDrainQueuesConcurrent(int64_t deadline)
         !m_ephemeralWithUnmarkedDemoted->IsEmpty();
 }
 
+// Demoted regions that are reusable sit in m_reusableRegions, which the prep stage can only
+// filter with EE stopped. Move them to the alternate queue and mark them here instead -
+// prep will splice the alternate back and only deal with what we did not get to.
+// Popping takes a lock, so this is for workers only - an app thread must not block here.
+bool SatoriRecycler::MarkDemotedInReusableConcurrent(int64_t deadline)
+{
+    _ASSERTE(!IsBlockingPhase());
+    _ASSERTE(deadline > 0);
+
+    if (!IsWorkerThread())
+    {
+        return false;
+    }
+
+    Interlocked::Increment(&m_reusableFilterThreadsNum);
+
+    // Paired with prep: it publishes the state, then reads this count. Both sides fence
+    // between their write and their read, so if prep sees 0 here, we see a state != NONE.
+    bool revisit = false;
+    if (m_ccStackMarkState == CC_MARK_STATE_NONE)
+    {
+        MarkContext markContext = MarkContext(this);
+        SatoriRegion* curRegion = m_reusableRegions->TryPop();
+        if (curRegion)
+        {
+            MaybeAskForHelp();
+            do
+            {
+                if (curRegion->HasUnmarkedDemotedObjects() &&
+                    curRegion->ReusableFor() != SatoriRegion::ReuseLevel::Gen0)
+                {
+                    MarkDemoted(curRegion, &markContext);
+                }
+
+                // reusables are kept with the top-bucket-free ones at the tail, which is the
+                // end TryGetReusableForLarge takes from. re-derive that, same as KeepRegion does.
+                if (curRegion->HasFreeSpaceInTopBucket())
+                {
+                    m_reusableRegionsAlternate->Enqueue(curRegion);
+                }
+                else
+                {
+                    m_reusableRegionsAlternate->Push(curRegion);
+                }
+
+                if ((SatoriUtil::GetTimeStamp() - deadline) > 0)
+                {
+                    revisit = !m_reusableRegions->IsEmpty();
+                    break;
+                }
+            } while ((curRegion = m_reusableRegions->TryPop()));
+        }
+
+        if (markContext.m_WorkChunk != nullptr)
+        {
+            m_workList->Push(markContext.m_WorkChunk);
+        }
+    }
+
+    Interlocked::Decrement(&m_reusableFilterThreadsNum);
+    return revisit;
+}
+
 void SatoriRecycler::MarkOwnStackAndDrainQueues()
 {
     MarkContext markContext = MarkContext(this);
@@ -1844,17 +1989,6 @@ void SatoriRecycler::MarkOwnStackAndDrainQueues()
             {
                 MaybeAskForHelp();
                 MarkOwnStack(aContext, &markContext);
-
-                // in concurrent prep stage we do not drain after self-scanning as we prefer to suspend quickly
-                if (!IsBlockingPhase())
-                {
-                    if (markContext.m_WorkChunk != nullptr)
-                    {
-                        m_workList->Push(markContext.m_WorkChunk);
-                    }
-
-                    return;
-                }
             }
         }
     }
@@ -1879,16 +2013,13 @@ void SatoriRecycler::MarkOwnStackOrDrainQueuesConcurrent(int64_t deadline)
                 MaybeAskForHelp();
                 MarkOwnStack(aContext, &markContext);
 
-                // in concurrent prep stage we do not drain after self-scanning as we prefer to suspend quickly
-                if (!IsBlockingPhase())
+                // prep is about to suspend us, so hand off what we found rather than draining it here
+                if (markContext.m_WorkChunk != nullptr)
                 {
-                    if (markContext.m_WorkChunk != nullptr)
-                    {
-                        m_workList->Push(markContext.m_WorkChunk);
-                    }
-
-                    return;
+                    m_workList->Push(markContext.m_WorkChunk);
                 }
+
+                return;
             }
         }
     }
@@ -1934,8 +2065,12 @@ void SatoriRecycler::MarkDemoted(SatoriRegion* curRegion, MarkContext* markConte
             for (int i = 0; i < gen2Objects->Count(); i++)
             {
                 SatoriObject* o = gen2Objects->Item(i);
-                o->SetMarkedAtomic();
-                markContext->PushToMarkQueues(o);
+                // demotion put these in a gen1 region, so they may already be marked
+                if (!o->IsMarked())
+                {
+                    o->SetMarkedAtomic();
+                    markContext->PushToMarkQueues(o);
+                }
             }
 
             gen2Objects = gen2Objects->Next();
@@ -1991,7 +2126,7 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
     // a part of the blocking phase or a part of concurrent GC 
     if (isBlockingPhase)
     {
-        SatoriRegion* curRegion = m_ephemeralWithUnmarkedDemoted->TryPop();
+        SatoriRegion* curRegion = m_ephemeralWithUnmarkedDemoted->TryPopDrainOnly();
         if (curRegion)
         {
             MaybeAskForHelp();
@@ -1999,7 +2134,7 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
             {
                 MarkDemoted(curRegion, &markContext);
                 PushToEphemeralQueues(curRegion);
-            } while ((curRegion = m_ephemeralWithUnmarkedDemoted->TryPop()));
+            } while ((curRegion = m_ephemeralWithUnmarkedDemoted->TryPopDrainOnly()));
         }
     }
     else
@@ -3360,20 +3495,38 @@ void SatoriRecycler::ScanFinalizables()
 {
     m_heap->FinalizationQueue()->ResetOverflow(m_condemnedGeneration);
     RunWithHelp(&SatoriRecycler::ScanAllFinalizableRegionsWorker);
+
+    // the drains above are lock-free, restore what was actually drained
+    m_ephemeralFinalizationTrackingRegions->ResetAfterUnsafeDrain();
+    if (m_condemnedGeneration == 2)
+    {
+        m_tenuredFinalizationTrackingRegions->ResetAfterUnsafeDrain();
+    }
+
     RunWithHelp(&SatoriRecycler::QueueCriticalFinalizablesWorker);
+    m_finalizationPendingRegions->ResetAfterUnsafeDrain();
 }
 
 void SatoriRecycler::ScanAllFinalizableRegionsWorker()
 {
     MarkContext c = MarkContext(this);
 
-    ScanFinalizableRegions(m_ephemeralFinalizationTrackingRegions, &c);
+    // every scanned region gets rerouted, so stage the pushes and splice once per destination
+    SatoriRegionQueue::Batch pending(m_finalizationPendingRegions);
+    SatoriRegionQueue::Batch eph(m_ephemeralRegions);
+    SatoriRegionQueue::Batch ten(m_tenuredRegions);
+
+    ScanFinalizableRegions(m_ephemeralFinalizationTrackingRegions, &c, &pending, &eph, &ten);
     _ASSERTE(m_reusableRegions->IsEmpty());
     
     if (m_condemnedGeneration == 2)
     {
-        ScanFinalizableRegions(m_tenuredFinalizationTrackingRegions, &c);
+        ScanFinalizableRegions(m_tenuredFinalizationTrackingRegions, &c, &pending, &eph, &ten);
     }
+
+    m_finalizationPendingRegions->Append(&pending);
+    m_ephemeralRegions->Append(&eph);
+    m_tenuredRegions->Append(&ten);
 
     if (c.m_WorkChunk != nullptr)
     {
@@ -3384,9 +3537,9 @@ void SatoriRecycler::ScanAllFinalizableRegionsWorker()
     }
 }
 
-void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContext* markContext)
+void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContext* markContext, SatoriRegionQueue::Batch* pending, SatoriRegionQueue::Batch* eph, SatoriRegionQueue::Batch* ten)
 {
-    SatoriRegion* region = queue->TryPop();
+    SatoriRegion* region = queue->TryPopDrainOnly();
     if (region)
     {
         MaybeAskForHelp();
@@ -3407,26 +3560,29 @@ void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContex
 
             if (hasCF)
             {
-                m_finalizationPendingRegions->Push(region);
+                pending->Push(region);
             }
             else
             {
                 if (region->Generation() == 2)
                 {
-                    m_tenuredRegions->Push(region);
+                    ten->Push(region);
                 }
                 else
                 {
-                    m_ephemeralRegions->Push(region);
+                    eph->Push(region);
                 }
             }
-        } while ((region = queue->TryPop()));
+        } while ((region = queue->TryPopDrainOnly()));
     }
 }
 
 void SatoriRecycler::QueueCriticalFinalizablesWorker()
 {
-    SatoriRegion* region = m_finalizationPendingRegions->TryPop();
+    SatoriRegionQueue::Batch eph(m_ephemeralRegions);
+    SatoriRegionQueue::Batch ten(m_tenuredRegions);
+
+    SatoriRegion* region = m_finalizationPendingRegions->TryPopDrainOnly();
     if (region)
     {
         MaybeAskForHelp();
@@ -3435,13 +3591,16 @@ void SatoriRecycler::QueueCriticalFinalizablesWorker()
             region->PendCfFinalizables(m_condemnedGeneration);
             if (region->Generation() == 2)
             {
-                m_tenuredRegions->Push(region);
+                ten.Push(region);
             }
             else
             {
-                m_ephemeralRegions->Push(region);
+                eph.Push(region);
             }
-        } while ((region = m_finalizationPendingRegions->TryPop()));
+        } while ((region = m_finalizationPendingRegions->TryPopDrainOnly()));
+
+        m_ephemeralRegions->Append(&eph);
+        m_tenuredRegions->Append(&ten);
     }
 }
 
@@ -3512,6 +3671,9 @@ void SatoriRecycler::PromoteHandlesAndFreeRelocatedRegions()
     }
 
     RunWithHelp(&SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker);
+
+    // the relocated drain above is lock-free
+    m_relocatedRegions->ResetAfterUnsafeDrain();
 }
 
 void SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker()
@@ -3572,14 +3734,14 @@ void SatoriRecycler::FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool hasM
 
 void SatoriRecycler::FreeRelocatedRegionsWorker()
 {
-    SatoriRegion* curRegion = m_relocatedRegions->TryPop();
+    SatoriRegion* curRegion = m_relocatedRegions->TryPopDrainOnly();
     if (curRegion)
     {
         MaybeAskForHelp();
         do
         {
             FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ true, /* noLock */ true);
-        } while ((curRegion = m_relocatedRegions->TryPop()));
+        } while ((curRegion = m_relocatedRegions->TryPopDrainOnly()));
     }
 }
 
@@ -3671,6 +3833,13 @@ void SatoriRecycler::Plan()
     // plan relocations
     RunWithHelp(&SatoriRecycler::PlanWorker);
 
+    // the drains above are lock-free, restore what was actually drained
+    m_ephemeralRegions->ResetAfterUnsafeDrain();
+    if (m_condemnedGeneration == 2)
+    {
+        m_tenuredRegions->ResetAfterUnsafeDrain();
+    }
+
     // The actual relocatable number could be less than the estimate due to pinning
     // or if this is gen1, which can reuse more.
     // Check again if it we are still meeting the relocation criteria.
@@ -3719,7 +3888,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
 {
     _ASSERTE(m_isRelocating);
 
-    SatoriRegion* curRegion = regions->TryPop();
+    SatoriRegion* curRegion = regions->TryPopDrainOnly();
     if (curRegion)
     {
         MaybeAskForHelp();
@@ -3767,7 +3936,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
                     AddRelocationTarget(curRegion);
                 }
             }
-        } while ((curRegion = regions->TryPop()));
+        } while ((curRegion = regions->TryPopDrainOnly()));
     }
 }
 
@@ -3866,6 +4035,14 @@ void SatoriRecycler::Relocate()
     if (m_isRelocating)
     {
         RunWithHelp(&SatoriRecycler::RelocateWorker);
+
+        // the drains above are lock-free, restore what was actually drained
+        m_relocatingRegions->ResetAfterUnsafeDrain();
+        if (m_condemnedGeneration != 2 && m_promoteAllRegions)
+        {
+            m_tenuredRegions->ResetAfterUnsafeDrain();
+            m_tenuredFinalizationTrackingRegions->ResetAfterUnsafeDrain();
+        }
     }
 }
 
@@ -3873,7 +4050,7 @@ void SatoriRecycler::AddTenuredRegionsToPlan(SatoriRegionQueue* regions)
 {
     _ASSERTE(m_isRelocating);
 
-    SatoriRegion* curRegion = regions->TryPop();
+    SatoriRegion* curRegion = regions->TryPopDrainOnly();
     if (curRegion)
     {
         MaybeAskForHelp();
@@ -3884,7 +4061,7 @@ void SatoriRecycler::AddTenuredRegionsToPlan(SatoriRegionQueue* regions)
             // condemned regions should go through Plan
             _ASSERTE(curRegion->Generation() > m_condemnedGeneration);
             AddRelocationTarget(curRegion);
-        } while ((curRegion = regions->TryPop()));
+        } while ((curRegion = regions->TryPopDrainOnly()));
     }
 }
 
@@ -3898,14 +4075,14 @@ void SatoriRecycler::RelocateWorker()
         AddTenuredRegionsToPlan(m_tenuredFinalizationTrackingRegions);
     }
 
-    SatoriRegion* curRegion = m_relocatingRegions->TryPop();
+    SatoriRegion* curRegion = m_relocatingRegions->TryPopDrainOnly();
     if (curRegion)
     {
         MaybeAskForHelp();
         do
         {
             RelocateRegion(curRegion);
-        } while ((curRegion = m_relocatingRegions->TryPop()));
+        } while ((curRegion = m_relocatingRegions->TryPopDrainOnly()));
     }
 }
 
@@ -4056,6 +4233,9 @@ void SatoriRecycler::Update()
 
     RunWithHelp(&SatoriRecycler::UpdateRootsWorker);
 
+    // the promoted-region drain above is lock-free
+    m_relocatedToHigherGenRegions->ResetAfterUnsafeDrain();
+
     // regions must me updated 
     // after updating through cards since region update may change generations
 
@@ -4085,6 +4265,14 @@ void SatoriRecycler::Update()
     m_occupancyReportingEnabled = true;
 
     RunWithHelp(&SatoriRecycler::UpdateRegionsWorker);
+
+    // the drain above leaves tails stale, the queues are reusable only after this
+    for (int i = 0; i < Satori::FREELIST_COUNT; i++)
+    {
+        m_relocationTargets[i]->ResetAfterUnsafeDrain();
+    }
+
+    m_stayingRegions->ResetAfterUnsafeDrain();
 
     // promoting handles must be after handles are updated (since update needs to know unpromoted generations).
     // relocated regions can be freed after live regions are updated (since update gets new locations from relocated regions).
@@ -4161,14 +4349,23 @@ void SatoriRecycler::UpdateRootsWorker()
 
 void SatoriRecycler::UpdateRegionsWorker()
 {
+    // nearly every region here ends up in the deferred sweep queue, so stage the pushes
+    // off to the side and splice them in once rather than taking its lock per region.
+    SatoriRegionQueue::Batch deferredFirst(m_deferredSweepRegions);
+    SatoriRegionQueue::Batch deferredRest(m_deferredSweepRegions);
+
     // update and return target regions
     for (int i = 0; i < Satori::FREELIST_COUNT; i++)
     {
-        UpdateRegions(m_relocationTargets[i]);
+        UpdateRegions(m_relocationTargets[i], &deferredFirst, &deferredRest);
     }
 
     // update and return staying regions
-    UpdateRegions(m_stayingRegions);
+    UpdateRegions(m_stayingRegions, &deferredFirst, &deferredRest);
+
+    // reuse candidates are swept first, so they go in at the head
+    m_deferredSweepRegions->Append(&deferredRest);
+    m_deferredSweepRegions->Prepend(&deferredFirst);
 
     // if we saw large objects we may have ranges to update
     if (!m_workList->IsEmpty())
@@ -4217,7 +4414,7 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
 void SatoriRecycler::UpdatePointersInPromotedObjects()
 {
     SatoriRegion* curRegion;
-    while ((curRegion = m_relocatedToHigherGenRegions->TryPop()))
+    while ((curRegion = m_relocatedToHigherGenRegions->TryPopDrainOnly()))
     {
         m_promoteAllRegions ?
             curRegion->UpdatePointersInPromotedObjects<true>():
@@ -4227,9 +4424,11 @@ void SatoriRecycler::UpdatePointersInPromotedObjects()
     }
 }
 
-void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
+void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::Batch* deferredFirst, SatoriRegionQueue::Batch* deferredRest)
 {
-    SatoriRegion* curRegion = queue->TryPop();
+    // These queues are filled in Plan and Relocate and only drained here, so the pop needs
+    // no lock. ResetAfterUnsafeDrain below puts them back into a usable state.
+    SatoriRegion* curRegion = queue->TryPopDrainOnly();
     if (curRegion)
     {
         MaybeAskForHelp();
@@ -4325,14 +4524,23 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue)
             // these we can sweep/return later
             if (curRegion->IsReuseCandidate())
             {
-                m_deferredSweepRegions->Push(curRegion);
+                deferredFirst->Push(curRegion);
             }
             else
             {
-                m_deferredSweepRegions->Enqueue(curRegion);
+                deferredRest->Enqueue(curRegion);
             }
-        } while ((curRegion = queue->TryPop()));
+        } while ((curRegion = queue->TryPopDrainOnly()));
     }
+}
+
+// Decides if a swept region should be parked for reuse rather than returned to the
+// ephemeral queues. Reusables stay usable until a blocking GC starts and drains them,
+// so parking more than the mutator can consume before then only adds to that drain.
+bool SatoriRecycler::ShouldReuse(SatoriRegion* curRegion)
+{
+    size_t freeSpace = curRegion->FreeSpaceInTopNBuckets(Satori::FREELIST_COUNT);
+    return Interlocked::ExchangeAdd64(&m_reusableLimit, -(int64_t)freeSpace) > 0;
 }
 
 void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
@@ -4350,7 +4558,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
             RecordDemotedOccupancy(curRegion->DemotedOccupancy());
         }
 
-        if (curRegion->Generation() == 1)
+        if (curRegion->Generation() == 1 && ShouldReuse(curRegion))
         {
 #if _DEBUG
             // just split 50%/50% for testing purposes.
@@ -4406,7 +4614,7 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
 
 void SatoriRecycler::DrainDeferredSweepQueue()
 {
-    SatoriRegion* curDeferredRegion = m_deferredSweepRegions->TryPop();
+    SatoriRegion* curDeferredRegion = m_deferredSweepRegions->TryPopDrainOnly();
     if (curDeferredRegion)
     {
         MaybeAskForHelp();
@@ -4414,25 +4622,74 @@ void SatoriRecycler::DrainDeferredSweepQueue()
         {
             SweepAndReturnRegion(curDeferredRegion);
             Interlocked::Decrement(&m_deferredSweepCount);
-        } while ((curDeferredRegion = m_deferredSweepRegions->TryPop()));
-    }
-
-    // we are blocked, we no longer need reusables.
-    _ASSERTE(IsBlockingPhase());
-    SatoriRegion* curReusableRegion = m_reusableRegions->TryPop();
-    if (curReusableRegion)
-    {
-        MaybeAskForHelp();
-        do
-        {
-            curReusableRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
-            PushToEphemeralQueues(curReusableRegion);
-        } while ((curReusableRegion = m_reusableRegions->TryPop()));
+        } while ((curDeferredRegion = m_deferredSweepRegions->TryPopDrainOnly()));
     }
 
     if (SatoriUtil::IsConservativeMode())
     {
         m_trimmer->WaitForStop();
+    }
+}
+
+// EE is stopped and sweeping is done, so nothing adds to the reusable queue here
+// and these are just regular gen1 regions now. Runs on one thread - see the call site.
+// NOTE: the routing below is a batched PushToEphemeralQueues.
+//       Changes here likely need to be mirrored there.
+void SatoriRecycler::DrainReusableQueue()
+{
+    _ASSERTE(IsBlockingPhase());
+
+    // sort into local batches and counters and publish each destination in one splice,
+    // rather than taking a queue lock per region.
+    SatoriRegionQueue::Batch demotedLocal(m_ephemeralWithUnmarkedDemoted);
+    SatoriRegionQueue::Batch finalizationTrackingLocal(m_ephemeralFinalizationTrackingRegions);
+    SatoriRegionQueue::Batch ephemeralLocal(m_ephemeralRegions);
+    size_t estimatedReclaim = 0;
+    size_t promotionEstimate = 0;
+
+    SatoriRegion* curReusableRegion = m_reusableRegions->TryPopUnsafe();
+    while (curReusableRegion)
+    {
+        curReusableRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
+        if (curReusableRegion->HasUnmarkedDemotedObjects())
+        {
+            demotedLocal.Push(curReusableRegion);
+        }
+        else
+        {
+            // no need to assume - we are in the GC and know its generation
+            estimatedReclaim += curReusableRegion->ReclaimSizeIfRelocated(m_condemnedGeneration == 2);
+
+            if (curReusableRegion->IsPromotionCandidate())
+            {
+                promotionEstimate++;
+            }
+
+            if (curReusableRegion->HasFinalizables())
+            {
+                finalizationTrackingLocal.Push(curReusableRegion);
+            }
+            else
+            {
+                ephemeralLocal.Push(curReusableRegion);
+            }
+        }
+
+        curReusableRegion = m_reusableRegions->TryPopUnsafe();
+    }
+
+    m_ephemeralWithUnmarkedDemoted->Append(&demotedLocal);
+    m_ephemeralFinalizationTrackingRegions->Append(&finalizationTrackingLocal);
+    m_ephemeralRegions->Append(&ephemeralLocal);
+
+    if (estimatedReclaim > 0)
+    {
+        Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, estimatedReclaim);
+    }
+
+    if (promotionEstimate > 0)
+    {
+        Interlocked::ExchangeAdd64(&m_promotionEstimate, promotionEstimate);
     }
 }
 
