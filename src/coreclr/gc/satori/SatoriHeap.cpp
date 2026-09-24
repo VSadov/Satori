@@ -90,6 +90,7 @@ SatoriHeap* SatoriHeap::Create()
     if (!GCToOSInterface::VirtualCommit(reserved, commitSize))
     {
         // failure
+        GCToOSInterface::VirtualRelease(reserved, reserveSize);
         return nullptr;
     }
 
@@ -105,7 +106,10 @@ SatoriHeap* SatoriHeap::Create()
 
     heap->m_allocator.Initialize(heap);
     heap->m_recycler.Initialize(heap);
-    heap->m_finalizationQueue.Initialize(heap);
+    if (!heap->m_finalizationQueue.Initialize(heap))
+    {
+        return nullptr;
+    }
     return heap;
 }
 
@@ -150,7 +154,12 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
         if (m_pageMap[i] == 0)
         {
             size_t pageAddress = i << Satori::PAGE_BITS;
-            newPage = SatoriPage::InitializeAt(pageAddress, Satori::PAGE_SIZE_GRANULARITY, this);
+            bool commitFailed;
+            newPage = SatoriPage::InitializeAt(pageAddress, Satori::PAGE_SIZE_GRANULARITY, this, commitFailed);
+            if (commitFailed)
+            {
+                return false;
+            }
             if (newPage)
             {
                 // SYNCRONIZATION:
@@ -215,7 +224,12 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
         if (m_pageMap[i] == 0)
         {
             size_t pageAddress = i << Satori::PAGE_BITS;
-            SatoriPage* newPage = SatoriPage::InitializeAt(pageAddress, pageSize, this);
+            bool commitFailed;
+            SatoriPage* newPage = SatoriPage::InitializeAt(pageAddress, pageSize, this, commitFailed);
+            if (commitFailed)
+            {
+                return nullptr;
+            }
             if (newPage)
             {
                 // mark the map, before an object can be allocated in the new page and

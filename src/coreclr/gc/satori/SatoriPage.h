@@ -41,8 +41,8 @@ public:
     SatoriPage() = delete;
     ~SatoriPage() = delete;
 
-    static SatoriPage* InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap);
-    SatoriRegion* MakeInitialRegion();
+    static SatoriPage* InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap, bool& commitFailed);
+    SatoriRegion* InitialRegion();
 
     void OnRegionInitialized(SatoriRegion* region);
 
