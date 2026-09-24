@@ -159,7 +159,7 @@ tryAgain:
         {
             if (page)
             {
-                putBack = page->MakeInitialRegion();
+                putBack = page->InitialRegion();
                 region = putBack->TrySplit(regionSize);
                 AddRegion(putBack);
                 Interlocked::Decrement(&m_singePageAdders);
@@ -176,7 +176,7 @@ tryAgain:
         SatoriPage* page = m_heap->AddLargePage(regionSize);
         if (page)
         {
-            region = page->MakeInitialRegion();
+            region = page->InitialRegion();
             _ASSERTE(region->Size() >= regionSize);
             if (region->Size() > regionSize)
             {
@@ -270,7 +270,7 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
             SatoriObject* result = (SatoriObject*)context->alloc_ptr;
             if ((flags & GC_ALLOC_FINALIZE) && !result->ContainingRegion()->RegisterForFinalization(result))
             {
-                result = nullptr;
+                return nullptr;
             }
 
             context->alloc_ptr += size;
@@ -681,6 +681,7 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
         if (region == nullptr)
         {
             //OOM
+            m_regularAllocLock.Leave();
             return nullptr;
         }
 
@@ -1245,7 +1246,7 @@ SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
         chunk = m_workChunks->TryPop();
     }
 
-    _ASSERTE(chunk->Count() == 0);
+    _ASSERTE(chunk == nullptr || chunk->Count() == 0);
     return chunk;
 }
 
@@ -1258,7 +1259,7 @@ SatoriWorkChunk* SatoriAllocator::GetWorkChunk()
         chunk = m_workChunks->TryPop();
     }
 
-    _ASSERTE(chunk->Count() == 0);
+    _ASSERTE(chunk == nullptr || chunk->Count() == 0);
     return chunk;
 }
 
