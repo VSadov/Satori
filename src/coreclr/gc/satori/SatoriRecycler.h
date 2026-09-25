@@ -114,6 +114,7 @@ public:
 
     int64_t GlobalGcIndex();
 
+    SatoriWorkChunk* TakeObjectRange(SatoriWorkChunk* chunk, SatoriObject*& o, size_t& start, size_t& end, size_t scanSize);
     void ScheduleMarkAsChildRanges(SatoriObject* o);
     bool ScheduleUpdateAsChildRanges(SatoriObject* o);
 
