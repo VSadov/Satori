@@ -37,6 +37,7 @@ class SatoriAllocator;
 class SatoriRegionQueue;
 class SatoriObject;
 class SatoriAllocationContext;
+struct SatoriLocalRootCache;
 
 // The Region contains objects and their metadata.
 class SatoriRegion
@@ -87,11 +88,25 @@ public:
     size_t FreeSpaceInTopNBuckets(int n);
 
     void StartEscapeTrackingRelease(size_t threadTag);
-    // when calledFromBarrier is true, the callee must not touch vector registers.
-    void StopEscapeTracking(bool calledFromBarrier = false);
+    void StopEscapeTracking();
+    // NB: called from the write barrier - must not touch vector registers or TLS.
+    void StopEscapeTrackingFromBarrier();
+    // Clears marks left by StopEscapeTrackingFromBarrier, if any.
+    // Returns true if there were such marks.
+    bool ClearStaleEscapeMarks();
     bool IsEscapeTracking();
     bool MaybeEscapeTrackingAcquire();
     bool IsEscapeTrackedByCurrentThread();
+
+    // Per-thread history of escape tracking outcomes. A thread whose tracked regions keep
+    // ending without a productive thread-local GC backs off and allocates some regions untracked.
+    // Called by the owning thread when attaching an eligible region.
+    // When allowBackoff is false, the region is tracked regardless of the history.
+    static bool ShouldStartEscapeTracking(bool allowBackoff);
+    // Called by the owning thread when detaching a region that ran out of space while it was
+    // tracked, or when it finds that the barrier stopped tracking because of too many escapes.
+    // NB: not from the write barrier - uses TLS.
+    static void OnEscapeTrackingEnded();
 
     void AttachToAllocatingOwner(SatoriRegion** attachementPoint);
     void DetachFromAlocatingOwnerRelease();
@@ -210,11 +225,7 @@ public:
 #endif
 
     bool NothingMarked();
-    // NB: both variants must not be inlined, so that vector code from one does not
-    //     end up on the call path of the other. ClearMarksScalar is reachable from
-    //     the write barrier - see comments in the implementation.
-    NOINLINE void ClearMarks();
-    NOINLINE void ClearMarksScalar();
+    void ClearMarks();
     void ClearIndex();
     void ClearFreeLists();
 
@@ -316,6 +327,9 @@ private:
             bool m_hasUnmarkedDemotedObjects;
             // TODO: VS can fold with m_doNotSweep?
             bool m_hasMarksSet;
+            // escape tracking was stopped by the barrier and the mark bitmap still has escape bits.
+            // concurrent marking must treat the region as escape tracking until the owner clears the marks.
+            bool m_staleEscapeMarks;
 
             size_t m_freeListCapacities[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];
@@ -341,9 +355,9 @@ private:
 
     static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
 
-    bool ThreadLocalMark();
+    bool ThreadLocalMark(SatoriLocalRootCache* rootCache);
     void ThreadLocalPlan();
-    void ThreadLocalUpdatePointers();
+    void ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache);
     void ThreadLocalCompact();
     NOINLINE void ClearPinned(SatoriObject* o);
     void ThreadLocalPendFinalizables();

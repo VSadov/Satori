@@ -50,8 +50,10 @@ inline bool SatoriRegion::IsEscapeTracking()
 inline bool SatoriRegion::MaybeEscapeTrackingAcquire()
 {
     // must check reusable level before the owner tag, before doing whatever follows
+    // the stale marks flag must be checked after the owner tag, see StopEscapeTrackingFromBarrier.
     return VolatileLoad((uint8_t*)&m_reusableFor) == (uint8_t)ReuseLevel::Gen0 ||
-        VolatileLoad(&m_ownerThreadTag);
+        VolatileLoad(&m_ownerThreadTag) ||
+        VolatileLoad(&m_staleEscapeMarks);
 }
 
 inline bool SatoriRegion::IsEscapeTrackedByCurrentThread()
@@ -154,24 +156,18 @@ inline SatoriObject* SatoriRegion::FirstObject()
 inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag)
 {
     _ASSERTE(m_generation == -1 || m_reusableFor == ReuseLevel::Gen0);
+    _ASSERTE(!m_staleEscapeMarks);
     m_escapeFunc = EscapeFn;
     m_ownerThreadTag = threadTag;
     VolatileStore(&m_generation, 0);
 }
 
-inline void SatoriRegion::StopEscapeTracking(bool calledFromBarrier)
+inline void SatoriRegion::StopEscapeTracking()
 {
     if (IsEscapeTracking())
     {
         _ASSERTE(!HasPinnedObjects());
-        if (calledFromBarrier)
-        {
-            ClearMarksScalar();
-        }
-        else
-        {
-            ClearMarks();
-        }
+        ClearMarks();
 
         // must clear ownership after clearing marks
         // to make sure concurrent marking does not use dirty mark table
@@ -182,6 +178,45 @@ inline void SatoriRegion::StopEscapeTracking(bool calledFromBarrier)
         m_escapedSize = 0;
         m_allocBytesAtCollect = 0;
     }
+    else
+    {
+        ClearStaleEscapeMarks();
+    }
+}
+
+// Called from the write barrier when the escape budget is exceeded.
+// Clearing the marks is left to the owner thread, since the barrier does not preserve
+// vector registers and clearing the bitmap is relatively expensive.
+inline void SatoriRegion::StopEscapeTrackingFromBarrier()
+{
+    _ASSERTE(IsEscapeTracking());
+
+    // the flag must be set before ownership is cleared, so that concurrent marking,
+    // which checks ownership first, never sees neither and does not use dirty mark table.
+    m_staleEscapeMarks = true;
+    VolatileStore(&m_ownerThreadTag, (size_t)0);
+
+    m_escapeFunc = nullptr;
+    m_generation = 1;
+    m_escapedSize = 0;
+    m_allocBytesAtCollect = 0;
+}
+
+inline bool SatoriRegion::ClearStaleEscapeMarks()
+{
+    if (!m_staleEscapeMarks)
+    {
+        return false;
+    }
+
+    _ASSERTE(!IsEscapeTracking());
+    _ASSERTE(!HasPinnedObjects());
+    ClearMarks();
+
+    // must reset the flag after clearing marks
+    // to make sure concurrent marking does not use dirty mark table
+    VolatileStore(&m_staleEscapeMarks, false);
+    return true;
 }
 
 // Used to simulate writes when containing region is individually promoted.
@@ -693,10 +728,7 @@ inline void SatoriRegion::DetachFromAlocatingOwnerRelease()
 {
     _ASSERTE(*m_allocatingOwnerAttachmentPoint == this);
 
-    if (IsEscapeTracking())
-    {
-        StopEscapeTracking();
-    }
+    StopEscapeTracking();
 
     *m_allocatingOwnerAttachmentPoint = nullptr;
     // all allocations must be committed prior to detachement.

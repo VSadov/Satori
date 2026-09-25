@@ -412,6 +412,10 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
         _ASSERTE(!region->HasPinnedObjects());
         region->ClearMarks();
     }
+    else
+    {
+        region->ClearStaleEscapeMarks();
+    }
 
     // When concurrent marking is allowed we may have marks already.
     // Demoted regions could be pre-marked
@@ -936,10 +940,7 @@ void SatoriRecycler::ConcurrentPhasePrepFn(gc_alloc_context* gcContext, void* pa
     SatoriRegion* region = context->RegularRegion();
     if (region)
     {
-        if (region->IsEscapeTracking())
-        {
-            region->StopEscapeTracking();
-        }
+        region->StopEscapeTracking();
 
         if (region->HasUnmarkedDemotedObjects())
         {
@@ -2048,7 +2049,7 @@ void SatoriRecycler::MarkOwnStack(gc_alloc_context* aContext, MarkContext* markC
     if (!isBlockingPhase)
     {
         SatoriRegion* region = ((SatoriAllocationContext*)aContext)->RegularRegion();
-        if (region && region->IsEscapeTracking())
+        if (region)
         {
             region->StopEscapeTracking();
         }

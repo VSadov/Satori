@@ -51,6 +51,51 @@
 
 const int SatoriRegion::MAX_LARGE_OBJ_SIZE = Satori::REGION_SIZE_GRANULARITY - Satori::MIN_FREE_SIZE - offsetof(SatoriRegion, m_firstObject);
 
+// Root slots recorded while marking a thread-local region, so that updating pointers
+// can fix them up directly instead of walking the stack a second time.
+//
+// A stack walk for relocation reports the same slots as the stack walk for marking, minus pinned slots
+// (pinned objects do not move) and minus some reports made only when marking, which pass addresses
+// of the stack walker's locals (those point to handle-held, thus escaped and unmovable objects).
+struct SatoriLocalRootCache
+{
+    static const int CAPACITY = 4096 / (2 * sizeof(size_t));
+
+    // number of recordable roots seen, can exceed CAPACITY, then the cache cannot be used.
+    int count;
+
+    PTR_PTR_Object slots[CAPACITY];
+    SatoriObject* objects[CAPACITY];
+
+    bool IsUsable()
+    {
+        return count <= CAPACITY;
+    }
+
+    void Record(PTR_PTR_Object ppObject, SatoriObject* o)
+    {
+        // The cache lives in ThreadLocalCollect frame. Anything between us and the cache is in
+        // the frames of the stack walker, which will be gone after the walk.
+        size_t slot = (size_t)ppObject;
+        if (slot < (size_t)this && slot > (size_t)&slot)
+        {
+            return;
+        }
+
+        int i = count++;
+        if (i < CAPACITY)
+        {
+            slots[i] = ppObject;
+            objects[i] = o;
+        }
+    }
+};
+
+struct SatoriLocalScanContext : ScanContext
+{
+    SatoriLocalRootCache* rootCache;
+};
+
 SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used)
 {
     _ASSERTE(used <= committed);
@@ -153,6 +198,7 @@ void SatoriRegion::ResetCardsForEphemeral()
 void SatoriRegion::MakeBlank()
 {
     _ASSERTE(NothingMarked());
+    _ASSERTE(!m_staleEscapeMarks);
 
     if (m_generation == 2)
     {
@@ -902,6 +948,12 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
         }
     }
 
+    // pinned objects do not move, the relocation walk does not report pinned slots.
+    if (!(flags & GC_CALL_PINNED))
+    {
+        ((SatoriLocalScanContext*)sc)->rootCache->Record(ppObject, o);
+    }
+
     if (!region->IsMarked(o))
     {
         region->SetMarked(o);
@@ -991,6 +1043,11 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
 
     SetEscaped(o);
     m_escapedSize += (int32_t)o->Size();
+
+    if (!o->RawGetMethodTable()->ContainsGCPointers())
+    {
+        return;
+    }
 
     // now recursively mark all the objects reachable from escaped object.
     do
@@ -1200,15 +1257,81 @@ void SatoriRegion::SetOccupancy(size_t occupancy)
     m_occupancy = occupancy;
 }
 
+namespace
+{
+    struct EscapeTrackingHistory
+    {
+        // length of the current untracked span, doubles on every unproductive probe
+        uint8_t backoff;
+        // eligible regions to attach untracked before the next probe
+        uint8_t skip;
+        // a tracked region is attached and its outcome is not known yet
+        bool tracking;
+        // the tracked region had at least one successful thread-local GC
+        bool collected;
+    };
+
+    thread_local EscapeTrackingHistory t_trackingHistory;
+}
+
+bool SatoriRegion::ShouldStartEscapeTracking(bool allowBackoff)
+{
+    EscapeTrackingHistory& h = t_trackingHistory;
+    if (h.tracking)
+    {
+        // Tracking of the previous region was stopped by GC, or the region was detached
+        // for reasons other than running out of space. That says little about this thread
+        // unless the region had a successful collection.
+        h.tracking = false;
+        if (h.collected)
+        {
+            h.backoff = 0;
+        }
+    }
+
+    if (allowBackoff && h.skip > 0 && SatoriUtil::TrackBackoffCap() > 0)
+    {
+        h.skip--;
+        return false;
+    }
+
+    h.skip = 0;
+    h.tracking = true;
+    h.collected = false;
+    return true;
+}
+
+void SatoriRegion::OnEscapeTrackingEnded()
+{
+    EscapeTrackingHistory& h = t_trackingHistory;
+    if (!h.tracking)
+    {
+        return;
+    }
+
+    h.tracking = false;
+    if (h.collected)
+    {
+        h.backoff = 0;
+    }
+    else
+    {
+        // the region ended without a productive thread-local GC, back off.
+        int backoff = h.backoff == 0 ? 1 : h.backoff * 2;
+        h.backoff = (uint8_t)min(backoff, SatoriUtil::TrackBackoffCap());
+        h.skip = h.backoff;
+    }
+}
+
 // NB: dst is unused, it is just to avoid argument shuffle in x64 barriers
 void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
 {
     region->EscapeRecursively(src);
     if (region->m_escapedSize > Satori::MAX_ESCAPE_SIZE)
     {
-        // NB: this is called from the write barrier, which does not preserve
-        //     vector registers, thus the scalar variant.
-        region->StopEscapeTracking(/* calledFromBarrier */ true);
+        // the owner thread clears the marks and updates the history on its next allocation slow path.
+        // NB: no TLS here, see OnEscapeTrackingEnded.
+        region->StopEscapeTrackingFromBarrier();
     }
 }
 
@@ -1232,11 +1355,16 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
     size_t count = Recycler()->IncrementGen0Count();
     FIRE_EVENT(GCStart_V2, (int)count, 0, gc_reason::reason_alloc_soh, gc_etw_type_ngc);
 
-    bool shouldCollect = ThreadLocalMark();
+    // NB: not initializing the entries, only the count.
+    SatoriLocalRootCache rootCache;
+    rootCache.count = 0;
+
+    bool shouldCollect = ThreadLocalMark(&rootCache);
     if (shouldCollect)
     {
+        t_trackingHistory.collected = true;
         ThreadLocalPlan();
-        ThreadLocalUpdatePointers();
+        ThreadLocalUpdatePointers(&rootCache);
         ThreadLocalCompact();
     }
 
@@ -1253,7 +1381,7 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
     return shouldCollect;
 }
 
-bool SatoriRegion::ThreadLocalMark()
+bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache)
 {
     Verify();
 
@@ -1317,9 +1445,10 @@ bool SatoriRegion::ThreadLocalMark()
     m_occupancy = 0;
 
     // mark roots for the current stack
-    ScanContext sc;
+    SatoriLocalScanContext sc;
     sc.promotion = TRUE;
     sc._unused1 = this;
+    sc.rootCache = rootCache;
 
     if (SatoriUtil::IsConservativeMode())
         GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn<true>, &sc);
@@ -1590,17 +1719,125 @@ void SatoriRegion::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     }
 };
 
-void SatoriRegion::ThreadLocalUpdatePointers()
+#ifdef _DEBUG
+struct SatoriLocalRootCacheVerifyContext : ScanContext
 {
-    // update stack roots
-    ScanContext sc;
-    sc.promotion = FALSE;
-    sc._unused1 = this;
+    SatoriLocalRootCache* rootCache;
+    bool failed;
+    bool found[SatoriLocalRootCache::CAPACITY];
+};
+
+// Checks that a relocation walk reports exactly the slots recorded while marking.
+template <bool isConservative>
+static void VerifyLocalRootCacheFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
+{
+    SatoriLocalRootCacheVerifyContext* ctx = (SatoriLocalRootCacheVerifyContext*)sc;
+    SatoriRegion* region = (SatoriRegion*)sc->_unused1;
+    size_t location = (size_t)*ppObject;
+
+    // same filtering as in UpdateFn
+    if (location < (size_t)region->FirstObject() || location >= region->End())
+    {
+        return;
+    }
+
+    SatoriObject* o = (SatoriObject*)location;
+    if (flags & GC_CALL_INTERIOR)
+    {
+        o = region->FindObject(location);
+        if (isConservative && o->IsFree())
+        {
+            return;
+        }
+    }
+
+    if (flags & GC_CALL_PINNED)
+    {
+        return;
+    }
+
+    SatoriLocalRootCache* rootCache = ctx->rootCache;
+    for (int i = 0; i < rootCache->count; i++)
+    {
+        if (rootCache->slots[i] == ppObject)
+        {
+            if (rootCache->objects[i] != o || ctx->found[i])
+            {
+                ctx->failed = true;
+            }
+
+            ctx->found[i] = true;
+            return;
+        }
+    }
+
+    ctx->failed = true;
+}
+
+static bool VerifyLocalRootCache(SatoriRegion* region, SatoriLocalRootCache* rootCache)
+{
+    SatoriLocalRootCacheVerifyContext ctx;
+    ctx.promotion = FALSE;
+    ctx._unused1 = region;
+    ctx.rootCache = rootCache;
+    ctx.failed = false;
+    memset(ctx.found, 0, sizeof(ctx.found));
 
     if (SatoriUtil::IsConservativeMode())
-        GCToEEInterface::GcScanCurrentStackRoots((promote_func*)UpdateFn<true>, &sc);
+        GCToEEInterface::GcScanCurrentStackRoots((promote_func*)VerifyLocalRootCacheFn<true>, &ctx);
     else
-        GCToEEInterface::GcScanCurrentStackRoots((promote_func*)UpdateFn<false>, &sc);
+        GCToEEInterface::GcScanCurrentStackRoots((promote_func*)VerifyLocalRootCacheFn<false>, &ctx);
+
+    for (int i = 0; i < rootCache->count; i++)
+    {
+        if (!ctx.found[i])
+        {
+            ctx.failed = true;
+        }
+    }
+
+    return !ctx.failed;
+}
+#endif // _DEBUG
+
+void SatoriRegion::ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache)
+{
+    // update stack roots
+    bool useCache = rootCache->IsUsable();
+
+#ifdef _DEBUG
+    if (useCache && !VerifyLocalRootCache(this, rootCache))
+    {
+        _ASSERTE(!"thread-local root cache does not match the relocation walk");
+        useCache = false;
+    }
+#endif
+
+    if (useCache)
+    {
+        for (int i = 0; i < rootCache->count; i++)
+        {
+            size_t reloc = rootCache->objects[i]->GetLocalReloc();
+            if (reloc)
+            {
+                PTR_PTR_Object ppObject = rootCache->slots[i];
+                *ppObject = (Object*)(((size_t)*ppObject) - reloc);
+                _ASSERTE(((SatoriObject*)(*ppObject))->SameRegion(this));
+            }
+        }
+    }
+    else
+    {
+        // too many roots to record, walk the stack again.
+        ScanContext sc;
+        sc.promotion = FALSE;
+        sc._unused1 = this;
+
+        if (SatoriUtil::IsConservativeMode())
+            GCToEEInterface::GcScanCurrentStackRoots((promote_func*)UpdateFn<true>, &sc);
+        else
+            GCToEEInterface::GcScanCurrentStackRoots((promote_func*)UpdateFn<false>, &sc);
+    }
 
     // go through all live objects and update pointers if targets are planned for relocation.
     size_t bitmapIndex = BITMAP_START;
@@ -2362,23 +2599,10 @@ bool SatoriRegion::NothingMarked()
     return true;
 }
 
-NOINLINE void SatoriRegion::ClearMarks()
+void SatoriRegion::ClearMarks()
 {
     _ASSERTE(this->HasUnmarkedDemotedObjects() == false);
     memset((void*)&m_bitmap[BITMAP_START], 0, (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
-}
-
-// Same as ClearMarks, but does not use vector registers.
-// This is reachable from the write barrier (EscapeFn -> StopEscapeTracking) which does
-// not save vector registers, thus we do not want to use memsetand instead we store through
-// the volatile element type, which prevents the compiler from coalescing the stores.
-NOINLINE void SatoriRegion::ClearMarksScalar()
-{
-    _ASSERTE(this->HasUnmarkedDemotedObjects() == false);
-    for (int i = BITMAP_START; i < BITMAP_LENGTH; i++)
-    {
-        m_bitmap[i] = 0;
-    }
 }
 
 void SatoriRegion::ClearIndex()

@@ -591,6 +591,20 @@ public:
         return (GCConfig::GetPacingGC());
     }
 
+    // DOTNET_gcTrackBackoff
+    // After a thread's escape-tracked region ends without a productive thread-local GC,
+    // the thread allocates the next 1, 2, 4 ... up to this many eligible regions untracked.
+    static int TrackBackoffCap()
+    {
+        int64_t cap = GCConfig::GetTrackBackoff();
+        if (cap < 0)
+        {
+            return 16;
+        }
+
+        return (int)min(cap, (int64_t)64);
+    }
+
     // DOTNET_GCLatencyMode
     static bool IsLowLatencyMode()
     {
