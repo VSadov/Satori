@@ -2258,15 +2258,17 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         if (srcChunk->IsRange())
         {
             size_t start, end;
-            srcChunk->GetRange(o, start, end);
-            srcChunk->Clear();
-            if (!dstChunk)
+            srcChunk = TakeObjectRange(srcChunk, o, start, end, Satori::MARK_RANGE_THRESHOLD);
+            if (srcChunk)
             {
-                dstChunk = srcChunk;
-            }
-            else
-            {
-                m_heap->Allocator()->ReturnWorkChunk(srcChunk);
+                if (!dstChunk)
+                {
+                    dstChunk = srcChunk;
+                }
+                else
+                {
+                    m_heap->Allocator()->ReturnWorkChunk(srcChunk);
+                }
             }
 
             srcChunk = nullptr;
@@ -2363,35 +2365,55 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
     return false;
 }
 
+SatoriWorkChunk* SatoriRecycler::TakeObjectRange(SatoriWorkChunk* chunk, SatoriObject*& o, size_t& start, size_t& end, size_t scanSize)
+{
+    chunk->GetRange(o, start, end);
+    size_t next = start + min(scanSize, end - start);
+    if (next < end)
+    {
+        // Expose more parallel work without materializing every scan range.
+        // Round the split to scan units so only the final range has a short tail.
+        size_t units = (end - next) / scanSize;
+        if (units > 1)
+        {
+            SatoriWorkChunk* half = m_heap->Allocator()->TryGetWorkChunk();
+            if (half)
+            {
+                size_t middle = next + (units / 2) * scanSize;
+                half->SetRange(o, middle, end);
+                m_workList->Push(half);
+                end = middle;
+            }
+        }
+
+        // Publish the remainder before scanning so other workers can claim it.
+        // Reuse the original chunk even if allocating a second chunk failed.
+        chunk->SetRange(o, next, end);
+        m_workList->Push(chunk);
+        MaybeAskForHelp();
+        end = next;
+        return nullptr;
+    }
+
+    chunk->Clear();
+    return chunk;
+}
+
 void SatoriRecycler::ScheduleMarkAsChildRanges(SatoriObject* o)
 {
     if (o->RawGetMethodTable()->ContainsGCPointersOrCollectible())
     {
         size_t start = o->Start();
-        size_t remains = o->Size();
-        size_t chunkSize = remains > Satori::REGION_SIZE_GRANULARITY ?
-            Satori::REGION_SIZE_GRANULARITY:
-            Satori::MARK_RANGE_THRESHOLD;
-
-            while (remains > 0)
+        size_t end = start + o->Size();
+        SatoriWorkChunk* chunk = m_heap->Allocator()->TryGetWorkChunk();
+        if (chunk == nullptr)
         {
-            SatoriWorkChunk* chunk = m_heap->Allocator()->TryGetWorkChunk();
-            if (chunk == nullptr)
-            {
-                o->ContainingRegion()->ContainingPage()->DirtyCardsForRange(start, start + remains);
-                remains = 0;
-                break;
-            }
-
-            size_t len = min(chunkSize, remains);
-            chunk->SetRange(o, start, start + len);
-            start += len;
-            remains -= len;
-            m_workList->Push(chunk);
+            o->ContainingRegion()->ContainingPage()->DirtyCardsForRange(start, end);
+            return;
         }
 
-        // done with current object
-        _ASSERTE(remains == 0);
+        chunk->SetRange(o, start, end);
+        m_workList->Push(chunk);
     }
 }
 
@@ -2399,25 +2421,16 @@ bool SatoriRecycler::ScheduleUpdateAsChildRanges(SatoriObject* o)
 {
     if (o->RawGetMethodTable()->ContainsGCPointers())
     {
-        size_t start = o->Start() + sizeof(size_t);
-        size_t remains = o->Size() - sizeof(size_t);
-        while (remains > 0)
+        SatoriWorkChunk* chunk = m_heap->Allocator()->TryGetWorkChunk();
+        if (chunk == nullptr)
         {
-            SatoriWorkChunk* chunk = m_heap->Allocator()->TryGetWorkChunk();
-            if (chunk == nullptr)
-            {
-                return false;
-            }
-
-            size_t len = min(Satori::REGION_SIZE_GRANULARITY, remains);
-            chunk->SetRange(o, start, start + len);
-            start += len;
-            remains -= len;
-            m_workList->Push(chunk);
+            return false;
         }
 
-        // done with current object
-        _ASSERTE(remains == 0);
+        // Skip the method table; the remaining ranges must not overlap because
+        // updating a relocated pointer twice is unsafe.
+        chunk->SetRange(o, o->Start() + sizeof(size_t), o->Start() + o->Size());
+        m_workList->Push(chunk);
     }
 
     return true;
@@ -2459,15 +2472,17 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         {
             SatoriObject* o;
             size_t start, end;
-            srcChunk->GetRange(o, start, end);
-            srcChunk->Clear();
-            if (!dstChunk)
+            srcChunk = TakeObjectRange(srcChunk, o, start, end, Satori::MARK_RANGE_THRESHOLD);
+            if (srcChunk)
             {
-                dstChunk = srcChunk;
-            }
-            else
-            {
-                m_heap->Allocator()->ReturnWorkChunk(srcChunk);
+                if (!dstChunk)
+                {
+                    dstChunk = srcChunk;
+                }
+                else
+                {
+                    m_heap->Allocator()->ReturnWorkChunk(srcChunk);
+                }
             }
 
             srcChunk = nullptr;
@@ -4408,9 +4423,11 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
             _ASSERTE(srcChunk->IsRange());
             SatoriObject* o;
             size_t start, end;
-            srcChunk->GetRange(o, start, end);
-            srcChunk->Clear();
-            m_heap->Allocator()->ReturnWorkChunk(srcChunk);
+            srcChunk = TakeObjectRange(srcChunk, o, start, end, Satori::MARK_RANGE_THRESHOLD);
+            if (srcChunk)
+            {
+                m_heap->Allocator()->ReturnWorkChunk(srcChunk);
+            }
 
             // update children in the range
             o->ForEachObjectRef(
