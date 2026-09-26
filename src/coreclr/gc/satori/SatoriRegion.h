@@ -356,6 +356,7 @@ private:
     static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
 
     bool ThreadLocalMark(SatoriLocalRootCache* rootCache);
+    void ThreadLocalPropagateMarks(size_t maxSurv);
     void ThreadLocalPlan();
     void ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache);
     void ThreadLocalCompact();

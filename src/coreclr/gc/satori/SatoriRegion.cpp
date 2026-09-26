@@ -1381,6 +1381,74 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
     return shouldCollect;
 }
 
+// Transitively marks thread-local objects reachable from the mark stack.
+// Stops early once maxSurv bytes are found alive.
+//
+// Newly discovered objects are prefetched and parked in a small FIFO before their size and type
+// are read. By the time an object leaves the queue its header is likely in cache, so marking
+// does not stall on every discovered object.
+void SatoriRegion::ThreadLocalPropagateMarks(size_t maxSurv)
+{
+    const int QUEUE_SIZE = 8;
+    static_assert((QUEUE_SIZE & (QUEUE_SIZE - 1)) == 0, "must be a power of 2");
+    SatoriObject* queue[QUEUE_SIZE];
+    int queueHead = 0;
+    int queueCount = 0;
+
+    while (m_occupancy < maxSurv)
+    {
+        SatoriObject* o = PopFromMarkStack();
+        if (o == nullptr)
+        {
+            if (queueCount == 0)
+            {
+                break;
+            }
+
+            // the mark stack is empty, take the oldest queued object.
+            SatoriObject* oldest = queue[queueHead];
+            queueHead = (queueHead + 1) & (QUEUE_SIZE - 1);
+            queueCount--;
+            m_occupancy += oldest->Size();
+            PushToMarkStackIfHasPointers(oldest);
+            continue;
+        }
+
+        _ASSERTE(IsMarked(o));
+        _ASSERTE(!IsEscaped(o));
+        _ASSERTE(!o->IsFree());
+        o->ForEachObjectRef(
+            [&](SatoriObject** ref)
+            {
+                SatoriObject* child = *ref;
+                if (child->SameRegion(this) && !IsMarked(child))
+                {
+                    SetMarked(child);
+                    SatoriUtil::Prefetch(child);
+                    if (queueCount == QUEUE_SIZE)
+                    {
+                        // replace the oldest with the new one and process the oldest.
+                        SatoriObject* oldest = queue[queueHead];
+                        queue[queueHead] = child;
+                        queueHead = (queueHead + 1) & (QUEUE_SIZE - 1);
+                        m_occupancy += oldest->Size();
+                        PushToMarkStackIfHasPointers(oldest);
+                    }
+                    else
+                    {
+                        queue[(queueHead + queueCount) & (QUEUE_SIZE - 1)] = child;
+                        queueCount++;
+                    }
+                }
+            },
+            /* includeCollectibleAllocator */ true
+        );
+    }
+
+    // NB: if we stopped because too much is alive, some marked objects may remain queued.
+    //     that is ok - they are marked, but not linked into the mark stack.
+}
+
 bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache)
 {
     Verify();
@@ -1456,29 +1524,8 @@ bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache)
         GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn<false>, &sc);
 
     // now recursively mark all the objects reachable from the stack roots.
-    SatoriObject* o = PopFromMarkStack();
-
  propagateMarks:
-    while (o && m_occupancy < maxSurv)
-    {
-        _ASSERTE(IsMarked(o));
-        _ASSERTE(!IsEscaped(o));
-        _ASSERTE(!o->IsFree());
-        o->ForEachObjectRef(
-            [this](SatoriObject** ref)
-            {
-                SatoriObject* child = *ref;
-                if (child->SameRegion(this) && !IsMarked(child))
-                {
-                    SetMarked(child);
-                    m_occupancy += child->Size();
-                    PushToMarkStackIfHasPointers(child);
-                }
-            },
-            /* includeCollectibleAllocator */ true
-        );
-        o = PopFromMarkStack();
-    }
+    ThreadLocalPropagateMarks(maxSurv);
 
     if (m_occupancy >= maxSurv)
     {
@@ -1526,7 +1573,6 @@ bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache)
             }
         );
 
-        o = PopFromMarkStack();
         checkFinalizables = false;
         goto propagateMarks;
     }
