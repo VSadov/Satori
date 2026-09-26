@@ -138,7 +138,11 @@ public:
     bool IsLarge();
 
     SatoriObject* FirstObject();
-    SatoriObject* FindObject(size_t location);
+    SatoriObject* FindObject(size_t location, SatoriObject* hint = nullptr);
+    // In a region that is being marked, finds the marked object that contains the location,
+    // or the first marked object after it, up to the limit. Uses only the mark bitmap and the index,
+    // except for reading the size of a candidate that starts before the location.
+    SatoriObject* FindMarkedObjectFrom(size_t location, size_t limit, SatoriObject* hint);
     size_t LocationToIndex(size_t location);
     void SetIndicesForObject(SatoriObject* o, size_t end);
     void SetIndicesForObjectCore(size_t start, size_t end);

@@ -882,7 +882,10 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
 //  - iterating over card table - 
 //         not in allocating mode
 //         can give refs pointing to Free. (because of card granularity)
-SatoriObject* SatoriRegion::FindObject(size_t location)
+//
+// hint, if not null, is a known object start. It is used as the starting point if it is closer
+// to the location than what we would otherwise find. (Ex: where a walk over a preceding range stopped)
+SatoriObject* SatoriRegion::FindObject(size_t location, SatoriObject* hint)
 {
     _ASSERTE(m_generation >= 0);
     _ASSERTE(location >= Start());
@@ -895,6 +898,12 @@ SatoriObject* SatoriRegion::FindObject(size_t location)
     SatoriObject* o = (IsAllocating() && (location >= m_allocEnd)) ?
                                  (SatoriObject*)m_allocEnd :
                                  FirstObject();
+
+    if (hint != nullptr && hint->Start() > o->Start() && hint->Start() <= location)
+    {
+        _ASSERTE(hint->SameRegion(this));
+        o = hint;
+    }
 
     // use a better start obj if we have one in the index
     size_t limit = LocationToIndex(o->Start());
@@ -928,6 +937,80 @@ SatoriObject* SatoriRegion::FindObject(size_t location)
     }
 
     return o;
+}
+
+SatoriObject* SatoriRegion::FindMarkedObjectFrom(size_t location, size_t limit, SatoriObject* hint)
+{
+    // the bitmap covers only the first granule, a huge region has only one object anyways.
+    // NB: the limit is clipped to the first granule too, so the location may be past the limit.
+    if (location >= Start() + Satori::REGION_SIZE_GRANULARITY)
+    {
+        return FindObject(location, hint);
+    }
+
+    _ASSERTE(location < limit);
+
+    location = max(location, FirstObject()->Start());
+
+    // Only marked objects have bits (at their starts), so the last bit at or before the location
+    // is the last marked object that starts before the location.
+    // If it does not reach the location, the object at the location, if any, is not marked.
+    const size_t MAX_BACK_WORDS = 64;
+    size_t bitmapIndex;
+    int offset = ((SatoriObject*)location)->GetMarkBitAndWord(&bitmapIndex);
+    size_t lowest = bitmapIndex > BITMAP_START + MAX_BACK_WORDS ? bitmapIndex - MAX_BACK_WORDS : BITMAP_START;
+    size_t word = m_bitmap[bitmapIndex] & (((size_t)2 << offset) - 1);
+    while (word == 0)
+    {
+        if (bitmapIndex <= lowest)
+        {
+            if (bitmapIndex > BITMAP_START)
+            {
+                // Nothing is marked in the scanned window, but a marked object that contains the location
+                // may start further back. The index can tell us where objects start without walking them.
+                // An indexed object covers the start of its granule, thus the object that contains the location
+                // starts at or after the indexed object.
+                size_t windowStart = ObjectForMarkBit(bitmapIndex, 0)->Start();
+                for (size_t current = LocationToIndex(location); current > LocationToIndex(windowStart); current--)
+                {
+                    int indexOffset = m_index[current];
+                    if (indexOffset)
+                    {
+                        SatoriObject* indexed = (SatoriObject*)(Start() + indexOffset);
+                        if (indexed->Start() < windowStart &&
+                            indexed->Start() + indexed->Size() > location &&
+                            IsMarked(indexed))
+                        {
+                            // a marked object from before the window contains the location
+                            return indexed;
+                        }
+
+                        // otherwise the object that contains the location starts in the window
+                        // (or is the indexed object that is not marked), thus it is not marked.
+                        return SkipUnmarked((SatoriObject*)location, limit);
+                    }
+                }
+
+                // do it the slow way.
+                return FindObject(location, hint);
+            }
+
+            // nothing is marked before the location
+            return SkipUnmarked((SatoriObject*)location, limit);
+        }
+
+        word = m_bitmap[--bitmapIndex];
+    }
+
+    DWORD bit;
+    BitScanReverse64(&bit, word);
+    SatoriObject* candidate = ObjectForMarkBit(bitmapIndex, bit);
+    if (candidate->Start() + candidate->Size() > location)
+    {
+        return candidate;
+    }
+
+    return SkipUnmarked((SatoriObject*)location, limit);
 }
 
 template <bool isConservative>
