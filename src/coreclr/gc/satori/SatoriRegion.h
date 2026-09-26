@@ -354,6 +354,7 @@ private:
     static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 
     static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
+    NOINLINE void EscapeReachable(SatoriObject* o);
 
     bool ThreadLocalMark(SatoriLocalRootCache* rootCache);
     void ThreadLocalPropagateMarks(size_t maxSurv);

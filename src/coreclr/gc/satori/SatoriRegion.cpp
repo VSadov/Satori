@@ -47,9 +47,14 @@
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
 #include "SatoriQueue.h"
+#include "SatoriPrefetchQueue.h"
 #include "SatoriWorkChunk.h"
 
 const int SatoriRegion::MAX_LARGE_OBJ_SIZE = Satori::REGION_SIZE_GRANULARITY - Satori::MIN_FREE_SIZE - offsetof(SatoriRegion, m_firstObject);
+
+// Prefetch queue for traversals of thread-local object graphs (marking and escaping).
+// On Roslyn, lengths 4 and 8 performed the same, 16 and 32 were worse.
+typedef SatoriPrefetchQueue<8> SatoriLocalPrefetchQueue;
 
 // Root slots recorded while marking a thread-local region, so that updating pointers
 // can fix them up directly instead of walking the stack a second time.
@@ -1049,8 +1054,17 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
         return;
     }
 
+    EscapeReachable(o);
+}
+
+// Escapes everything reachable from an escaped object.
+// NB: not inlined, so that the queue (and the stack protection that comes with a local array)
+//     is not on the more common paths in EscapeRecursively.
+NOINLINE void SatoriRegion::EscapeReachable(SatoriObject* o)
+{
     // now recursively mark all the objects reachable from escaped object.
-    do
+    SatoriLocalPrefetchQueue queue;
+    while (true)
     {
         _ASSERTE(IsEscaped(o));
         o->ForEachObjectRef(
@@ -1068,14 +1082,31 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
                 if (child->SameRegion(this) && !IsEscaped(child))
                 {
                     SetEscaped(child);
-                    m_escapedSize += (int32_t)child->Size();
-                    PushToMarkStackIfHasPointers(child);
+                    if (SatoriObject* oldest = queue.Push(child))
+                    {
+                        m_escapedSize += (int32_t)oldest->Size();
+                        PushToMarkStackIfHasPointers(oldest);
+                    }
                 }
             }
         );
 
         o = PopFromMarkStack();
-    } while (o);
+        while (o == nullptr)
+        {
+            // the mark stack is empty, take the oldest queued object.
+            SatoriObject* queued = queue.Pop();
+            if (queued == nullptr)
+            {
+                // everything reachable is escaped.
+                return;
+            }
+
+            m_escapedSize += (int32_t)queued->Size();
+            PushToMarkStackIfHasPointers(queued);
+            o = PopFromMarkStack();
+        }
+    }
 }
 
 // Checks whether assigning [src, src+len) into [dst, dst+len) is a thread-local
@@ -1384,33 +1415,25 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
 // Transitively marks thread-local objects reachable from the mark stack.
 // Stops early once maxSurv bytes are found alive.
 //
-// Newly discovered objects are prefetched and parked in a small FIFO before their size and type
-// are read. By the time an object leaves the queue its header is likely in cache, so marking
-// does not stall on every discovered object.
+// Newly discovered objects go through a prefetch queue before their size and type are read,
+// so marking does not stall on every discovered object. See SatoriPrefetchQueue.
 void SatoriRegion::ThreadLocalPropagateMarks(size_t maxSurv)
 {
-    const int QUEUE_SIZE = 8;
-    static_assert((QUEUE_SIZE & (QUEUE_SIZE - 1)) == 0, "must be a power of 2");
-    SatoriObject* queue[QUEUE_SIZE];
-    int queueHead = 0;
-    int queueCount = 0;
-
+    SatoriLocalPrefetchQueue queue;
     while (m_occupancy < maxSurv)
     {
         SatoriObject* o = PopFromMarkStack();
         if (o == nullptr)
         {
-            if (queueCount == 0)
+            // the mark stack is empty, take the oldest queued object.
+            SatoriObject* queued = queue.Pop();
+            if (queued == nullptr)
             {
                 break;
             }
 
-            // the mark stack is empty, take the oldest queued object.
-            SatoriObject* oldest = queue[queueHead];
-            queueHead = (queueHead + 1) & (QUEUE_SIZE - 1);
-            queueCount--;
-            m_occupancy += oldest->Size();
-            PushToMarkStackIfHasPointers(oldest);
+            m_occupancy += queued->Size();
+            PushToMarkStackIfHasPointers(queued);
             continue;
         }
 
@@ -1424,20 +1447,10 @@ void SatoriRegion::ThreadLocalPropagateMarks(size_t maxSurv)
                 if (child->SameRegion(this) && !IsMarked(child))
                 {
                     SetMarked(child);
-                    SatoriUtil::Prefetch(child);
-                    if (queueCount == QUEUE_SIZE)
+                    if (SatoriObject* oldest = queue.Push(child))
                     {
-                        // replace the oldest with the new one and process the oldest.
-                        SatoriObject* oldest = queue[queueHead];
-                        queue[queueHead] = child;
-                        queueHead = (queueHead + 1) & (QUEUE_SIZE - 1);
                         m_occupancy += oldest->Size();
                         PushToMarkStackIfHasPointers(oldest);
-                    }
-                    else
-                    {
-                        queue[(queueHead + queueCount) & (QUEUE_SIZE - 1)] = child;
-                        queueCount++;
                     }
                 }
             },
