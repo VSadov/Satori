@@ -864,6 +864,10 @@ inline bool SatoriRegion::IsEscaped(SatoriObject* o)
 
 inline void SatoriRegion::SetEscaped(SatoriObject* o)
 {
+    // Escaped objects are always live as far as thread-local GC is concerned, so they are also marked.
+    // Thread-local GC clears marks when done, except marks of escaped objects.
+    // NB: both bits are cleared together when tracking stops or when GC takes over the region.
+    SetMarked(o);
     SetMarked(o + MarkOffset::Escaped);
 }
 

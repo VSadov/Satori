@@ -1472,44 +1472,21 @@ bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache)
     //- those that are reachable from the current stack and
     //- those that are reachable from outside of the region (escaped)
 
-    // mark escaped objects:
-    // for every set escape bit, set the corresponding mark bit
-    // nothing should be marked in the region, so we can find escapes via bit scan
-    size_t bitmapIndex = BITMAP_START;
-    int markBitOffset = 0;
-
+    // escaped objects are already marked, see SetEscaped.
 #ifdef _DEBUG
+    // nothing else should be marked yet.
     size_t escaped = 0;
-#endif
-    while (bitmapIndex < BITMAP_LENGTH)
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+    for (SatoriObject* o = FirstObject(); o->Start() < objLimit; o = o->Next())
     {
-        DWORD step;
-        if (BitScanForward64(&step, m_bitmap[bitmapIndex] >> markBitOffset))
+        _ASSERTE(IsMarked(o) == IsEscaped(o));
+        if (IsEscaped(o))
         {
-            // got an escape bit. its mark bit is at -1
-            markBitOffset += step - 1;
-
-            // set the mark bit
-            m_bitmap[bitmapIndex + (markBitOffset >> 6)] |= ((size_t)1 << (markBitOffset & 63));
-
-            SatoriObject* o = ObjectForMarkBit(bitmapIndex, markBitOffset);
-#ifdef _DEBUG
             o->Validate();
             escaped += o->Size();
-#endif
-
-            // skip the object
-            markBitOffset = o->Next()->GetMarkBitAndWord(&bitmapIndex);
-        }
-        else
-        {
-            // skip empty mark words
-            markBitOffset = 0;
-            while (++bitmapIndex < BITMAP_LENGTH && m_bitmap[bitmapIndex] == 0) {}
         }
     }
 
-#ifdef _DEBUG
     _ASSERTE(escaped == this->m_escapedSize);
 #endif
 
@@ -2024,9 +2001,13 @@ void SatoriRegion::ThreadLocalCompact()
                 }
             }
 
-            // clear Mark/Pinned, keep escaped, reloc should be 0, this object will stay around
+            // clear Mark/Pinned, reloc should be 0, this object will stay around
+            // escaped objects stay marked (and cannot be pinned), see SetEscaped
             _ASSERTE(d1->GetLocalReloc() == 0);
-            ClearPinnedAndMarked(d1);
+            if (!IsEscaped(d1))
+            {
+                ClearPinnedAndMarked(d1);
+            }
             SatoriObject* next = d1->Next();
             // opportunistically mark the index if d1 is indexable
             SetIndicesForObject(d1, next->Start());
@@ -2788,7 +2769,8 @@ void SatoriRegion::Verify(bool allowMarked)
         }
         else
         {
-            _ASSERTE(allowMarked || !IsMarked(o));
+            // escaped objects are marked while the region is escape-tracking, see SetEscaped
+            _ASSERTE(allowMarked || !IsMarked(o) || IsEscaped(o));
         }
 
         prevPrevObj = prevObj;
