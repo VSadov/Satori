@@ -867,8 +867,24 @@ inline void SatoriRegion::SetEscaped(SatoriObject* o)
     // Escaped objects are always live as far as thread-local GC is concerned, so they are also marked.
     // Thread-local GC clears marks when done, except marks of escaped objects.
     // NB: both bits are cleared together when tracking stops or when GC takes over the region.
-    SetMarked(o);
-    SetMarked(o + MarkOffset::Escaped);
+    _ASSERTE(o->SameRegion(this));
+
+    size_t word = o->Start();
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t bit = (word >> 3) & 63;
+    if (bit != 63)
+    {
+        // the mark and escape bits are adjacent and in the same word, set both at once.
+        // SetMarked(o) and SetMarked(o + MarkOffset::Escaped)
+        m_bitmap[bitmapIndex] |= (size_t)3 << bit;
+    }
+    else
+    {
+        // the mark bit is the last in the word, the escape bit is the first in the next word.
+        // NB: o is not at the end of the region, so the next word is still in the bitmap.
+        m_bitmap[bitmapIndex] |= (size_t)1 << 63;    // SetMarked(o)
+        m_bitmap[bitmapIndex + 1] |= 1;              // SetMarked(o + MarkOffset::Escaped)
+    }
 }
 
 inline bool SatoriRegion::IsEscapedOrPinned(SatoriObject* o)
