@@ -2756,13 +2756,14 @@ void SatoriRegion::PreSweep()
     int32_t objCount = 0;
     bool hasFinalizables = false;
     SatoriObject* o = FirstObject();
+    SweepPrefetcher prefetcher;
+    SweepPrefetchStart(prefetcher, o);
     do
     {
         if (!IsMarked(o))
         {
             size_t lastMarkedEnd = o->Start();
             o = SkipUnmarked(o);
-            SatoriUtil::Prefetch(o);
             size_t skipped = o->Start() - lastMarkedEnd;
             SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
             SetIndicesForObject(free, o->Start());
@@ -2776,6 +2777,7 @@ void SatoriRegion::PreSweep()
         }
 
         _ASSERTE(!o->IsFree());
+        SweepPrefetchAdvance(prefetcher, o);
 
         size_t size = o->Size();
 
