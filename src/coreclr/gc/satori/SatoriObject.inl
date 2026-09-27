@@ -278,7 +278,8 @@ inline void SatoriObject::UnsetUnfinished()
 template <typename F>
 inline void SatoriObject::ForEachObjectRef(F lambda, bool includeCollectibleAllocator)
 {
-    MethodTable* mt = RawGetMethodTable();
+    // The Java bridge tags method tables while walking the unreachable graph.
+    MethodTable* mt = GetGCSafeMethodTable();
 
     if (includeCollectibleAllocator && mt->Collectible())
     {

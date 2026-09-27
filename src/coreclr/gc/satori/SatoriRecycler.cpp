@@ -1560,6 +1560,11 @@ void SatoriRecycler::BlockingMark()
     DependentHandlesScan();
     ASSERT_NO_WORK();
 
+#ifdef FEATURE_JAVAMARSHAL
+    MarkBridgeObjects();
+    ASSERT_NO_WORK();
+#endif
+
     // Tell EE we have done marking strong references before scanning finalizables.
     // What actually happens here is detaching COM wrappers when exposed object is not reachable.
     // The object may stay around for finalization and become F-reachable, so the check needs to happen here.
@@ -3472,6 +3477,38 @@ bool SatoriRecycler::MarkHandles(int64_t deadline)
 
     return revisit;
 }
+
+#ifdef FEATURE_JAVAMARSHAL
+void SatoriRecycler::MarkBridgeObjects()
+{
+    _ASSERTE(IsBlockingPhase());
+
+    ScanContext sc;
+    sc.promotion = TRUE;
+
+    // Analyze the unreachable graph with all marking workers stopped. The bridge
+    // temporarily borrows object headers and restores them before returning.
+    size_t count;
+    uint8_t** objects = GCScan::GcProcessBridgeObjects(m_condemnedGeneration, max_generation, &sc, &count);
+
+    // Keep every bridge alive until the client releases its handle, including
+    // when it is still processing the results of a previous collection.
+    MarkContext c = MarkContext(this);
+    sc._unused1 = &c;
+    for (size_t i = 0; i < count; i++)
+    {
+        MarkFn</*isConservative*/ false>((Object**)&objects[i], &sc, 0);
+    }
+
+    if (c.m_WorkChunk != nullptr)
+    {
+        m_workList->Push(c.m_WorkChunk);
+    }
+
+    // Bridge roots can also make dependent-handle secondaries reachable.
+    MarkNewReachable();
+}
+#endif
 
 void SatoriRecycler::ShortWeakPtrScan()
 {

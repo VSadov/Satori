@@ -9,11 +9,13 @@ using Xunit;
 
 public class Bridge
 {
+    public static List<Bridge> Roots;
     public List<object> Links;
 
     public unsafe Bridge()
     {
         Links = new List<object>();
+        Roots.Add(this);
         IntPtr *pContext = (IntPtr*)NativeMemory.Alloc(((nuint)sizeof(void*)));
         GCHandle handle = JavaMarshal.CreateReferenceTrackingHandle(this, pContext);
 
@@ -117,7 +119,9 @@ public unsafe class GCBridgeTests
 
     static void RunGraphTest(Func<List<WeakReference>> buildGraph, nuint expectedSCCs, nuint expectedCCRs)
     {
-        Assert.True(GC.TryStartNoGCRegion(10000000));
+        // Keep the graph alive while it is being built and expectations are set.
+        // This also works with collectors that do not support no-GC regions.
+        Bridge.Roots = new List<Bridge>();
         Console.WriteLine("Start test {0}", buildGraph.Method.Name);
         List<WeakReference> weakRefs = buildGraph();
         // All objects produced by buildGraph are expected to be dead, so we can compute
@@ -125,12 +129,11 @@ public unsafe class GCBridgeTests
 
         Console.WriteLine(" First GC");
         SetBPFinishArguments(false, expectedSCCs, expectedCCRs);
-        GC.EndNoGCRegion();
+        Bridge.Roots = null;
         GC.Collect ();
         // The BP finish of first gc will not release any cross refs. We verify
         // that we computed the correct number of SCCs and CCRs for the object graph.
 
-        Assert.True(GC.TryStartNoGCRegion(100000));
         Thread.Sleep (100);
 
         // BP might have finished or not at this point, WeakRef check should wait for
@@ -140,7 +143,6 @@ public unsafe class GCBridgeTests
 
         Console.WriteLine(" Second GC");
         SetBPFinishArguments(true, expectedSCCs, expectedCCRs);
-        GC.EndNoGCRegion();
         GC.Collect ();
         // The BP finish of first gc will release all cross refs. The bridge object graph
         // should be the same, since it is computed before the cross ref handles are released.
@@ -149,10 +151,8 @@ public unsafe class GCBridgeTests
         // are freed on the java/client side.
         CheckWeakRefs(weakRefs, false);
 
-        Assert.True(GC.TryStartNoGCRegion(100000));
         Console.WriteLine(" Third GC");
         SetBPFinishArguments(true, 0, 0);
-        GC.EndNoGCRegion();
         GC.Collect ();
         // During this GC, there are no cross ref handles anymore so no bridge objects to process
 
