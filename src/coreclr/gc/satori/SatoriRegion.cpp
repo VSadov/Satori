@@ -2085,12 +2085,8 @@ void SatoriRegion::ThreadLocalCompact()
             }
 
             // clear Mark/Pinned, reloc should be 0, this object will stay around
-            // escaped objects stay marked (and cannot be pinned), see SetEscaped
             _ASSERTE(d1->GetLocalReloc() == 0);
-            if (!IsEscaped(d1))
-            {
-                ClearPinnedAndMarked(d1);
-            }
+            ClearMarkedAndPinnedUnlessEscaped(d1);
             SatoriObject* next = d1->Next();
             // opportunistically mark the index if d1 is indexable
             SetIndicesForObject(d1, next->Start());
@@ -2139,14 +2135,6 @@ void SatoriRegion::ThreadLocalCompact()
     Verify();
 
     _ASSERTE((Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject) - foundFree) == m_occupancy);
-}
-
-NOINLINE void SatoriRegion::ClearPinned(SatoriObject* o)
-{
-    if (!IsEscaped(o))
-    {
-        ClearMarked(o + MarkOffset::Pinned);
-    }
 }
 
 NOINLINE void SatoriRegion::SetIndicesForObjectCore(size_t start, size_t end)

@@ -898,13 +898,51 @@ inline void SatoriRegion::SetPinned(SatoriObject* o)
     SetMarked(o + MarkOffset::Pinned);
 }
 
-inline void SatoriRegion::ClearPinnedAndMarked(SatoriObject* o)
+// NB: the mark, escaped and pinned bits of an object are adjacent, thus usually in the same bitmap word.
+//     In escaped objects the bit in the pinned position is the "exposed" bit of the second field,
+//     so it can be treated as the pinned bit only when the object is not escaped.
+
+inline void SatoriRegion::ClearMarkedAndPinned(SatoriObject* o)
 {
-    ClearMarked(o);
-    if (IsPinned(o))
+    _ASSERTE(o->SameRegion(this));
+    _ASSERTE(!IsEscaped(o));
+
+    size_t word = o->Start();
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t bit = (word >> 3) & 63;
+    if (bit < 62)
     {
-        // this would be rare. do not inline.
-        ClearPinned(o);
+        // ClearMarked(o) and ClearMarked(o + MarkOffset::Pinned) at once
+        m_bitmap[bitmapIndex] &= ~((size_t)5 << bit);
+    }
+    else
+    {
+        ClearMarked(o);
+        ClearMarked(o + MarkOffset::Pinned);
+    }
+}
+
+// escaped objects stay marked (and cannot be pinned), see SetEscaped
+inline void SatoriRegion::ClearMarkedAndPinnedUnlessEscaped(SatoriObject* o)
+{
+    _ASSERTE(o->SameRegion(this));
+
+    size_t word = o->Start();
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t bit = (word >> 3) & 63;
+    if (bit < 62)
+    {
+        size_t bits = m_bitmap[bitmapIndex];
+        if (!(bits & ((size_t)2 << bit)))
+        {
+            // not escaped, ClearMarked(o) and ClearMarked(o + MarkOffset::Pinned) at once
+            m_bitmap[bitmapIndex] = bits & ~((size_t)5 << bit);
+        }
+    }
+    else if (!IsEscaped(o))
+    {
+        ClearMarked(o);
+        ClearMarked(o + MarkOffset::Pinned);
     }
 }
 
@@ -940,7 +978,25 @@ inline void SatoriRegion::SetEscaped(SatoriObject* o)
 
 inline bool SatoriRegion::IsEscapedOrPinned(SatoriObject* o)
 {
-    return IsEscaped(o) || IsPinned(o) || o->IsUnmovable();
+    _ASSERTE(o->SameRegion(this));
+
+    size_t word = o->Start();
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t bit = (word >> 3) & 63;
+    if (bit < 62)
+    {
+        // IsEscaped(o) || IsPinned(o) with one read
+        if (m_bitmap[bitmapIndex] & ((size_t)6 << bit))
+        {
+            return true;
+        }
+    }
+    else if (IsEscaped(o) || IsPinned(o))
+    {
+        return true;
+    }
+
+    return o->IsUnmovable();
 }
 
 inline void SatoriRegion::SetExposed(SatoriObject** location)

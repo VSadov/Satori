@@ -382,7 +382,6 @@ private:
     void ThreadLocalPlan();
     void ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache);
     void ThreadLocalCompact();
-    NOINLINE void ClearPinned(SatoriObject* o);
     void ThreadLocalPendFinalizables();
 
     void PushToMarkStackIfHasPointers(SatoriObject* obj);
@@ -405,7 +404,8 @@ private:
 
     bool IsPinned(SatoriObject* o);
     void SetPinned(SatoriObject* o);
-    void ClearPinnedAndMarked(SatoriObject* o);
+    void ClearMarkedAndPinned(SatoriObject* o);
+    void ClearMarkedAndPinnedUnlessEscaped(SatoriObject* o);
     bool IsEscaped(SatoriObject* o);
     void SetEscaped(SatoriObject* o);
     bool IsEscapedOrPinned(SatoriObject* o);
