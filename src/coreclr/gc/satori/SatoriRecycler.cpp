@@ -41,6 +41,7 @@
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
 #include "SatoriWorkChunk.h"
+#include "SatoriPrefetchQueue.h"
 #include "SatoriAllocationContext.h"
 #include "SatoriFinalizationQueue.h"
 #include "../gcscan.h"
@@ -411,6 +412,10 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
         _ASSERTE(IsBlockingPhase());
         _ASSERTE(!region->HasPinnedObjects());
         region->ClearMarks();
+    }
+    else
+    {
+        region->ClearStaleEscapeMarks();
     }
 
     // When concurrent marking is allowed we may have marks already.
@@ -936,10 +941,7 @@ void SatoriRecycler::ConcurrentPhasePrepFn(gc_alloc_context* gcContext, void* pa
     SatoriRegion* region = context->RegularRegion();
     if (region)
     {
-        if (region->IsEscapeTracking())
-        {
-            region->StopEscapeTracking();
-        }
+        region->StopEscapeTracking();
 
         if (region->HasUnmarkedDemotedObjects())
         {
@@ -2048,7 +2050,7 @@ void SatoriRecycler::MarkOwnStack(gc_alloc_context* aContext, MarkContext* markC
     if (!isBlockingPhase)
     {
         SatoriRegion* region = ((SatoriAllocationContext*)aContext)->RegularRegion();
-        if (region && region->IsEscapeTracking())
+        if (region)
         {
             region->StopEscapeTracking();
         }
@@ -2203,6 +2205,11 @@ void SatoriRecycler::PushOrReturnWorkChunk(SatoriWorkChunk * chunk)
     }
 }
 
+// Draining a mark chunk visits objects in a known order, since new work goes to a different chunk.
+// Prefetching the object this many pops ahead hides most of the latency of reading it.
+// (1 -> 16 made concurrent marking ~15% cheaper per object on a large heap)
+static const int MARK_PREFETCH_DISTANCE = 16;
+
 bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_t deadline)
 {
     _ASSERTE(deadline > 0);
@@ -2220,6 +2227,30 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
     SatoriWorkChunk* dstChunk = nullptr;
     SatoriObject* o = nullptr;
 
+    // Newly marked children go through a prefetch queue. When a child comes out, its type is likely in cache.
+    // Children without references are done at that point, only the rest go to dstChunk to be scanned.
+    SatoriPrefetchQueue<8> childQueue;
+
+    auto pushToChunk = [&](SatoriObject* child)
+    {
+        if (!dstChunk || !dstChunk->TryPush(child))
+        {
+            this->PushToMarkQueuesSlow(dstChunk, child);
+        }
+    };
+
+    auto processChild = [&](SatoriObject* child)
+    {
+        if (child->RawGetMethodTable()->ContainsGCPointersOrCollectible())
+        {
+            pushToChunk(child);
+        }
+        else if (child->IsUnmovable())
+        {
+            child->ContainingRegion()->HasPinnedObjects() = true;
+        }
+    };
+
     auto markChildFn = [&](SatoriObject** ref)
     {
         SatoriObject* child = VolatileLoadWithoutBarrier(ref);
@@ -2231,9 +2262,9 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
                 if (!child->IsMarkedOrOlderThan(m_condemnedGeneration))
                 {
                     child->SetMarkedAtomic();
-                    if (!dstChunk || !dstChunk->TryPush(child))
+                    if (SatoriObject* oldest = childQueue.Push(child))
                     {
-                        this->PushToMarkQueuesSlow(dstChunk, child);
+                        processChild(oldest);
                     }
                 }
                 return;
@@ -2296,7 +2327,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
             while (srcChunk->Count() > 0)
             {
                 o = srcChunk->Pop();
-                srcChunk->PrefetchNext(1);
+                srcChunk->PrefetchNext(MARK_PREFETCH_DISTANCE);
 
                 _ASSERTE(o->IsMarked());
                 if (o->IsUnmovable())
@@ -2314,6 +2345,12 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
 
                 o->ForEachObjectRef(markChildFn, size, /* includeCollectibleAllocator */ true);
             }
+        }
+
+        // finish the queued children, so that dstChunk has all the new work.
+        while (SatoriObject* child = childQueue.Pop())
+        {
+            processChild(child);
         }
 
         _ASSERTE(srcChunk == nullptr || srcChunk->Count() == 0);
@@ -2449,6 +2486,30 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
 
     SatoriWorkChunk* dstChunk = nullptr;
 
+    // Newly marked children go through a prefetch queue. When a child comes out, its type is likely in cache.
+    // Children without references are done at that point, only the rest go to dstChunk to be scanned.
+    SatoriPrefetchQueue<8> childQueue;
+
+    auto pushToChunk = [&](SatoriObject* child)
+    {
+        if (!dstChunk || !dstChunk->TryPush(child))
+        {
+            this->PushToMarkQueuesSlow(dstChunk, child);
+        }
+    };
+
+    auto processChild = [&](SatoriObject* child)
+    {
+        if (child->RawGetMethodTable()->ContainsGCPointersOrCollectible())
+        {
+            pushToChunk(child);
+        }
+        else if (child->IsUnmovable())
+        {
+            child->ContainingRegion()->HasPinnedObjects() = true;
+        }
+    };
+
     auto markChildFn = [&](SatoriObject** ref)
     {
         SatoriObject* child = *ref;
@@ -2457,10 +2518,9 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
             !child->IsMarkedOrOlderThan(m_condemnedGeneration))
         {
             child->SetMarkedAtomic();
-            // put more work, if found, into dstChunk
-            if (!dstChunk || !dstChunk->TryPush(child))
+            if (SatoriObject* oldest = childQueue.Push(child))
             {
-                this->PushToMarkQueuesSlow(dstChunk, child);
+                processChild(oldest);
             }
         }
     };
@@ -2509,7 +2569,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
             while (srcChunk->Count() > 0)
             {
                 SatoriObject* o = srcChunk->Pop();
-                srcChunk->PrefetchNext(1);
+                srcChunk->PrefetchNext(MARK_PREFETCH_DISTANCE);
 
                 _ASSERTE(o->IsMarked());
                 if (o->IsUnmovable())
@@ -2527,6 +2587,12 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
 
                 o->ForEachObjectRef(markChildFn, size, /* includeCollectibleAllocator */ true);
             }
+        }
+
+        // finish the queued children, so that dstChunk has all the new work.
+        while (SatoriObject* child = childQueue.Pop())
+        {
+            processChild(child);
         }
 
         _ASSERTE(!srcChunk || srcChunk->Count() == 0);
@@ -2687,6 +2753,8 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                         _ASSERTE(groupTicket == 0 || groupTicket == 0xff || (uint8_t)(currentScanTicket - groupTicket) == 1);
                         int8_t resetValue = Satori::CardState::REMEMBERED;
                         int8_t* cards = page->CardsForGroup(i);
+                        // where the previous walk in this group stopped, see FindObject
+                        SatoriObject* hint = nullptr;
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
                         {
                             // cards are often sparsely set, if j is aligned, check the entire size_t for unset value
@@ -2718,7 +2786,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
 
                             size_t end = page->LocationForCard(&cards[j]);
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
-                            SatoriObject* o = region->FindObject(start);
+                            SatoriObject* o = region->FindObject(start, hint);
 
                             if (cleaned)
                             {
@@ -2766,6 +2834,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                                     }, start, end, /* includeCollectibleAllocator */ true);
                                 }
                                 o = o->Next();
+                                hint = o;
                             } while (o->Start() < objLimit);
                         }
 
@@ -2918,6 +2987,8 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
 
                         bool considerAllMarked = region->Generation() > m_condemnedGeneration;
                         int8_t* cards = page->CardsForGroup(i);
+                        // where the previous walk in this group stopped, see FindObject
+                        SatoriObject* hint = nullptr;
 
                         _ASSERTE(Satori::CardState::DIRTY == (int8_t)0x04);
                         const size_t dirtyBits = 0x0404040404040404;
@@ -2945,12 +3016,23 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
 
                             size_t end = page->LocationForCard(&cards[j]);
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
-                            SatoriObject* o = region->FindObject(start);
 
                             // do not allow card cleaning to delay until after checking IsMarked or fetching children
                             MemoryBarrier();
 
-                            do
+                            // Only marked objects need visiting, those can be found via the mark bitmap.
+                            // That is much cheaper than walking objects from a known object start (FindObject),
+                            // since that touches memory of every object on the way.
+                            SatoriObject* o = considerAllMarked ?
+                                region->FindObject(start, hint) :
+                                region->FindMarkedObjectFrom(start, objLimit, hint);
+                            if (o->Start() < objLimit)
+                            {
+                                hint = o;
+                            }
+
+                            // the lookup may find nothing in the range
+                            while (o->Start() < objLimit)
                             {
                                 if (!considerAllMarked)
                                 {
@@ -3000,7 +3082,8 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                                         }, start, end, /* includeCollectibleAllocator */ true);
                                 }
                                 o = o->Next();
-                            } while (o->Start() < objLimit);
+                                hint = o;
+                            }
                         }
 
                         _ASSERTE(deadline != 0);
@@ -3104,6 +3187,8 @@ void SatoriRecycler::MarkThroughCards()
                         _ASSERTE(groupTicket == 0 || groupTicket == 0xff || (uint8_t)(currentScanTicket - groupTicket) == 1);
                         const int8_t resetValue = Satori::CardState::REMEMBERED;
                         int8_t* cards = page->CardsForGroup(i);
+                        // where the previous walk in this group stopped, see FindObject
+                        SatoriObject* hint = nullptr;
 
                         // clean the group if dirty, but must do that before reading the cards.
                         if (groupState == Satori::CardState::DIRTY)
@@ -3140,7 +3225,7 @@ void SatoriRecycler::MarkThroughCards()
 
                             size_t end = page->LocationForCard(&cards[j]);
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
-                            SatoriObject* o = region->FindObject(start);
+                            SatoriObject* o = region->FindObject(start, hint);
                             do
                             {
                                 o->ForEachObjectRef(
@@ -3159,6 +3244,7 @@ void SatoriRecycler::MarkThroughCards()
                                         }
                                     }, start, end, /* includeCollectibleAllocator */ true);
                                 o = o->Next();
+                                hint = o;
                             } while (o->Start() < objLimit);
                         }
                     }
@@ -3232,6 +3318,8 @@ void SatoriRecycler::CleanCards()
                         bool considerAllMarked = region->Generation() > m_condemnedGeneration;
 
                         int8_t* cards = page->CardsForGroup(i);
+                        // where the previous walk in this group stopped, see FindObject
+                        SatoriObject* hint = nullptr;
                         const int8_t resetValue = region->Generation() >= 2 ? Satori::CardState::REMEMBERED : Satori::CardState::EPHEMERAL;
 
                         _ASSERTE(Satori::CardState::DIRTY == (int8_t)0x04);
@@ -3260,7 +3348,6 @@ void SatoriRecycler::CleanCards()
 
                             size_t end = page->LocationForCard(&cards[j]);
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
-                            SatoriObject* o = region->FindObject(start);
 
                             // do not allow card cleaning to delay until after checking IsMarked
                             if (!considerAllMarked)
@@ -3268,7 +3355,19 @@ void SatoriRecycler::CleanCards()
                                 MemoryBarrier();
                             }
 
-                            do
+                            // Only marked objects need visiting, those can be found via the mark bitmap.
+                            // That is much cheaper than walking objects from a known object start (FindObject),
+                            // since that touches memory of every object on the way.
+                            SatoriObject* o = considerAllMarked ?
+                                region->FindObject(start, hint) :
+                                region->FindMarkedObjectFrom(start, objLimit, hint);
+                            if (o->Start() < objLimit)
+                            {
+                                hint = o;
+                            }
+
+                            // the lookup may find nothing in the range
+                            while (o->Start() < objLimit)
                             {
                                 if (!considerAllMarked)
                                 {
@@ -3298,7 +3397,8 @@ void SatoriRecycler::CleanCards()
                                         }, start, end, /* includeCollectibleAllocator */ true);
                                 }
                                 o = o->Next();
-                            } while (o->Start() < objLimit);
+                                hint = o;
+                            }
                         }
                     }
                 }
@@ -3366,6 +3466,8 @@ void SatoriRecycler::UpdatePointersThroughCards()
                         // thus should be marked through on every GC and should not fall far behind the tickets
                         _ASSERTE(groupTicket == 0 || groupTicket == 0xff || (uint8_t)(currentScanTicket - groupTicket) == 1);
                         int8_t* cards = page->CardsForGroup(i);
+                        // where the previous walk in this group stopped, see FindObject
+                        SatoriObject* hint = nullptr;
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
                         {
                             // cards are often sparsely set, if j is aligned, check the entire size_t for 0
@@ -3393,7 +3495,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
 
                             size_t end = page->LocationForCard(&cards[j]);
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
-                            SatoriObject* o = region->FindObject(start);
+                            SatoriObject* o = region->FindObject(start, hint);
                             do
                             {
                                 o->ForEachObjectRef(
@@ -3427,6 +3529,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                     /* includeCollectibleAllocator */ false
                                 );
                                 o = o->Next();
+                                hint = o;
                             } while (o->Start() < objLimit);
                         }
                     }

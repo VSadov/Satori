@@ -37,6 +37,7 @@ class SatoriAllocator;
 class SatoriRegionQueue;
 class SatoriObject;
 class SatoriAllocationContext;
+struct SatoriLocalRootCache;
 
 // The Region contains objects and their metadata.
 class SatoriRegion
@@ -87,11 +88,25 @@ public:
     size_t FreeSpaceInTopNBuckets(int n);
 
     void StartEscapeTrackingRelease(size_t threadTag);
-    // when calledFromBarrier is true, the callee must not touch vector registers.
-    void StopEscapeTracking(bool calledFromBarrier = false);
+    void StopEscapeTracking();
+    // NB: called from the write barrier - must not touch vector registers or TLS.
+    void StopEscapeTrackingFromBarrier();
+    // Clears marks left by StopEscapeTrackingFromBarrier, if any.
+    // Returns true if there were such marks.
+    bool ClearStaleEscapeMarks();
     bool IsEscapeTracking();
     bool MaybeEscapeTrackingAcquire();
     bool IsEscapeTrackedByCurrentThread();
+
+    // Per-thread history of escape tracking outcomes. A thread whose tracked regions keep
+    // ending without a productive thread-local GC backs off and allocates some regions untracked.
+    // Called by the owning thread when attaching an eligible region.
+    // When allowBackoff is false, the region is tracked regardless of the history.
+    static bool ShouldStartEscapeTracking(bool allowBackoff);
+    // Called by the owning thread when detaching a region that ran out of space while it was
+    // tracked, or when it finds that the barrier stopped tracking because of too many escapes.
+    // NB: not from the write barrier - uses TLS.
+    static void OnEscapeTrackingEnded();
 
     void AttachToAllocatingOwner(SatoriRegion** attachementPoint);
     void DetachFromAlocatingOwnerRelease();
@@ -123,7 +138,11 @@ public:
     bool IsLarge();
 
     SatoriObject* FirstObject();
-    SatoriObject* FindObject(size_t location);
+    SatoriObject* FindObject(size_t location, SatoriObject* hint = nullptr);
+    // In a region that is being marked, finds the marked object that contains the location,
+    // or the first marked object after it, up to the limit. Uses only the mark bitmap and the index,
+    // except for reading the size of a candidate that starts before the location.
+    SatoriObject* FindMarkedObjectFrom(size_t location, size_t limit, SatoriObject* hint);
     size_t LocationToIndex(size_t location);
     void SetIndicesForObject(SatoriObject* o, size_t end);
     void SetIndicesForObjectCore(size_t start, size_t end);
@@ -210,11 +229,7 @@ public:
 #endif
 
     bool NothingMarked();
-    // NB: both variants must not be inlined, so that vector code from one does not
-    //     end up on the call path of the other. ClearMarksScalar is reachable from
-    //     the write barrier - see comments in the implementation.
-    NOINLINE void ClearMarks();
-    NOINLINE void ClearMarksScalar();
+    void ClearMarks();
     void ClearIndex();
     void ClearFreeLists();
 
@@ -232,6 +247,23 @@ public:
 
 private:
     static const int BITMAP_LENGTH = Satori::REGION_SIZE_GRANULARITY / sizeof(size_t) / sizeof(size_t) / 8;
+
+    // Walks the mark bitmap ahead of a sweep and prefetches upcoming live objects.
+    // It moves by mark bytes - a mark byte covers one 64 byte cache line of the heap,
+    // thus it prefetches every line that has live objects once, and counts the distance in such lines.
+    struct SweepPrefetcher
+    {
+        size_t m_index;
+        size_t m_word;
+        // the heap cache line of the last live object the sweep has reached
+        size_t m_line;
+    };
+
+    static const int SWEEP_PREFETCH_LINES = 8;
+
+    void SweepPrefetchStart(SweepPrefetcher& prefetcher, SatoriObject* from);
+    void SweepPrefetchAdvance(SweepPrefetcher& prefetcher, SatoriObject* o);
+    void SweepPrefetchNext(SweepPrefetcher& prefetcher);
 
     // The first actually useful index is offsetof(m_firstObject) / sizeof(size_t) / 8,
     // which is the map itself (BITMAP_LENGTH + 1 words), the index and the syncblock.
@@ -316,6 +348,9 @@ private:
             bool m_hasUnmarkedDemotedObjects;
             // TODO: VS can fold with m_doNotSweep?
             bool m_hasMarksSet;
+            // escape tracking was stopped by the barrier and the mark bitmap still has escape bits.
+            // concurrent marking must treat the region as escape tracking until the owner clears the marks.
+            bool m_staleEscapeMarks;
 
             size_t m_freeListCapacities[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];
@@ -340,12 +375,13 @@ private:
     static void UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 
     static void EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region);
+    NOINLINE void EscapeReachable(SatoriObject* o);
 
-    bool ThreadLocalMark();
+    bool ThreadLocalMark(SatoriLocalRootCache* rootCache);
+    void ThreadLocalPropagateMarks(size_t maxSurv);
     void ThreadLocalPlan();
-    void ThreadLocalUpdatePointers();
+    void ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache);
     void ThreadLocalCompact();
-    NOINLINE void ClearPinned(SatoriObject* o);
     void ThreadLocalPendFinalizables();
 
     void PushToMarkStackIfHasPointers(SatoriObject* obj);
@@ -368,7 +404,8 @@ private:
 
     bool IsPinned(SatoriObject* o);
     void SetPinned(SatoriObject* o);
-    void ClearPinnedAndMarked(SatoriObject* o);
+    void ClearMarkedAndPinned(SatoriObject* o);
+    void ClearMarkedAndPinnedUnlessEscaped(SatoriObject* o);
     bool IsEscaped(SatoriObject* o);
     void SetEscaped(SatoriObject* o);
     bool IsEscapedOrPinned(SatoriObject* o);

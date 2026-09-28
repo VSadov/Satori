@@ -100,6 +100,7 @@ if (CLR_CMAKE_TARGET_WIN32)
     satori/SatoriRegion.inl
     satori/SatoriObject.h
     satori/SatoriObject.inl
+    satori/SatoriPrefetchQueue.h
     satori/SatoriQueue.h
     satori/SatoriRegionQueue.h
     satori/SatoriAllocator.h
