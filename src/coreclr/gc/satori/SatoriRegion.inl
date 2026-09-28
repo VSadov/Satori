@@ -50,8 +50,10 @@ inline bool SatoriRegion::IsEscapeTracking()
 inline bool SatoriRegion::MaybeEscapeTrackingAcquire()
 {
     // must check reusable level before the owner tag, before doing whatever follows
+    // the stale marks flag must be checked after the owner tag, see StopEscapeTrackingFromBarrier.
     return VolatileLoad((uint8_t*)&m_reusableFor) == (uint8_t)ReuseLevel::Gen0 ||
-        VolatileLoad(&m_ownerThreadTag);
+        VolatileLoad(&m_ownerThreadTag) ||
+        VolatileLoad(&m_staleEscapeMarks);
 }
 
 inline bool SatoriRegion::IsEscapeTrackedByCurrentThread()
@@ -154,24 +156,18 @@ inline SatoriObject* SatoriRegion::FirstObject()
 inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag)
 {
     _ASSERTE(m_generation == -1 || m_reusableFor == ReuseLevel::Gen0);
+    _ASSERTE(!m_staleEscapeMarks);
     m_escapeFunc = EscapeFn;
     m_ownerThreadTag = threadTag;
     VolatileStore(&m_generation, 0);
 }
 
-inline void SatoriRegion::StopEscapeTracking(bool calledFromBarrier)
+inline void SatoriRegion::StopEscapeTracking()
 {
     if (IsEscapeTracking())
     {
         _ASSERTE(!HasPinnedObjects());
-        if (calledFromBarrier)
-        {
-            ClearMarksScalar();
-        }
-        else
-        {
-            ClearMarks();
-        }
+        ClearMarks();
 
         // must clear ownership after clearing marks
         // to make sure concurrent marking does not use dirty mark table
@@ -182,6 +178,45 @@ inline void SatoriRegion::StopEscapeTracking(bool calledFromBarrier)
         m_escapedSize = 0;
         m_allocBytesAtCollect = 0;
     }
+    else
+    {
+        ClearStaleEscapeMarks();
+    }
+}
+
+// Called from the write barrier when the escape budget is exceeded.
+// Clearing the marks is left to the owner thread, since the barrier does not preserve
+// vector registers and clearing the bitmap is relatively expensive.
+inline void SatoriRegion::StopEscapeTrackingFromBarrier()
+{
+    _ASSERTE(IsEscapeTracking());
+
+    // the flag must be set before ownership is cleared, so that concurrent marking,
+    // which checks ownership first, never sees neither and does not use dirty mark table.
+    m_staleEscapeMarks = true;
+    VolatileStore(&m_ownerThreadTag, (size_t)0);
+
+    m_escapeFunc = nullptr;
+    m_generation = 1;
+    m_escapedSize = 0;
+    m_allocBytesAtCollect = 0;
+}
+
+inline bool SatoriRegion::ClearStaleEscapeMarks()
+{
+    if (!m_staleEscapeMarks)
+    {
+        return false;
+    }
+
+    _ASSERTE(!IsEscapeTracking());
+    _ASSERTE(!HasPinnedObjects());
+    ClearMarks();
+
+    // must reset the flag after clearing marks
+    // to make sure concurrent marking does not use dirty mark table
+    VolatileStore(&m_staleEscapeMarks, false);
+    return true;
 }
 
 // Used to simulate writes when containing region is individually promoted.
@@ -470,6 +505,55 @@ void SatoriRegion::ForEachFinalizableThreadLocal(F lambda)
     UnlockFinalizableTrackers();
 }
 
+// Sweeping does little work per object and the next object is known only after reading the current one,
+// thus the sweep is mostly waiting for object headers. The mark bitmap tells where the upcoming live
+// objects are, so they can be prefetched some distance ahead.
+// (8 lines ahead made sweeping about a quarter to a third cheaper per live object)
+inline void SatoriRegion::SweepPrefetchStart(SweepPrefetcher& prefetcher, SatoriObject* from)
+{
+    // start with the mark bits at and after the given object
+    int bitOffset = from->GetMarkBitAndWord(&prefetcher.m_index);
+    prefetcher.m_word = m_bitmap[prefetcher.m_index] & ~(((size_t)1 << bitOffset) - 1);
+    prefetcher.m_line = 0;
+    for (int i = 0; i < SWEEP_PREFETCH_LINES; i++)
+    {
+        SweepPrefetchNext(prefetcher);
+    }
+}
+
+// called when the sweep gets to a live object, keeps the prefetcher the same number of lines ahead.
+inline void SatoriRegion::SweepPrefetchAdvance(SweepPrefetcher& prefetcher, SatoriObject* o)
+{
+    size_t line = o->Start() >> 6;
+    if (line != prefetcher.m_line)
+    {
+        prefetcher.m_line = line;
+        SweepPrefetchNext(prefetcher);
+    }
+}
+
+inline void SatoriRegion::SweepPrefetchNext(SweepPrefetcher& prefetcher)
+{
+    // NB: the sweep may clear marks behind us, but we are ahead and see the words before they are touched.
+    while (prefetcher.m_word == 0)
+    {
+        if (prefetcher.m_index >= BITMAP_LENGTH - 1)
+        {
+            return;
+        }
+
+        prefetcher.m_word = m_bitmap[++prefetcher.m_index];
+    }
+
+    DWORD bit;
+    BitScanForward64(&bit, prefetcher.m_word);
+    // the rest of the mark byte is in the same cache line, skip it.
+    prefetcher.m_word &= ~((size_t)0xFF << (bit & ~7));
+    // prefetch the first object that starts in the line, rather than the line start,
+    // in case the actual cache line is smaller.
+    SatoriUtil::Prefetch(ObjectForMarkBit(prefetcher.m_index, (int)bit));
+}
+
 template <bool updatePointers, bool individuallyPromoted, bool isEscapeTracking>
 bool SatoriRegion::Sweep()
 {
@@ -511,13 +595,14 @@ bool SatoriRegion::Sweep()
     int32_t objCount = 0;
     bool hasFinalizables = false;
     SatoriObject* o = FirstObject();
+    SweepPrefetcher prefetcher;
+    SweepPrefetchStart(prefetcher, o);
     do
     {
         if (!CheckAndClearMarked(o))
         {
             size_t lastMarkedEnd = o->Start();
             o = SkipUnmarkedAndClear(o);
-            SatoriUtil::Prefetch(o);
             size_t skipped = o->Start() - lastMarkedEnd;
             SatoriObject* free = SatoriObject::FormatAsFree(lastMarkedEnd, skipped);
             SetIndicesForObject(free, o->Start());
@@ -531,6 +616,7 @@ bool SatoriRegion::Sweep()
         }
 
         _ASSERTE(!o->IsFree());
+        SweepPrefetchAdvance(prefetcher, o);
 
         size_t size = o->Size();
         if (isEscapeTracking)
@@ -693,10 +779,7 @@ inline void SatoriRegion::DetachFromAlocatingOwnerRelease()
 {
     _ASSERTE(*m_allocatingOwnerAttachmentPoint == this);
 
-    if (IsEscapeTracking())
-    {
-        StopEscapeTracking();
-    }
+    StopEscapeTracking();
 
     *m_allocatingOwnerAttachmentPoint = nullptr;
     // all allocations must be committed prior to detachement.
@@ -815,13 +898,51 @@ inline void SatoriRegion::SetPinned(SatoriObject* o)
     SetMarked(o + MarkOffset::Pinned);
 }
 
-inline void SatoriRegion::ClearPinnedAndMarked(SatoriObject* o)
+// NB: the mark, escaped and pinned bits of an object are adjacent, thus usually in the same bitmap word.
+//     In escaped objects the bit in the pinned position is the "exposed" bit of the second field,
+//     so it can be treated as the pinned bit only when the object is not escaped.
+
+inline void SatoriRegion::ClearMarkedAndPinned(SatoriObject* o)
 {
-    ClearMarked(o);
-    if (IsPinned(o))
+    _ASSERTE(o->SameRegion(this));
+    _ASSERTE(!IsEscaped(o));
+
+    size_t word = o->Start();
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t bit = (word >> 3) & 63;
+    if (bit < 62)
     {
-        // this would be rare. do not inline.
-        ClearPinned(o);
+        // ClearMarked(o) and ClearMarked(o + MarkOffset::Pinned) at once
+        m_bitmap[bitmapIndex] &= ~((size_t)5 << bit);
+    }
+    else
+    {
+        ClearMarked(o);
+        ClearMarked(o + MarkOffset::Pinned);
+    }
+}
+
+// escaped objects stay marked (and cannot be pinned), see SetEscaped
+inline void SatoriRegion::ClearMarkedAndPinnedUnlessEscaped(SatoriObject* o)
+{
+    _ASSERTE(o->SameRegion(this));
+
+    size_t word = o->Start();
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t bit = (word >> 3) & 63;
+    if (bit < 62)
+    {
+        size_t bits = m_bitmap[bitmapIndex];
+        if (!(bits & ((size_t)2 << bit)))
+        {
+            // not escaped, ClearMarked(o) and ClearMarked(o + MarkOffset::Pinned) at once
+            m_bitmap[bitmapIndex] = bits & ~((size_t)5 << bit);
+        }
+    }
+    else if (!IsEscaped(o))
+    {
+        ClearMarked(o);
+        ClearMarked(o + MarkOffset::Pinned);
     }
 }
 
@@ -832,12 +953,50 @@ inline bool SatoriRegion::IsEscaped(SatoriObject* o)
 
 inline void SatoriRegion::SetEscaped(SatoriObject* o)
 {
-    SetMarked(o + MarkOffset::Escaped);
+    // Escaped objects are always live as far as thread-local GC is concerned, so they are also marked.
+    // Thread-local GC clears marks when done, except marks of escaped objects.
+    // NB: both bits are cleared together when tracking stops or when GC takes over the region.
+    _ASSERTE(o->SameRegion(this));
+
+    size_t word = o->Start();
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t bit = (word >> 3) & 63;
+    if (bit != 63)
+    {
+        // the mark and escape bits are adjacent and in the same word, set both at once.
+        // SetMarked(o) and SetMarked(o + MarkOffset::Escaped)
+        m_bitmap[bitmapIndex] |= (size_t)3 << bit;
+    }
+    else
+    {
+        // the mark bit is the last in the word, the escape bit is the first in the next word.
+        // NB: o is not at the end of the region, so the next word is still in the bitmap.
+        m_bitmap[bitmapIndex] |= (size_t)1 << 63;    // SetMarked(o)
+        m_bitmap[bitmapIndex + 1] |= 1;              // SetMarked(o + MarkOffset::Escaped)
+    }
 }
 
 inline bool SatoriRegion::IsEscapedOrPinned(SatoriObject* o)
 {
-    return IsEscaped(o) || IsPinned(o) || o->IsUnmovable();
+    _ASSERTE(o->SameRegion(this));
+
+    size_t word = o->Start();
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    size_t bit = (word >> 3) & 63;
+    if (bit < 62)
+    {
+        // IsEscaped(o) || IsPinned(o) with one read
+        if (m_bitmap[bitmapIndex] & ((size_t)6 << bit))
+        {
+            return true;
+        }
+    }
+    else if (IsEscaped(o) || IsPinned(o))
+    {
+        return true;
+    }
+
+    return o->IsUnmovable();
 }
 
 inline void SatoriRegion::SetExposed(SatoriObject** location)
