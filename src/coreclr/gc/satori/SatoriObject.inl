@@ -200,8 +200,7 @@ inline void SatoriObject::ClearMarkCompactStateForRelocation()
 
     SatoriRegion* r = ContainingRegion();
     _ASSERTE(!r->IsEscaped(this));
-    r->ClearMarked(this);
-    r->ClearPinned(this);
+    r->ClearMarkedAndPinned(this);
 }
 
 inline SatoriObject* SatoriObject::RelocatedToUnchecked()

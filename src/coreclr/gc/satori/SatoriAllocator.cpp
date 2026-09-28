@@ -416,6 +416,12 @@ tryAgain:
     SatoriRegion* region = context->RegularRegion();
     _ASSERTE(region == nullptr || region->IsAttachedToAllocatingOwner());
 
+    if (region != nullptr && region->ClearStaleEscapeMarks())
+    {
+        // the barrier stopped tracking because of too many escapes.
+        SatoriRegion::OnEscapeTrackingEnded();
+    }
+
     while (true)
     {
         if (region != nullptr)
@@ -517,6 +523,12 @@ tryAgain:
             }
 
             context->alloc_ptr = context->alloc_limit = nullptr;
+            if (region->IsEscapeTracking())
+            {
+                // the region ran out of space while tracking.
+                SatoriRegion::OnEscapeTrackingEnded();
+            }
+
             region->DetachFromAlocatingOwnerRelease();
             m_heap->Recycler()->AddEphemeralRegion(region);
 
@@ -542,12 +554,27 @@ tryAgain:
         region->AttachToAllocatingOwner(&context->RegularRegion());
         if (SatoriUtil::IsGen0Enabled())
         {
+            // No backoff in low latency mode. There backoff was measured to trade allocation throughput
+            // for longer GC pauses (likely more work for the concurrent GC in untracked regions).
+            bool allowBackoff = !m_heap->Recycler()->IsLowLatencyMode();
             switch (region->ReusableFor())
             {
             case SatoriRegion::ReuseLevel::Gen0:
+                if (!SatoriRegion::ShouldStartEscapeTracking(allowBackoff))
+                {
+                    region->SetGenerationRelease(1);
+                    break;
+                }
+
                 region->EscapeAll();
                 goto fallthrough;
             case SatoriRegion::ReuseLevel::None:
+                if (!SatoriRegion::ShouldStartEscapeTracking(allowBackoff))
+                {
+                    region->SetGenerationRelease(1);
+                    break;
+                }
+
             fallthrough:
                 //NB: sets Generation to 0
                 region->StartEscapeTrackingRelease(SatoriUtil::GetCurrentThreadTag());
