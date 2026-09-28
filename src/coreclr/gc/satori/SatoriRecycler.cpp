@@ -2207,7 +2207,7 @@ void SatoriRecycler::PushOrReturnWorkChunk(SatoriWorkChunk * chunk)
 
 // Draining a mark chunk visits objects in a known order, since new work goes to a different chunk.
 // Prefetching the object this many pops ahead hides most of the latency of reading it.
-// (On GCBurn 1 -> 16 made concurrent marking ~15% cheaper per object on a 19 GB heap)
+// (1 -> 16 made concurrent marking ~15% cheaper per object on a large heap)
 static const int MARK_PREFETCH_DISTANCE = 16;
 
 bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_t deadline)

@@ -126,6 +126,9 @@ namespace Satori
     // When 1/4 escapes, we stop tracking escapes.
     static const int MAX_ESCAPE_SIZE = REGION_SIZE_GRANULARITY / 4;
 
+    // A thread-local collection proceeds only if at least this much of the region will be free after it.
+    static const int TLGC_MIN_FREE_PERCENT = 70;
+
     // objects smaller than this go into regular region.
     static const int LARGE_OBJECT_THRESHOLD = 32 * 1024;
 

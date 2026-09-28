@@ -1574,11 +1574,15 @@ bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache)
 #endif
 
     // We expect high mortality rate of Gen0 objects.
-    // If surviving set is large, then collection will be more expensive with diminishing results.
-    // We will not continue with collection if we see that too much of thread local objects are alive.
-    // The criteria does not need to be very precise. (anything in the order of 1/8 and 1/16 seems
-    // to yield similar results)
-    const size_t maxSurv = Satori::REGION_SIZE_GRANULARITY / 8;
+    // The cost of a collection is mostly proportional to what is live - the escaped objects and the survivors,
+    // and the benefit is the free space it leaves. If too much is live, the collection is not worth it and
+    // the region is better left to the global GC.
+    // Escaped objects are live (and already marked), thus they count against the limit.
+    // (requiring 60% or less to be free accepted collections that made single-threaded allocation-heavy
+    //  code much slower, 80% made many collections abort after marking)
+    const size_t usableSize = Satori::REGION_SIZE_GRANULARITY - offsetof(SatoriRegion, m_firstObject);
+    const size_t liveLimit = usableSize - Satori::REGION_SIZE_GRANULARITY / 100 * Satori::TLGC_MIN_FREE_PERCENT;
+    const size_t maxSurv = liveLimit > (size_t)m_escapedSize ? liveLimit - (size_t)m_escapedSize : 0;
 
     // Temporarily use m_occupancy to estimate surviving size.
     // If we proceed with collection, m_occupancy will be recomputed anyways.

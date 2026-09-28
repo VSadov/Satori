@@ -508,7 +508,7 @@ void SatoriRegion::ForEachFinalizableThreadLocal(F lambda)
 // Sweeping does little work per object and the next object is known only after reading the current one,
 // thus the sweep is mostly waiting for object headers. The mark bitmap tells where the upcoming live
 // objects are, so they can be prefetched some distance ahead.
-// (8 lines ahead made sweeping 24% cheaper per live object on GCBurn and 35-37% on Roslyn)
+// (8 lines ahead made sweeping about a quarter to a third cheaper per live object)
 inline void SatoriRegion::SweepPrefetchStart(SweepPrefetcher& prefetcher, SatoriObject* from)
 {
     // start with the mark bits at and after the given object
