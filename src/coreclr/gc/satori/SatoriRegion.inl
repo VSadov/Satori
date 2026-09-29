@@ -746,9 +746,19 @@ inline bool& SatoriRegion::IsRelocated()
     return m_isRelocated;
 }
 
+inline uint8_t& SatoriRegion::RelocationCandidateIndex()
+{
+    return m_relocationCandidateIndex;
+}
+
 inline bool& SatoriRegion::AcceptedPromotedObjects()
 {
     return m_acceptedPromotedObjects;
+}
+
+inline bool& SatoriRegion::AcceptedRelocatedFinalizables()
+{
+    return m_acceptedRelocatedFinalizables;
 }
 
 inline bool& SatoriRegion::IndividuallyPromoted()

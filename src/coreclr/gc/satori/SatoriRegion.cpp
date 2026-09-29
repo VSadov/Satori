@@ -133,8 +133,28 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     // the header itself (i.e. below BITMAP_START), otherwise it would corrupt live mark bits.
     // NB: this is not implied by the assert above - that one ties BITMAP_START to the location
     //     of the first object, it does not constrain the size of the header.
-    static_assert(offsetof(SatoriRegion, m_freeListTails) + sizeof(SatoriRegion::m_freeListTails) <= BITMAP_START * sizeof(size_t),
+    //     The free list arrays are the last fields of the header, in no particular order.
+    static_assert(offsetof(SatoriRegion, m_freeLists) + sizeof(SatoriRegion::m_freeLists) <= BITMAP_START * sizeof(size_t) &&
+        offsetof(SatoriRegion, m_freeListTails) + sizeof(SatoriRegion::m_freeListTails) <= BITMAP_START * sizeof(size_t) &&
+        offsetof(SatoriRegion, m_freeListCapacities) + sizeof(SatoriRegion::m_freeListCapacities) <= BITMAP_START * sizeof(size_t),
         "SatoriRegion header does not fit in the unused part of the mark bitmap.");
+
+    // What the marker reads for every reference is on the first line of the header.
+    // Also the demoted state, which is read when walking the queues of regions.
+    static_assert(offsetof(SatoriRegion, m_generation) < Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_relocationCandidateIndex) < Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_reusableFor) < Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_staleEscapeMarks) < Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_gen2Objects) < Satori::CACHE_LINE_GRANULARITY,
+        "Fields read by the marker for every reference are expected to be on the first cache line of the header.");
+
+    // The line with the queue link is prefetched when walking queues of regions,
+    // so it has what is looked at when walking: occupancy, object count, sweep count and which free lists are not empty.
+    static_assert(offsetof(SatoriRegion, m_occupancy) / Satori::CACHE_LINE_GRANULARITY == offsetof(SatoriRegion, m_next) / Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_objCount) / Satori::CACHE_LINE_GRANULARITY == offsetof(SatoriRegion, m_next) / Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_sweepsSinceLastAllocation) / Satori::CACHE_LINE_GRANULARITY == offsetof(SatoriRegion, m_next) / Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_nonEmptyFreeLists) / Satori::CACHE_LINE_GRANULARITY == offsetof(SatoriRegion, m_next) / Satori::CACHE_LINE_GRANULARITY,
+        "Fields looked at when walking queues of regions are expected to share the cache line with the queue link.");
 
     static_assert(Satori::FREELIST_COUNT <= sizeof(SatoriRegion::m_nonEmptyFreeLists) * 8,
         "m_nonEmptyFreeLists has a bit for every free list.");
@@ -286,7 +306,9 @@ void SatoriRegion::MakeBlank()
     m_doNotSweep = false;
     m_isPreSwept = false;
     m_isRelocated = false;
+    m_relocationCandidateIndex = 0;
     _ASSERTE(!m_acceptedPromotedObjects);
+    _ASSERTE(!m_acceptedRelocatedFinalizables);
     _ASSERTE(!m_individuallyPromoted);
     _ASSERTE(!m_hasUnmarkedDemotedObjects);
 
@@ -2785,8 +2807,10 @@ void SatoriRegion::ClearIndex()
 
 void SatoriRegion::ClearFreeLists()
 {
-    // clear free lists and free list tails
-    memset(m_freeListCapacities, 0, sizeof(m_freeListCapacities) + sizeof(m_freeLists) + sizeof(m_freeListTails));
+    // clear free lists, tails and capacities. (these are separate arrays, not necessarily adjacent)
+    memset(m_freeLists, 0, sizeof(m_freeLists));
+    memset(m_freeListTails, 0, sizeof(m_freeListTails));
+    memset(m_freeListCapacities, 0, sizeof(m_freeListCapacities));
     m_nonEmptyFreeLists = 0;
 }
 
