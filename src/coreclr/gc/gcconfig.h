@@ -164,6 +164,11 @@ public:
     INT_CONFIG   (Gen1Target,                "gcGen1Target",              NULL,                                -1,                 "Specifies target for Gen1 GC (in terms of % of the last known size)")                    \
     INT_CONFIG   (ReusableTarget,            "gcReusableTarget",          NULL,                                -1,                 "Specifies how much free space may be held in reusable regions (in terms of % of gen1 budget)") \
     INT_CONFIG   (TrackBackoff,              "gcTrackBackoff",            NULL,                                -1,                 "Specifies max number of regions a thread allocates untracked after unproductive escape tracking (hex). 0 - disabled, -1 - default") \
+    BOOL_CONFIG  (IncrReloc,                 "gcIncrReloc",               NULL,                                false,              "Specifies whether a Gen2 GC can relocate a small preselected set of regions instead of regular relocation (experiment)") \
+    INT_CONFIG   (IncrRelocBudget,           "gcIncrRelocBudget",         NULL,                                -1,                 "Specifies the pause (hex, in microseconds) that incremental relocation may add to a Gen2 GC. The cost model is calibrated at run time. -1 - default") \
+    INT_CONFIG   (IncrRelocBudgetPerGB,      "gcIncrRelocBudgetPerGB",    NULL,                                -1,                 "Specifies the pause (hex, in microseconds per GB of Gen2) that incremental relocation may add, when not in low latency mode. The larger of this and gcIncrRelocBudget is used. -1 - default") \
+    INT_CONFIG   (IncrRelocRefs,             "gcIncrRelocRefs",           NULL,                                -1,                 "Specifies max number of recorded references (hex) after which incremental relocation is abandoned. -1 - derived from the budget") \
+    INT_CONFIG   (IncrRelocBacklog,          "gcIncrRelocBacklog",        NULL,                                -1,                 "Specifies (hex, in percent of Gen2 space) how much reclaimable space in sparse regions may remain after incremental relocation, before a Gen2 GC that can relocate regularly does that instead. -1 - default") \
 
 // This class is responsible for retreiving configuration information
 // for how the GC should operate.

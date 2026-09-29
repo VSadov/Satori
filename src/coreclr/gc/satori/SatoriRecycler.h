@@ -222,13 +222,6 @@ private:
     static const int CC_CLEAN_STATE_DONE = 4;
 
     volatile int m_ccStackMarkState;
-    volatile int m_ccStackMarkingThreadsNum;
-
-    // threads filtering m_reusableRegions concurrently. prep waits for these to leave
-    // before it may swap the queues.
-    volatile int m_reusableFilterThreadsNum;
-
-    volatile int m_ccHelpersNum;
 
     int m_syncBlockCacheScanDone;
 
@@ -260,28 +253,43 @@ private:
     size_t m_gen1Budget;
     size_t m_totalLimit;
 
-    // how much more free space may be parked in reusable regions. set from the gen1 budget
-    // once it is known, and spent as regions are parked. 0 stops parking any more.
+    // percent of the gen1 budget that may be parked in reusable regions, see m_reusableLimit.
     int m_reusableTargetPercent;
-    int64_t m_reusableLimit;
     bool m_nextGcIsFullGc;
 
     size_t m_condemnedRegionsCount;
-    size_t m_deferredSweepCount;
-    size_t m_gen1AddedSinceLastCollection;
-    size_t m_gen2AddedSinceLastCollection;
     size_t m_gen1CountAtLastGen2;
     size_t m_gcNextTimeTarget;
 
     size_t m_occupancy[3];
-    size_t m_occupancyAcc[3];
-    size_t m_demotedOccupancyAcc;
     bool m_occupancyReportingEnabled;
 
+    // The counters below are updated with interlocked operations, about once per region.
+    // Allocating threads and sweepers update different ones, so each group gets its own cache line
+    // and none shares a line with the state above, which is read much more often.
+
+    // updated by allocating threads when they hand over a region
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
+    size_t m_gen1AddedSinceLastCollection;
+    size_t m_gen2AddedSinceLastCollection;
+
+    // updated by both allocating threads and sweepers
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     size_t m_estimatedEphemeralReclaim;
     size_t m_estimatedTenuredReclaim;
     size_t m_promotionEstimate;
 
+    // updated by sweepers
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
+    size_t m_deferredSweepCount;
+    size_t m_occupancyAcc[3];
+    size_t m_demotedOccupancyAcc;
+
+    // how much more free space may be parked in reusable regions. set from the gen1 budget
+    // once it is known, and spent as regions are parked. 0 stops parking any more.
+    int64_t m_reusableLimit;
+
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     int64_t m_currentAllocBytesLiveThreads;
     int64_t m_currentAllocBytesDeadThreads;
     int64_t m_totalAllocBytes;
@@ -292,6 +300,16 @@ private:
 
     SatoriGate* m_workerGate;
 
+    // Updated by helper threads on every help quantum. They have their own cache line, so these
+    // updates do not invalidate the GC state that markers, helpers and mutators keep reading.
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
+    volatile int m_ccHelpersNum;
+    volatile int m_ccStackMarkingThreadsNum;
+
+    // threads filtering m_reusableRegions concurrently. prep waits for these to leave
+    // before it may swap the queues.
+    volatile int m_reusableFilterThreadsNum;
+
     volatile int m_gateSignaled;
     volatile int m_workerWoken;
     volatile int m_activeWorkers;
@@ -301,11 +319,92 @@ private:
 
     int64_t m_noWorkSince;
 
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     LastRecordedGcInfo m_lastEphemeralGcInfo;
     LastRecordedGcInfo m_lastTenuredGcInfo;
     LastRecordedGcInfo* m_CurrentGcInfo;
 
     size_t m_startMillis;
+
+    // ---- incremental relocation ----
+    //
+    // It is used in low latency mode, or when regular relocation is disabled, where it is the only relocation.
+    // Otherwise it is preferred to regular relocation, which is used when incremental does not keep up,
+    // that is when too much reclaimable space remains in sparse Gen2 regions.
+    //
+    // Before the concurrent marking of a gen2 GC starts, a few sparse regions are selected as relocation
+    // sources (candidates), and a few regions with large free spans as targets.
+    // While marking, the locations of all references to candidates are recorded.
+    // If the candidates are still relocatable when marking is done, the blocking phase relocates only these
+    // and updates only roots, recorded locations and the copies. Everything else stays and is swept later,
+    // as if the GC did not relocate. Thus the cost is proportional to what we relocate, not to the heap size.
+    // candidates are identified by indices 1..INCR_MAX_REGIONS, which must fit in a byte
+    static const int INCR_MAX_REGIONS = 255;
+
+    struct IncrCopyRange
+    {
+        SatoriRegion* m_region;
+        size_t m_start;
+        size_t m_end;
+    };
+
+    class RefRecorder;
+
+    // true from selection until planning. The marker records references to candidates while it is true.
+    volatile bool m_incrRecording;
+    bool m_isIncrementalRelocation;
+    int m_incrSourceCount;
+    int m_incrTargetCount;
+    SatoriRegion* m_incrSources[INCR_MAX_REGIONS];
+    SatoriRegion* m_incrTargets[INCR_MAX_REGIONS];
+    SatoriWorkList* m_recordedRefs;
+    volatile int64_t m_incrRecordedRefs;
+    // which candidates (by index) are relocated, the recorded locations of the others are skipped
+    bool m_incrKeep[INCR_MAX_REGIONS + 1];
+    // how many references to each candidate were recorded (with duplicates)
+    volatile int64_t m_incrSourceRefs[INCR_MAX_REGIONS];
+    // why recording was given up, 0 if not (see INCR_ABANDON_*)
+    volatile int m_incrAbandonReason;
+    size_t m_incrMaxRecordedRefs;
+    // Recorders publish what they have when they are done, and that is often just a few references.
+    // Such leftovers are merged into this chunk, so that we do not use a chunk for a few references.
+    SatoriLock m_incrSpillLock;
+    SatoriWorkChunk* m_incrSpill;
+    // the last chunk in the chain of recorded chunks
+    SatoriWorkChunk* m_incrRecordedLast;
+    IncrCopyRange m_incrCopyRanges[INCR_MAX_REGIONS];
+    volatile int m_incrCopyRangeCount;
+    volatile int m_incrCopyRangeClaim;
+
+    // Selection was done for this GC, even if nothing was selected. Planning then decides how to relocate.
+    bool m_incrSelectionDone;
+    // what the candidates were when selected
+    size_t m_incrSourceObjs[INCR_MAX_REGIONS];
+    size_t m_incrSourceBytes[INCR_MAX_REGIONS];
+    size_t m_incrSelectedObjs;
+    // Sparse Gen2 regions are the backlog. This is what they could free if relocated,
+    // and the Gen2 space (without large regions) that they are a part of.
+    size_t m_incrEligibleGain;
+    size_t m_incrGen2Space;
+    // the budget of the current GC in cost units, and what the kept candidates are estimated to cost.
+    size_t m_incrUnitsBudget;
+    size_t m_incrPlannedUnits;
+
+    // The cost model, calibrated as we go: pause = fixed + perUnit * units.
+    // The fixed part is mostly updating roots. Units are estimated from objects, bytes and references.
+    double m_incrFixedUs;
+    double m_incrUsPerUnit;
+    // references to candidates that are recorded, per object in candidates
+    double m_incrRefsPerObj;
+    int m_incrFixedSamples;
+    int m_incrUnitSamples;
+    int m_incrRefsSamples;
+    // when the fixed part alone would not fit the budget, we relocate only occasionally, to see if that changed.
+    int m_incrNoRoomCount;
+    // measured parts of the current incremental relocation
+    int64_t m_incrMeasuredTicks;
+    size_t m_incrRootsStartTicks;
+    volatile size_t m_incrRootsDoneTicks;
 
 private:
     size_t Gen1RegionCount();
@@ -429,6 +528,20 @@ private:
     void SweepAndReturnRegion(SatoriRegion* curRegion);
 
     void UpdateGcCounters(int64_t blockingStart);
+
+    void SelectIncrementalRelocationCandidates();
+    bool PlanIncrementalRelocation(bool canRelocateRegularly);
+    void CalibrateIncrementalRelocation();
+    void PublishRecordedRefs(SatoriWorkChunk*& chunk);
+    void PushRecordedChunk(SatoriWorkChunk* chunk);
+    bool RecordRelocationRefSlow(SatoriWorkChunk*& chunk, SatoriObject* entry);
+    void AddRecordedRefCounts(const int32_t* counts);
+    void AbandonIncrementalRelocation();
+    void FreeRecordedRefs();
+    void UpdateRecordedRefsWorker();
+#if _DEBUG
+    void VerifyIncrementalRelocation();
+#endif
 
     void ASSERT_NO_WORK();
 };

@@ -209,7 +209,9 @@ public:
     bool& DoNotSweep();
     bool& IsPreSwept();
     bool& IsRelocated();
+    uint8_t& RelocationCandidateIndex();
     bool& AcceptedPromotedObjects();
+    bool& AcceptedRelocatedFinalizables();
     bool& IndividuallyPromoted();
 
     uint32_t SweepsSinceLastAllocation();
@@ -290,14 +292,28 @@ private:
             size_t m_ownerThreadTag;
             void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
             int m_generation;
-            // above fields are accessed from asm helpers
 
-            // the following 5 fields change rarely or not at all.
+            // above fields are accessed from asm helpers
+            // the following fields change rarely.
+
+            // Non-zero on regions selected for incremental relocation, while references to them are being recorded.
+            // The value is 1 + the index in the recycler's list of candidates.
+            // Read by the marker for every reference, so it shares the cache line with the generation.
+            uint8_t m_relocationCandidateIndex;
+            bool m_doNotSweep;
+            bool m_hasMarksSet;
+            bool m_isPreSwept;
             size_t m_end;
             SatoriPage* m_containingPage;
 
             ReuseLevel m_reusableFor;
-            int32_t m_occupancyAtReuse;
+            bool m_acceptedPromotedObjects;
+            bool m_acceptedRelocatedFinalizables;
+            bool m_hasUnmarkedDemotedObjects;
+            // escape tracking was stopped by the barrier and the mark bitmap still has escape bits.
+            // concurrent marking must treat the region as escape tracking until the owner clears the marks.
+            bool m_staleEscapeMarks;
+            bool m_isRelocated;
 
             SatoriRegion** m_allocatingOwnerAttachmentPoint;
             SatoriWorkChunk* m_gen2Objects;
@@ -324,10 +340,8 @@ private:
 
             SatoriWorkChunk* m_finalizableTrackers;
             int m_finalizableTrackersLock;
-
-            uint32_t m_sweepsSinceLastAllocation;
-            // Bit N is set when free list N is not empty.
-            uint16_t m_nonEmptyFreeLists;
+            // written when the region is taken for reuse, so it is kept with the allocation state.
+            int32_t m_occupancyAtReuse;
 
             // ===== 128  bytes boundary
             SatoriRegion* m_prev;
@@ -340,25 +354,22 @@ private:
 
             int32_t m_unfinishedAllocationCount;
 
-            bool m_hasPinnedObjects;
             bool m_hasFinalizables;
             bool m_hasPendingFinalizables;
-            bool m_doNotSweep;
-            bool m_isPreSwept;
-            bool m_isRelocated;
-
-            bool m_acceptedPromotedObjects;
             bool m_individuallyPromoted;
-            bool m_hasUnmarkedDemotedObjects;
-            // TODO: VS can fold with m_doNotSweep?
-            bool m_hasMarksSet;
-            // escape tracking was stopped by the barrier and the mark bitmap still has escape bits.
-            // concurrent marking must treat the region as escape tracking until the owner clears the marks.
-            bool m_staleEscapeMarks;
+            bool m_hasPinnedObjects;
 
-            size_t m_freeListCapacities[Satori::FREELIST_COUNT];
+            // Mostly read together with occupancy and flags, and updated when these are, so it shares their cache line.
+            // That is also the line with the queue links, which is prefetched when walking queues.
+            uint32_t m_sweepsSinceLastAllocation;
+            // bit N is set when the free list N is not empty.
+            // Finding the largest free span does not need to read the free lists, which are on other lines.
+            uint16_t m_nonEmptyFreeLists;
+
+            // ===== 192 bytes boundary
             SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeListTails[Satori::FREELIST_COUNT];
+            size_t m_freeListCapacities[Satori::FREELIST_COUNT];
         };
     };
 

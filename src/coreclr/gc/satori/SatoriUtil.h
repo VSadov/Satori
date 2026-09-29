@@ -614,6 +614,47 @@ public:
         return (GCConfig::GetLatencyMode()) >= 2;
     }
 
+    // DOTNET_gcIncrReloc
+    static bool IsIncrementalRelocation()
+    {
+        return (GCConfig::GetIncrReloc());
+    }
+
+    // DOTNET_gcIncrRelocBudget
+    // The pause, in microseconds, that incremental relocation may add to a Gen2 GC.
+    static size_t IncrRelocBudgetUs()
+    {
+        int64_t n = GCConfig::GetIncrRelocBudget();
+        return n < 0 ? 1000 : (size_t)n;
+    }
+
+    // DOTNET_gcIncrRelocBudgetPerGB
+    // Outside of low latency mode the budget may grow with the heap, since the alternative, regular relocation,
+    // costs in proportion to the heap. This is the pause, in microseconds, per GB of Gen2.
+    static size_t IncrRelocBudgetPerGBUs()
+    {
+        int64_t n = GCConfig::GetIncrRelocBudgetPerGB();
+        return n < 0 ? 5000 : (size_t)n;
+    }
+
+    // DOTNET_gcIncrRelocRefs
+    // The number of recorded references to relocation candidates after which recording is given up.
+    // 0 - derived from the budget.
+    static size_t IncrRelocRefs()
+    {
+        int64_t n = GCConfig::GetIncrRelocRefs();
+        return n < 0 ? 0 : (size_t)n;
+    }
+
+    // DOTNET_gcIncrRelocBacklog
+    // When a Gen2 GC can also relocate regularly, it does that instead of incremental relocation
+    // if more than this percentage of Gen2 space would remain reclaimable in sparse regions.
+    static size_t IncrRelocBacklogPercent()
+    {
+        int64_t n = GCConfig::GetIncrRelocBacklog();
+        return n < 0 ? 25 : (size_t)n;
+    }
+
     static int HandlePartitionsCount()
     {
         int partitionCount = (int)GCConfig::GetHeapCount();
