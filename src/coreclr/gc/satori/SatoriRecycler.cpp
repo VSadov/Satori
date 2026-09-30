@@ -26,6 +26,8 @@
 
 #include "common.h"
 
+#include <stdio.h>
+
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 #include "../gceventstatus.h"
@@ -78,9 +80,298 @@ void ToggleWriteBarrier(int barrierState, bool eeSuspended)
     GCToEEInterface::StompWriteBarrier(&args);
 }
 
-// why recording of references to incremental relocation candidates was given up
+//
+// Instrumentation for the incremental relocation experiment.
+// When DOTNET_gcIncrStatsDir is set, cumulative counters are written to <dir>/incr-<pid>.txt
+// (the file is overwritten, at most every 250 msec) and every gen2 GC appends a line to <dir>/incr-<pid>.log
+//
+struct SatoriIncrStats
+{
+    int state; // 0 - not initialized, 1 - enabled, -1 - disabled
+    size_t lastDumpTicks;
+    char path[512];
+    char logPath[512];
+
+    // blocking GCs by condemned generation (0 is unused)
+    int64_t gcCount[3];
+    int64_t pauseTicks[3];
+    int64_t pauseMaxTicks[3];
+    int64_t markTicks[3];
+    int64_t planTicks[3];
+    int64_t relocateTicks[3];
+    int64_t updateTicks[3];
+    int64_t compactingCount[3];
+
+    // concurrent phases, by the generation of the GC they are a part of
+    int64_t ccCount[3];
+    // from the start of the concurrent phase to the start of the blocking GC
+    int64_t ccWallTicks[3];
+    // time in help quanta, summed over threads
+    int64_t ccWorkTicks[3];
+    int64_t ccQuanta[3];
+    // EE stopped for marking stacks in the concurrent phase
+    int64_t prepPauseTicks[3];
+    int64_t prepPauseMaxTicks[3];
+
+    // state of the heap when a blocking GC starts (as of the previous GC)
+    int64_t heapSamples[3];
+    int64_t heapAllRegionsSum[3];
+    int64_t heapGen2RegionsSum[3];
+    int64_t heapGen2OccupancySum[3];
+    int64_t heapTotalOccupancySum[3];
+    int64_t lastAllRegions;
+    int64_t lastGen2Regions;
+    int64_t lastGen2Occupancy;
+    int64_t lastTotalOccupancy;
+
+    // incremental relocation
+    int64_t incrGen2Gcs;
+    int64_t incrNoCandidates;
+    int64_t incrAttempts;
+    int64_t incrAbandonedRefs;
+    int64_t incrAbandonedOom;
+    int64_t incrNothingToRelocate;
+    int64_t incrRegularInstead;
+    int64_t incrNoRoom;
+    int64_t incrRelocated;
+    int64_t incrSourcesSelected;
+    int64_t incrSourceObjs;
+    int64_t incrSourceBytes;
+    int64_t incrTargetsSelected;
+    int64_t incrDroppedPinned;
+    int64_t incrDroppedPopular;
+    int64_t incrRecordedRefs;
+    int64_t incrRegionsRelocated;
+    int64_t incrObjsRelocated;
+    int64_t incrBytesRelocated;
+    int64_t incrFreshTargets;
+    int64_t incrSourcesSkipped;
+    int64_t incrRefsExamined;
+    int64_t incrRefsUpdated;
+    int64_t incrCopiedObjs;
+    int64_t incrVerifyFailed;
+    int64_t incrSelectTicks;
+    int64_t incrPlanTicks;
+    int64_t incrRelocateTicks;
+    int64_t incrUpdateRootsTicks;
+    int64_t incrUpdateRecordedTicks;
+    int64_t incrUpdateRegionsTicks;
+    int64_t incrFreeTicks;
+    int64_t incrPauseTicks;
+    int64_t incrPauseMaxTicks;
+    int64_t incrPauseCount;
+};
+
+// what happens in the current blocking GC. One GC at a time, so it is just a static.
+// updated with plain stores where only one thread is involved, interlocked otherwise.
+struct SatoriIncrGcInfo
+{
+    int outcome; // see INCR_OUTCOME_*
+    int sources;
+    int targets;
+    int dropped;
+    int droppedPopular;
+    int64_t sourceObjs;
+    int64_t sourceBytes;
+    int64_t recordedRefs;
+    // phases of the blocking GC, all GCs
+    int64_t phaseMarkTicks;
+    int64_t phasePlanTicks;
+    int64_t phaseRelocateTicks;
+    int64_t phaseUpdateTicks;
+    // parts of incremental relocation. select is concurrent, the rest is in the blocking GC.
+    // updateRecordedTicks is summed over threads, the others are wall time.
+    int64_t selectTicks;
+    int64_t updateRootsTicks;
+    int64_t updateRecordedTicks;
+    int64_t updateRegionsTicks;
+    int64_t freeTicks;
+    // parts of updating roots, summed over threads
+    int64_t updHandlesTicks;
+    int64_t updStacksTicks;
+    int64_t updFQTicks;
+    int64_t regionsRelocated;
+    int64_t objsRelocated;
+    int64_t bytesRelocated;
+    int64_t freshTargets;
+    int64_t sourcesSkipped;
+    int64_t refsExamined;
+    int64_t refsUpdated;
+    int64_t copiedObjs;
+    // how many gen2 regions were sparse enough (the backlog), and how much they could free
+    int64_t eligible;
+    int64_t eligibleGain;
+    // Gen2 space without large regions, and what the relocated candidates could free
+    int64_t gen2Space;
+    int64_t keptGain;
+    // the budget, the cost model when selecting and how that worked out
+    int64_t budgetUs;
+    int64_t unitsBudget;
+    int64_t plannedUnits;
+    int64_t predictedUs;
+    int64_t measuredUs;
+    int64_t rootsUs;
+    int64_t modelFixedUs;
+    int64_t modelUsPerMUnits;
+    int64_t modelRefsPerObjX100;
+    // recorded chunks and how they were freed, if not consumed by relocation
+    int64_t publishedChunks;
+    int64_t spillMerges;
+    int64_t freeRecordedTicks;
+    // selection: walking the regions (including sorting), how many regions, how many entries were moved while sorting
+    int64_t selectScanTicks;
+    int64_t selectRegions;
+    int64_t selectSortMoves;
+    // the concurrent phase before this blocking GC, if there was one. work is summed over threads.
+    int64_t ccStartTicks;
+    int64_t ccWallTicks;
+    int64_t ccWorkTicks;
+    int64_t ccQuanta;
+    int64_t prepPauseTicks;
+};
+
+// what is needed to log a GC after EE is restarted
+struct SatoriIncrGcSnapshot
+{
+    bool valid;
+    SatoriIncrGcInfo gc;
+    int64_t pauseTicks;
+    int64_t gen2Index;
+    bool relocating;
+    int64_t gen2Regions;
+    int64_t gen2OccupancyKB;
+    int64_t allRegions;
+};
+
+static const int INCR_OUTCOME_NONE = 0;
+static const int INCR_OUTCOME_RELOCATED = 1;
+static const int INCR_OUTCOME_ABANDONED_REFS = 2;
+static const int INCR_OUTCOME_ABANDONED_OOM = 3;
+static const int INCR_OUTCOME_NOTHING_TO_RELOCATE = 4;
+static const int INCR_OUTCOME_NO_CANDIDATES = 5;
+static const int INCR_OUTCOME_REGULAR_INSTEAD = 6;
+static const int INCR_OUTCOME_NO_ROOM = 7;
+
 static const int INCR_ABANDON_REFS = 1;
 static const int INCR_ABANDON_OOM = 2;
+
+static SatoriIncrStats g_incrStats;
+static SatoriIncrGcInfo g_incrGc;
+
+static inline bool IncrStatsEnabled()
+{
+    return VolatileLoadWithoutBarrier(&g_incrStats.state) == 1;
+}
+
+#define INCR_STAT_ADD(field, value) \
+    do { if (IncrStatsEnabled()) Interlocked::ExchangeAdd64((int64_t*)&g_incrStats.field, (int64_t)(value)); } while (0)
+#define INCR_GC_ADD(field, value) \
+    do { if (IncrStatsEnabled()) Interlocked::ExchangeAdd64((int64_t*)&g_incrGc.field, (int64_t)(value)); } while (0)
+#define INCR_TICKS() (IncrStatsEnabled() ? minipal_hires_ticks() : 0)
+
+static void IncrStatsInitialize()
+{
+    GCConfigStringHolder dir = GCConfig::GetIncrStatsDir();
+    int state = -1;
+    if (dir.Get() && *dir.Get())
+    {
+        uint32_t pid = GCToOSInterface::GetCurrentProcessId();
+        snprintf(g_incrStats.path, sizeof(g_incrStats.path), "%s/incr-%u.txt", dir.Get(), pid);
+        snprintf(g_incrStats.logPath, sizeof(g_incrStats.logPath), "%s/incr-%u.log", dir.Get(), pid);
+        state = 1;
+    }
+
+    VolatileStore(&g_incrStats.state, state);
+}
+
+static void IncrStatsWriteSummary(bool force)
+{
+    // at most every 250 msec. only one thread wins the right to dump.
+    size_t now = (size_t)minipal_hires_ticks();
+    size_t last = VolatileLoadWithoutBarrier(&g_incrStats.lastDumpTicks);
+    if (!force &&
+        (now - last < (size_t)minipal_hires_tick_frequency() / 4 ||
+         Interlocked::CompareExchange(&g_incrStats.lastDumpTicks, now, last) != last))
+    {
+        return;
+    }
+
+    FILE* f = fopen(g_incrStats.path, "w");
+    if (!f)
+    {
+        return;
+    }
+
+    SatoriIncrStats& s = g_incrStats;
+#define INCR_DUMP(name) fprintf(f, #name "=%lld\n", (long long)s.name)
+#define INCR_DUMP_GEN(name) \
+    fprintf(f, #name "1=%lld\n", (long long)s.name[1]); \
+    fprintf(f, #name "2=%lld\n", (long long)s.name[2])
+
+    fprintf(f, "pid=%u\n", GCToOSInterface::GetCurrentProcessId());
+    fprintf(f, "tickFrequency=%lld\n", (long long)minipal_hires_tick_frequency());
+    INCR_DUMP_GEN(gcCount);
+    INCR_DUMP_GEN(pauseTicks);
+    INCR_DUMP_GEN(pauseMaxTicks);
+    INCR_DUMP_GEN(markTicks);
+    INCR_DUMP_GEN(planTicks);
+    INCR_DUMP_GEN(relocateTicks);
+    INCR_DUMP_GEN(updateTicks);
+    INCR_DUMP_GEN(compactingCount);
+    INCR_DUMP_GEN(ccCount);
+    INCR_DUMP_GEN(ccWallTicks);
+    INCR_DUMP_GEN(ccWorkTicks);
+    INCR_DUMP_GEN(ccQuanta);
+    INCR_DUMP_GEN(prepPauseTicks);
+    INCR_DUMP_GEN(prepPauseMaxTicks);
+    INCR_DUMP_GEN(heapSamples);
+    INCR_DUMP_GEN(heapAllRegionsSum);
+    INCR_DUMP_GEN(heapGen2RegionsSum);
+    INCR_DUMP_GEN(heapGen2OccupancySum);
+    INCR_DUMP_GEN(heapTotalOccupancySum);
+    INCR_DUMP(lastAllRegions);
+    INCR_DUMP(lastGen2Regions);
+    INCR_DUMP(lastGen2Occupancy);
+    INCR_DUMP(lastTotalOccupancy);
+    INCR_DUMP(incrGen2Gcs);
+    INCR_DUMP(incrNoCandidates);
+    INCR_DUMP(incrAttempts);
+    INCR_DUMP(incrAbandonedRefs);
+    INCR_DUMP(incrAbandonedOom);
+    INCR_DUMP(incrNothingToRelocate);
+    INCR_DUMP(incrRegularInstead);
+    INCR_DUMP(incrNoRoom);
+    INCR_DUMP(incrRelocated);
+    INCR_DUMP(incrSourcesSelected);
+    INCR_DUMP(incrSourceObjs);
+    INCR_DUMP(incrSourceBytes);
+    INCR_DUMP(incrTargetsSelected);
+    INCR_DUMP(incrDroppedPinned);
+    INCR_DUMP(incrDroppedPopular);
+    INCR_DUMP(incrRecordedRefs);
+    INCR_DUMP(incrRegionsRelocated);
+    INCR_DUMP(incrObjsRelocated);
+    INCR_DUMP(incrBytesRelocated);
+    INCR_DUMP(incrFreshTargets);
+    INCR_DUMP(incrSourcesSkipped);
+    INCR_DUMP(incrRefsExamined);
+    INCR_DUMP(incrRefsUpdated);
+    INCR_DUMP(incrCopiedObjs);
+    INCR_DUMP(incrVerifyFailed);
+    INCR_DUMP(incrSelectTicks);
+    INCR_DUMP(incrPlanTicks);
+    INCR_DUMP(incrRelocateTicks);
+    INCR_DUMP(incrUpdateRootsTicks);
+    INCR_DUMP(incrUpdateRecordedTicks);
+    INCR_DUMP(incrUpdateRegionsTicks);
+    INCR_DUMP(incrFreeTicks);
+    INCR_DUMP(incrPauseTicks);
+    INCR_DUMP(incrPauseMaxTicks);
+    INCR_DUMP(incrPauseCount);
+#undef INCR_DUMP_GEN
+#undef INCR_DUMP
+    fclose(f);
+}
 
 // The index of the candidate is kept in the top byte of a recorded location (heap addresses use far fewer than 56 bits).
 // This lets us skip, without reading the location, references to candidates that end up not relocated.
@@ -236,6 +527,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_incrMeasuredTicks = 0;
     m_incrRootsStartTicks = 0;
     m_incrRootsDoneTicks = 0;
+    IncrStatsInitialize();
 
     m_gcState = GC_STATE_NONE;
     m_barrierState = BARRIER_STATE_NOT_CONCURRENT;
@@ -634,6 +926,11 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
         // which happens before the blocking stage
         if (newState == GC_STATE_CONCURRENT)
         {
+            if (IncrStatsEnabled())
+            {
+                g_incrGc.ccStartTicks = minipal_hires_ticks();
+            }
+
             m_ccStackMarkState = CC_MARK_STATE_NONE;
             IncrementRootScanTicket();
             m_concurrentCardsDone = (generation == 2);
@@ -870,7 +1167,14 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
         Interlocked::Increment(&m_ccHelpersNum);
         if (m_concurrentCleaningState != CC_CLEAN_STATE_WAIT_FOR_HELPERS)
         {
+            // minQuantum is used only while in a quantum already, waiting for stack marking. do not count that twice.
+            int64_t helpStart = minQuantum ? 0 : INCR_TICKS();
             moreWork = HelpOnceCoreInner(minQuantum);
+            if (helpStart)
+            {
+                INCR_GC_ADD(ccWorkTicks, minipal_hires_ticks() - helpStart);
+                INCR_GC_ADD(ccQuanta, 1);
+            }
         }
         Interlocked::Decrement(&m_ccHelpersNum);
     }
@@ -1146,6 +1450,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
         _ASSERTE(m_reusableRegionsAlternate->IsEmpty());
 
         size_t blockingDuration = (minipal_hires_ticks() - blockingStart);
+        INCR_GC_ADD(prepPauseTicks, blockingDuration);
         m_CurrentGcInfo->m_pauseDurations[1] = blockingDuration / m_osTicksPerMicro;
         m_gcAccmulatingDurationUsecs[m_condemnedGeneration] += blockingDuration / m_osTicksPerMicro;
         UpdateGcCounters(blockingStart);
@@ -1451,8 +1756,13 @@ void SatoriRecycler::BlockingCollect1()
     m_CurrentGcInfo = nullptr;
     UpdateGcCounters(blockingStart);
 
+    SatoriIncrGcSnapshot incrSnapshot;
+    IncrStatsOnBlockingGcEnd(1, (int64_t)blockingDuration, incrSnapshot);
+
     // restart VM
     GCToEEInterface::RestartEE(true);
+
+    IncrStatsWriteLog(incrSnapshot);
 }
 
 NOINLINE
@@ -1476,8 +1786,13 @@ void SatoriRecycler::BlockingCollect2()
     m_CurrentGcInfo = nullptr;
     UpdateGcCounters(blockingStart);
 
+    SatoriIncrGcSnapshot incrSnapshot;
+    IncrStatsOnBlockingGcEnd(2, (int64_t)blockingDuration, incrSnapshot);
+
     // restart VM
     GCToEEInterface::RestartEE(true);
+
+    IncrStatsWriteLog(incrSnapshot);
 }
 
 NOINLINE
@@ -1557,7 +1872,8 @@ void SatoriRecycler::BlockingCollectImpl()
 
     _ASSERTE(m_deferredSweepRegions->IsEmpty());
 
-    // now we know survivorship after the last GC
+    IncrStatsOnBlockingGcStart();
+
     // and we can figure what we want to do in this GC and when we will do the next one
     // NOTE: AdjustHeuristics is in the context of previous GC, which is complete by now and m_occupancy
     //       was updated accordingly.
@@ -1582,10 +1898,22 @@ void SatoriRecycler::BlockingCollectImpl()
         RegionCount() :
         Gen1RegionCount();
 
+    int64_t markStartTicks = INCR_TICKS();
     BlockingMark();
+    int64_t planStartTicks = INCR_TICKS();
     Plan();
+    int64_t relocateStartTicks = INCR_TICKS();
     Relocate();
+    int64_t updateStartTicks = INCR_TICKS();
     Update();
+    if (IncrStatsEnabled())
+    {
+        int64_t endTicks = minipal_hires_ticks();
+        g_incrGc.phaseMarkTicks = planStartTicks - markStartTicks;
+        g_incrGc.phasePlanTicks = relocateStartTicks - planStartTicks;
+        g_incrGc.phaseRelocateTicks = updateStartTicks - relocateStartTicks;
+        g_incrGc.phaseUpdateTicks = endTicks - updateStartTicks;
+    }
 
     // we are done using workers.
     // undo the adjustment if we had to do one
@@ -4397,6 +4725,11 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool exis
     SatoriRegion* newRegion = m_heap->Allocator()->GetRegion(Satori::REGION_SIZE_GRANULARITY);
     if (newRegion)
     {
+        if (m_isIncrementalRelocation)
+        {
+            INCR_GC_ADD(freshTargets, 1);
+        }
+
         newRegion->SetGeneration(m_condemnedGeneration);
         newRegion->DoNotSweep() = true;
         if (newRegion->Generation() == 2)
@@ -4527,6 +4860,11 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
             relocationTarget = GetOrAddRelocationTarget(relocationSource, maxBytesToCopy);
             if (!relocationTarget)
             {
+                if (m_isIncrementalRelocation)
+                {
+                    INCR_GC_ADD(sourcesSkipped, 1);
+                }
+
                 return;
             }
         }
@@ -4535,6 +4873,11 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
             // we could not get a region. we must be low on available memory.
             // we can still try using the source region as a target for other relocations.
             AddRelocationTarget(relocationSource);
+            if (m_isIncrementalRelocation)
+            {
+                INCR_GC_ADD(sourcesSkipped, 1);
+            }
+
             return;
         }
     }
@@ -4547,6 +4890,11 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         relocationTarget->StopAllocating();
         AddRelocationTarget(relocationTarget);
         AddRelocationTarget(relocationSource);
+        if (m_isIncrementalRelocation)
+        {
+            INCR_GC_ADD(sourcesSkipped, 1);
+        }
+
         return;
     }
 
@@ -4627,6 +4975,9 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
             m_incrCopyRanges[index].m_region = relocationTarget;
             m_incrCopyRanges[index].m_start = dstOrig;
             m_incrCopyRanges[index].m_end = dst;
+            INCR_GC_ADD(regionsRelocated, 1);
+            INCR_GC_ADD(objsRelocated, objectsRelocated);
+            INCR_GC_ADD(bytesRelocated, used);
         }
 
         if (relocationIsPromotion)
@@ -4660,6 +5011,8 @@ void SatoriRecycler::Update()
         // Nothing was actually relocated, thus there is nothing to update.
         m_isIncrementalRelocation = false;
         FreeRecordedRefs();
+        INCR_STAT_ADD(incrNothingToRelocate, 1);
+        g_incrGc.outcome = INCR_OUTCOME_NOTHING_TO_RELOCATE;
     }
 
     int64_t updateRootsStartTicks = m_isIncrementalRelocation ? minipal_hires_ticks() : 0;
@@ -4680,13 +5033,28 @@ void SatoriRecycler::Update()
     RunWithHelp(&SatoriRecycler::UpdateRootsWorker);
     if (m_isIncrementalRelocation)
     {
-        m_incrMeasuredTicks += minipal_hires_ticks() - updateRootsStartTicks;
+        int64_t updateRootsTicks = minipal_hires_ticks() - updateRootsStartTicks;
+        m_incrMeasuredTicks += updateRootsTicks;
+        g_incrGc.updateRootsTicks = updateRootsTicks;
+        INCR_STAT_ADD(incrRelocated, 1);
+        INCR_STAT_ADD(incrRegionsRelocated, g_incrGc.regionsRelocated);
+        INCR_STAT_ADD(incrObjsRelocated, g_incrGc.objsRelocated);
+        INCR_STAT_ADD(incrBytesRelocated, g_incrGc.bytesRelocated);
+        INCR_STAT_ADD(incrFreshTargets, g_incrGc.freshTargets);
+        INCR_STAT_ADD(incrSourcesSkipped, g_incrGc.sourcesSkipped);
+        INCR_STAT_ADD(incrRefsExamined, g_incrGc.refsExamined);
+        INCR_STAT_ADD(incrRefsUpdated, g_incrGc.refsUpdated);
+        INCR_STAT_ADD(incrCopiedObjs, g_incrGc.copiedObjs);
 
 #if _DEBUG
         VerifyIncrementalRelocation();
+#else
+        if (SatoriUtil::IsIncrementalRelocationVerify())
+        {
+            VerifyIncrementalRelocation();
+        }
 #endif
     }
-
     // the promoted-region drain above is lock-free
     m_relocatedToHigherGenRegions->ResetAfterUnsafeDrain();
 
@@ -4718,7 +5086,12 @@ void SatoriRecycler::Update()
     // enable accumulating and reporting
     m_occupancyReportingEnabled = true;
 
+    int64_t updateRegionsStartTicks = INCR_TICKS();
     RunWithHelp(&SatoriRecycler::UpdateRegionsWorker);
+    if (m_isIncrementalRelocation)
+    {
+        g_incrGc.updateRegionsTicks = INCR_TICKS() - updateRegionsStartTicks;
+    }
 
     // the drain above leaves tails stale, the queues are reusable only after this
     for (int i = 0; i < Satori::FREELIST_COUNT; i++)
@@ -4735,7 +5108,9 @@ void SatoriRecycler::Update()
     PromoteHandlesAndFreeRelocatedRegions();
     if (m_isIncrementalRelocation)
     {
-        m_incrMeasuredTicks += minipal_hires_ticks() - freeStartTicks;
+        int64_t freeTicks = minipal_hires_ticks() - freeStartTicks;
+        m_incrMeasuredTicks += freeTicks;
+        g_incrGc.freeTicks = freeTicks;
         CalibrateIncrementalRelocation();
     }
 
@@ -4763,6 +5138,7 @@ void SatoriRecycler::UpdateRootsWorker()
         sc._unused1 = &c;
 
         bool updatedRoots = false;
+        int64_t handlesStartTicks = INCR_TICKS();
         SatoriHandlePartitioner::ForEachUnscannedPartition(
             [&](int p)
             {
@@ -4775,6 +5151,7 @@ void SatoriRecycler::UpdateRootsWorker()
             }
         );
 
+        int64_t stacksStartTicks = INCR_TICKS();
         if (SatoriUtil::IsConservativeMode())
             //generations are meaningless here, so we pass -1
             GCToEEInterface::GcScanRoots(UpdateFn<true>, -1, -1, &sc);
@@ -4784,6 +5161,7 @@ void SatoriRecycler::UpdateRootsWorker()
         // the scan sets the thread that it crawls, if any.
         updatedRoots |= sc.thread_under_crawl != nullptr;
 
+        int64_t fQueueStartTicks = INCR_TICKS();
         SatoriFinalizationQueue* fQueue = m_heap->FinalizationQueue();
         if (fQueue->TryUpdateScanTicket(this->GetRootScanTicket()))
         {
@@ -4813,6 +5191,14 @@ void SatoriRecycler::UpdateRootsWorker()
                 Interlocked::CompareExchange(&m_incrRootsDoneTicks, now, done) != done)
             {
             }
+        }
+
+        if (m_isIncrementalRelocation && IncrStatsEnabled())
+        {
+            int64_t endTicks = minipal_hires_ticks();
+            INCR_GC_ADD(updHandlesTicks, stacksStartTicks - handlesStartTicks);
+            INCR_GC_ADD(updStacksTicks, fQueueStartTicks - stacksStartTicks);
+            INCR_GC_ADD(updFQTicks, endTicks - fQueueStartTicks);
         }
 
         _ASSERTE(c.m_WorkChunk == nullptr);
@@ -5364,21 +5750,171 @@ void SatoriRecycler::UpdateGcCounters(int64_t blockingStart)
 // ---- incremental relocation ----
 //
 
+void SatoriRecycler::IncrStatsOnBlockingGcStart()
+{
+    if (!IncrStatsEnabled())
+    {
+        return;
+    }
+
+    // one thread is doing this, while EE is stopped, so plain updates are ok.
+    SatoriIncrStats& s = g_incrStats;
+    if (g_incrGc.ccStartTicks)
+    {
+        g_incrGc.ccWallTicks = minipal_hires_ticks() - g_incrGc.ccStartTicks;
+    }
+
+    int g = m_condemnedGeneration;
+    int64_t allRegions = (int64_t)RegionCount();
+    int64_t gen2Regions = (int64_t)Gen2RegionCount();
+    int64_t gen2Occupancy = (int64_t)m_occupancy[2];
+    int64_t totalOccupancy = (int64_t)GetTotalOccupancy();
+
+    s.heapSamples[g]++;
+    s.heapAllRegionsSum[g] += allRegions;
+    s.heapGen2RegionsSum[g] += gen2Regions;
+    s.heapGen2OccupancySum[g] += gen2Occupancy;
+    s.heapTotalOccupancySum[g] += totalOccupancy;
+    s.lastAllRegions = allRegions;
+    s.lastGen2Regions = gen2Regions;
+    s.lastGen2Occupancy = gen2Occupancy;
+    s.lastTotalOccupancy = totalOccupancy;
+}
+
+void SatoriRecycler::IncrStatsOnBlockingGcEnd(int generation, int64_t pauseTicks, SatoriIncrGcSnapshot& snapshot)
+{
+    snapshot.valid = false;
+    if (!IncrStatsEnabled())
+    {
+        return;
+    }
+
+    SatoriIncrStats& s = g_incrStats;
+    SatoriIncrGcInfo& gc = g_incrGc;
+
+    s.gcCount[generation]++;
+    s.pauseTicks[generation] += pauseTicks;
+    if (pauseTicks > s.pauseMaxTicks[generation])
+    {
+        s.pauseMaxTicks[generation] = pauseTicks;
+    }
+
+    s.markTicks[generation] += gc.phaseMarkTicks;
+    s.planTicks[generation] += gc.phasePlanTicks;
+    s.relocateTicks[generation] += gc.phaseRelocateTicks;
+    s.updateTicks[generation] += gc.phaseUpdateTicks;
+    if (m_isRelocating)
+    {
+        s.compactingCount[generation]++;
+    }
+
+    if (gc.ccStartTicks)
+    {
+        s.ccCount[generation]++;
+        s.ccWallTicks[generation] += gc.ccWallTicks;
+        s.ccWorkTicks[generation] += gc.ccWorkTicks;
+        s.ccQuanta[generation] += gc.ccQuanta;
+        s.prepPauseTicks[generation] += gc.prepPauseTicks;
+        if (gc.prepPauseTicks > s.prepPauseMaxTicks[generation])
+        {
+            s.prepPauseMaxTicks[generation] = gc.prepPauseTicks;
+        }
+    }
+
+    if (generation == 2)
+    {
+        if (gc.outcome == INCR_OUTCOME_RELOCATED)
+        {
+            s.incrPauseCount++;
+            s.incrPauseTicks += pauseTicks;
+            if (pauseTicks > s.incrPauseMaxTicks)
+            {
+                s.incrPauseMaxTicks = pauseTicks;
+            }
+
+            s.incrPlanTicks += gc.phasePlanTicks;
+            s.incrRelocateTicks += gc.phaseRelocateTicks;
+            s.incrUpdateRootsTicks += gc.updateRootsTicks;
+            s.incrUpdateRecordedTicks += gc.updateRecordedTicks;
+            s.incrUpdateRegionsTicks += gc.updateRegionsTicks;
+            s.incrFreeTicks += gc.freeTicks;
+        }
+
+        // The log is written after EE is restarted, when the next GC could already be starting,
+        // so it is written from a snapshot.
+        snapshot.valid = true;
+        snapshot.gc = gc;
+        snapshot.pauseTicks = pauseTicks;
+        snapshot.gen2Index = (int64_t)m_gcCount[2];
+        snapshot.relocating = m_isRelocating;
+        snapshot.gen2Regions = s.lastGen2Regions;
+        snapshot.gen2OccupancyKB = s.lastGen2Occupancy / 1024;
+        snapshot.allRegions = s.lastAllRegions;
+    }
+
+    g_incrGc = {};
+}
+
+void SatoriRecycler::IncrStatsWriteLog(const SatoriIncrGcSnapshot& snapshot)
+{
+    if (!snapshot.valid)
+    {
+        return;
+    }
+
+    const SatoriIncrGcInfo& gc = snapshot.gc;
+    FILE* f = fopen(g_incrStats.logPath, "a");
+    if (f)
+    {
+        double us = 1e6 / (double)minipal_hires_tick_frequency();
+        fprintf(f,
+            "gen2 idx=%lld pauseUs=%.0f markUs=%.0f planUs=%.0f relocUs=%.0f updateUs=%.0f outcome=%d "
+            "src=%d srcObjs=%lld srcKB=%lld eligible=%lld eligibleGainKB=%lld tgt=%d dropped=%d droppedPop=%d recorded=%lld skipped=%lld fresh=%lld "
+            "relocRegions=%lld relocObjs=%lld relocKB=%lld copied=%lld examined=%lld updated=%lld "
+            "selectUs=%.0f updRootsUs=%.0f updRecUs=%.0f updRegionsUs=%.0f freeUs=%.0f updHandlesUs=%.0f updStacksUs=%.0f updFQUs=%.0f "
+            "gen2Regions=%lld gen2OccKB=%lld allRegions=%lld compacting=%d "
+            "gen2SpaceKB=%lld keptGainKB=%lld budgetUs=%lld unitsBudgetK=%lld plannedK=%lld predUs=%lld measUs=%lld rootsUs=%lld "
+            "fixUs=%lld perMUnitsUs=%lld refsPerObjX100=%lld "
+            "pubChunks=%lld merges=%lld freeRecUs=%.0f scanUs=%.0f scanRegions=%lld sortMoves=%lld "
+            "ccWallUs=%.0f ccWorkUs=%.0f ccQuanta=%lld prepUs=%.0f\n",
+            (long long)snapshot.gen2Index, snapshot.pauseTicks * us, gc.phaseMarkTicks * us, gc.phasePlanTicks * us,
+            gc.phaseRelocateTicks * us, gc.phaseUpdateTicks * us, gc.outcome,
+            gc.sources, (long long)gc.sourceObjs, (long long)(gc.sourceBytes / 1024), (long long)gc.eligible, (long long)(gc.eligibleGain / 1024),
+            gc.targets, gc.dropped, gc.droppedPopular,
+            (long long)gc.recordedRefs, (long long)gc.sourcesSkipped, (long long)gc.freshTargets,
+            (long long)gc.regionsRelocated, (long long)gc.objsRelocated, (long long)(gc.bytesRelocated / 1024),
+            (long long)gc.copiedObjs, (long long)gc.refsExamined, (long long)gc.refsUpdated,
+            gc.selectTicks * us, gc.updateRootsTicks * us, gc.updateRecordedTicks * us, gc.updateRegionsTicks * us,
+            gc.freeTicks * us, gc.updHandlesTicks * us, gc.updStacksTicks * us, gc.updFQTicks * us,
+            (long long)snapshot.gen2Regions, (long long)snapshot.gen2OccupancyKB, (long long)snapshot.allRegions,
+            snapshot.relocating ? 1 : 0,
+            (long long)(gc.gen2Space / 1024), (long long)(gc.keptGain / 1024), (long long)gc.budgetUs, (long long)(gc.unitsBudget / 1000),
+            (long long)(gc.plannedUnits / 1000), (long long)gc.predictedUs, (long long)gc.measuredUs, (long long)gc.rootsUs,
+            (long long)gc.modelFixedUs, (long long)gc.modelUsPerMUnits, (long long)gc.modelRefsPerObjX100,
+            (long long)gc.publishedChunks, (long long)gc.spillMerges, gc.freeRecordedTicks * us,
+            gc.selectScanTicks * us, (long long)gc.selectRegions, (long long)gc.selectSortMoves,
+            gc.ccWallTicks * us, gc.ccWorkTicks * us, (long long)gc.ccQuanta, gc.prepPauseTicks * us);
+        fclose(f);
+    }
+
+    IncrStatsWriteSummary(/* force */ false);
+}
+
 struct IncrEntry
 {
     SatoriRegion* m_region;
     size_t m_key;
 };
 
-// keeps the list sorted by key, the smallest first, and no longer than capacity.
-static void IncrInsertSmallest(IncrEntry* list, int& count, int capacity, SatoriRegion* region, size_t key)
+// keeps the list sorted by key, the smallest first, and no longer than capacity. Returns how many entries were moved.
+static int IncrInsertSmallest(IncrEntry* list, int& count, int capacity, SatoriRegion* region, size_t key)
 {
     int i = count;
     if (count == capacity)
     {
         if (key >= list[count - 1].m_key)
         {
-            return;
+            return 0;
         }
 
         // drop the largest
@@ -5389,14 +5925,17 @@ static void IncrInsertSmallest(IncrEntry* list, int& count, int capacity, Satori
         count++;
     }
 
+    int moves = 0;
     while (i > 0 && list[i - 1].m_key > key)
     {
         list[i] = list[i - 1];
         i--;
+        moves++;
     }
 
     list[i].m_region = region;
     list[i].m_key = key;
+    return moves;
 }
 
 // A target needs a free span that could take some of the relocated objects.
@@ -5461,6 +6000,8 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
         return;
     }
 
+    int64_t startTicks = INCR_TICKS();
+
     _ASSERTE(m_recordedRefs->IsEmpty());
     m_incrRecordedLast = nullptr;
     m_incrRecordedRefs = 0;
@@ -5472,13 +6013,17 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     IncrEntry targets[INCR_MAX_REGIONS * 2];
     int sourceCount = 0;
     int targetCount = 0;
+    int64_t eligibleCount = 0;
     size_t eligibleGain = 0;
     size_t gen2Space = 0;
     size_t gen2Occupancy = 0;
     double refsPerObj = m_incrRefsPerObj;
+    int64_t visitedRegions = 0;
+    int64_t sortMoves = 0;
 
     auto considerRegion = [&](SatoriRegion* region)
     {
+        visitedRegions++;
         if (region->Generation() != 2)
         {
             return;
@@ -5516,18 +6061,23 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
         {
             size_t gain = IncrRelocationGain(occupancy);
             size_t cost = IncrRelocationCost(objCount, occupancy, (size_t)(objCount * refsPerObj));
+            eligibleCount++;
             eligibleGain += gain;
-            IncrInsertSmallest(sources, sourceCount, INCR_MAX_REGIONS, region, cost * 65536 / gain);
+            sortMoves += IncrInsertSmallest(sources, sourceCount, INCR_MAX_REGIONS, region, cost * 65536 / gain);
         }
 
         if (bucket >= INCR_MIN_TARGET_BUCKET)
         {
-            IncrInsertSmallest(targets, targetCount, INCR_MAX_REGIONS * 2, region, (size_t)(Satori::FREELIST_COUNT - bucket));
+            sortMoves += IncrInsertSmallest(targets, targetCount, INCR_MAX_REGIONS * 2, region, (size_t)(Satori::FREELIST_COUNT - bucket));
         }
     };
 
+    int64_t scanStartTicks = INCR_TICKS();
     m_tenuredRegions->ForEachRegion(considerRegion);
     m_tenuredFinalizationTrackingRegions->ForEachRegion(considerRegion);
+    g_incrGc.selectScanTicks = INCR_TICKS() - scanStartTicks;
+    g_incrGc.selectRegions = visitedRegions;
+    g_incrGc.selectSortMoves = sortMoves;
 
     // The budget is the pause that incremental relocation may add. Outside of low latency mode, it may grow with the heap,
     // since the alternative - regular relocation - costs in proportion to the heap.
@@ -5558,6 +6108,7 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     // sources, best first, as long as the budget allows
     size_t unitsLeft = unitsBudget;
     size_t selectedUnits = 0;
+    size_t selectedBytes = 0;
     for (int i = 0; i < sourceCount && m_incrSourceCount < maxSources; i++)
     {
         SatoriRegion* region = sources[i].m_region;
@@ -5572,6 +6123,7 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
 
         unitsLeft -= cost;
         selectedUnits += cost;
+        selectedBytes += occupancy;
         m_incrSelectedObjs += objCount;
         m_incrSourceObjs[m_incrSourceCount] = objCount;
         m_incrSourceBytes[m_incrSourceCount] = occupancy;
@@ -5612,6 +6164,44 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
         }
     }
 
+    int64_t ticks = INCR_TICKS() - startTicks;
+    INCR_STAT_ADD(incrGen2Gcs, 1);
+    INCR_STAT_ADD(incrSelectTicks, ticks);
+    g_incrGc.selectTicks = ticks;
+    g_incrGc.eligible = eligibleCount;
+    g_incrGc.eligibleGain = (int64_t)eligibleGain;
+    g_incrGc.gen2Space = (int64_t)gen2Space;
+    g_incrGc.sources = m_incrSourceCount;
+    g_incrGc.targets = m_incrTargetCount;
+    g_incrGc.sourceObjs = (int64_t)m_incrSelectedObjs;
+    g_incrGc.sourceBytes = (int64_t)selectedBytes;
+    g_incrGc.budgetUs = (int64_t)budgetUs;
+    g_incrGc.unitsBudget = (int64_t)unitsBudget;
+    g_incrGc.modelFixedUs = (int64_t)m_incrFixedUs;
+    g_incrGc.modelUsPerMUnits = (int64_t)(m_incrUsPerUnit * 1000000);
+    g_incrGc.modelRefsPerObjX100 = (int64_t)(m_incrRefsPerObj * 100);
+    if (m_incrSourceCount == 0)
+    {
+        if (noRoom)
+        {
+            INCR_STAT_ADD(incrNoRoom, 1);
+            g_incrGc.outcome = INCR_OUTCOME_NO_ROOM;
+        }
+        else
+        {
+            INCR_STAT_ADD(incrNoCandidates, 1);
+            g_incrGc.outcome = INCR_OUTCOME_NO_CANDIDATES;
+        }
+    }
+    else
+    {
+        INCR_STAT_ADD(incrAttempts, 1);
+        INCR_STAT_ADD(incrSourcesSelected, m_incrSourceCount);
+        INCR_STAT_ADD(incrSourceObjs, m_incrSelectedObjs);
+        INCR_STAT_ADD(incrSourceBytes, selectedBytes);
+        INCR_STAT_ADD(incrTargetsSelected, m_incrTargetCount);
+    }
+
     // planning will decide how to relocate, even if there are no candidates.
     m_incrSelectionDone = true;
 
@@ -5646,6 +6236,7 @@ void SatoriRecycler::PublishRecordedRefs(SatoriWorkChunk*& chunk)
     int64_t total = Interlocked::ExchangeAdd64(&m_incrRecordedRefs, (int64_t)count) + (int64_t)count;
     if (count < INCR_SPILL_THRESHOLD)
     {
+        INCR_GC_ADD(spillMerges, 1);
         SatoriLockHolder holder(&m_incrSpillLock);
         if (m_incrSpill == nullptr)
         {
@@ -5699,6 +6290,8 @@ void SatoriRecycler::PushRecordedChunk(SatoriWorkChunk* chunk)
     {
         m_incrRecordedLast = chunk;
     }
+
+    INCR_GC_ADD(publishedChunks, 1);
 }
 
 // Returns false if we are no longer recording.
@@ -5744,6 +6337,7 @@ void SatoriRecycler::AddRecordedRefCounts(const int32_t* counts)
 
 void SatoriRecycler::FreeRecordedRefs()
 {
+    int64_t startTicks = INCR_TICKS();
     if (m_incrSpill)
     {
         PushRecordedChunk(m_incrSpill);
@@ -5761,6 +6355,10 @@ void SatoriRecycler::FreeRecordedRefs()
 
     m_incrRecordedLast = nullptr;
     m_incrRecordedRefs = 0;
+    if (IncrStatsEnabled())
+    {
+        g_incrGc.freeRecordedTicks += minipal_hires_ticks() - startTicks;
+    }
 }
 
 // This is in place of PlanRegions, and is called when marking is done.
@@ -5805,6 +6403,8 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
     size_t keepTotalCost = 0;
     size_t keepTotalGain = 0;
     int keepCount = 0;
+    int droppedPinned = 0;
+    int droppedCostly = 0;
 
     for (int i = 0; i < m_incrSourceCount; i++)
     {
@@ -5818,6 +6418,7 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
         // pinned candidates are not movable. we found that while marking stacks, which could not be known earlier.
         if (region->HasPinnedObjects())
         {
+            droppedPinned++;
             continue;
         }
 
@@ -5850,7 +6451,16 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
         keepIndex[worst] = keepIndex[keepCount];
         keepCost[worst] = keepCost[keepCount];
         keepGain[worst] = keepGain[keepCount];
+        droppedCostly++;
     }
+
+    g_incrGc.dropped = droppedPinned;
+    g_incrGc.droppedPopular = droppedCostly;
+    g_incrGc.recordedRefs = recorded;
+    g_incrGc.keptGain = (int64_t)keepTotalGain;
+    INCR_STAT_ADD(incrDroppedPinned, droppedPinned);
+    INCR_STAT_ADD(incrDroppedPopular, droppedCostly);
+    INCR_STAT_ADD(incrRecordedRefs, recorded);
 
     // Incremental relocation keeps up if not too much reclaimable space remains in sparse Gen2 regions.
     // Otherwise, if we can, we relocate regularly.
@@ -5862,6 +6472,8 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
         m_incrSourceCount = 0;
         m_incrTargetCount = 0;
         m_incrSelectionDone = false;
+        INCR_STAT_ADD(incrRegularInstead, 1);
+        g_incrGc.outcome = INCR_OUTCOME_REGULAR_INSTEAD;
         return false;
     }
 
@@ -5919,9 +6531,31 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
         // what we expect this to cost, and the start of measuring what it actually costs.
         m_incrPlannedUnits = keepTotalCost;
         m_incrMeasuredTicks = minipal_hires_ticks() - startTicks;
+        g_incrGc.plannedUnits = (int64_t)keepTotalCost;
+        g_incrGc.predictedUs = (int64_t)(m_incrFixedUs + m_incrUsPerUnit * keepTotalCost);
+        g_incrGc.outcome = INCR_OUTCOME_RELOCATED;
     }
     else
     {
+        if (m_incrSourceCount > 0)
+        {
+            if (reason == INCR_ABANDON_REFS || (reason == 0 && droppedCostly > 0))
+            {
+                INCR_STAT_ADD(incrAbandonedRefs, 1);
+                g_incrGc.outcome = INCR_OUTCOME_ABANDONED_REFS;
+            }
+            else if (reason == INCR_ABANDON_OOM)
+            {
+                INCR_STAT_ADD(incrAbandonedOom, 1);
+                g_incrGc.outcome = INCR_OUTCOME_ABANDONED_OOM;
+            }
+            else
+            {
+                INCR_STAT_ADD(incrNothingToRelocate, 1);
+                g_incrGc.outcome = INCR_OUTCOME_NOTHING_TO_RELOCATE;
+            }
+        }
+
         FreeRecordedRefs();
     }
 
@@ -5937,6 +6571,8 @@ void SatoriRecycler::CalibrateIncrementalRelocation()
     double usPerTick = 1000000.0 / (double)minipal_hires_tick_frequency();
     double measuredUs = (double)m_incrMeasuredTicks * usPerTick;
     double rootsUs = (double)(m_incrRootsDoneTicks - m_incrRootsStartTicks) * usPerTick;
+    g_incrGc.measuredUs = (int64_t)measuredUs;
+    g_incrGc.rootsUs = (int64_t)rootsUs;
 
     // The fixed part is updating roots, which we measure. What else was on the pause is per unit.
     IncrCalibrate(m_incrFixedUs, m_incrFixedSamples, max(rootsUs, 1.0));
@@ -5952,6 +6588,10 @@ void SatoriRecycler::CalibrateIncrementalRelocation()
 void SatoriRecycler::UpdateRecordedRefsWorker()
 {
     _ASSERTE(m_isIncrementalRelocation);
+    int64_t startTicks = INCR_TICKS();
+    int64_t examined = 0;
+    int64_t updated = 0;
+    int64_t copied = 0;
 
     // The copies have references to what was in the relocated regions. There are not a lot of copies.
     int rangeCount = m_incrCopyRangeCount;
@@ -5969,6 +6609,7 @@ void SatoriRecycler::UpdateRecordedRefsWorker()
         {
             size_t size = o->Size();
             range.m_region->UpdatePointersInObject(o, size);
+            copied++;
             o = (SatoriObject*)(o->Start() + size);
         }
     }
@@ -6001,6 +6642,7 @@ void SatoriRecycler::UpdateRecordedRefsWorker()
                 }
 
                 SatoriObject** ref = (SatoriObject**)(entry & INCR_LOCATION_MASK);
+                examined++;
 
                 // someone else could be updating the same location
                 SatoriObject* child = VolatileLoadWithoutBarrier(ref);
@@ -6008,6 +6650,7 @@ void SatoriRecycler::UpdateRecordedRefsWorker()
                 if (child && child->IsRelocatedTo(&newLocation))
                 {
                     VolatileStoreWithoutBarrier(ref, newLocation);
+                    updated++;
                 }
             }
 
@@ -6017,9 +6660,16 @@ void SatoriRecycler::UpdateRecordedRefsWorker()
 
         m_heap->Allocator()->ReturnWorkChunks(doneFirst, doneLast);
     }
+
+    if (IncrStatsEnabled())
+    {
+        INCR_GC_ADD(refsExamined, examined);
+        INCR_GC_ADD(refsUpdated, updated);
+        INCR_GC_ADD(copiedObjs, copied);
+        INCR_GC_ADD(updateRecordedTicks, minipal_hires_ticks() - startTicks);
+    }
 }
 
-#if _DEBUG
 // Checks that nothing alive refers to relocated regions. Runs before the relocated regions are freed,
 // so stale references are found here and not as heap corruption later.
 void SatoriRecycler::VerifyIncrementalRelocation()
@@ -6034,7 +6684,11 @@ void SatoriRecycler::VerifyIncrementalRelocation()
                 SatoriObject* child = *ref;
                 if (child && !child->IsExternal() && child->ContainingRegion()->IsRelocated())
                 {
-                    failed++;
+                    if (failed++ < 16)
+                    {
+                        fprintf(stderr, "Stale reference to a relocated region: %p in %p (region %p) refers to %p (region %p)\n",
+                            (void*)ref, (void*)o, (void*)o->ContainingRegion(), (void*)child, (void*)child->ContainingRegion());
+                    }
                 }
             },
             size);
@@ -6088,7 +6742,9 @@ void SatoriRecycler::VerifyIncrementalRelocation()
 
     if (failed)
     {
+        INCR_STAT_ADD(incrVerifyFailed, failed);
+        IncrStatsWriteSummary(/* force */ true);
         _ASSERTE(!"Stale references after incremental relocation");
+        GCToOSInterface::DebugBreak();
     }
 }
-#endif
