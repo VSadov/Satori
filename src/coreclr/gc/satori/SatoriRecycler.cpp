@@ -756,9 +756,16 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
 
     if (!moreWork)
     {
-        // if did not try to clean yet, tell new helpers to not enter
-        if (m_concurrentCleaningState == CC_CLEAN_STATE_NOT_READY)
+        if (m_ccStackMarkState != CC_MARK_STATE_DONE)
         {
+            // Stacks are about to be marked, or are being marked. We will be needed there, so stay around.
+            // Do not tell new helpers to not enter - that would keep them out of marking stacks, and cleaning
+            // could not start before stacks are done anyway, since the marking thread counts as a helper.
+            moreWork = true;
+        }
+        else if (m_concurrentCleaningState == CC_CLEAN_STATE_NOT_READY)
+        {
+            // did not try to clean yet, tell new helpers to not enter.
             // there will be more work soon.
             moreWork = true;
             Interlocked::CompareExchange(&m_concurrentCleaningState, CC_CLEAN_STATE_WAIT_FOR_HELPERS, CC_CLEAN_STATE_NOT_READY);
@@ -793,9 +800,14 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
         m_workList->IsEmpty())
     {
         // was it long enough since last time we saw work?
-        if (start - m_noWorkSince > HelpQuantumOsTicks() * 4)
+        // Helpers that are still inside could be in the middle of something that produces more work, like a card group,
+        // so then we wait longer. How long does not depend on which thread checks.
+        int64_t quietTicks = m_ccHelpersNum > 0 ?
+            m_osTicksPerMilli / 2 :     // 500 usec, 4 worker quanta
+            m_osTicksPerMilli / 16;     // 62.5 usec, 4 app thread quanta
+        if (start - m_noWorkSince > quietTicks)
         {
-            // 4 help quantums without work, seems like we are done
+            // no work for a while, seems like we are done
             // we may have some helpers draining long chains and not sharing anything
             // in such degenerate case we still may want to wrap it up and and block.
             if (Interlocked::CompareExchange(&m_gcState, GC_STATE_BLOCKING, GC_STATE_CONCURRENT) == GC_STATE_CONCURRENT)
