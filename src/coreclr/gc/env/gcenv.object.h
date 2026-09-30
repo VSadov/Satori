@@ -171,7 +171,7 @@ public:
 
     MethodTable * GetGCSafeMethodTable() const
     {
-#if !defined(FEATURE_SATORI_GC)
+#if !defined(FEATURE_SATORI_GC) || defined(FEATURE_JAVAMARSHAL)
 #ifdef HOST_64BIT
         return (MethodTable *)((uintptr_t)m_pMethTab & ~7);
 #else
