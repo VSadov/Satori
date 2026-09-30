@@ -387,6 +387,9 @@ private:
     void DrainAndCleanWorker();
     void MarkStrongReferences();
     void MarkStrongReferencesWorker();
+#ifdef FEATURE_JAVAMARSHAL
+    void MarkBridgeObjects();
+#endif
 
     void Plan();
     void PlanWorker();
