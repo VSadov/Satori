@@ -361,7 +361,7 @@ class Object
         LIMITED_METHOD_CONTRACT;
         SUPPORTS_DAC;
 
-#if !defined(FEATURE_SATORI_GC)
+#if !defined(FEATURE_SATORI_GC) || defined(FEATURE_JAVAMARSHAL)
         // lose GC marking bit and the reserved bit
         // A method table pointer should always be aligned.  During GC we set the least
         // significant bit for marked objects, and the second to least significant

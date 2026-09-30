@@ -550,7 +550,22 @@ Object* SatoriGC::GetContainingObject(void* pInteriorPtr, bool fCollectedGenOnly
 
 void SatoriGC::DiagWalkObject(Object* obj, walk_fn fn, void* context)
 {
-    // NYI
+    if (obj == nullptr)
+    {
+        return;
+    }
+
+    bool keepWalking = true;
+    ((SatoriObject*)obj)->ForEachObjectRef(
+        [&](SatoriObject** ref)
+        {
+            if (keepWalking && *ref != nullptr)
+            {
+                keepWalking = fn(*ref, context);
+            }
+        },
+        /* includeCollectibleAllocator */ true
+    );
 }
 
 void SatoriGC::DiagWalkObject2(Object* obj, walk_fn2 fn, void* context)

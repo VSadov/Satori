@@ -45,7 +45,7 @@ public:
     MethodTable * GetMethodTable() const
         { return m_pEEType; }
     MethodTable* GetGCSafeMethodTable() const
-#if !defined(FEATURE_SATORI_GC)
+#if !defined(FEATURE_SATORI_GC) || defined(FEATURE_JAVAMARSHAL)
 #ifdef TARGET_64BIT
         { return dac_cast<PTR_EEType>((dac_cast<TADDR>(m_pEEType)) & ~((uintptr_t)7)); }
 #else

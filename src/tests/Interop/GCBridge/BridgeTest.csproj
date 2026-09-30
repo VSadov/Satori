@@ -3,8 +3,6 @@
     <!-- Needed for CLRTestTargetUnsupported, CMakeProjectReference, GC.WaitForPendingFinalizers -->
     <RequiresProcessIsolation>true</RequiresProcessIsolation>
     <DisableProjectBuild Condition="'$(RuntimeFlavor)' == 'Mono'">true</DisableProjectBuild>
-    <!-- Satori NYI: Satori does not support the Java GC bridge yet -->
-    <DisableProjectBuild>true</DisableProjectBuild>
     <GCStressIncompatible>true</GCStressIncompatible>
     <CLRTestTargetUnsupported Condition="'$(RuntimeFlavor)' == 'coreclr' and '$(TargetOS)' == 'browser'">true</CLRTestTargetUnsupported>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
