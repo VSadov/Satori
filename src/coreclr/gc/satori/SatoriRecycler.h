@@ -37,6 +37,7 @@ class SatoriHeap;
 class SatoriTrimmer;
 class SatoriRegion;
 class MarkContext;
+struct SatoriIncrGcSnapshot;
 
 struct LastRecordedGcInfo
 {
@@ -539,9 +540,10 @@ private:
     void AbandonIncrementalRelocation();
     void FreeRecordedRefs();
     void UpdateRecordedRefsWorker();
-#if _DEBUG
     void VerifyIncrementalRelocation();
-#endif
+    void IncrStatsOnBlockingGcStart();
+    void IncrStatsOnBlockingGcEnd(int generation, int64_t pauseTicks, SatoriIncrGcSnapshot& snapshot);
+    void IncrStatsWriteLog(const SatoriIncrGcSnapshot& snapshot);
 
     void ASSERT_NO_WORK();
 };

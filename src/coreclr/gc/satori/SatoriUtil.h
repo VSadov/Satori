@@ -655,6 +655,12 @@ public:
         return n < 0 ? 25 : (size_t)n;
     }
 
+    // DOTNET_gcIncrRelocVerify
+    static bool IsIncrementalRelocationVerify()
+    {
+        return (GCConfig::GetIncrRelocVerify());
+    }
+
     static int HandlePartitionsCount()
     {
         int partitionCount = (int)GCConfig::GetHeapCount();
