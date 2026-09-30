@@ -38,6 +38,28 @@ class SatoriTrimmer;
 class SatoriRegion;
 class MarkContext;
 
+// A candidate for incremental relocation, with what selection needs to know about it.
+struct SatoriIncrEntry
+{
+    SatoriRegion* m_region;
+    size_t m_key;
+    uint32_t m_objCount;
+    uint32_t m_occupancy;
+};
+
+// What selection of incremental relocation candidates takes from a Gen2 region.
+struct SatoriIncrRegionInfo
+{
+    size_t m_occupancy;
+    // not large, counts toward Gen2 space
+    bool m_inSpace;
+    bool m_isSource;
+    bool m_isTarget;
+    int m_bucket;
+    size_t m_gain;
+    SatoriIncrEntry m_source;
+};
+
 struct LastRecordedGcInfo
 {
     size_t m_index;
@@ -406,6 +428,41 @@ private:
     size_t m_incrRootsStartTicks;
     volatile size_t m_incrRootsDoneTicks;
 
+    // A target needs a free span that could take some of the relocated objects.
+    static const int INCR_MIN_TARGET_BUCKET = 6;
+    static const int INCR_TARGET_BUCKETS = Satori::FREELIST_COUNT - INCR_MIN_TARGET_BUCKET;
+
+    // A summary of what selection needs to know about Gen2 regions, made as they enter the tenured queues,
+    // so that selection does not need to walk the queues.
+    // Regions leave the tenured queues only in GCs that rebuild Gen2 (m_promoteAllRegions), and these start the summary over.
+    // Otherwise the queues only grow, and so does the summary. Thus it is what a walk of the queues would find.
+    //
+    // It is updated in bursts - as the Gen2 regions are swept after a GC, by several threads at once.
+    // A shared structure makes that a point of contention, so every processor updates a shard of its own.
+    // Selection then merges the shards. Gen2 occupancy and the number of Gen2 regions are known from the recycler's
+    // accumulators and the queues, which are reset and filled at the same points, so these are not in the summary.
+    static const int INCR_MAX_SUMMARY_SHARDS = 64;
+    static const int INCR_SHARD_TARGETS = 64;
+
+    struct DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY) IncrSummaryShard
+    {
+        // a spin lock - the critical section is a few moves in a small heap
+        volatile int m_lock;
+        // the best relocation sources, as a max-heap by key - the root is the worst one kept
+        int m_sourceCount;
+        // what the eligible regions would free (the backlog), and large regions, which do not count toward Gen2 space
+        size_t m_eligibleGain;
+        size_t m_largeRegions;
+        // relocation targets, by their largest free bucket
+        int m_targetCounts[INCR_TARGET_BUCKETS];
+        SatoriIncrEntry m_sources[INCR_MAX_REGIONS];
+        SatoriRegion* m_targets[INCR_TARGET_BUCKETS][INCR_SHARD_TARGETS];
+    };
+
+    // one shard per processor (up to INCR_MAX_SUMMARY_SHARDS), or null when incremental relocation is not enabled
+    IncrSummaryShard* m_incrSummary;
+    int m_incrSummaryShardCount;
+
 private:
     size_t Gen1RegionCount();
     size_t Gen2RegionCount();
@@ -530,6 +587,9 @@ private:
     void UpdateGcCounters(int64_t blockingStart);
 
     void SelectIncrementalRelocationCandidates();
+    static void IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, SatoriIncrRegionInfo& info);
+    void IncrSummarizeRegion(SatoriRegion* region);
+    void IncrSummaryReset();
     bool PlanIncrementalRelocation(bool canRelocateRegularly);
     void CalibrateIncrementalRelocation();
     void PublishRecordedRefs(SatoriWorkChunk*& chunk);
