@@ -786,7 +786,10 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
     }
 
     // If we are done cleaning and see no work, start blocking collection.
-    if (m_concurrentCleaningState == CC_CLEAN_STATE_DONE &&
+    // Never with minQuantum - that is the thread that suspended EE for marking stacks and is waiting for the other
+    // markers. Cleaning cannot be done while that thread counts as a helper anyway, this just makes sure.
+    if (!minQuantum &&
+        m_concurrentCleaningState == CC_CLEAN_STATE_DONE &&
         m_workList->IsEmpty())
     {
         // was it long enough since last time we saw work?
@@ -997,8 +1000,11 @@ void SatoriRecycler::BlockingMarkForConcurrent()
         Interlocked::Exchange(&m_ccStackMarkState, CC_MARK_STATE_DONE);
         while (m_ccStackMarkingThreadsNum)
         {
-            // since we are waiting anyways, try helping
-            if (!HelpOnceCore(/*minQuantum*/ true))
+            // All stacks are claimed, so the other markers should be done soon - poll aggressively.
+            // Help with a chunk of work to not spin uselessly, but only if there is some. Entering as a helper
+            // is interlocked traffic, which could delay the markers that we are waiting for.
+            // NB: the head of the work list is volatile, thus the check is not hoisted out of the loop.
+            if (m_workList->IsEmpty() || !HelpOnceCore(/*minQuantum*/ true))
             {
                 YieldProcessor();
             }
