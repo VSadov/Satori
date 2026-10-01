@@ -1449,6 +1449,21 @@ void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion*
     }
 }
 
+// Thread-local collections are frequent and do not stop other threads, thus they are reported with their own
+// verbose event, like allocation ticks, rather than with GCStart/GCEnd.
+static bool ThreadLocalCollectionEventEnabled()
+{
+#ifdef BUILD_AS_STANDALONE
+    // the event sink of an older runtime does not have the event
+    if (g_runtimeSupportedVersion.MajorVersion < 6)
+    {
+        return false;
+    }
+#endif
+
+    return EVENT_ENABLED(GCThreadLocalCollection);
+}
+
 bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
 {
     if (m_escapedSize > Satori::MAX_ESCAPE_SIZE)
@@ -1467,7 +1482,8 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
     m_allocBytesAtCollect = allocBytes;
 
     size_t count = Recycler()->IncrementGen0Count();
-    FIRE_EVENT(GCStart_V2, (int)count, 0, gc_reason::reason_alloc_soh, gc_etw_type_ngc);
+    int64_t eventStartTicks = ThreadLocalCollectionEventEnabled() ? minipal_hires_ticks() : 0;
+    size_t occupancyBefore = m_occupancy;
 
     // NB: not initializing the entries, only the count.
     SatoriLocalRootCache rootCache;
@@ -1491,7 +1507,12 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
         ThreadLocalPendFinalizables();
     }
 
-    FIRE_EVENT(GCEnd_V1, (int)count, 0);
+    if (eventStartTicks != 0)
+    {
+        double durationNs = (double)(minipal_hires_ticks() - eventStartTicks) * 1e9 / (double)minipal_hires_tick_frequency();
+        FIRE_EVENT(GCThreadLocalCollection, (uint32_t)count, shouldCollect, (uint64_t)occupancyBefore, (uint64_t)m_occupancy, durationNs);
+    }
+
     return shouldCollect;
 }
 
