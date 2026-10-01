@@ -165,6 +165,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
         m_gcStartMillis[i] = m_gcDurationUsecs[i] = m_gcAccmulatingDurationUsecs[i] = 0;
     }
 
+    m_blockingWorkEndTicks = 0;
+
     m_lastEphemeralGcInfo = { 0 };
     m_lastTenuredGcInfo   = { 0 };
     m_CurrentGcInfo = nullptr;
@@ -1319,7 +1321,7 @@ void SatoriRecycler::BlockingCollect1()
 
     BlockingCollectImpl();
 
-    size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
+    size_t blockingDuration = ((size_t)m_blockingWorkEndTicks - blockingStart);
     m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_osTicksPerMicro;
     m_gcDurationUsecs[1] = blockingDuration / m_osTicksPerMicro;
     m_gcAccmulatingDurationUsecs[1] += blockingDuration / m_osTicksPerMicro;
@@ -1344,7 +1346,7 @@ void SatoriRecycler::BlockingCollect2()
 
     BlockingCollectImpl();
 
-    size_t blockingDuration = (GCToOSInterface::QueryPerformanceCounter() - blockingStart);
+    size_t blockingDuration = ((size_t)m_blockingWorkEndTicks - blockingStart);
     m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_osTicksPerMicro;
     m_gcDurationUsecs[2] = blockingDuration / m_osTicksPerMicro;
     m_gcAccmulatingDurationUsecs[2] += blockingDuration / m_osTicksPerMicro;
@@ -1491,6 +1493,9 @@ void SatoriRecycler::BlockingCollectImpl()
     }
 
     m_CurrentGcInfo->m_index = GlobalGcIndex();
+
+    // The reported pause ends here, before telling EE and firing GCEnd/GCHeapStats - same as in the stock GC.
+    m_blockingWorkEndTicks = GCToOSInterface::QueryPerformanceCounter();
 
     // we may still have some deferred sweeping to do, but
     // that is unobservable to EE, so tell EE that we are done

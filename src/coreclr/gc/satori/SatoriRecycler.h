@@ -251,6 +251,8 @@ private:
     int64_t m_gcStartMillis[3];
     int64_t m_gcDurationUsecs[3];
     int64_t m_gcAccmulatingDurationUsecs[3];
+    // when the current blocking GC finished its work. The reported pause ends there (see BlockingCollectImpl).
+    int64_t m_blockingWorkEndTicks;
 
     int64_t m_totalTimeAtLastGcEnd;
     int m_percentTimeInGcSinceLastGc;
