@@ -160,6 +160,15 @@ struct SatoriIncrStats
     int64_t incrPauseTicks;
     int64_t incrPauseMaxTicks;
     int64_t incrPauseCount;
+    // selection: how often an app thread did it, and the summary kept at pushes
+    int64_t incrSelectByApp;
+    int64_t incrSummaryPushes;
+    int64_t incrSummaryLocked;
+    int64_t incrSummaryLockTicks;
+    int64_t incrSummaryPushTicks;
+    // regions whose cards are rearmed when Gen2 is rebuilt, and how many of them did not need it
+    int64_t cardsRearmable;
+    int64_t cardsKept;
 };
 
 // what happens in the current blocking GC. One GC at a time, so it is just a static.
@@ -218,10 +227,9 @@ struct SatoriIncrGcInfo
     int64_t publishedChunks;
     int64_t spillMerges;
     int64_t freeRecordedTicks;
-    // selection: walking the regions (including sorting), how many regions, how many entries were moved while sorting
+    // selection: merging the summary, and whether an app thread did it
     int64_t selectScanTicks;
-    int64_t selectRegions;
-    int64_t selectSortMoves;
+    int64_t selectByApp;
     // the concurrent phase before this blocking GC, if there was one. work is summed over threads.
     int64_t ccStartTicks;
     int64_t ccWallTicks;
@@ -368,6 +376,13 @@ static void IncrStatsWriteSummary(bool force)
     INCR_DUMP(incrPauseTicks);
     INCR_DUMP(incrPauseMaxTicks);
     INCR_DUMP(incrPauseCount);
+    INCR_DUMP(incrSelectByApp);
+    INCR_DUMP(incrSummaryPushes);
+    INCR_DUMP(incrSummaryLocked);
+    INCR_DUMP(incrSummaryLockTicks);
+    INCR_DUMP(incrSummaryPushTicks);
+    INCR_DUMP(cardsRearmable);
+    INCR_DUMP(cardsKept);
 #undef INCR_DUMP_GEN
 #undef INCR_DUMP
     fclose(f);
@@ -527,6 +542,27 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_incrMeasuredTicks = 0;
     m_incrRootsStartTicks = 0;
     m_incrRootsDoneTicks = 0;
+    m_incrSummary = nullptr;
+    m_incrSummaryShardCount = 0;
+    if (SatoriUtil::IsIncrementalRelocation())
+    {
+        // committed memory is zeroed, which is the initial state
+        int shardCount = min(INCR_MAX_SUMMARY_SHARDS, max(1, (int)GCToEEInterface::GetCurrentProcessCpuCount()));
+        size_t size = ALIGN_UP(sizeof(IncrSummaryShard) * shardCount, SatoriUtil::CommitGranularity());
+        void* summary = GCToOSInterface::VirtualReserve(nullptr, size);
+        if (summary != nullptr)
+        {
+            if (GCToOSInterface::VirtualCommit(summary, size))
+            {
+                m_incrSummary = (IncrSummaryShard*)summary;
+                m_incrSummaryShardCount = shardCount;
+            }
+            else
+            {
+                GCToOSInterface::VirtualRelease(summary, size);
+            }
+        }
+    }
     IncrStatsInitialize();
 
     m_gcState = GC_STATE_NONE;
@@ -787,6 +823,11 @@ void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
     if (estimatedReclaim  > 0)
     {
         Interlocked::ExchangeAdd64(&m_estimatedTenuredReclaim, estimatedReclaim);
+    }
+
+    if (m_incrSummary != nullptr)
+    {
+        IncrSummarizeRegion(region);
     }
 
     if (region->HasFinalizables())
@@ -4474,6 +4515,12 @@ void SatoriRecycler::Plan()
         m_occupancyAcc[2] = 0;
         m_estimatedTenuredReclaim = 0;
         m_demotedOccupancyAcc = 0;
+
+        // All tenured regions leave the queues now and the ones that stay will be pushed back.
+        if (m_incrSummary != nullptr)
+        {
+            IncrSummaryReset();
+        }
     }
 
     // If we do relocation, we are committed to do pointer updates.
@@ -4574,6 +4621,7 @@ void SatoriRecycler::DenyRelocation()
     if (m_promoteAllRegions)
     {
         m_stayingRegions->AppendUnsafe(m_ephemeralRegions);
+        // TODO: we should consider wiping cards at page level, and in incremental/nocompact case just send non-target tenured regions to deferred sweep at once
         m_stayingRegions->AppendUnsafe(m_tenuredRegions);
         m_stayingRegions->AppendUnsafe(m_tenuredFinalizationTrackingRegions);
     }
@@ -5301,6 +5349,9 @@ void SatoriRecycler::UpdatePointersInPromotedObjects()
 
 void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::Batch* deferredFirst, SatoriRegionQueue::Batch* deferredRest)
 {
+    int64_t cardsRearmable = 0;
+    int64_t cardsKept = 0;
+
     // These queues are filled in Plan and Relocate and only drained here, so the pop needs
     // no lock. ResetAfterUnsafeDrain below puts them back into a usable state.
     SatoriRegion* curRegion = queue->TryPopDrainOnly();
@@ -5393,13 +5444,15 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::
             {
                 if (curRegion->Generation() == 2)
                 {
-                    curRegion->RearmCardsForStillTenured();
+                    cardsKept += curRegion->RearmCardsForStillTenured() ? 1 : 0;
                 }
                 else
                 {
                     curRegion->SetGeneration(2);
                     curRegion->RearmCardsForTenured();
                 }
+
+                cardsRearmable++;
             }
 
             // make sure the region is swept and returned now, or later
@@ -5428,6 +5481,9 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::
             }
         } while ((curRegion = queue->TryPopDrainOnly()));
     }
+
+    INCR_STAT_ADD(cardsRearmable, cardsRearmable);
+    INCR_STAT_ADD(cardsKept, cardsKept);
 }
 
 // Decides if a swept region should be parked for reuse rather than returned to the
@@ -5878,8 +5934,9 @@ void SatoriRecycler::IncrStatsWriteLog(const SatoriIncrGcSnapshot& snapshot)
             "gen2Regions=%lld gen2OccKB=%lld allRegions=%lld compacting=%d "
             "gen2SpaceKB=%lld keptGainKB=%lld budgetUs=%lld unitsBudgetK=%lld plannedK=%lld predUs=%lld measUs=%lld rootsUs=%lld "
             "fixUs=%lld perMUnitsUs=%lld refsPerObjX100=%lld "
-            "pubChunks=%lld merges=%lld freeRecUs=%.0f scanUs=%.0f scanRegions=%lld sortMoves=%lld "
-            "ccWallUs=%.0f ccWorkUs=%.0f ccQuanta=%lld prepUs=%.0f\n",
+            "pubChunks=%lld merges=%lld freeRecUs=%.0f scanUs=%.0f "
+            "ccWallUs=%.0f ccWorkUs=%.0f ccQuanta=%lld prepUs=%.0f "
+            "selByApp=%lld\n",
             (long long)snapshot.gen2Index, snapshot.pauseTicks * us, gc.phaseMarkTicks * us, gc.phasePlanTicks * us,
             gc.phaseRelocateTicks * us, gc.phaseUpdateTicks * us, gc.outcome,
             gc.sources, (long long)gc.sourceObjs, (long long)(gc.sourceBytes / 1024), (long long)gc.eligible, (long long)(gc.eligibleGain / 1024),
@@ -5895,54 +5952,108 @@ void SatoriRecycler::IncrStatsWriteLog(const SatoriIncrGcSnapshot& snapshot)
             (long long)(gc.plannedUnits / 1000), (long long)gc.predictedUs, (long long)gc.measuredUs, (long long)gc.rootsUs,
             (long long)gc.modelFixedUs, (long long)gc.modelUsPerMUnits, (long long)gc.modelRefsPerObjX100,
             (long long)gc.publishedChunks, (long long)gc.spillMerges, gc.freeRecordedTicks * us,
-            gc.selectScanTicks * us, (long long)gc.selectRegions, (long long)gc.selectSortMoves,
-            gc.ccWallTicks * us, gc.ccWorkTicks * us, (long long)gc.ccQuanta, gc.prepPauseTicks * us);
+            gc.selectScanTicks * us,
+            gc.ccWallTicks * us, gc.ccWorkTicks * us, (long long)gc.ccQuanta, gc.prepPauseTicks * us,
+            (long long)gc.selectByApp);
         fclose(f);
     }
 
     IncrStatsWriteSummary(/* force */ false);
 }
 
-struct IncrEntry
-{
-    SatoriRegion* m_region;
-    size_t m_key;
-};
+typedef SatoriIncrEntry IncrEntry;
 
-// keeps the list sorted by key, the smallest first, and no longer than capacity. Returns how many entries were moved.
-static int IncrInsertSmallest(IncrEntry* list, int& count, int capacity, SatoriRegion* region, size_t key)
+// Keeps the entries with the smallest keys, no more than capacity, in a max-heap. The root is the largest kept.
+static void IncrHeapInsertSmallest(IncrEntry* heap, int& count, int capacity, const IncrEntry& entry)
 {
-    int i = count;
-    if (count == capacity)
+    int i;
+    if (count < capacity)
     {
-        if (key >= list[count - 1].m_key)
+        // sift up
+        i = count++;
+        while (i > 0)
         {
-            return 0;
+            int parent = (i - 1) / 2;
+            if (heap[parent].m_key >= entry.m_key)
+            {
+                break;
+            }
+
+            heap[i] = heap[parent];
+            i = parent;
         }
 
-        // drop the largest
-        i = count - 1;
-    }
-    else
-    {
-        count++;
+        heap[i] = entry;
+        return;
     }
 
-    int moves = 0;
-    while (i > 0 && list[i - 1].m_key > key)
+    if (entry.m_key >= heap[0].m_key)
     {
-        list[i] = list[i - 1];
-        i--;
-        moves++;
+        return;
     }
 
-    list[i].m_region = region;
-    list[i].m_key = key;
-    return moves;
+    // replace the root and sift down
+    i = 0;
+    for (;;)
+    {
+        int child = i * 2 + 1;
+        if (child >= count)
+        {
+            break;
+        }
+
+        if (child + 1 < count && heap[child + 1].m_key > heap[child].m_key)
+        {
+            child++;
+        }
+
+        if (heap[child].m_key <= entry.m_key)
+        {
+            break;
+        }
+
+        heap[i] = heap[child];
+        i = child;
+    }
+
+    heap[i] = entry;
 }
 
-// A target needs a free span that could take some of the relocated objects.
-static const int INCR_MIN_TARGET_BUCKET = 6;
+// Sorts a max-heap in place, the smallest key first.
+static void IncrHeapSort(IncrEntry* heap, int count)
+{
+    for (int end = count - 1; end > 0; end--)
+    {
+        IncrEntry last = heap[end];
+        heap[end] = heap[0];
+
+        // sift the former last element down from the root, within [0, end)
+        int i = 0;
+        for (;;)
+        {
+            int child = i * 2 + 1;
+            if (child >= end)
+            {
+                break;
+            }
+
+            if (child + 1 < end && heap[child + 1].m_key > heap[child].m_key)
+            {
+                child++;
+            }
+
+            if (heap[child].m_key <= last.m_key)
+            {
+                break;
+            }
+
+            heap[i] = heap[child];
+            i = child;
+        }
+
+        heap[i] = last;
+    }
+}
 
 // Recording is given up when the candidates are referenced from this many times more places than the budget allows
 // updating. That bounds the memory used for recording, while the rest is dealt with by dropping costly candidates in planning.
@@ -5984,10 +6095,187 @@ static void IncrCalibrate(double& value, int& samples, double sample)
     samples++;
 }
 
+// Evaluates a Gen2 region for selection, as it enters the tenured queues (see IncrSummarizeRegion).
+void SatoriRecycler::IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, SatoriIncrRegionInfo& info)
+{
+    info.m_occupancy = region->Occupancy();
+    info.m_inSpace = false;
+    info.m_isSource = false;
+    info.m_isTarget = false;
+    info.m_bucket = -1;
+    info.m_gain = 0;
+
+    if (region->IsLarge())
+    {
+        return;
+    }
+
+    info.m_inSpace = true;
+    if (region->IsDemoted() ||
+        region->IsAttachedToAllocatingOwner() ||
+        region->HasPinnedObjects() ||
+        region->HasUnmarkedDemotedObjects() ||
+        region->SweepsSinceLastAllocation() == 0)
+    {
+        return;
+    }
+
+    size_t occupancy = info.m_occupancy;
+    size_t objCount = (size_t)region->ObjCount();
+    if (objCount == 0)
+    {
+        return;
+    }
+
+    int bucket = region->GetMaxFreeBucket();
+    info.m_bucket = bucket;
+
+    // As in ReclaimSizeIfRelocated, we do not want to move much.
+    // A region that could take its own objects in one of its free spans is a better target than a source.
+    if (occupancy <= Satori::REGION_SIZE_GRANULARITY / 2 &&
+        bucket < SatoriUtil::BucketForAlloc(occupancy))
+    {
+        size_t gain = IncrRelocationGain(occupancy);
+        size_t cost = IncrRelocationCost(objCount, occupancy, (size_t)(objCount * refsPerObj));
+        info.m_isSource = true;
+        info.m_gain = gain;
+        info.m_source.m_region = region;
+        info.m_source.m_key = cost * 65536 / gain;
+        info.m_source.m_objCount = (uint32_t)objCount;
+        info.m_source.m_occupancy = (uint32_t)occupancy;
+    }
+
+    info.m_isTarget = bucket >= INCR_MIN_TARGET_BUCKET;
+}
+
+static void IncrSpinLockEnter(volatile int* lock)
+{
+    while (Interlocked::CompareExchange(lock, 1, 0) != 0)
+    {
+        int spins = 0;
+        while (VolatileLoadWithoutBarrier(lock) != 0)
+        {
+            // the holder is almost done, unless it was preempted
+            if (++spins < 1024)
+            {
+                YieldProcessor();
+            }
+            else
+            {
+                GCToOSInterface::YieldThread(0);
+                spins = 0;
+            }
+        }
+    }
+}
+
+static void IncrSpinLockLeave(volatile int* lock)
+{
+    VolatileStore((int*)lock, 0);
+}
+
+// timing every push would cost more than what is timed, so only some are timed.
+static thread_local uint32_t t_incrSummaryPushes;
+
+// The shard of the summary for the current thread - by the processor it runs on, when we can know that.
+static int IncrSummaryShardIndex(int shardCount)
+{
+    uint32_t value;
+    if (GCToOSInterface::CanGetCurrentProcessorNumber())
+    {
+        value = GCToOSInterface::GetCurrentProcessorNumber();
+    }
+    else
+    {
+        size_t thread = SatoriUtil::GetCurrentThreadTag();
+        value = (uint32_t)((thread * 11400714819323198485llu) >> 32);
+    }
+
+    return (int)(value % (uint32_t)shardCount);
+}
+
+// Called for every region that enters the tenured queues, when incremental relocation is enabled.
+// The region has just been swept or handed over, so its header is likely still in cache.
+// NB: the cost model (refs per object) changes only when a Gen2 GC plans, which starts the summary over.
+void SatoriRecycler::IncrSummarizeRegion(SatoriRegion* region)
+{
+    _ASSERTE(region->Generation() == 2);
+    int64_t startTicks = (++t_incrSummaryPushes & 15) == 0 ? INCR_TICKS() : 0;
+
+    SatoriIncrRegionInfo info;
+    IncrEvaluateRegion(region, m_incrRefsPerObj, info);
+    bool isLarge = !info.m_inSpace;
+    bool locked = isLarge || info.m_isSource || info.m_isTarget;
+    int64_t lockTicks = 0;
+    if (locked)
+    {
+        IncrSummaryShard& shard = m_incrSummary[IncrSummaryShardIndex(m_incrSummaryShardCount)];
+        int64_t lockStart = startTicks ? minipal_hires_ticks() : 0;
+        IncrSpinLockEnter(&shard.m_lock);
+        if (lockStart)
+        {
+            lockTicks = minipal_hires_ticks() - lockStart;
+        }
+
+        if (isLarge)
+        {
+            shard.m_largeRegions++;
+        }
+
+        if (info.m_isSource)
+        {
+            shard.m_eligibleGain += info.m_gain;
+            shard.m_eligibleCount++;
+            IncrHeapInsertSmallest(shard.m_sources, shard.m_sourceCount, INCR_MAX_REGIONS, info.m_source);
+        }
+
+        if (info.m_isTarget)
+        {
+            // a shard keeps fewer targets than selection may take, but together they have more.
+            int b = info.m_bucket - INCR_MIN_TARGET_BUCKET;
+            if (shard.m_targetCounts[b] < INCR_SHARD_TARGETS)
+            {
+                shard.m_targets[b][shard.m_targetCounts[b]++] = region;
+            }
+        }
+
+        IncrSpinLockLeave(&shard.m_lock);
+    }
+
+    if (startTicks)
+    {
+        int64_t ticks = minipal_hires_ticks() - startTicks;
+        INCR_STAT_ADD(incrSummaryPushes, 1);
+        INCR_STAT_ADD(incrSummaryPushTicks, ticks);
+        if (locked)
+        {
+            INCR_STAT_ADD(incrSummaryLocked, 1);
+            INCR_STAT_ADD(incrSummaryLockTicks, lockTicks);
+        }
+    }
+}
+
+// Starts the summary over. Called when Gen2 is rebuilt, while EE is stopped.
+void SatoriRecycler::IncrSummaryReset()
+{
+    for (int s = 0; s < m_incrSummaryShardCount; s++)
+    {
+        IncrSummaryShard& shard = m_incrSummary[s];
+        shard.m_sourceCount = 0;
+        shard.m_eligibleGain = 0;
+        shard.m_eligibleCount = 0;
+        shard.m_largeRegions = 0;
+        for (int b = 0; b < INCR_TARGET_BUCKETS; b++)
+        {
+            shard.m_targetCounts[b] = 0;
+        }
+    }
+}
+
 // Called when the barrier is about to become concurrent for a gen2 GC, before any marking.
-// All deferred sweeping is done by now, so occupancy and free lists of gen2 regions are current.
+// All deferred sweeping is done by now, so the summary of gen2 regions, made as they entered the tenured queues, is complete.
 // Selects sparse gen2 regions as relocation candidates, and gen2 regions with large free spans as targets.
-// Only the tenured queues are looked at. That is not O(heap), but O(regions), and is done concurrently.
+// Only the summary is looked at, not the regions, thus the cost does not grow with the heap. It is done concurrently.
 // Also measures the backlog of sparse regions, for planning to decide if incremental relocation keeps up.
 void SatoriRecycler::SelectIncrementalRelocationCandidates()
 {
@@ -5997,8 +6285,9 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     m_incrSelectedObjs = 0;
     m_incrSelectionDone = false;
 
+    // the summary exists only when incremental relocation is enabled
     if (m_condemnedGeneration != 2 ||
-        !SatoriUtil::IsIncrementalRelocation())
+        m_incrSummary == nullptr)
     {
         return;
     }
@@ -6018,69 +6307,73 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     int targetCount = 0;
     int64_t eligibleCount = 0;
     size_t eligibleGain = 0;
-    size_t gen2Space = 0;
-    size_t gen2Occupancy = 0;
+    size_t largeRegions = 0;
     double refsPerObj = m_incrRefsPerObj;
-    int64_t visitedRegions = 0;
-    int64_t sortMoves = 0;
-
-    auto considerRegion = [&](SatoriRegion* region)
-    {
-        visitedRegions++;
-        if (region->Generation() != 2)
-        {
-            return;
-        }
-
-        gen2Occupancy += region->Occupancy();
-        if (region->IsLarge())
-        {
-            return;
-        }
-
-        gen2Space += region->Size();
-        if (region->IsDemoted() ||
-            region->IsAttachedToAllocatingOwner() ||
-            region->HasPinnedObjects() ||
-            region->HasUnmarkedDemotedObjects() ||
-            region->SweepsSinceLastAllocation() == 0)
-        {
-            return;
-        }
-
-        size_t occupancy = region->Occupancy();
-        size_t objCount = (size_t)region->ObjCount();
-        if (objCount == 0)
-        {
-            return;
-        }
-
-        int bucket = region->GetMaxFreeBucket();
-
-        // As in ReclaimSizeIfRelocated, we do not want to move much.
-        // A region that could take its own objects in one of its free spans is a better target than a source.
-        if (occupancy <= Satori::REGION_SIZE_GRANULARITY / 2 &&
-            bucket < SatoriUtil::BucketForAlloc(occupancy))
-        {
-            size_t gain = IncrRelocationGain(occupancy);
-            size_t cost = IncrRelocationCost(objCount, occupancy, (size_t)(objCount * refsPerObj));
-            eligibleCount++;
-            eligibleGain += gain;
-            sortMoves += IncrInsertSmallest(sources, sourceCount, INCR_MAX_REGIONS, region, cost * 65536 / gain);
-        }
-
-        if (bucket >= INCR_MIN_TARGET_BUCKET)
-        {
-            sortMoves += IncrInsertSmallest(targets, targetCount, INCR_MAX_REGIONS * 2, region, (size_t)(Satori::FREELIST_COUNT - bucket));
-        }
-    };
 
     int64_t scanStartTicks = INCR_TICKS();
-    m_tenuredRegions->ForEachRegion(considerRegion);
-    m_tenuredFinalizationTrackingRegions->ForEachRegion(considerRegion);
+
+    // Merge the shards. Pushes may still happen (direct Gen2 allocations), so the locks.
+    // Most shards of a small heap are empty, which is seen without the lock. A region pushed right now could be missed.
+    int shardTargets[INCR_MAX_SUMMARY_SHARDS][INCR_TARGET_BUCKETS];
+    for (int s = 0; s < m_incrSummaryShardCount; s++)
+    {
+        IncrSummaryShard& shard = m_incrSummary[s];
+        bool hasTargets = false;
+        for (int b = 0; b < INCR_TARGET_BUCKETS; b++)
+        {
+            shardTargets[s][b] = VolatileLoadWithoutBarrier(&shard.m_targetCounts[b]);
+            hasTargets |= shardTargets[s][b] != 0;
+        }
+
+        if (!hasTargets &&
+            VolatileLoadWithoutBarrier(&shard.m_sourceCount) == 0 &&
+            VolatileLoadWithoutBarrier(&shard.m_largeRegions) == 0)
+        {
+            continue;
+        }
+
+        IncrSpinLockEnter(&shard.m_lock);
+        for (int i = 0; i < shard.m_sourceCount; i++)
+        {
+            IncrHeapInsertSmallest(sources, sourceCount, INCR_MAX_REGIONS, shard.m_sources[i]);
+        }
+
+        eligibleCount += (int64_t)shard.m_eligibleCount;
+        eligibleGain += shard.m_eligibleGain;
+        largeRegions += shard.m_largeRegions;
+        IncrSpinLockLeave(&shard.m_lock);
+    }
+
+    // the best sources first
+    IncrHeapSort(sources, sourceCount);
+
+    // the largest spans first
+    for (int b = INCR_TARGET_BUCKETS - 1; b >= 0; b--)
+    {
+        for (int s = 0; s < m_incrSummaryShardCount && targetCount < INCR_MAX_REGIONS * 2; s++)
+        {
+            if (shardTargets[s][b] == 0)
+            {
+                continue;
+            }
+
+            IncrSummaryShard& shard = m_incrSummary[s];
+            IncrSpinLockEnter(&shard.m_lock);
+            int n = min(shard.m_targetCounts[b], INCR_MAX_REGIONS * 2 - targetCount);
+            for (int i = 0; i < n; i++)
+            {
+                IncrEntry target = { shard.m_targets[b][i], (size_t)(Satori::FREELIST_COUNT - (b + INCR_MIN_TARGET_BUCKET)), 0, 0 };
+                targets[targetCount++] = target;
+            }
+
+            IncrSpinLockLeave(&shard.m_lock);
+        }
+    }
+
+    // Gen2 occupancy and regions are known from the accumulators and the queues, see IncrSummaryShard.
+    size_t gen2Space = (Gen2RegionCount() - largeRegions) * Satori::REGION_SIZE_GRANULARITY;
+    size_t gen2Occupancy = m_occupancyAcc[2] + m_gen2AddedSinceLastCollection;
     g_incrGc.selectScanTicks = INCR_TICKS() - scanStartTicks;
-    g_incrGc.selectRegions = visitedRegions;
-    g_incrGc.selectSortMoves = sortMoves;
 
     // The budget is the pause that incremental relocation may add. Outside of low latency mode, it may grow with the heap,
     // since the alternative - regular relocation - costs in proportion to the heap.
@@ -6115,8 +6408,8 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     for (int i = 0; i < sourceCount && m_incrSourceCount < maxSources; i++)
     {
         SatoriRegion* region = sources[i].m_region;
-        size_t objCount = (size_t)region->ObjCount();
-        size_t occupancy = region->Occupancy();
+        size_t objCount = sources[i].m_objCount;
+        size_t occupancy = sources[i].m_occupancy;
         size_t cost = IncrRelocationCost(objCount, occupancy, (size_t)(objCount * refsPerObj));
         if (cost > unitsLeft)
         {
@@ -6153,16 +6446,54 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
 
     for (int i = 0; i < m_incrSourceCount; i++)
     {
+        _ASSERTE(m_incrSources[i]->Generation() == 2);
+        _ASSERTE((size_t)m_incrSources[i]->ObjCount() == m_incrSourceObjs[i]);
         m_incrSourceRefs[i] = 0;
         m_incrSources[i]->RelocationCandidateIndex() = (uint8_t)(i + 1);
     }
 
-    // targets are the ones with the largest spans, but not the sources (which are tagged by now)
+    // Targets are the ones with the largest spans, but not the sources.
+    // The sources are few. To not look at the headers of the targets, we look them up in a sorted copy.
+    SatoriRegion* sortedSources[INCR_MAX_REGIONS];
+    for (int i = 0; i < m_incrSourceCount; i++)
+    {
+        SatoriRegion* region = m_incrSources[i];
+        int j = i;
+        while (j > 0 && sortedSources[j - 1] > region)
+        {
+            sortedSources[j] = sortedSources[j - 1];
+            j--;
+        }
+
+        sortedSources[j] = region;
+    }
+
+    auto isSource = [&](SatoriRegion* region)
+    {
+        int lo = 0;
+        int hi = m_incrSourceCount;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) / 2;
+            if (sortedSources[mid] < region)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+
+        return lo < m_incrSourceCount && sortedSources[lo] == region;
+    };
+
     for (int i = 0; i < targetCount && m_incrTargetCount < INCR_MAX_REGIONS && m_incrSourceCount > 0; i++)
     {
         SatoriRegion* region = targets[i].m_region;
-        if (region->RelocationCandidateIndex() == 0)
+        if (!isSource(region))
         {
+            _ASSERTE(region->RelocationCandidateIndex() == 0);
             m_incrTargets[m_incrTargetCount++] = region;
         }
     }
@@ -6170,6 +6501,12 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     int64_t ticks = INCR_TICKS() - startTicks;
     INCR_STAT_ADD(incrGen2Gcs, 1);
     INCR_STAT_ADD(incrSelectTicks, ticks);
+    if (!IsWorkerThread())
+    {
+        g_incrGc.selectByApp = 1;
+        INCR_STAT_ADD(incrSelectByApp, 1);
+    }
+
     g_incrGc.selectTicks = ticks;
     g_incrGc.eligible = eligibleCount;
     g_incrGc.eligibleGain = (int64_t)eligibleGain;
