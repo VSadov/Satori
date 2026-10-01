@@ -1273,7 +1273,12 @@ SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
         chunk = m_workChunks->TryPop();
     }
 
-    _ASSERTE(chunk == nullptr || chunk->Count() == 0);
+    // chunks may be returned not cleared (see ReturnWorkChunks)
+    if (chunk)
+    {
+        chunk->Clear();
+    }
+
     return chunk;
 }
 
@@ -1286,7 +1291,12 @@ SatoriWorkChunk* SatoriAllocator::GetWorkChunk()
         chunk = m_workChunks->TryPop();
     }
 
-    _ASSERTE(chunk == nullptr || chunk->Count() == 0);
+    // chunks may be returned not cleared (see ReturnWorkChunks)
+    if (chunk)
+    {
+        chunk->Clear();
+    }
+
     return chunk;
 }
 
@@ -1317,4 +1327,23 @@ void SatoriAllocator::ReturnWorkChunk(SatoriWorkChunk* chunk)
 {
     _ASSERTE(chunk->Count() == 0);
     m_workChunks->Push(chunk);
+}
+
+// Returns a chain of chunks at once, linked through Next() from the first to the last.
+// Clearing every chunk here would be a cache miss per chunk. Chunks are cleared when taken instead.
+void SatoriAllocator::ReturnWorkChunks(SatoriWorkChunk* first, SatoriWorkChunk* last)
+{
+    m_workChunks->PushChain(first, last);
+}
+
+// Same as above, when the last chunk is not known.
+void SatoriAllocator::ReturnWorkChunks(SatoriWorkChunk* first)
+{
+    SatoriWorkChunk* last = first;
+    while (last->Next())
+    {
+        last = last->Next();
+    }
+
+    ReturnWorkChunks(first, last);
 }
