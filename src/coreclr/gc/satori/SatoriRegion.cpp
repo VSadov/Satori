@@ -136,6 +136,9 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     static_assert(offsetof(SatoriRegion, m_freeListTails) + sizeof(SatoriRegion::m_freeListTails) <= BITMAP_START * sizeof(size_t),
         "SatoriRegion header does not fit in the unused part of the mark bitmap.");
 
+    static_assert(Satori::FREELIST_COUNT <= sizeof(SatoriRegion::m_nonEmptyFreeLists) * 8,
+        "m_nonEmptyFreeLists has a bit for every free list.");
+
     // clear the header if was used before
     size_t zeroUpTo = min(used, (size_t)&result->m_syncBlock);
     memset((void*)address, 0, zeroUpTo - address);
@@ -405,16 +408,21 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
         bucket++;
     }
 
-    for (; bucket < Satori::FREELIST_COUNT; bucket++)
     {
-        freeObj = m_freeLists[bucket];
-        if (freeObj)
+        // Find the lowest nonempty bucket from here on. The mask has a bit for every nonempty bucket.
+        _ASSERTE(bucket <= Satori::FREELIST_COUNT);
+        size_t nonEmpty = (size_t)m_nonEmptyFreeLists >> bucket;
+        if (nonEmpty == 0)
         {
-            goto hasObj;
+            return 0;
         }
-    }
 
-    return 0;
+        DWORD offset;
+        BitScanForward64(&offset, nonEmpty);
+        bucket += offset;
+        freeObj = m_freeLists[bucket];
+        _ASSERTE(freeObj != nullptr);
+    }
 
 hasObj:
     SatoriFreeListObject* next = freeObj->m_nextInFreeList;
@@ -422,6 +430,7 @@ hasObj:
     if (next == nullptr)
     {
         m_freeListTails[bucket] = nullptr;
+        m_nonEmptyFreeLists &= (uint16_t)~(1u << bucket);
     }
 
     size_t freeObjSize = freeObj->FreeObjSize();
@@ -496,6 +505,7 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
     if (m_freeLists[bucket] == nullptr)
     {
         m_freeLists[bucket] = m_freeListTails[bucket] = freeListObj;
+        m_nonEmptyFreeLists |= (uint16_t)(1u << bucket);
         return;
     }
 
@@ -534,6 +544,7 @@ void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
     if (m_freeLists[bucket] == nullptr)
     {
         m_freeListTails[bucket] = freeListObj;
+        m_nonEmptyFreeLists |= (uint16_t)(1u << bucket);
     }
 
     m_freeLists[bucket] = freeListObj;
@@ -541,7 +552,7 @@ void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
 
 bool SatoriRegion::HasFreeSpaceInTopBucket()
 {
-    return m_freeLists[Satori::FREELIST_COUNT - 1];
+    return (m_nonEmptyFreeLists & (1u << (Satori::FREELIST_COUNT - 1))) != 0;
 }
 
 size_t SatoriRegion::FreeSpaceInTopNBuckets(int n)
@@ -557,15 +568,20 @@ size_t SatoriRegion::FreeSpaceInTopNBuckets(int n)
 
 int SatoriRegion::GetMaxFreeBucket()
 {
-    for (int bucket = Satori::FREELIST_COUNT - 1; bucket >= 0; bucket--)
+#if _DEBUG
+    for (int bucket = 0; bucket < Satori::FREELIST_COUNT; bucket++)
     {
-        if (m_freeLists[bucket])
-        {
-            return bucket;
-        }
+        _ASSERTE(((m_nonEmptyFreeLists >> bucket) & 1) == (m_freeLists[bucket] != nullptr));
+    }
+#endif
+
+    DWORD bucket;
+    if (!BitScanReverse64(&bucket, m_nonEmptyFreeLists))
+    {
+        return -1;
     }
 
-    return -1;
+    return (int)bucket;
 }
 
 void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextCommitted, size_t& nextUsed)
@@ -2771,6 +2787,7 @@ void SatoriRegion::ClearFreeLists()
 {
     // clear free lists and free list tails
     memset(m_freeListCapacities, 0, sizeof(m_freeListCapacities) + sizeof(m_freeLists) + sizeof(m_freeListTails));
+    m_nonEmptyFreeLists = 0;
 }
 
 void SatoriRegion::PreSweep()
