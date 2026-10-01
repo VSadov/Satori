@@ -646,13 +646,19 @@ public:
         return n < 0 ? 0 : (size_t)n;
     }
 
-    // DOTNET_gcIncrRelocBacklog
-    // When a Gen2 GC can also relocate regularly, it does that instead of incremental relocation
-    // if more than this percentage of Gen2 space would remain reclaimable in sparse regions.
-    static size_t IncrRelocBacklogPercent()
+    // DOTNET_gcIncrRelocGrowth
+    // When a Gen2 GC can also relocate regularly, it does that instead of incremental relocation if Gen2 space
+    // would remain larger by more than this percentage than what regular relocation would keep.
+    static size_t IncrRelocGrowthPercent()
     {
-        int64_t n = GCConfig::GetIncrRelocBacklog();
-        return n < 0 ? 25 : (size_t)n;
+        int64_t n = GCConfig::GetIncrRelocGrowth();
+        return n < 0 ? 50 : (size_t)n;
+    }
+
+    // DOTNET_gcIncrMerge
+    static bool IsIncrementalMerge()
+    {
+        return GCConfig::GetIncrMerge() != 0;
     }
 
     // DOTNET_gcIncrRelocVerify

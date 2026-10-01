@@ -45,8 +45,13 @@ struct SatoriIncrEntry
     SatoriRegion* m_region;
     size_t m_key;
     uint32_t m_objCount;
-    uint32_t m_occupancy;
+    // candidates are at most half full, so the occupancy leaves a bit for the flag.
+    uint32_t m_occupancy : 31;
+    // could fit its objects in its own free span, see SatoriRecycler::IncrEvaluateRegion
+    uint32_t m_merge : 1;
 };
+
+static_assert(sizeof(SatoriIncrEntry) == sizeof(void*) + sizeof(size_t) + 2 * sizeof(uint32_t), "the flag should not make the entry larger");
 
 // What selection of incremental relocation candidates takes from a Gen2 region.
 struct SatoriIncrRegionInfo
@@ -191,6 +196,31 @@ public:
         return m_gcState == GC_STATE_BLOCKING ||
             m_ccStackMarkState == CC_MARK_STATE_SUSPENDING_EE;
     }
+
+    // dev instrumentation: a timeline of EE suspensions and of long operations on app threads (see SatoriRecycler.cpp)
+    static const int TRACE_PREP = 1;
+    static const int TRACE_BLOCK = 2;
+    static const int TRACE_TLGC = 3;
+    static const int TRACE_HELP = 4;
+    static const int TRACE_TRIGGER = 5;
+    static const int TRACE_REUSE = 6;
+    static const int TRACE_NEWREGION = 7;
+    static const int TRACE_LARGE = 8;
+    static const int TRACE_ALLOCSLOW = 9;
+    static const int TRACE_PREP_FILTER_WAIT = 10;
+    // parts of the allocation slow path: zeroing (with byte counts), getting space from a free list, shared large allocations
+    static const int TRACE_ZERO = 11;
+    static const int TRACE_ZERO_LARGE = 12;
+    static const int TRACE_FREELIST = 13;
+    static const int TRACE_LARGE_SHARED = 14;
+    // zeroing in a region that was taken for reuse (had live objects)
+    static const int TRACE_ZERO_REUSED = 15;
+    static const int TRACE_KIND_COUNT = 16;
+
+    static bool TraceEnabled();
+    // an operation on an app thread that started at startTicks is done
+    void TraceOp(int kind, int64_t startTicks, bool suspendingAtStart, size_t bytes = 0);
+    static void TraceBlocking(int generation, int64_t start, int64_t suspended, int64_t gcDone, const int64_t* vm);
 
 private:
     SatoriHeap* m_heap;
@@ -404,11 +434,15 @@ private:
     // what the candidates were when selected
     size_t m_incrSourceObjs[INCR_MAX_REGIONS];
     size_t m_incrSourceBytes[INCR_MAX_REGIONS];
+    bool m_incrSourceMerge[INCR_MAX_REGIONS];
     size_t m_incrSelectedObjs;
     // Sparse Gen2 regions are the backlog. This is what they could free if relocated,
     // and the Gen2 space (without large regions) that they are a part of.
     size_t m_incrEligibleGain;
     size_t m_incrGen2Space;
+    // Gen2 space above this is growth that incremental relocation does not keep up with, and regular relocation takes over.
+    // See SelectIncrementalRelocationCandidates.
+    size_t m_incrGrowthLimit;
     // the budget of the current GC in cost units, and what the kept candidates are estimated to cost.
     size_t m_incrUnitsBudget;
     size_t m_incrPlannedUnits;
@@ -424,6 +458,13 @@ private:
     int m_incrRefsSamples;
     // when the fixed part alone would not fit the budget, we relocate only occasionally, to see if that changed.
     int m_incrNoRoomCount;
+    // The cost model of regular relocation in Gen2 GCs, calibrated as we go: pause = fixed + perRegion * regions.
+    // The fixed part is updating roots, same as for incremental relocation.
+    double m_regularUsPerRegion;
+    int m_regularSamples;
+    // the last Gen2 GC relocated regularly, and the last selection chose that.
+    bool m_lastGen2WasRegular;
+    bool m_lastGen2ChoseRegular;
     // measured parts of the current incremental relocation
     int64_t m_incrMeasuredTicks;
     size_t m_incrRootsStartTicks;
@@ -455,6 +496,9 @@ private:
         size_t m_eligibleGain;
         size_t m_eligibleCount;
         size_t m_largeRegions;
+        size_t m_largeOccupancy;
+        // what merge candidates would free. they are not a part of the backlog.
+        size_t m_mergeGain;
         // relocation targets, by their largest free bucket
         int m_targetCounts[INCR_TARGET_BUCKETS];
         SatoriIncrEntry m_sources[INCR_MAX_REGIONS];
@@ -594,6 +638,7 @@ private:
     void IncrSummaryReset();
     bool PlanIncrementalRelocation(bool canRelocateRegularly);
     void CalibrateIncrementalRelocation();
+    void CalibrateRegularRelocation(int64_t ticks);
     void PublishRecordedRefs(SatoriWorkChunk*& chunk);
     void PushRecordedChunk(SatoriWorkChunk* chunk);
     bool RecordRelocationRefSlow(SatoriWorkChunk*& chunk, SatoriObject* entry);

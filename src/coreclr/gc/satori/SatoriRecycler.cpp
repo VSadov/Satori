@@ -132,6 +132,8 @@ struct SatoriIncrStats
     int64_t incrAbandonedOom;
     int64_t incrNothingToRelocate;
     int64_t incrRegularInstead;
+    int64_t incrRegularCheap;
+    int64_t incrRegularGrowth;
     int64_t incrNoRoom;
     int64_t incrRelocated;
     int64_t incrSourcesSelected;
@@ -169,6 +171,11 @@ struct SatoriIncrStats
     // regions whose cards are rearmed when Gen2 is rebuilt, and how many of them did not need it
     int64_t cardsRearmable;
     int64_t cardsKept;
+    // merges selected, kept after planning, relocated, made targets
+    int64_t incrMergesSelected;
+    int64_t incrMergesKept;
+    int64_t incrMergesRelocated;
+    int64_t incrMergesToTarget;
 };
 
 // what happens in the current blocking GC. One GC at a time, so it is just a static.
@@ -230,6 +237,37 @@ struct SatoriIncrGcInfo
     // selection: merging the summary, and whether an app thread did it
     int64_t selectScanTicks;
     int64_t selectByApp;
+    // merges: what merge candidates would free, how many were selected, kept after planning, relocated, or made targets
+    int64_t mergeGain;
+    int64_t mergesSelected;
+    int64_t mergesKept;
+    int64_t mergesRelocated;
+    int64_t mergesToTarget;
+    // regular relocation: sources by generation, the ones that fit their own free span (merges),
+    // and what happened to them - relocated into an existing target, paired with another such region, made a target.
+    int64_t regSources[3];
+    int64_t regFits[3];
+    int64_t regRelocated[3];
+    int64_t regFitRelocated;
+    int64_t regFitPaired;
+    int64_t regFitToTarget;
+    int64_t regFresh;
+    int64_t regEmpty;
+    int64_t regBytes;
+    int64_t regFitBytes;
+    // what regular relocation estimated it could reclaim (ephemeral and tenured parts) and what it wants to reclaim
+    int64_t regEstEphemeral;
+    int64_t regEstTenured;
+    int64_t regDesired;
+    // choosing between incremental and regular relocation: Gen2 live bytes in regions that are not large,
+    // the growth limit, the space per live byte after the last regular relocation,
+    // and the regular relocation cost model - predicted, measured and calibrated.
+    int64_t gen2Live;
+    int64_t growthLimit;
+    int64_t compactedRatioX100;
+    int64_t regularPredictedUs;
+    int64_t regularMeasuredUs;
+    int64_t regularUsPerRegionX100;
     // the concurrent phase before this blocking GC, if there was one. work is summed over threads.
     int64_t ccStartTicks;
     int64_t ccWallTicks;
@@ -259,6 +297,9 @@ static const int INCR_OUTCOME_NOTHING_TO_RELOCATE = 4;
 static const int INCR_OUTCOME_NO_CANDIDATES = 5;
 static const int INCR_OUTCOME_REGULAR_INSTEAD = 6;
 static const int INCR_OUTCOME_NO_ROOM = 7;
+// decided when selecting: regular relocation is cheap, or incremental would not keep Gen2 from growing
+static const int INCR_OUTCOME_REGULAR_CHEAP = 8;
+static const int INCR_OUTCOME_REGULAR_GROWTH = 9;
 
 static const int INCR_ABANDON_REFS = 1;
 static const int INCR_ABANDON_OOM = 2;
@@ -277,6 +318,8 @@ static inline bool IncrStatsEnabled()
     do { if (IncrStatsEnabled()) Interlocked::ExchangeAdd64((int64_t*)&g_incrGc.field, (int64_t)(value)); } while (0)
 #define INCR_TICKS() (IncrStatsEnabled() ? minipal_hires_ticks() : 0)
 
+static void TraceInitialize(const char* dir);
+
 static void IncrStatsInitialize()
 {
     GCConfigStringHolder dir = GCConfig::GetIncrStatsDir();
@@ -286,6 +329,7 @@ static void IncrStatsInitialize()
         uint32_t pid = GCToOSInterface::GetCurrentProcessId();
         snprintf(g_incrStats.path, sizeof(g_incrStats.path), "%s/incr-%u.txt", dir.Get(), pid);
         snprintf(g_incrStats.logPath, sizeof(g_incrStats.logPath), "%s/incr-%u.log", dir.Get(), pid);
+        TraceInitialize(dir.Get());
         state = 1;
     }
 
@@ -348,6 +392,8 @@ static void IncrStatsWriteSummary(bool force)
     INCR_DUMP(incrAbandonedOom);
     INCR_DUMP(incrNothingToRelocate);
     INCR_DUMP(incrRegularInstead);
+    INCR_DUMP(incrRegularCheap);
+    INCR_DUMP(incrRegularGrowth);
     INCR_DUMP(incrNoRoom);
     INCR_DUMP(incrRelocated);
     INCR_DUMP(incrSourcesSelected);
@@ -383,9 +429,305 @@ static void IncrStatsWriteSummary(bool force)
     INCR_DUMP(incrSummaryPushTicks);
     INCR_DUMP(cardsRearmable);
     INCR_DUMP(cardsKept);
+    INCR_DUMP(incrMergesSelected);
+    INCR_DUMP(incrMergesKept);
+    INCR_DUMP(incrMergesRelocated);
+    INCR_DUMP(incrMergesToTarget);
 #undef INCR_DUMP_GEN
 #undef INCR_DUMP
     fclose(f);
+}
+
+//
+// A timeline of EE suspensions by the GC (all of them, with a breakdown) and of operations on app threads
+// that took long (aggregated always, recorded when longer than TRACE_MIN_US).
+// Written to <dir>/trace-<pid>.log, when DOTNET_gcIncrStatsDir is set.
+//
+struct SatoriTraceRecord
+{
+    int64_t start;
+    int64_t end;
+    int64_t a;
+    int64_t b;
+    int64_t c;
+    int64_t d;
+    int64_t e;
+    // prep and blocking: EE suspension and restart timestamps (see g_satoriSuspendTicks), then when RestartEE was called
+    int64_t vm[9];
+    uint32_t thread;
+    // 0 - the slot is free or not ready yet
+    int32_t kind;
+};
+
+static const int64_t TRACE_CAPACITY = 1 << 16;
+static const int64_t TRACE_MIN_US = 500;
+static const int64_t TRACE_FLUSH_US = 100000;
+// thread local aggregates are published after this many operations
+static const int64_t TRACE_LOCAL_FLUSH_OPS = 256;
+
+struct SatoriTrace
+{
+    char path[512];
+    int64_t startTicks;
+    int64_t minTicks;
+    size_t reserved;
+    size_t flushed;
+    int64_t lastFlushTicks;
+    int32_t flushing;
+    size_t dropped;
+    // all operations, also the short ones
+    size_t count[SatoriRecycler::TRACE_KIND_COUNT];
+    size_t ticks[SatoriRecycler::TRACE_KIND_COUNT];
+    size_t maxTicks[SatoriRecycler::TRACE_KIND_COUNT];
+    size_t bytes[SatoriRecycler::TRACE_KIND_COUNT];
+    // stack marking helpers in the current prep pause
+    int32_t prepHelpers;
+    size_t prepHelperMaxTicks;
+    SatoriTraceRecord records[TRACE_CAPACITY];
+};
+
+static SatoriTrace g_trace;
+
+#if !defined(FEATURE_NATIVEAOT) && !defined(BUILD_AS_STANDALONE)
+// defined in the VM (threadsuspend.cpp)
+extern int64_t g_satoriSuspendTicks[8];
+#endif
+
+// captures the VM timestamps of the last suspension (after SuspendEE) or restart (after RestartEE)
+static void TraceCaptureVm(int64_t* vm, bool restart, int64_t restartCallTicks)
+{
+#if !defined(FEATURE_NATIVEAOT) && !defined(BUILD_AS_STANDALONE)
+    if (restart)
+    {
+        vm[6] = g_satoriSuspendTicks[6];
+        vm[7] = g_satoriSuspendTicks[7];
+        vm[8] = restartCallTicks;
+    }
+    else
+    {
+        for (int i = 0; i < 6; i++)
+        {
+            vm[i] = g_satoriSuspendTicks[i];
+        }
+    }
+#endif
+}
+
+struct SatoriTraceLocal
+{
+    int64_t ops;
+    size_t count[SatoriRecycler::TRACE_KIND_COUNT];
+    size_t ticks[SatoriRecycler::TRACE_KIND_COUNT];
+    size_t bytes[SatoriRecycler::TRACE_KIND_COUNT];
+};
+
+static thread_local SatoriTraceLocal t_trace;
+
+static const char* const s_traceKindNames[SatoriRecycler::TRACE_KIND_COUNT] =
+{
+    "none", "prep", "block", "tlgc", "help", "trigger", "reuse", "newregion", "large", "allocslow", "filterwait",
+    "zero", "zerolarge", "freelist", "largeshared", "zeroreused"
+};
+
+/* static */
+bool SatoriRecycler::TraceEnabled()
+{
+    return IncrStatsEnabled();
+}
+
+static void TraceInitialize(const char* dir)
+{
+    snprintf(g_trace.path, sizeof(g_trace.path), "%s/trace-%u.log", dir, GCToOSInterface::GetCurrentProcessId());
+    g_trace.startTicks = minipal_hires_ticks();
+    g_trace.lastFlushTicks = g_trace.startTicks;
+    g_trace.minTicks = TRACE_MIN_US * minipal_hires_tick_frequency() / 1000000;
+}
+
+static void TraceUpdateMax(size_t* location, size_t value)
+{
+    size_t current = VolatileLoad(location);
+    while (value > current)
+    {
+        size_t seen = Interlocked::CompareExchange(location, value, current);
+        if (seen == current)
+        {
+            break;
+        }
+
+        current = seen;
+    }
+}
+
+static void TraceAddTotal(int kind, int64_t duration)
+{
+    Interlocked::Increment(&g_trace.count[kind]);
+    Interlocked::ExchangeAdd64(&g_trace.ticks[kind], (size_t)duration);
+    TraceUpdateMax(&g_trace.maxTicks[kind], (size_t)duration);
+}
+
+static void TraceRecord(int kind, int64_t start, int64_t end, int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, const int64_t* vm = nullptr)
+{
+    size_t index;
+    while (true)
+    {
+        index = VolatileLoad(&g_trace.reserved);
+        if (index - VolatileLoad(&g_trace.flushed) >= (size_t)TRACE_CAPACITY)
+        {
+            Interlocked::Increment(&g_trace.dropped);
+            return;
+        }
+
+        if (Interlocked::CompareExchange(&g_trace.reserved, index + 1, index) == index)
+        {
+            break;
+        }
+    }
+
+    SatoriTraceRecord& r = g_trace.records[index % TRACE_CAPACITY];
+    r.start = start;
+    r.end = end;
+    r.a = a;
+    r.b = b;
+    r.c = c;
+    r.d = d;
+    r.e = e;
+    for (int i = 0; i < 9; i++)
+    {
+        r.vm[i] = vm ? vm[i] : 0;
+    }
+    r.thread = (uint32_t)GCToOSInterface::GetCurrentThreadIdForLogging();
+    VolatileStore(&r.kind, (int32_t)kind);
+}
+
+static void TraceFlushLocal()
+{
+    for (int i = 0; i < SatoriRecycler::TRACE_KIND_COUNT; i++)
+    {
+        if (t_trace.count[i])
+        {
+            Interlocked::ExchangeAdd64(&g_trace.count[i], t_trace.count[i]);
+            Interlocked::ExchangeAdd64(&g_trace.ticks[i], t_trace.ticks[i]);
+            Interlocked::ExchangeAdd64(&g_trace.bytes[i], t_trace.bytes[i]);
+            t_trace.count[i] = 0;
+            t_trace.ticks[i] = 0;
+            t_trace.bytes[i] = 0;
+        }
+    }
+
+    t_trace.ops = 0;
+}
+
+void SatoriRecycler::TraceOp(int kind, int64_t startTicks, bool suspendingAtStart, size_t bytes)
+{
+    int64_t end = minipal_hires_ticks();
+    int64_t duration = end - startTicks;
+    t_trace.count[kind]++;
+    t_trace.ticks[kind] += (size_t)duration;
+    t_trace.bytes[kind] += bytes;
+    if (++t_trace.ops >= TRACE_LOCAL_FLUSH_OPS)
+    {
+        TraceFlushLocal();
+    }
+
+    if ((size_t)duration > VolatileLoadWithoutBarrier(&g_trace.maxTicks[kind]))
+    {
+        TraceUpdateMax(&g_trace.maxTicks[kind], (size_t)duration);
+    }
+
+    if (duration >= g_trace.minTicks)
+    {
+        TraceRecord(kind, startTicks, end, suspendingAtStart, AppThreadsShouldSuspend(), m_gcState, m_condemnedGeneration, 0);
+    }
+}
+
+static void TraceFlush(bool force)
+{
+    int64_t now = minipal_hires_ticks();
+    if (!force &&
+        (now - VolatileLoadWithoutBarrier(&g_trace.lastFlushTicks)) < TRACE_FLUSH_US * minipal_hires_tick_frequency() / 1000000)
+    {
+        return;
+    }
+
+    if (Interlocked::CompareExchange(&g_trace.flushing, 1, 0) != 0)
+    {
+        return;
+    }
+
+    g_trace.lastFlushTicks = now;
+    FILE* f = fopen(g_trace.path, "a");
+    if (f)
+    {
+        double us = 1e6 / (double)minipal_hires_tick_frequency();
+        size_t i = g_trace.flushed;
+        size_t reserved = VolatileLoad(&g_trace.reserved);
+        for (; i < reserved; i++)
+        {
+            SatoriTraceRecord& r = g_trace.records[i % TRACE_CAPACITY];
+            int kind = VolatileLoad(&r.kind);
+            if (kind == 0)
+            {
+                // not ready yet
+                break;
+            }
+
+            double startUs = (r.start - g_trace.startTicks) * us;
+            double durUs = (r.end - r.start) * us;
+            char vmText[256] = "";
+            if (r.vm[0])
+            {
+                // suspend: call -> SuspendEE, Begin event, thread store lock, until trapping, process wide barrier, until all suspended
+                // restart: Begin event, resuming threads, after resuming until RestartEE returned
+                snprintf(vmText, sizeof(vmText),
+                    " vmCallUs=%.0f vmEtwUs=%.0f vmLockUs=%.0f vmToTrapUs=%.0f vmBarrierUs=%.0f vmCatchUs=%.0f rEtwUs=%.0f rResumeUs=%.0f rTailUs=%.0f",
+                    (r.vm[0] - r.start) * us, (r.vm[1] - r.vm[0]) * us, (r.vm[2] - r.vm[1]) * us, (r.vm[3] - r.vm[2]) * us,
+                    (r.vm[4] - r.vm[3]) * us, (r.vm[5] - r.vm[4]) * us,
+                    (r.vm[6] - r.vm[8]) * us, (r.vm[7] - r.vm[6]) * us, (r.end - r.vm[7]) * us);
+            }
+
+            if (kind == SatoriRecycler::TRACE_PREP)
+            {
+                double restUs = (r.end - r.start - r.a - r.b - r.c - r.d) * us;
+                fprintf(f, "%.0f %s tid=%u durUs=%.0f gen=%lld worker=%lld helpers=%lld activeW=%lld totalW=%lld "
+                    "suspendUs=%.0f allocCtxUs=%.0f ownMarkUs=%.0f waitHelpersUs=%.0f restUs=%.0f helperMaxUs=%lld%s\n",
+                    startUs, s_traceKindNames[kind], r.thread, durUs,
+                    (long long)(r.e & 0xF), (long long)((r.e >> 4) & 0xF), (long long)((r.e >> 8) & 0xFF),
+                    (long long)((r.e >> 16) & 0xFF), (long long)((r.e >> 24) & 0xFF),
+                    r.a * us, r.b * us, r.c * us, r.d * us, restUs, (long long)(r.e >> 32), vmText);
+            }
+            else if (kind == SatoriRecycler::TRACE_BLOCK)
+            {
+                fprintf(f, "%.0f %s tid=%u durUs=%.0f gen=%lld suspendUs=%.0f gcUs=%.0f%s\n",
+                    startUs, s_traceKindNames[kind], r.thread, durUs, (long long)r.b, r.a * us, r.c * us, vmText);
+            }
+            else
+            {
+                fprintf(f, "%.0f %s tid=%u durUs=%.0f suspStart=%lld suspEnd=%lld gcState=%lld gen=%lld\n",
+                    startUs, s_traceKindNames[kind], r.thread, durUs,
+                    (long long)r.a, (long long)r.b, (long long)r.c, (long long)r.d);
+            }
+
+            VolatileStore(&r.kind, 0);
+        }
+
+        VolatileStore(&g_trace.flushed, i);
+
+        if (force)
+        {
+            double us2 = 1e6 / (double)minipal_hires_tick_frequency();
+            for (int k = 1; k < SatoriRecycler::TRACE_KIND_COUNT; k++)
+            {
+                fprintf(f, "# total %s count=%lld totalUs=%.0f maxUs=%.0f bytes=%lld\n", s_traceKindNames[k],
+                    (long long)g_trace.count[k], g_trace.ticks[k] * us2, g_trace.maxTicks[k] * us2, (long long)g_trace.bytes[k]);
+            }
+
+            fprintf(f, "# dropped=%lld\n", (long long)g_trace.dropped);
+        }
+
+        fclose(f);
+    }
+
+    VolatileStore(&g_trace.flushing, 0);
 }
 
 // The index of the candidate is kept in the top byte of a recorded location (heap addresses use far fewer than 56 bits).
@@ -404,6 +746,18 @@ static const size_t INCR_BYTES_PER_UNIT = 8;
 static const double INCR_INITIAL_FIXED_US = 300;
 static const double INCR_INITIAL_US_PER_UNIT = 0.001 / 4;
 static const double INCR_INITIAL_REFS_PER_OBJ = 2;
+// Regular relocation in a Gen2 GC costs roughly this much per region, on top of updating roots.
+// It is learned from larger heaps only, since in a small one the fixed part dominates. It is never assumed to be very cheap.
+static const double INCR_INITIAL_REGULAR_US_PER_REGION = 64;
+static const double INCR_MIN_REGULAR_US_PER_REGION = 8;
+static const size_t INCR_MIN_REGULAR_SAMPLE_REGIONS = 64;
+// What regular relocation keeps is modeled as live * ratio + slack - what sustained regular relocation achieves
+// (measured 1.25-1.33 in Roslyn and Unity). The slack is for partially filled regions, which dominate in a small heap.
+// NB: a single regular relocation after a run of incremental ones keeps more (regions just over half full stay),
+//     so the ratio right after one is not what regular relocation would keep and is only logged.
+static const double INCR_COMPACTED_RATIO = 1.25;
+static const size_t INCR_COMPACTED_SLACK = 8 * Satori::REGION_SIZE_GRANULARITY;
+static const size_t INCR_MIN_COMPACTED_SAMPLE_SPACE = 64 * Satori::REGION_SIZE_GRANULARITY;
 // weight of a new sample in the calibrated values
 static const double INCR_CALIBRATION_WEIGHT_UP = 1.0 / 2;
 static const double INCR_CALIBRATION_WEIGHT_DOWN = 1.0 / 8;
@@ -530,6 +884,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_incrSelectedObjs = 0;
     m_incrEligibleGain = 0;
     m_incrGen2Space = 0;
+    m_incrGrowthLimit = SIZE_MAX;
     m_incrUnitsBudget = 0;
     m_incrPlannedUnits = 0;
     m_incrFixedUs = INCR_INITIAL_FIXED_US;
@@ -539,6 +894,10 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_incrUnitSamples = 0;
     m_incrRefsSamples = 0;
     m_incrNoRoomCount = 0;
+    m_regularUsPerRegion = INCR_INITIAL_REGULAR_US_PER_REGION;
+    m_regularSamples = 0;
+    m_lastGen2WasRegular = false;
+    m_lastGen2ChoseRegular = false;
     m_incrMeasuredTicks = 0;
     m_incrRootsStartTicks = 0;
     m_incrRootsDoneTicks = 0;
@@ -619,6 +978,11 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 void SatoriRecycler::ShutDown()
 {
     m_activeWorkerFn = nullptr;
+    if (TraceEnabled())
+    {
+        TraceFlushLocal();
+        TraceFlush(/* force */ true);
+    }
 }
 
 /* static */
@@ -1407,7 +1771,13 @@ void SatoriRecycler::BlockingMarkForConcurrentImpl()
     // check state again it could have changed if there were no marking threads
     if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
     {
+        int64_t traceStart = INCR_TICKS();
         MarkAllStacksFinalizationAndDemotedRoots();
+        if (traceStart)
+        {
+            Interlocked::Increment(&g_trace.prepHelpers);
+            TraceUpdateMax(&g_trace.prepHelperMaxTicks, (size_t)(minipal_hires_ticks() - traceStart));
+        }
     }
 
     Interlocked::Decrement(&m_ccStackMarkingThreadsNum);
@@ -1446,13 +1816,32 @@ void SatoriRecycler::BlockingMarkForConcurrent()
         // The state is published by the CAS above, so filtering that starts from now on will
         // see it and do nothing. Wait for the ones already inside to leave before touching the
         // queues. This is before suspending, so the wait is not a part of the pause.
+        int64_t traceWaitStart = INCR_TICKS();
         while (m_reusableFilterThreadsNum)
         {
             YieldProcessor();
         }
 
         size_t blockingStart = minipal_hires_ticks();
+        if (traceWaitStart)
+        {
+            g_trace.prepHelpers = 0;
+            g_trace.prepHelperMaxTicks = 0;
+            if ((int64_t)blockingStart - traceWaitStart >= g_trace.minTicks)
+            {
+                TraceRecord(TRACE_PREP_FILTER_WAIT, traceWaitStart, blockingStart, 0, 0, 0, 0, 0);
+            }
+        }
+
+        int traceActiveWorkers = m_activeWorkers;
+        int traceTotalWorkers = m_totalWorkers;
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
+        int64_t traceSuspended = INCR_TICKS();
+        int64_t traceVm[9] = {};
+        if (traceSuspended)
+        {
+            TraceCaptureVm(traceVm, /* restart */ false, 0);
+        }
 
         // the concurrent pass has already filtered what is in the alternate, make it usable again.
         // whatever is left in m_reusableRegions it did not reach - the loop below will filter that.
@@ -1471,9 +1860,11 @@ void SatoriRecycler::BlockingMarkForConcurrent()
         {
             m_workList->Push(c.m_WorkChunk);
         }
+        int64_t traceAllocCtxDone = INCR_TICKS();
 
         // now join everybody else and mark some roots
         MarkAllStacksFinalizationAndDemotedRoots();
+        int64_t traceOwnMarkDone = INCR_TICKS();
 
         // done, wait for marking to finish and restart EE
         Interlocked::Exchange(&m_ccStackMarkState, CC_MARK_STATE_DONE);
@@ -1488,6 +1879,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
                 YieldProcessor();
             }
         }
+        int64_t traceHelpersDone = INCR_TICKS();
 
         _ASSERTE(m_reusableRegionsAlternate->IsEmpty());
 
@@ -1497,7 +1889,28 @@ void SatoriRecycler::BlockingMarkForConcurrent()
         m_gcAccmulatingDurationUsecs[m_condemnedGeneration] += blockingDuration / m_osTicksPerMicro;
         UpdateGcCounters(blockingStart);
 
+        int64_t traceRestartCall = INCR_TICKS();
         GCToEEInterface::RestartEE(false);
+
+        if (traceSuspended)
+        {
+            TraceCaptureVm(traceVm, /* restart */ true, traceRestartCall);
+            int64_t end = minipal_hires_ticks();
+            TraceAddTotal(TRACE_PREP, end - (int64_t)blockingStart);
+            int64_t packed = (int64_t)(m_condemnedGeneration & 0xF) |
+                ((int64_t)(IsWorkerThread() ? 1 : 0) << 4) |
+                ((int64_t)min(VolatileLoad(&g_trace.prepHelpers), 0xFF) << 8) |
+                ((int64_t)min(traceActiveWorkers, 0xFF) << 16) |
+                ((int64_t)min(traceTotalWorkers, 0xFF) << 24) |
+                ((int64_t)(VolatileLoad(&g_trace.prepHelperMaxTicks) / (size_t)m_osTicksPerMicro) << 32);
+            TraceRecord(TRACE_PREP, (int64_t)blockingStart, end,
+                traceSuspended - (int64_t)blockingStart,
+                traceAllocCtxDone - traceSuspended,
+                traceOwnMarkDone - traceAllocCtxDone,
+                traceHelpersDone - traceOwnMarkDone,
+                packed, traceVm);
+            TraceFlush(/* force */ false);
+        }
     }
 }
 
@@ -1784,8 +2197,15 @@ void SatoriRecycler::BlockingCollect1()
 
     // stop other threads.
     GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
+    int64_t traceSuspended = INCR_TICKS();
+    int64_t traceVm[9] = {};
+    if (traceSuspended)
+    {
+        TraceCaptureVm(traceVm, /* restart */ false, 0);
+    }
 
     BlockingCollectImpl();
+    int64_t traceGcDone = INCR_TICKS();
 
     size_t blockingDuration = ((size_t)m_blockingWorkEndTicks - blockingStart);
     m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_osTicksPerMicro;
@@ -1803,8 +2223,14 @@ void SatoriRecycler::BlockingCollect1()
     IncrStatsOnBlockingGcEnd(1, (int64_t)blockingDuration, incrSnapshot);
 
     // restart VM
+    int64_t traceRestartCall = INCR_TICKS();
     GCToEEInterface::RestartEE(true);
+    if (traceSuspended)
+    {
+        TraceCaptureVm(traceVm, /* restart */ true, traceRestartCall);
+    }
 
+    TraceBlocking(1, (int64_t)blockingStart, traceSuspended, traceGcDone, traceVm);
     IncrStatsWriteLog(incrSnapshot);
 }
 
@@ -1815,8 +2241,15 @@ void SatoriRecycler::BlockingCollect2()
 
     // stop other threads.
     GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
+    int64_t traceSuspended = INCR_TICKS();
+    int64_t traceVm[9] = {};
+    if (traceSuspended)
+    {
+        TraceCaptureVm(traceVm, /* restart */ false, 0);
+    }
 
     BlockingCollectImpl();
+    int64_t traceGcDone = INCR_TICKS();
 
     size_t blockingDuration = ((size_t)m_blockingWorkEndTicks - blockingStart);
     m_CurrentGcInfo->m_pauseDurations[0] = blockingDuration / m_osTicksPerMicro;
@@ -1834,9 +2267,29 @@ void SatoriRecycler::BlockingCollect2()
     IncrStatsOnBlockingGcEnd(2, (int64_t)blockingDuration, incrSnapshot);
 
     // restart VM
+    int64_t traceRestartCall = INCR_TICKS();
     GCToEEInterface::RestartEE(true);
+    if (traceSuspended)
+    {
+        TraceCaptureVm(traceVm, /* restart */ true, traceRestartCall);
+    }
 
+    TraceBlocking(2, (int64_t)blockingStart, traceSuspended, traceGcDone, traceVm);
     IncrStatsWriteLog(incrSnapshot);
+}
+
+/* static */
+void SatoriRecycler::TraceBlocking(int generation, int64_t start, int64_t suspended, int64_t gcDone, const int64_t* vm)
+{
+    if (!suspended)
+    {
+        return;
+    }
+
+    int64_t end = minipal_hires_ticks();
+    TraceAddTotal(TRACE_BLOCK, end - start);
+    TraceRecord(TRACE_BLOCK, start, end, suspended - start, generation, gcDone - suspended, 0, 0, vm);
+    TraceFlush(/* force */ false);
 }
 
 NOINLINE
@@ -1944,15 +2397,25 @@ void SatoriRecycler::BlockingCollectImpl()
 
     int64_t markStartTicks = INCR_TICKS();
     BlockingMark();
-    int64_t planStartTicks = INCR_TICKS();
+    int64_t planStartTicks = minipal_hires_ticks();
     Plan();
     int64_t relocateStartTicks = INCR_TICKS();
     Relocate();
     int64_t updateStartTicks = INCR_TICKS();
     Update();
+    int64_t endTicks = minipal_hires_ticks();
+    if (m_condemnedGeneration == 2)
+    {
+        // the cost of regular relocation is learned from what it costs, see SelectIncrementalRelocationCandidates.
+        m_lastGen2WasRegular = m_isRelocating && !m_isIncrementalRelocation;
+        if (m_lastGen2WasRegular)
+        {
+            CalibrateRegularRelocation(endTicks - planStartTicks);
+        }
+    }
+
     if (IncrStatsEnabled())
     {
-        int64_t endTicks = minipal_hires_ticks();
         g_incrGc.phaseMarkTicks = planStartTicks - markStartTicks;
         g_incrGc.phasePlanTicks = relocateStartTicks - planStartTicks;
         g_incrGc.phaseRelocateTicks = updateStartTicks - relocateStartTicks;
@@ -4499,6 +4962,7 @@ void SatoriRecycler::Plan()
     m_gen1AddedSinceLastCollection = 0;
 
     size_t estimatedReclaim = m_estimatedEphemeralReclaim;
+    size_t estimatedEphemeralReclaim = estimatedReclaim;
     if (m_condemnedGeneration == 2)
     {
         estimatedReclaim += m_estimatedTenuredReclaim;
@@ -4554,6 +5018,13 @@ void SatoriRecycler::Plan()
             // gen1 can reuse most of free space, so compact only if ~1/2 can be reclaimed
             desiredReclaim = (m_condemnedRegionsCount / 1 + 2) * Satori::REGION_SIZE_GRANULARITY / 2;
         }
+    }
+
+    if (m_condemnedGeneration == 2)
+    {
+        g_incrGc.regEstEphemeral = (int64_t)estimatedEphemeralReclaim;
+        g_incrGc.regEstTenured = (int64_t)(estimatedReclaim - estimatedEphemeralReclaim);
+        g_incrGc.regDesired = (int64_t)desiredReclaim;
     }
 
     if (m_isRelocating == false)
@@ -4780,6 +5251,10 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool exis
         {
             INCR_GC_ADD(freshTargets, 1);
         }
+        else
+        {
+            INCR_GC_ADD(regFresh, 1);
+        }
 
         newRegion->SetGeneration(m_condemnedGeneration);
         newRegion->DoNotSweep() = true;
@@ -4872,11 +5347,23 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     // We would rather make this one a target of relocations.
     bool existingRegionOnly = relocationSource->GetMaxFreeBucket() >= SatoriUtil::BucketForAlloc(maxBytesToCopy);
 
+    int sourceGen = relocationSource->Generation();
+    bool regularFit = !m_isIncrementalRelocation && existingRegionOnly;
+    if (!m_isIncrementalRelocation)
+    {
+        INCR_GC_ADD(regSources[sourceGen], 1);
+        if (regularFit)
+        {
+            INCR_GC_ADD(regFits[sourceGen], 1);
+        }
+    }
+
+    bool isMerge = relocationSource->IncrMergeSource();
+    relocationSource->IncrMergeSource() = false;
     if (m_isIncrementalRelocation)
     {
         // The occupancy is from the last sweep and includes what has died since then.
         // We know what is alive now, and that is what we need a target for.
-        // We selected this region to be relocated, so we do not want to make it a target instead.
         size_t objLimit = relocationSource->Start() + Satori::REGION_SIZE_GRANULARITY;
         size_t liveBytes = 0;
         SatoriObject* liveObj = relocationSource->FirstObject();
@@ -4895,7 +5382,12 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
 
         // nothing may be alive, but we still need a span to go through the motions.
         maxBytesToCopy = max(liveBytes, (size_t)Satori::MIN_FREELIST_CAPACITY);
-        existingRegionOnly = false;
+
+        // We selected this region to be relocated, so we do not want to make it a target instead.
+        // Unless it is a merge - a region that could fit its objects in its own free span. Moving that into a fresh region
+        // would free nothing, so as in regular relocation, it goes into an existing target, or into another such region,
+        // or becomes a target for others.
+        existingRegionOnly = isMerge && relocationSource->GetMaxFreeBucket() >= SatoriUtil::BucketForAlloc(maxBytesToCopy);
     }
 
     SatoriRegion* relocationTarget = TryGetRelocationTarget(maxBytesToCopy, existingRegionOnly);
@@ -4914,9 +5406,22 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
                 if (m_isIncrementalRelocation)
                 {
                     INCR_GC_ADD(sourcesSkipped, 1);
+                    if (isMerge)
+                    {
+                        INCR_GC_ADD(mergesToTarget, 1);
+                    }
+                }
+                else
+                {
+                    INCR_GC_ADD(regFitToTarget, 1);
                 }
 
                 return;
+            }
+
+            if (regularFit)
+            {
+                INCR_GC_ADD(regFitPaired, 1);
             }
         }
         else
@@ -5029,6 +5534,20 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
             INCR_GC_ADD(regionsRelocated, 1);
             INCR_GC_ADD(objsRelocated, objectsRelocated);
             INCR_GC_ADD(bytesRelocated, used);
+            if (isMerge)
+            {
+                INCR_GC_ADD(mergesRelocated, 1);
+            }
+        }
+        else
+        {
+            INCR_GC_ADD(regRelocated[sourceGen], 1);
+            INCR_GC_ADD(regBytes, used);
+            if (regularFit)
+            {
+                INCR_GC_ADD(regFitRelocated, 1);
+                INCR_GC_ADD(regFitBytes, used);
+            }
         }
 
         if (relocationIsPromotion)
@@ -5044,6 +5563,11 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     else
     {
         // relocationSource happened to be empty
+        if (!m_isIncrementalRelocation)
+        {
+            INCR_GC_ADD(regEmpty, 1);
+        }
+
         FreeLogicallyEmptyRegion(relocationSource, /* hasMarks */ false, /* noLock */ false);
     }
 }
@@ -5096,6 +5620,8 @@ void SatoriRecycler::Update()
         INCR_STAT_ADD(incrRefsExamined, g_incrGc.refsExamined);
         INCR_STAT_ADD(incrRefsUpdated, g_incrGc.refsUpdated);
         INCR_STAT_ADD(incrCopiedObjs, g_incrGc.copiedObjs);
+        INCR_STAT_ADD(incrMergesRelocated, g_incrGc.mergesRelocated);
+        INCR_STAT_ADD(incrMergesToTarget, g_incrGc.mergesToTarget);
 
 #if _DEBUG
         VerifyIncrementalRelocation();
@@ -5936,7 +6462,10 @@ void SatoriRecycler::IncrStatsWriteLog(const SatoriIncrGcSnapshot& snapshot)
             "fixUs=%lld perMUnitsUs=%lld refsPerObjX100=%lld "
             "pubChunks=%lld merges=%lld freeRecUs=%.0f scanUs=%.0f "
             "ccWallUs=%.0f ccWorkUs=%.0f ccQuanta=%lld prepUs=%.0f "
-            "selByApp=%lld\n",
+            "selByApp=%lld mergeGainKB=%lld mergesSel=%lld mergesKept=%lld mergesReloc=%lld mergesTgt=%lld "
+            "rSrc2=%lld rSrc1=%lld rFit2=%lld rFit1=%lld rRel2=%lld rRel1=%lld rFitRel=%lld rFitPair=%lld rFitTgt=%lld "
+            "rFresh=%lld rEmpty=%lld rKB=%lld rFitKB=%lld rEstEphKB=%lld rEstTenKB=%lld rDesiredKB=%lld "
+            "gen2LiveKB=%lld limitKB=%lld compactedX100=%lld regPredUs=%lld regMeasUs=%lld regPerRegionX100=%lld\n",
             (long long)snapshot.gen2Index, snapshot.pauseTicks * us, gc.phaseMarkTicks * us, gc.phasePlanTicks * us,
             gc.phaseRelocateTicks * us, gc.phaseUpdateTicks * us, gc.outcome,
             gc.sources, (long long)gc.sourceObjs, (long long)(gc.sourceBytes / 1024), (long long)gc.eligible, (long long)(gc.eligibleGain / 1024),
@@ -5954,7 +6483,15 @@ void SatoriRecycler::IncrStatsWriteLog(const SatoriIncrGcSnapshot& snapshot)
             (long long)gc.publishedChunks, (long long)gc.spillMerges, gc.freeRecordedTicks * us,
             gc.selectScanTicks * us,
             gc.ccWallTicks * us, gc.ccWorkTicks * us, (long long)gc.ccQuanta, gc.prepPauseTicks * us,
-            (long long)gc.selectByApp);
+            (long long)gc.selectByApp, (long long)(gc.mergeGain / 1024), (long long)gc.mergesSelected, (long long)gc.mergesKept,
+            (long long)gc.mergesRelocated, (long long)gc.mergesToTarget,
+            (long long)gc.regSources[2], (long long)gc.regSources[1], (long long)gc.regFits[2], (long long)gc.regFits[1],
+            (long long)gc.regRelocated[2], (long long)gc.regRelocated[1], (long long)gc.regFitRelocated, (long long)gc.regFitPaired,
+            (long long)gc.regFitToTarget, (long long)gc.regFresh, (long long)gc.regEmpty,
+            (long long)(gc.regBytes / 1024), (long long)(gc.regFitBytes / 1024),
+            (long long)(gc.regEstEphemeral / 1024), (long long)(gc.regEstTenured / 1024), (long long)(gc.regDesired / 1024),
+            (long long)(gc.gen2Live / 1024), (long long)(gc.growthLimit / 1024), (long long)gc.compactedRatioX100,
+            (long long)gc.regularPredictedUs, (long long)gc.regularMeasuredUs, (long long)gc.regularUsPerRegionX100);
         fclose(f);
     }
 
@@ -6131,18 +6668,24 @@ void SatoriRecycler::IncrEvaluateRegion(SatoriRegion* region, double refsPerObj,
     info.m_bucket = bucket;
 
     // As in ReclaimSizeIfRelocated, we do not want to move much.
-    // A region that could take its own objects in one of its free spans is a better target than a source.
-    if (occupancy <= Satori::REGION_SIZE_GRANULARITY / 2 &&
-        bucket < SatoriUtil::BucketForAlloc(occupancy))
+    if (occupancy <= Satori::REGION_SIZE_GRANULARITY / 2)
     {
-        size_t gain = IncrRelocationGain(occupancy);
-        size_t cost = IncrRelocationCost(objCount, occupancy, (size_t)(objCount * refsPerObj));
-        info.m_isSource = true;
-        info.m_gain = gain;
-        info.m_source.m_region = region;
-        info.m_source.m_key = cost * 65536 / gain;
-        info.m_source.m_objCount = (uint32_t)objCount;
-        info.m_source.m_occupancy = (uint32_t)occupancy;
+        // A region that could take its own objects in one of its free spans is a better target than a source.
+        // When merges are allowed, it may also be a source - it would go only into an existing target or into another
+        // region like this, as in regular relocation, see RelocateRegion.
+        bool fitsOwnSpan = bucket >= SatoriUtil::BucketForAlloc(occupancy);
+        if (!fitsOwnSpan || SatoriUtil::IsIncrementalMerge())
+        {
+            size_t gain = IncrRelocationGain(occupancy);
+            size_t cost = IncrRelocationCost(objCount, occupancy, (size_t)(objCount * refsPerObj));
+            info.m_isSource = true;
+            info.m_gain = gain;
+            info.m_source.m_region = region;
+            info.m_source.m_key = cost * 65536 / gain;
+            info.m_source.m_objCount = (uint32_t)objCount;
+            info.m_source.m_occupancy = (uint32_t)occupancy;
+            info.m_source.m_merge = fitsOwnSpan ? 1 : 0;
+        }
     }
 
     info.m_isTarget = bucket >= INCR_MIN_TARGET_BUCKET;
@@ -6220,12 +6763,22 @@ void SatoriRecycler::IncrSummarizeRegion(SatoriRegion* region)
         if (isLarge)
         {
             shard.m_largeRegions++;
+            shard.m_largeOccupancy += info.m_occupancy;
         }
 
         if (info.m_isSource)
         {
-            shard.m_eligibleGain += info.m_gain;
-            shard.m_eligibleCount++;
+            // merges are not a part of the backlog, which measures what regular relocation would do better
+            if (info.m_source.m_merge)
+            {
+                shard.m_mergeGain += info.m_gain;
+            }
+            else
+            {
+                shard.m_eligibleGain += info.m_gain;
+                shard.m_eligibleCount++;
+            }
+
             IncrHeapInsertSmallest(shard.m_sources, shard.m_sourceCount, INCR_MAX_REGIONS, info.m_source);
         }
 
@@ -6265,6 +6818,8 @@ void SatoriRecycler::IncrSummaryReset()
         shard.m_eligibleGain = 0;
         shard.m_eligibleCount = 0;
         shard.m_largeRegions = 0;
+        shard.m_largeOccupancy = 0;
+        shard.m_mergeGain = 0;
         for (int b = 0; b < INCR_TARGET_BUCKETS; b++)
         {
             shard.m_targetCounts[b] = 0;
@@ -6308,6 +6863,8 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     int64_t eligibleCount = 0;
     size_t eligibleGain = 0;
     size_t largeRegions = 0;
+    size_t largeOccupancy = 0;
+    size_t mergeGain = 0;
     double refsPerObj = m_incrRefsPerObj;
 
     int64_t scanStartTicks = INCR_TICKS();
@@ -6341,6 +6898,8 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
         eligibleCount += (int64_t)shard.m_eligibleCount;
         eligibleGain += shard.m_eligibleGain;
         largeRegions += shard.m_largeRegions;
+        largeOccupancy += shard.m_largeOccupancy;
+        mergeGain += shard.m_mergeGain;
         IncrSpinLockLeave(&shard.m_lock);
     }
 
@@ -6405,6 +6964,8 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     size_t unitsLeft = unitsBudget;
     size_t selectedUnits = 0;
     size_t selectedBytes = 0;
+    size_t selectedGain = 0;
+    int64_t mergesSelected = 0;
     for (int i = 0; i < sourceCount && m_incrSourceCount < maxSources; i++)
     {
         SatoriRegion* region = sources[i].m_region;
@@ -6420,9 +6981,12 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
         unitsLeft -= cost;
         selectedUnits += cost;
         selectedBytes += occupancy;
+        selectedGain += IncrRelocationGain(occupancy);
         m_incrSelectedObjs += objCount;
         m_incrSourceObjs[m_incrSourceCount] = objCount;
         m_incrSourceBytes[m_incrSourceCount] = occupancy;
+        m_incrSourceMerge[m_incrSourceCount] = sources[i].m_merge != 0;
+        mergesSelected += sources[i].m_merge;
         m_incrSources[m_incrSourceCount++] = region;
     }
 
@@ -6430,6 +6994,57 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     if (unitsBudget == SIZE_MAX)
     {
         unitsBudget = selectedUnits * 2;
+    }
+
+    // Incremental relocation is used as long as it keeps Gen2 from growing much over what regular relocation would keep.
+    // When it does not, or when regular relocation is about as cheap, a GC that can relocate regularly does that instead.
+    // That is decided now, so that nothing is recorded in vain. Planning then decides as if nothing was selected.
+    // What regular relocation keeps is estimated from live bytes (as of the last sweep), see INCR_COMPACTED_RATIO.
+    size_t gen2Live = gen2Occupancy > largeOccupancy ? gen2Occupancy - largeOccupancy : 0;
+    double measuredRatio = 0;
+    if (m_lastGen2WasRegular && gen2Space >= INCR_MIN_COMPACTED_SAMPLE_SPACE && gen2Live > 0)
+    {
+        measuredRatio = max((double)(gen2Space - INCR_COMPACTED_SLACK) / (double)gen2Live, 1.0);
+    }
+
+    // If we chose regular relocation last time, but it did not relocate (nothing was worth it),
+    // relocating regularly again would likely be just as futile. We relocate incrementally this time.
+    bool regularWasFutile = m_lastGen2ChoseRegular && !m_lastGen2WasRegular;
+    m_lastGen2WasRegular = false;
+    m_lastGen2ChoseRegular = false;
+
+    // When regular relocation is about as cheap as incremental, no growth is tolerated. Otherwise some is.
+    double compactedSpace = (double)gen2Live * INCR_COMPACTED_RATIO + (double)INCR_COMPACTED_SLACK;
+    m_incrGrowthLimit = (size_t)(compactedSpace * (double)(100 + SatoriUtil::IncrRelocGrowthPercent()) / 100);
+    double regularPredictedUs = m_incrFixedUs + m_regularUsPerRegion * (double)RegionCount();
+    size_t gen2SpaceAfter = gen2Space > selectedGain ? gen2Space - selectedGain : 0;
+    int regularOutcome = INCR_OUTCOME_NONE;
+    if (SatoriUtil::IsRelocatingInGen2() && !IsLowLatencyMode() && !regularWasFutile)
+    {
+        if (regularPredictedUs <= budgetUs && (double)gen2SpaceAfter > compactedSpace)
+        {
+            regularOutcome = INCR_OUTCOME_REGULAR_CHEAP;
+            INCR_STAT_ADD(incrRegularCheap, 1);
+        }
+        else if (gen2SpaceAfter > m_incrGrowthLimit)
+        {
+            regularOutcome = INCR_OUTCOME_REGULAR_GROWTH;
+            INCR_STAT_ADD(incrRegularGrowth, 1);
+        }
+
+        m_lastGen2ChoseRegular = regularOutcome != INCR_OUTCOME_NONE;
+    }
+
+    g_incrGc.gen2Live = (int64_t)gen2Live;
+    g_incrGc.growthLimit = (int64_t)m_incrGrowthLimit;
+    g_incrGc.compactedRatioX100 = (int64_t)(measuredRatio * 100);
+    g_incrGc.regularPredictedUs = (int64_t)regularPredictedUs;
+    if (regularOutcome != INCR_OUTCOME_NONE)
+    {
+        m_incrSourceCount = 0;
+        m_incrSelectedObjs = 0;
+        selectedBytes = 0;
+        mergesSelected = 0;
     }
 
     // Recording is abandoned when there are far more references than the budget allows updating.
@@ -6510,6 +7125,9 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     g_incrGc.selectTicks = ticks;
     g_incrGc.eligible = eligibleCount;
     g_incrGc.eligibleGain = (int64_t)eligibleGain;
+    g_incrGc.mergeGain = (int64_t)mergeGain;
+    g_incrGc.mergesSelected = mergesSelected;
+    INCR_STAT_ADD(incrMergesSelected, mergesSelected);
     g_incrGc.gen2Space = (int64_t)gen2Space;
     g_incrGc.sources = m_incrSourceCount;
     g_incrGc.targets = m_incrTargetCount;
@@ -6520,7 +7138,11 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     g_incrGc.modelFixedUs = (int64_t)m_incrFixedUs;
     g_incrGc.modelUsPerMUnits = (int64_t)(m_incrUsPerUnit * 1000000);
     g_incrGc.modelRefsPerObjX100 = (int64_t)(m_incrRefsPerObj * 100);
-    if (m_incrSourceCount == 0)
+    if (regularOutcome != INCR_OUTCOME_NONE)
+    {
+        g_incrGc.outcome = regularOutcome;
+    }
+    else if (m_incrSourceCount == 0)
     {
         if (noRoom)
         {
@@ -6542,8 +7164,9 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
         INCR_STAT_ADD(incrTargetsSelected, m_incrTargetCount);
     }
 
-    // planning will decide how to relocate, even if there are no candidates.
-    m_incrSelectionDone = true;
+    // planning will decide how to relocate incrementally, even if there are no candidates.
+    // unless we relocate regularly.
+    m_incrSelectionDone = regularOutcome == INCR_OUTCOME_NONE;
 
     // publish the tags, before the barrier is toggled to concurrent (which is a process-wide fence).
     // and thus before anyone can start marking.
@@ -6802,11 +7425,22 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
     INCR_STAT_ADD(incrDroppedPopular, droppedCostly);
     INCR_STAT_ADD(incrRecordedRefs, recorded);
 
-    // Incremental relocation keeps up if not too much reclaimable space remains in sparse Gen2 regions.
-    // Otherwise, if we can, we relocate regularly.
-    size_t backlog = m_incrEligibleGain > keepTotalGain ? m_incrEligibleGain - keepTotalGain : 0;
+    int64_t mergesKept = 0;
+    for (int i = 0; i < keepCount; i++)
+    {
+        if (m_incrSourceMerge[keepIndex[i]])
+        {
+            mergesKept++;
+        }
+    }
+
+    g_incrGc.mergesKept = mergesKept;
+
+    // Selection expected Gen2 to stay within the growth limit after relocating what it selected. Planning may keep less
+    // (pinned, popular, abandoned), and then Gen2 may not. If we can, we then relocate regularly.
+    size_t gen2SpaceAfter = m_incrGen2Space > keepTotalGain ? m_incrGen2Space - keepTotalGain : 0;
     if (canRelocateRegularly &&
-        backlog * 100 > m_incrGen2Space * SatoriUtil::IncrRelocBacklogPercent())
+        gen2SpaceAfter > m_incrGrowthLimit)
     {
         FreeRecordedRefs();
         m_incrSourceCount = 0;
@@ -6844,6 +7478,7 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
         // the candidate is in a tenured queue. must be taken out, to not be treated as staying.
         if (m_tenuredRegions->TryRemove(keep[i]))
         {
+            keep[i]->IncrMergeSource() = m_incrSourceMerge[keepIndex[i]];
             m_relocatingRegions->Push(keep[i]);
             m_incrKeep[keepIndex[i] + 1] = true;
             relocatingCount++;
@@ -6874,6 +7509,7 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
         g_incrGc.plannedUnits = (int64_t)keepTotalCost;
         g_incrGc.predictedUs = (int64_t)(m_incrFixedUs + m_incrUsPerUnit * keepTotalCost);
         g_incrGc.outcome = INCR_OUTCOME_RELOCATED;
+        INCR_STAT_ADD(incrMergesKept, mergesKept);
     }
     else
     {
@@ -6903,6 +7539,21 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
     m_incrTargetCount = 0;
     m_incrSelectionDone = false;
     return true;
+}
+
+// Learns from what regular relocation in a Gen2 GC actually cost - planning, relocating and updating.
+// The fixed part (updating roots) is shared with incremental relocation, the rest is per region.
+void SatoriRecycler::CalibrateRegularRelocation(int64_t ticks)
+{
+    double measuredUs = (double)ticks * 1000000.0 / (double)minipal_hires_tick_frequency();
+    g_incrGc.regularMeasuredUs = (int64_t)measuredUs;
+    if (m_condemnedRegionsCount >= INCR_MIN_REGULAR_SAMPLE_REGIONS)
+    {
+        double usPerRegion = max(measuredUs - m_incrFixedUs, 0.0) / (double)m_condemnedRegionsCount;
+        IncrCalibrate(m_regularUsPerRegion, m_regularSamples, max(usPerRegion, INCR_MIN_REGULAR_US_PER_REGION));
+    }
+
+    g_incrGc.regularUsPerRegionX100 = (int64_t)(m_regularUsPerRegion * 100);
 }
 
 // Learns from what incremental relocation actually cost. Called when it is done.
