@@ -38,7 +38,8 @@
 
 inline bool SatoriRegion::CanSplitWithoutCommit(size_t size)
 {
-    return m_committed > (m_end - size + offsetof(SatoriRegion, m_syncBlock) + SatoriUtil::MinZeroInitSize());
+    size_t minCommitted = ALIGN_UP(m_end - size + offsetof(SatoriRegion, m_syncBlock) + SatoriUtil::MinZeroInitSize(), SatoriUtil::CommitGranularity());
+    return m_committed >= min(minCommitted, m_end);
 }
 
 inline bool SatoriRegion::IsEscapeTracking()
