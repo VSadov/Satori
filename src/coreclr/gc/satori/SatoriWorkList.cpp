@@ -83,3 +83,37 @@ SatoriWorkChunk* SatoriWorkList::TryPopSlow()
     head->m_next = nullptr;
     return head;
 }
+
+// Pushes a chain of chunks at once. The chunks are linked through Next(), from the first to the last.
+NOINLINE
+void SatoriWorkList::PushChain(SatoriWorkChunk* first, SatoriWorkChunk* last)
+{
+    _ASSERTE(last->m_next == nullptr);
+
+#ifdef COUNT_CHUNKS
+    for (SatoriWorkChunk* chunk = first; ; chunk = chunk->m_next)
+    {
+        _ASSERTE(chunk != nullptr);
+        Interlocked::Increment(&m_count);
+        if (chunk == last)
+        {
+            break;
+        }
+    }
+#endif
+
+    uint32_t collisions = 1;
+    while (true)
+    {
+        SatoriWorkChunk* head = this->m_head;
+        size_t aba = this->m_aba;
+
+        last->m_next = head;
+
+        SatoriWorkList orig(head, aba);
+        if (Cas128((int64_t*)this, aba + 1, (int64_t)first, (int64_t*)&orig))
+            break;
+
+        SatoriLock::CollisionBackoff(collisions++);
+    }
+}

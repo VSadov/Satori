@@ -181,13 +181,12 @@ void SatoriRegion::RearmCardsForTenured()
 
 void SatoriRegion::FreeDemotedTrackers()
 {
-    while (DemotedObjects())
+    // the trackers are a chain already, we return it at once. (chunks do not need to be cleared, see ReturnWorkChunks)
+    SatoriWorkChunk* gen2Objects = DemotedObjects();
+    if (gen2Objects)
     {
-        SatoriWorkChunk* gen2Objects = DemotedObjects();
-        DemotedObjects() = gen2Objects->Next();
-        gen2Objects->SetNext(nullptr);
-        gen2Objects->Clear();
-        Allocator()->ReturnWorkChunk(gen2Objects);
+        DemotedObjects() = nullptr;
+        Allocator()->ReturnWorkChunks(gen2Objects);
     }
 
     m_demotedOccupancy = 0;

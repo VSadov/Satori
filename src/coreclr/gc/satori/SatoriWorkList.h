@@ -170,6 +170,8 @@ public:
     }
 #endif
 
+    void PushChain(SatoriWorkChunk* first, SatoriWorkChunk* last);
+
 private:
     struct
     {
