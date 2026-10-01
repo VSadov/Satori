@@ -746,6 +746,11 @@ inline bool& SatoriRegion::IsRelocated()
     return m_isRelocated;
 }
 
+inline bool& SatoriRegion::IncrMergeSource()
+{
+    return m_incrMergeSource;
+}
+
 inline uint8_t& SatoriRegion::RelocationCandidateIndex()
 {
     return m_relocationCandidateIndex;

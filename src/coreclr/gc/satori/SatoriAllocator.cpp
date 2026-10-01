@@ -42,6 +42,36 @@
 #include "SatoriWorkChunk.h"
 #include "SatoriWorkList.h"
 
+// dev instrumentation: times an operation on an app thread, see SatoriRecycler::TraceOp
+class SatoriTraceScope
+{
+public:
+    SatoriTraceScope(SatoriRecycler* recycler, int kind, size_t bytes = 0)
+        : m_recycler(recycler), m_start(0), m_bytes(bytes), m_kind(kind), m_suspending(false)
+    {
+        if (SatoriRecycler::TraceEnabled())
+        {
+            m_start = minipal_hires_ticks();
+            m_suspending = recycler->AppThreadsShouldSuspend();
+        }
+    }
+
+    ~SatoriTraceScope()
+    {
+        if (m_start)
+        {
+            m_recycler->TraceOp(m_kind, m_start, m_suspending, m_bytes);
+        }
+    }
+
+private:
+    SatoriRecycler* m_recycler;
+    int64_t m_start;
+    size_t m_bytes;
+    int m_kind;
+    bool m_suspending;
+};
+
 void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
     m_heap = heap;
@@ -336,6 +366,7 @@ void SatoriAllocator::UpdateAllocStatsAndHelpIfNeeded(SatoriAllocationContext* c
     size_t curAllocBytes = context->alloc_bytes + context->alloc_bytes_uoh;
     if (curAllocBytes == 0)
     {
+        SatoriTraceScope trace(m_heap->Recycler(), SatoriRecycler::TRACE_TRIGGER);
         m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
         return;
     }
@@ -354,11 +385,13 @@ void SatoriAllocator::UpdateAllocStatsAndHelpIfNeeded(SatoriAllocationContext* c
 
     if (curAllocBytes - t_lastAllocBytesAtGCcheck >= Satori::REGION_SIZE_GRANULARITY)
     {
+        SatoriTraceScope trace(m_heap->Recycler(), SatoriRecycler::TRACE_TRIGGER);
         m_heap->Recycler()->MaybeTriggerGC(gc_reason::reason_alloc_soh);
         t_lastAllocBytesAtGCcheck = curAllocBytes;
     }
     else
     {
+        SatoriTraceScope trace(m_heap->Recycler(), SatoriRecycler::TRACE_HELP);
         m_heap->Recycler()->HelpOnce();
     }
 
@@ -381,6 +414,8 @@ void SatoriAllocator::UpdateAllocStatsAndHelpIfNeeded(SatoriAllocationContext* c
 
 SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags)
 {
+    SatoriTraceScope trace(m_heap->Recycler(), SatoriRecycler::TRACE_ALLOCSLOW);
+
     // when allocations cross certain thresholds, check if GC should start or help is needed.
     UpdateAllocStatsAndHelpIfNeeded(context);
 
@@ -456,7 +491,15 @@ tryAgain:
                     }
                 }
 
-                if (region->Allocate(moreSpace, zeroInitialize))
+                size_t allocated;
+                {
+                    SatoriTraceScope traceZero(m_heap->Recycler(),
+                        region->OccupancyAtReuse() != 0 ? SatoriRecycler::TRACE_ZERO_REUSED : SatoriRecycler::TRACE_ZERO,
+                        zeroInitialize ? moreSpace : 0);
+                    allocated = region->Allocate(moreSpace, zeroInitialize);
+                }
+
+                if (allocated)
                 {
                     context->alloc_limit += moreSpace;
                     context->alloc_bytes += moreSpace;
@@ -501,7 +544,13 @@ tryAgain:
             }
 
             // try get from the free list
-            if (region->StartAllocating(size))
+            size_t started;
+            {
+                SatoriTraceScope traceFreeList(m_heap->Recycler(), SatoriRecycler::TRACE_FREELIST);
+                started = region->StartAllocating(size);
+            }
+
+            if (started)
             {
                 // we have enough free space in the region to continue
                 context->alloc_ptr = context->alloc_limit = (uint8_t*)region->GetAllocStart();
@@ -511,7 +560,13 @@ tryAgain:
             if (region->IsEscapeTracking())
             {
                 // try performing thread local collection and see if we have enough space after that.
-                if (region->ThreadLocalCollect(context->alloc_bytes))
+                bool collected;
+                {
+                    SatoriTraceScope trace(m_heap->Recycler(), SatoriRecycler::TRACE_TLGC);
+                    collected = region->ThreadLocalCollect(context->alloc_bytes);
+                }
+
+                if (collected)
                 {
                     if (region->StartAllocating(size))
                     {
@@ -745,7 +800,10 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region)
         }
     }
 
-    region = m_heap->Recycler()->TryGetReusable();
+    {
+        SatoriTraceScope trace(m_heap->Recycler(), SatoriRecycler::TRACE_REUSE);
+        region = m_heap->Recycler()->TryGetReusable();
+    }
 
     if (region == nullptr)
     {
@@ -765,6 +823,7 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region)
             }
         }
 
+        SatoriTraceScope trace(m_heap->Recycler(), SatoriRecycler::TRACE_NEWREGION);
         region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
         _ASSERTE(region == nullptr || region->NothingMarked());
     }
@@ -778,6 +837,8 @@ SatoriObject* SatoriAllocator::AllocLarge(SatoriAllocationContext* context, size
         return AllocHuge(context, size, flags);
     }
 
+    SatoriTraceScope trace(m_heap->Recycler(), SatoriRecycler::TRACE_LARGE);
+
     // when allocations cross certain thresholds, check if GC should start or help is needed.
     UpdateAllocStatsAndHelpIfNeeded(context);
 
@@ -789,6 +850,7 @@ tryAgain:
         //m_largeAllocLock.Enter();
         if (m_largeAllocLock.TryEnter())
         {
+            SatoriTraceScope traceShared(m_heap->Recycler(), SatoriRecycler::TRACE_LARGE_SHARED, size);
             return AllocLargeShared(context, size, flags);
         }
     }
@@ -802,7 +864,11 @@ tryAgain:
             if (allocRemaining >= size)
             {
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
-                SatoriObject* result = (SatoriObject*)region->Allocate(size, zeroInitialize);
+                SatoriObject* result;
+                {
+                    SatoriTraceScope traceZero(m_heap->Recycler(), SatoriRecycler::TRACE_ZERO_LARGE, zeroInitialize ? size : 0);
+                    result = (SatoriObject*)region->Allocate(size, zeroInitialize);
+                }
                 if (!result)
                 {
                     // OOM, nothing to undo

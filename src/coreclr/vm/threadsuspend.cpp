@@ -32,6 +32,13 @@ bool ThreadSuspend::s_fSuspendRuntimeInProgress = false;
 
 bool ThreadSuspend::s_fSuspended = false;
 
+// Dev instrumentation, read by Satori GC: timestamps of the last suspension and restart of the EE.
+// 0 - SuspendEE entry, 1 - after SuspendEEBegin event, 2 - thread store locked, 3 - threads trapped,
+// 4 - after the process wide barrier, 5 - all threads suspended, 6 - after RestartEEBegin event, 7 - threads resumed
+int64_t g_satoriSuspendTicks[8];
+// Dev instrumentation: DOTNET_SatoriSkipSuspendBeginEvent skips the GCSuspendEEBegin event, to see what writing it costs.
+static int s_satoriSkipSuspendBeginEvent = -1;
+
 ThreadSuspend::SUSPEND_REASON ThreadSuspend::m_suspendReason;
 
 #if defined(TARGET_WINDOWS)
@@ -3260,12 +3267,14 @@ void ThreadSuspend::SuspendAllThreads()
     // Tell all threads, globally, to wait for WaitForGCEvent.
     //
     ThreadStore::SetThreadTrapForSuspension();
+    g_satoriSuspendTicks[3] = minipal_hires_ticks();
 
     // Flush the store buffers on all CPUs, to ensure two things:
     // - we get a reliable reading of the threads' m_fPreemptiveGCDisabled state
     // - other threads see that g_TrapReturningThreads is set
     // See VSW 475315 and 488918 for details.
     minipal_memory_barrier_process_wide();
+    g_satoriSuspendTicks[4] = minipal_hires_ticks();
 
     int prevRemaining = INT32_MAX;
     bool observeOnly = true;
@@ -3328,6 +3337,8 @@ void ThreadSuspend::SuspendAllThreads()
             usecsSinceYield = 0;
         }
     }
+
+    g_satoriSuspendTicks[5] = minipal_hires_ticks();
 
 #if defined(TARGET_ARM) || defined(TARGET_ARM64)
     // Flush the store buffers on all CPUs, to ensure that all changes made so far are seen
@@ -5383,6 +5394,7 @@ void ThreadSuspend::RestartEE(BOOL SuspendSucceeded)
 #endif //TIME_SUSPEND
 
     FireEtwGCRestartEEBegin_V1(GetClrInstanceId());
+    g_satoriSuspendTicks[6] = minipal_hires_ticks();
 
 #if defined(TARGET_ARM) || defined(TARGET_ARM64)
     // Flush the store buffers on all CPUs, to ensure that they all see changes made
@@ -5425,6 +5437,7 @@ void ThreadSuspend::RestartEE(BOOL SuspendSucceeded)
     GCHeapUtilities::GetGCHeap()->SetGCInProgress(false);
 
     ResumeAllThreads(SuspendSucceeded);
+    g_satoriSuspendTicks[7] = minipal_hires_ticks();
 
     //
     // Notify everyone who cares, that this suspension is over, and this thread is going to go do other things.
@@ -5517,6 +5530,7 @@ void ThreadSuspend::RestartEE(BOOL SuspendSucceeded)
 //
 void ThreadSuspend::SuspendEE(SUSPEND_REASON reason)
 {
+    g_satoriSuspendTicks[0] = minipal_hires_ticks();
 #ifdef TIME_SUSPEND
     g_SuspendStatistics.StartSuspend();
 #endif //TIME_SUSPEND
@@ -5528,7 +5542,16 @@ void ThreadSuspend::SuspendEE(SUSPEND_REASON reason)
     Info.SuspendEE.GcCount = (((reason == SUSPEND_FOR_GC) || (reason == SUSPEND_FOR_GC_PREP)) ?
         (ULONG)GCHeapUtilities::GetGCHeap()->GetGcCount() : (ULONG)-1);
 
-    FireEtwGCSuspendEEBegin_V1(Info.SuspendEE.Reason, Info.SuspendEE.GcCount, GetClrInstanceId());
+    if (s_satoriSkipSuspendBeginEvent < 0)
+    {
+        s_satoriSkipSuspendBeginEvent = CLRConfig::IsConfigOptionSpecified(W("SatoriSkipSuspendBeginEvent")) ? 1 : 0;
+    }
+
+    if (!s_satoriSkipSuspendBeginEvent)
+    {
+        FireEtwGCSuspendEEBegin_V1(Info.SuspendEE.Reason, Info.SuspendEE.GcCount, GetClrInstanceId());
+    }
+    g_satoriSuspendTicks[1] = minipal_hires_ticks();
 
     LOG((LF_SYNC, INFO3, "Suspending the runtime for reason %d\n", reason));
 
@@ -5548,6 +5571,7 @@ retry_for_debugger:
     // Acquire the TSL.  We will hold this until the we restart the EE.
     //
     ThreadSuspend::LockThreadStore(reason);
+    g_satoriSuspendTicks[2] = minipal_hires_ticks();
 
 #ifdef TIME_SUSPEND
     g_SuspendStatistics.acquireTSL.Accumulate(SuspendStatistics::GetElapsed(startAcquire,

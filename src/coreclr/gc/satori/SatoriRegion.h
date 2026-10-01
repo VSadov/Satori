@@ -209,6 +209,7 @@ public:
     bool& DoNotSweep();
     bool& IsPreSwept();
     bool& IsRelocated();
+    bool& IncrMergeSource();
     uint8_t& RelocationCandidateIndex();
     bool& AcceptedPromotedObjects();
     bool& AcceptedRelocatedFinalizables();
@@ -314,6 +315,8 @@ private:
             // concurrent marking must treat the region as escape tracking until the owner clears the marks.
             bool m_staleEscapeMarks;
             bool m_isRelocated;
+            // an incremental relocation candidate that could fit its objects in its own free span, see SatoriRecycler::RelocateRegion
+            bool m_incrMergeSource;
 
             SatoriRegion** m_allocatingOwnerAttachmentPoint;
             SatoriWorkChunk* m_gen2Objects;
