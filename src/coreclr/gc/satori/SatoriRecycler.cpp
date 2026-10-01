@@ -4275,6 +4275,7 @@ void SatoriRecycler::DenyRelocation()
     if (m_promoteAllRegions)
     {
         m_stayingRegions->AppendUnsafe(m_ephemeralRegions);
+        // TODO: we should consider wiping cards at page level, and in incremental/nocompact case just send non-target tenured regions to deferred sweep at once
         m_stayingRegions->AppendUnsafe(m_tenuredRegions);
         m_stayingRegions->AppendUnsafe(m_tenuredFinalizationTrackingRegions);
     }
