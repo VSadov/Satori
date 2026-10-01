@@ -57,6 +57,7 @@ public:
     bool ValidateBlank();
 
     void RearmCardsForTenured();
+    bool RearmCardsForStillTenured();
     void ResetCardsForEphemeral();
 
     SatoriRegion* TrySplit(size_t regionSize);

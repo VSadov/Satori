@@ -179,6 +179,28 @@ void SatoriRegion::RearmCardsForTenured()
     FreeDemotedTrackers();
 }
 
+// Same as RearmCardsForTenured, for a region that has been tenured since its cards were last rearmed.
+// Cards of such region are BLANK, REMEMBERED or DIRTY, and its card groups become blank only when the cards are reset:
+//  - every writer, including the write barriers, sets or dirties a card before its group,
+//  - cleaners never make a group of a tenured region blank, and set scan tickets only in groups that are not blank.
+// Thus if the groups are still as the last reset left them - blank and without a ticket, so are the cards.
+// Returns true if the cards did not need rearming.
+// NB: that does not hold for a region that becomes tenured - its cards could be EPHEMERAL, or REMEMBERED under blank groups.
+bool SatoriRegion::RearmCardsForStillTenured()
+{
+    _ASSERTE(Generation() == 2);
+    if (!m_containingPage->CardGroupsAreWipedForRange(Start(), End()))
+    {
+        RearmCardsForTenured();
+        return false;
+    }
+
+    _ASSERTE(m_containingPage->CardsAreBlankForRange(Start(), End()));
+    HasUnmarkedDemotedObjects() = false;
+    FreeDemotedTrackers();
+    return true;
+}
+
 void SatoriRegion::FreeDemotedTrackers()
 {
     // the trackers are a chain already, we return it at once. (chunks do not need to be cleared, see ReturnWorkChunks)

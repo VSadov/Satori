@@ -4704,8 +4704,15 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::
 
             if (m_promoteAllRegions)
             {
-                curRegion->SetGeneration(2);
-                curRegion->RearmCardsForTenured();
+                if (curRegion->Generation() == 2)
+                {
+                    curRegion->RearmCardsForStillTenured();
+                }
+                else
+                {
+                    curRegion->SetGeneration(2);
+                    curRegion->RearmCardsForTenured();
+                }
             }
 
             // make sure the region is swept and returned now, or later
