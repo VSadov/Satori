@@ -1735,7 +1735,7 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, Sa
         // check for unmovable here
         if (o->IsUnmovable())
         {
-            o->ContainingRegion()->HasPinnedObjects() = true;
+            o->ContainingRegion()->SetHasPinnedObjects();
         }
     }
 }
@@ -1784,7 +1784,7 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
 
         if (flags & GC_CALL_PINNED)
         {
-            o->ContainingRegion()->HasPinnedObjects() = true;
+            o->ContainingRegion()->SetHasPinnedObjects();
         }
     }
 };
@@ -1911,7 +1911,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
 
         if (flags & GC_CALL_PINNED)
         {
-            o->ContainingRegion()->HasPinnedObjects() = true;
+            o->ContainingRegion()->SetHasPinnedObjects();
         }
     }
 };
@@ -2275,7 +2275,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         }
         else if (child->IsUnmovable())
         {
-            child->ContainingRegion()->HasPinnedObjects() = true;
+            child->ContainingRegion()->SetHasPinnedObjects();
         }
     };
 
@@ -2360,7 +2360,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
                 _ASSERTE(o->IsMarked());
                 if (o->IsUnmovable())
                 {
-                    o->ContainingRegion()->HasPinnedObjects() = true;
+                    o->ContainingRegion()->SetHasPinnedObjects();
                 }
 
                 // do not get engaged with big objects, reschedule them as child ranges.
@@ -2534,7 +2534,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         }
         else if (child->IsUnmovable())
         {
-            child->ContainingRegion()->HasPinnedObjects() = true;
+            child->ContainingRegion()->SetHasPinnedObjects();
         }
     };
 
@@ -2602,7 +2602,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
                 _ASSERTE(o->IsMarked());
                 if (o->IsUnmovable())
                 {
-                    o->ContainingRegion()->HasPinnedObjects() = true;
+                    o->ContainingRegion()->SetHasPinnedObjects();
                 }
 
                 // do not get engaged with big objects, reschedule them as child ranges.

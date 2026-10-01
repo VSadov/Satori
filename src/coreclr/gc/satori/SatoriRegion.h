@@ -205,6 +205,7 @@ public:
     size_t DemotedOccupancy();
 
     bool& HasPinnedObjects();
+    void SetHasPinnedObjects();
     bool& DoNotSweep();
     bool& IsPreSwept();
     bool& IsRelocated();
