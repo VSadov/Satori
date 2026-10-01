@@ -2158,7 +2158,7 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
                     return;
                 }
 
-                if (!o->IsMarkedOrOlderThan(m_condemnedGeneration))
+                if (!o->IsMarkedOrOlderThan(markContext.m_condemnedGeneration))
                 {
                     o->SetMarkedAtomic();
                     markContext.PushToMarkQueues(o);
@@ -2259,6 +2259,8 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
     // Children without references are done at that point, only the rest go to dstChunk to be scanned.
     SatoriPrefetchQueue<8> childQueue;
 
+    const int condemnedGeneration = m_condemnedGeneration;
+
     auto pushToChunk = [&](SatoriObject* child)
     {
         if (!dstChunk || !dstChunk->TryPush(child))
@@ -2287,7 +2289,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
             SatoriRegion* childRegion = child->ContainingRegion();
             if (!childRegion->MaybeEscapeTrackingAcquire())
             {
-                if (!child->IsMarkedOrOlderThan(m_condemnedGeneration))
+                if (!child->IsMarkedOrOlderThan(condemnedGeneration))
                 {
                     child->SetMarkedAtomic();
                     if (SatoriObject* oldest = childQueue.Push(child))
@@ -2518,6 +2520,8 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
     // Children without references are done at that point, only the rest go to dstChunk to be scanned.
     SatoriPrefetchQueue<8> childQueue;
 
+    const int condemnedGeneration = m_condemnedGeneration;
+
     auto pushToChunk = [&](SatoriObject* child)
     {
         if (!dstChunk || !dstChunk->TryPush(child))
@@ -2543,7 +2547,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         SatoriObject* child = *ref;
         if (child &&
             !child->IsExternal() &&
-            !child->IsMarkedOrOlderThan(m_condemnedGeneration))
+            !child->IsMarkedOrOlderThan(condemnedGeneration))
         {
             child->SetMarkedAtomic();
             if (SatoriObject* oldest = childQueue.Push(child))
@@ -2900,6 +2904,7 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
 {
     SatoriWorkChunk* dstChunk = nullptr;
     bool revisit = false;
+    const int condemnedGeneration = m_condemnedGeneration;
 
     // Use Gen1 count to identify the current GC. Not Gen0 as that could be changing concurrently.
     // Multiply by 2 and add 1 to not intersect with concurrent marking, which uses the same restart state.
@@ -3013,7 +3018,7 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                         // and should not fall far behind the tickets
                         _ASSERTE(region->Generation() != 2 || groupTicket == 0 || groupTicket == 0xff || (uint8_t)(currentScanTicket - groupTicket) == 1);
 
-                        bool considerAllMarked = region->Generation() > m_condemnedGeneration;
+                        bool considerAllMarked = region->Generation() > condemnedGeneration;
                         int8_t* cards = page->CardsForGroup(i);
                         // where the previous walk in this group stopped, see FindObject
                         SatoriObject* hint = nullptr;
@@ -3083,7 +3088,7 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                                                 SatoriRegion* childRegion = child->ContainingRegion();
                                                 if (!childRegion->MaybeEscapeTrackingAcquire())
                                                 {
-                                                    if (!child->IsMarkedOrOlderThan(m_condemnedGeneration))
+                                                    if (!child->IsMarkedOrOlderThan(condemnedGeneration))
                                                     {
                                                         child->SetMarkedAtomic();
                                                         if (!dstChunk || !dstChunk->TryPush(child))
@@ -3302,6 +3307,7 @@ bool SatoriRecycler::HasDirtyCards()
 void SatoriRecycler::CleanCards()
 {
     SatoriWorkChunk* dstChunk = nullptr;
+    const int condemnedGeneration = m_condemnedGeneration;
 
     m_heap->ForEachPage(
         [&](SatoriPage* page)
@@ -3343,7 +3349,7 @@ void SatoriRecycler::CleanCards()
                             continue;
                         }
 
-                        bool considerAllMarked = region->Generation() > m_condemnedGeneration;
+                        bool considerAllMarked = region->Generation() > condemnedGeneration;
 
                         int8_t* cards = page->CardsForGroup(i);
                         // where the previous walk in this group stopped, see FindObject
@@ -3414,7 +3420,7 @@ void SatoriRecycler::CleanCards()
                                             SatoriObject* child = *ref;
                                             if (child &&
                                                 !child->IsExternal() &&
-                                                !child->IsMarkedOrOlderThan(m_condemnedGeneration))
+                                                !child->IsMarkedOrOlderThan(condemnedGeneration))
                                             {
                                                 child->SetMarkedAtomic();
                                                 if (!dstChunk || !dstChunk->TryPush(child))
