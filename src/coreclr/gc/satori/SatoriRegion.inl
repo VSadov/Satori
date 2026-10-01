@@ -714,6 +714,16 @@ inline bool& SatoriRegion::HasPinnedObjects()
     return m_hasPinnedObjects;
 }
 
+// Markers call this for every pinned object they see, possibly on many threads at once.
+// Store only if not set yet, so that repeated calls do not take the cache line exclusive.
+inline void SatoriRegion::SetHasPinnedObjects()
+{
+    if (!m_hasPinnedObjects)
+    {
+        m_hasPinnedObjects = true;
+    }
+}
+
 #if _DEBUG
 inline bool& SatoriRegion::HasMarksSet()
 {
