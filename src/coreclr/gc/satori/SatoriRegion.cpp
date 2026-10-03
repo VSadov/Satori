@@ -29,6 +29,7 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 #include "../env/gcenv.ee.h"
+#include "../gcenv.inl"
 #include "../gceventstatus.h"
 
 #if !defined(_DEBUG)
@@ -111,12 +112,12 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     committed = max(address, committed);
     used = max(address, used);
 
-    // make sure the header + minZero is comitted
-    ptrdiff_t toCommit = (size_t)&result->m_syncBlock + SatoriUtil::MinZeroInitSize() - committed;
-    if (toCommit > 0)
+    // Cover the first commit granule when a huge allocation left a page-aligned tail.
+    size_t minCommitted = ALIGN_UP((size_t)&result->m_syncBlock + SatoriUtil::MinZeroInitSize(), SatoriUtil::CommitGranularity());
+    minCommitted = min(minCommitted, address + regionSize);
+    if (committed < minCommitted)
     {
-        toCommit = ALIGN_UP(toCommit, SatoriUtil::CommitGranularity());
-        _ASSERTE(committed + (size_t)toCommit <= address + regionSize);
+        size_t toCommit = minCommitted - committed;
         if (!GCToOSInterface::VirtualCommit((void*)committed, toCommit))
         {
             // OOM
@@ -124,7 +125,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
         }
 
         containingPage->Heap()->IncBytesCommitted(toCommit);
-        committed += toCommit;
+        committed = minCommitted;
     }
 
     _ASSERTE(BITMAP_START * sizeof(size_t) == offsetof(SatoriRegion, m_firstObject) / sizeof(size_t) / 8);
@@ -684,7 +685,7 @@ bool SatoriRegion::Coalesce(SatoriRegion* next)
     {
         _ASSERTE(next->m_committed > next->Start());
         size_t toDecommit = next->m_committed - next->Start();
-        _ASSERTE(toDecommit % SatoriUtil::CommitGranularity() == 0);
+        _ASSERTE(toDecommit % GCToOSInterface::GetPageSize() == 0);
         if (!GCToOSInterface::VirtualDecommit(next, toDecommit))
         {
             return false;
@@ -856,10 +857,12 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     _ASSERTE(chunkEnd > Start() + Satori::REGION_SIZE_GRANULARITY);
     _ASSERTE(chunkStart <= Start() + Satori::REGION_SIZE_GRANULARITY);
 
+    // This region contains one object, so commit only the pages needed for it and its filler.
     size_t ensureCommitted = chunkEnd + Satori::MIN_FREE_SIZE;
     if (ensureCommitted > m_committed)
     {
-        size_t newComitted = ALIGN_UP(ensureCommitted, SatoriUtil::CommitGranularity());
+        size_t newComitted = ALIGN_UP(ensureCommitted, GCToOSInterface::GetPageSize());
+        _ASSERTE(newComitted <= End());
         size_t toCommit = newComitted - m_committed;
         if (!GCToOSInterface::VirtualCommit((void*)m_committed, toCommit))
         {

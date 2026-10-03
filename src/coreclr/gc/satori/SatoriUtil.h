@@ -675,6 +675,13 @@ public:
         return target;
     }
 
+    // DOTNET_GCHighMemPercent
+    static uint32_t HighMemoryPercent()
+    {
+        uint32_t percent = (uint32_t)GCConfig::GetGCHighMemPercent();
+        return percent == 0 ? 99 : min(99u, percent);
+    }
+
     // DOTNET_gcGen2Target
     static int Gen2Target()
     {
