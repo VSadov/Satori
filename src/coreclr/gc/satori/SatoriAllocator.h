@@ -64,6 +64,8 @@ public:
     SatoriWorkChunk* TryGetWorkChunk();
     SatoriWorkChunk* GetWorkChunk();
     void ReturnWorkChunk(SatoriWorkChunk* chunk);
+    void ReturnWorkChunks(SatoriWorkChunk* first, SatoriWorkChunk* last);
+    void ReturnWorkChunks(SatoriWorkChunk* first);
 
     void DeactivateSharedRegion(SatoriRegion* region, bool promoteAllRegions);
     void DeactivateSharedRegions(bool promoteAllRegions);

@@ -57,6 +57,7 @@ public:
     bool ValidateBlank();
 
     void RearmCardsForTenured();
+    bool RearmCardsForStillTenured();
     void ResetCardsForEphemeral();
 
     SatoriRegion* TrySplit(size_t regionSize);
@@ -204,6 +205,7 @@ public:
     size_t DemotedOccupancy();
 
     bool& HasPinnedObjects();
+    void SetHasPinnedObjects();
     bool& DoNotSweep();
     bool& IsPreSwept();
     bool& IsRelocated();
@@ -324,6 +326,8 @@ private:
             int m_finalizableTrackersLock;
 
             uint32_t m_sweepsSinceLastAllocation;
+            // Bit N is set when free list N is not empty.
+            uint16_t m_nonEmptyFreeLists;
 
             // ===== 128  bytes boundary
             SatoriRegion* m_prev;

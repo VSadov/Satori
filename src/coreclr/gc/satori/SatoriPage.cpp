@@ -359,3 +359,36 @@ void SatoriPage::ResetCardsForRange(size_t start, size_t end, bool isTenured)
 
     WipeGroupsForRange(start, end);
 }
+
+// Tells if the card groups for the range are as WipeGroupsForRange leaves them - blank and with no scan ticket.
+bool SatoriPage::CardGroupsAreWipedForRange(size_t start, size_t end)
+{
+    size_t firstGroup = (start - Start()) / Satori::BYTES_PER_CARD_GROUP;
+    size_t lastGroup = (end - Start() - 1) / Satori::BYTES_PER_CARD_GROUP;
+    for (size_t i = firstGroup; i <= lastGroup; i++)
+    {
+        if (m_cardGroups[i * 2] != Satori::CardState::BLANK || m_cardGroups[i * 2 + 1] != 0)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+#if _DEBUG
+bool SatoriPage::CardsAreBlankForRange(size_t start, size_t end)
+{
+    size_t firstCard = (start - Start()) / Satori::BYTES_PER_CARD_BYTE;
+    size_t lastCard = (end - Start() - 1) / Satori::BYTES_PER_CARD_BYTE;
+    for (size_t i = firstCard; i <= lastCard; i++)
+    {
+        if (m_cardTable[i] != Satori::CardState::BLANK)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+#endif

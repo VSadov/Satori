@@ -119,6 +119,10 @@ public:
 
     void WipeGroupsForRange(size_t start, size_t end);
     void ResetCardsForRange(size_t start, size_t end, bool isTenured);
+    bool CardGroupsAreWipedForRange(size_t start, size_t end);
+#if _DEBUG
+    bool CardsAreBlankForRange(size_t start, size_t end);
+#endif
 
     volatile int8_t& CardState();
     volatile uint8_t& ScanTicket();
