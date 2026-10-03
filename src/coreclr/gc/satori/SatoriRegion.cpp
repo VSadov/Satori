@@ -136,6 +136,9 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     static_assert(offsetof(SatoriRegion, m_freeListTails) + sizeof(SatoriRegion::m_freeListTails) <= BITMAP_START * sizeof(size_t),
         "SatoriRegion header does not fit in the unused part of the mark bitmap.");
 
+    static_assert(Satori::FREELIST_COUNT <= sizeof(SatoriRegion::m_nonEmptyFreeLists) * 8,
+        "m_nonEmptyFreeLists has a bit for every free list.");
+
     // clear the header if was used before
     size_t zeroUpTo = min(used, (size_t)&result->m_syncBlock);
     memset((void*)address, 0, zeroUpTo - address);
@@ -179,15 +182,36 @@ void SatoriRegion::RearmCardsForTenured()
     FreeDemotedTrackers();
 }
 
+// Same as RearmCardsForTenured, for a region that has been tenured since its cards were last rearmed.
+// Cards of such region are BLANK, REMEMBERED or DIRTY, and its card groups become blank only when the cards are reset:
+//  - every writer, including the write barriers, sets or dirties a card before its group,
+//  - cleaners never make a group of a tenured region blank, and set scan tickets only in groups that are not blank.
+// Thus if the groups are still as the last reset left them - blank and without a ticket, so are the cards.
+// Returns true if the cards did not need rearming.
+// NB: that does not hold for a region that becomes tenured - its cards could be EPHEMERAL, or REMEMBERED under blank groups.
+bool SatoriRegion::RearmCardsForStillTenured()
+{
+    _ASSERTE(Generation() == 2);
+    if (!m_containingPage->CardGroupsAreWipedForRange(Start(), End()))
+    {
+        RearmCardsForTenured();
+        return false;
+    }
+
+    _ASSERTE(m_containingPage->CardsAreBlankForRange(Start(), End()));
+    HasUnmarkedDemotedObjects() = false;
+    FreeDemotedTrackers();
+    return true;
+}
+
 void SatoriRegion::FreeDemotedTrackers()
 {
-    while (DemotedObjects())
+    // the trackers are a chain already, we return it at once. (chunks do not need to be cleared, see ReturnWorkChunks)
+    SatoriWorkChunk* gen2Objects = DemotedObjects();
+    if (gen2Objects)
     {
-        SatoriWorkChunk* gen2Objects = DemotedObjects();
-        DemotedObjects() = gen2Objects->Next();
-        gen2Objects->SetNext(nullptr);
-        gen2Objects->Clear();
-        Allocator()->ReturnWorkChunk(gen2Objects);
+        DemotedObjects() = nullptr;
+        Allocator()->ReturnWorkChunks(gen2Objects);
     }
 
     m_demotedOccupancy = 0;
@@ -384,16 +408,21 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize)
         bucket++;
     }
 
-    for (; bucket < Satori::FREELIST_COUNT; bucket++)
     {
-        freeObj = m_freeLists[bucket];
-        if (freeObj)
+        // Find the lowest nonempty bucket from here on. The mask has a bit for every nonempty bucket.
+        _ASSERTE(bucket <= Satori::FREELIST_COUNT);
+        size_t nonEmpty = (size_t)m_nonEmptyFreeLists >> bucket;
+        if (nonEmpty == 0)
         {
-            goto hasObj;
+            return 0;
         }
-    }
 
-    return 0;
+        DWORD offset;
+        BitScanForward64(&offset, nonEmpty);
+        bucket += offset;
+        freeObj = m_freeLists[bucket];
+        _ASSERTE(freeObj != nullptr);
+    }
 
 hasObj:
     SatoriFreeListObject* next = freeObj->m_nextInFreeList;
@@ -401,6 +430,7 @@ hasObj:
     if (next == nullptr)
     {
         m_freeListTails[bucket] = nullptr;
+        m_nonEmptyFreeLists &= (uint16_t)~(1u << bucket);
     }
 
     size_t freeObjSize = freeObj->FreeObjSize();
@@ -475,6 +505,7 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
     if (m_freeLists[bucket] == nullptr)
     {
         m_freeLists[bucket] = m_freeListTails[bucket] = freeListObj;
+        m_nonEmptyFreeLists |= (uint16_t)(1u << bucket);
         return;
     }
 
@@ -513,6 +544,7 @@ void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
     if (m_freeLists[bucket] == nullptr)
     {
         m_freeListTails[bucket] = freeListObj;
+        m_nonEmptyFreeLists |= (uint16_t)(1u << bucket);
     }
 
     m_freeLists[bucket] = freeListObj;
@@ -520,7 +552,7 @@ void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
 
 bool SatoriRegion::HasFreeSpaceInTopBucket()
 {
-    return m_freeLists[Satori::FREELIST_COUNT - 1];
+    return (m_nonEmptyFreeLists & (1u << (Satori::FREELIST_COUNT - 1))) != 0;
 }
 
 size_t SatoriRegion::FreeSpaceInTopNBuckets(int n)
@@ -536,15 +568,20 @@ size_t SatoriRegion::FreeSpaceInTopNBuckets(int n)
 
 int SatoriRegion::GetMaxFreeBucket()
 {
-    for (int bucket = Satori::FREELIST_COUNT - 1; bucket >= 0; bucket--)
+#if _DEBUG
+    for (int bucket = 0; bucket < Satori::FREELIST_COUNT; bucket++)
     {
-        if (m_freeLists[bucket])
-        {
-            return bucket;
-        }
+        _ASSERTE(((m_nonEmptyFreeLists >> bucket) & 1) == (m_freeLists[bucket] != nullptr));
+    }
+#endif
+
+    DWORD bucket;
+    if (!BitScanReverse64(&bucket, m_nonEmptyFreeLists))
+    {
+        return -1;
     }
 
-    return -1;
+    return (int)bucket;
 }
 
 void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextCommitted, size_t& nextUsed)
@@ -1449,6 +1486,21 @@ void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion*
     }
 }
 
+// Thread-local collections are frequent and do not stop other threads, thus they are reported with their own
+// verbose event, like allocation ticks, rather than with GCStart/GCEnd.
+static bool ThreadLocalCollectionEventEnabled()
+{
+#ifdef BUILD_AS_STANDALONE
+    // the event sink of an older runtime does not have the event
+    if (g_runtimeSupportedVersion.MajorVersion < 6)
+    {
+        return false;
+    }
+#endif
+
+    return EVENT_ENABLED(GCThreadLocalCollection);
+}
+
 bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
 {
     if (m_escapedSize > Satori::MAX_ESCAPE_SIZE)
@@ -1467,7 +1519,8 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
     m_allocBytesAtCollect = allocBytes;
 
     size_t count = Recycler()->IncrementGen0Count();
-    FIRE_EVENT(GCStart_V2, (int)count, 0, gc_reason::reason_alloc_soh, gc_etw_type_ngc);
+    int64_t eventStartTicks = ThreadLocalCollectionEventEnabled() ? minipal_hires_ticks() : 0;
+    size_t occupancyBefore = m_occupancy;
 
     // NB: not initializing the entries, only the count.
     SatoriLocalRootCache rootCache;
@@ -1491,7 +1544,12 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
         ThreadLocalPendFinalizables();
     }
 
-    FIRE_EVENT(GCEnd_V1, (int)count, 0);
+    if (eventStartTicks != 0)
+    {
+        double durationNs = (double)(minipal_hires_ticks() - eventStartTicks) * 1e9 / (double)minipal_hires_tick_frequency();
+        FIRE_EVENT(GCThreadLocalCollection, (uint32_t)count, shouldCollect, (uint64_t)occupancyBefore, (uint64_t)m_occupancy, durationNs);
+    }
+
     return shouldCollect;
 }
 
@@ -2729,6 +2787,7 @@ void SatoriRegion::ClearFreeLists()
 {
     // clear free lists and free list tails
     memset(m_freeListCapacities, 0, sizeof(m_freeListCapacities) + sizeof(m_freeLists) + sizeof(m_freeListTails));
+    m_nonEmptyFreeLists = 0;
 }
 
 void SatoriRegion::PreSweep()

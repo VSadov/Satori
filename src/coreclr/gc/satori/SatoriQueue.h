@@ -572,14 +572,24 @@ public:
         return m_kind;
     }
 
+    // The lambda must not unlink items.
     template <typename F>
     void ForEachRegion(F lambda)
     {
         T* item = m_head;
         while (item)
         {
+            // Items are far apart, so walking the list is a chain of cache misses.
+            // Start fetching the next item and its link while the lambda works on this one.
+            T* next = item->m_next;
+            if (next != nullptr)
+            {
+                SatoriUtil::Prefetch(next);
+                SatoriUtil::Prefetch(&next->m_next);
+            }
+
             lambda(item);
-            item = item->m_next;
+            item = next;
         }
     }
 
