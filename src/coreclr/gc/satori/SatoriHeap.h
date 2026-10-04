@@ -82,7 +82,9 @@ public:
         _ASSERTE((address & (sizeof(size_t) - 1)) == 0);
 
         size_t mapIndex = address >> Satori::PAGE_BITS;
-        return s_pageByteMap[mapIndex] != 0;
+        // Native allocations can carry pointer tags (for example, on Android).
+        // Satori pages are untagged and fit within the fixed-size page map.
+        return mapIndex < (size_t(1) << pageCountBits) && s_pageByteMap[mapIndex] != 0;
     }
 
     SatoriRegion* RegionForAddressChecked(size_t address);

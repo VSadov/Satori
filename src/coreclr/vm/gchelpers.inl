@@ -49,13 +49,15 @@ FORCEINLINE bool IsPossiblyInHeap(void* address)
 
     // must match Satori::PAGE_BITS, same as the shift that barriers use.
     const int SATORI_PAGE_BITS = 30;
+    // Must match SatoriHeap::availableAddressSpaceBits. Native pointers may be tagged.
+    const int SATORI_ADDRESS_SPACE_BITS = 48;
 
     // one byte per page (1Gb), nonzero if the page is a part of the heap.
     // NB: the map is a fixed-size array inside the heap instance. Satori publishes it
     //     once, at init, and never moves or reallocates it, thus an ordinary read.
     //     (the later StompResize only re-publishes the highest address)
     uint8_t* pageByteMap = (uint8_t*)g_card_bundle_table;
-    return pageByteMap[(size_t)address >> SATORI_PAGE_BITS] != 0;
+    return ((size_t)address >> SATORI_ADDRESS_SPACE_BITS) == 0 && pageByteMap[(size_t)address >> SATORI_PAGE_BITS] != 0;
 #else
     return (BYTE*)address >= g_lowest_address && (BYTE*)address < g_highest_address;
 #endif

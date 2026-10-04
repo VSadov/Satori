@@ -521,6 +521,9 @@ LEAF_END_MARKED JIT_WriteBarrier_WriteWatch_Bit_Region64, _TEXT
 //
 WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
     // See if dst is in GCHeap
+    // The page map covers 48-bit addresses. Native pointers may be tagged.
+        lsr     x17, x14, #48
+        cbnz    x17, LOCAL_LABEL(NotInHeap)
         ldr     x16, LOCAL_LABEL(wbs_card_bundle_table)
         lsr     x17, x14, #30                       // dst page index
         ldrb    w12, [x16, x17]
