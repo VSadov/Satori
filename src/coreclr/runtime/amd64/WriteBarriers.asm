@@ -271,6 +271,8 @@ LEAF_ENTRY RhpCheckedAssignRef, _TEXT
         mov     rax, [g_card_bundle_table] ; fetch the page byte map
         mov     r8,  rcx
         shr     r8,  30                    ; dst page index
+        cmp     r8, 40000h                 ; page map covers 48-bit addresses
+        jae     NotInHeap
         cmp     byte ptr [rax + r8], 0
         jne     RhpCheckedEntry
 
@@ -460,6 +462,8 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
     ; check if dst is in heap
         mov     r8, rcx
         shr     r8, 30                    ; round to page size ( >> PAGE_BITS )
+        cmp     r8, 40000h                ; page map covers 48-bit addresses
+        jae     JustAssign
         cmp     byte ptr [r11 + r8], 0
         je      JustAssign              ; dst not in heap
 
@@ -622,6 +626,8 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         ; check if dst is in heap
         mov     r8, rcx
         shr     r8, 30                    ; round to page size ( >> PAGE_BITS )
+        cmp     r8, 40000h                ; page map covers 48-bit addresses
+        jae     JustAssign
         cmp     byte ptr [r11 + r8], 0
         je      JustAssign              ; dst not in heap
 

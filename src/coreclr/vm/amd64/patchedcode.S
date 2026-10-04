@@ -330,6 +330,8 @@ WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
         mov     rax, [rax]
         mov     r8, rdi
         shr     r8, 30                                  // dst page index
+        cmp     r8, 0x40000                             // page map covers 48-bit addresses
+        jae     LOCAL_LABEL(NotInHeap)
         cmp     byte ptr [rax + r8], 0
         jne     C_FUNC(CheckedEntry)
 
