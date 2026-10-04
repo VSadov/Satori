@@ -456,9 +456,9 @@ ALTERNATE_ENTRY RhpCheckedEntry
 #endif
         and     x16,  x15, #0xFFFFFFFFFFE00000  // source region
         ldr     x12, [x16]                      // region tag
-#ifdef TARGET_OSX
+#ifdef TARGET_APPLE
         mrs     x17, TPIDRRO_EL0
-        and     x17, x17, #-8                   // thread tag on OSX
+        and     x17, x17, #-8                   // thread tag on Apple platforms
 #else
         mrs     x17, TPIDR_EL0                  // thread tag on other Unix
 #endif
@@ -659,9 +659,9 @@ LEAF_ENTRY RhpCheckedLockCmpXchg
 #endif
         and     x16,  x1, #0xFFFFFFFFFFE00000   // source region
         ldr     x12, [x16]                      // region tag
-#ifdef TARGET_OSX
+#ifdef TARGET_APPLE
         mrs     x17, TPIDRRO_EL0
-        and     x17, x17, #-8                   // thread tag on OSX
+        and     x17, x17, #-8                   // thread tag on Apple platforms
 #else
         mrs     x17, TPIDR_EL0                  // thread tag on other Unix
 #endif
@@ -868,9 +868,9 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
 #endif
         and     x16,  x1, #0xFFFFFFFFFFE00000   // source region
         ldr     x12, [x16]                      // region tag
-#ifdef TARGET_OSX
+#ifdef TARGET_APPLE
         mrs     x17, TPIDRRO_EL0
-        and     x17, x17, #-8                   // thread tag on OSX
+        and     x17, x17, #-8                   // thread tag on Apple platforms
 #else
         mrs     x17, TPIDR_EL0                  // thread tag on other Unix
 #endif
@@ -890,8 +890,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         tbnz        x17, #0, LOCAL_LABEL(RecordEscape_Xchg) // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign_Xchg):
-// TODO: VS use LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT instead
-#ifdef TARGET_OSX
+#ifdef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
         swpal  x1, x0, [x0]                   // exchange
 #else
     LOCAL_LABEL(TryAgain_Xchg):
@@ -905,7 +904,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
 
     LOCAL_LABEL(AssignAndMarkCards_Xchg):
         mov    x14, x0                        // x14 = dst
-#ifdef TARGET_OSX
+#ifdef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
         swpal  x1, x0, [x0]                   // exchange
 #else
     LOCAL_LABEL(TryAgain1_Xchg):

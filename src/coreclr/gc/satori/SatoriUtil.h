@@ -192,7 +192,7 @@ public:
         return (size_t)__readgsqword(0x30);
 #endif
 
-#elif defined(TARGET_OSX)
+#elif defined(TARGET_APPLE)
 
         size_t tag;
 #if defined(TARGET_ARM64)
