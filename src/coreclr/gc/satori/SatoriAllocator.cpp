@@ -83,38 +83,39 @@ tryAgain:
                             m_queues[bucket]->TryPop():
                             m_queues[bucket]->TryRemoveWithSize(regionSize, putBack);
 
+    // Return putBack even if the split failed to avoid losing the original region.
+    if (putBack)
+    {
+        AddRegion(putBack);
+        putBack = nullptr;
+    }
+
     if (region)
     {
-        if (putBack)
-        {
-            AddRegion(putBack);
-        }
-
         return region;
     }
 
     while (++bucket < Satori::ALLOCATOR_BUCKET_COUNT)
     {
         region = m_queues[bucket]->TryPopWithSize(regionSize, putBack);
-        if (region)
+        if (putBack)
         {
-            if (putBack)
+            // Split the remainder so two threads can allocate from it concurrently.
+            if (region && putBack->Size() > region->Size() * 2)
             {
-                // we took a bite out of a relatively large region
-                // and noone could use it while we were taking our piece.
-                // split the remaining portion in two so that two threads could take a piece next time.
-                if (putBack->Size() > region->Size() * 2)
+                SatoriRegion* half = putBack->TrySplit(ALIGN_DOWN((putBack->Size() / 2), Satori::REGION_SIZE_GRANULARITY));
+                if (half)
                 {
-                    SatoriRegion* half = putBack->TrySplit(ALIGN_DOWN((putBack->Size() / 2), Satori::REGION_SIZE_GRANULARITY));
-                    if (half)
-                    {
-                        AddRegion(half);
-                    }
+                    AddRegion(half);
                 }
-
-                AddRegion(putBack);
             }
 
+            AddRegion(putBack);
+            putBack = nullptr;
+        }
+
+        if (region)
+        {
             return region;
         }
     }

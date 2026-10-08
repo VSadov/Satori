@@ -702,7 +702,7 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
     }
 
     // cleaning is per card group as well, but nothing below depends on it
-    if (m_concurrentCleaningState == CC_CLEAN_STATE_CLEANING)
+    if (VolatileLoad(&m_concurrentCleaningState) == CC_CLEAN_STATE_CLEANING)
     {
         if (!canTakeBigChunks)
         {
@@ -790,7 +790,8 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
             Interlocked::CompareExchange(&m_concurrentCleaningState, CC_CLEAN_STATE_SETTING_UP, CC_CLEAN_STATE_WAIT_FOR_HELPERS) == CC_CLEAN_STATE_WAIT_FOR_HELPERS)
         {
             IncrementCardScanTicket();
-            m_concurrentCleaningState = CC_CLEAN_STATE_CLEANING;
+            // Publish the ticket before a helper can start cleaning.
+            VolatileStore((int*)&m_concurrentCleaningState, (int)CC_CLEAN_STATE_CLEANING);
         }
     }
 
@@ -1186,8 +1187,8 @@ size_t GetAvailableMemory()
         available = min(available, restrictedAvailable);
     }
 
-    // we will not use the last 5% of physical memory
-    uint64_t reserve = total / 20;
+    // Keep at least 5% free, or more when the configured threshold is lower.
+    uint64_t reserve = total * max(5u, 100u - SatoriUtil::HighMemoryPercent()) / 100;
     available = available > reserve ? available - reserve : 0;
 
 #ifdef TARGET_WINDOWS
@@ -1327,7 +1328,8 @@ void SatoriRecycler::BlockingCollect1()
     m_gcAccmulatingDurationUsecs[1] += blockingDuration / m_osTicksPerMicro;
 
     size_t fromStartMillis = GetNowMillis() - m_startMillis;
-    m_CurrentGcInfo->m_pausePercentage = (uint32_t)(m_gcAccmulatingDurationUsecs[1] / (int64_t)fromStartMillis / 10);
+    int64_t totalPauseUsecs = m_gcAccmulatingDurationUsecs[1] + m_gcAccmulatingDurationUsecs[2];
+    m_CurrentGcInfo->m_pausePercentage = fromStartMillis != 0 ? (uint32_t)(totalPauseUsecs * 10 / fromStartMillis) : 0;
 
     m_CurrentGcInfo = nullptr;
     UpdateGcCounters(blockingStart);
@@ -1352,7 +1354,8 @@ void SatoriRecycler::BlockingCollect2()
     m_gcAccmulatingDurationUsecs[2] += blockingDuration / m_osTicksPerMicro;
 
     size_t fromStartMillis = GetNowMillis() - m_startMillis;
-    m_CurrentGcInfo->m_pausePercentage = (uint32_t)( m_gcAccmulatingDurationUsecs[2] / (int64_t)fromStartMillis / 10);
+    int64_t totalPauseUsecs = m_gcAccmulatingDurationUsecs[1] + m_gcAccmulatingDurationUsecs[2];
+    m_CurrentGcInfo->m_pausePercentage = fromStartMillis != 0 ? (uint32_t)(totalPauseUsecs * 10 / fromStartMillis) : 0;
 
     m_CurrentGcInfo = nullptr;
     UpdateGcCounters(blockingStart);

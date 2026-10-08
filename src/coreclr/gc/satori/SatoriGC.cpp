@@ -40,6 +40,9 @@
 #include "SatoriRegion.inl"
 #include "../gceventstatus.h"
 
+static uint64_t g_totalPhysicalMem;
+static bool g_isRestrictedPhysicalMem;
+
 bool SatoriGC::IsValidSegmentSize(size_t size)
 {
     // N/A
@@ -311,6 +314,9 @@ size_t SatoriGC::GetLastGCGenerationSize(int gen)
 
 HRESULT SatoriGC::Initialize()
 {
+    g_totalPhysicalMem = GCToOSInterface::GetPhysicalMemoryLimit(&g_isRestrictedPhysicalMem);
+    GCConfig::SetGCHighMemPercent(SatoriUtil::HighMemoryPercent());
+
     SatoriUtil::Initialize();
     SatoriObject::Initialize();
     SatoriHandlePartitioner::Initialize();
@@ -678,17 +684,12 @@ size_t SatoriGC::GetPromotedBytes(int heap_index)
     return 0;
 }
 
-static uint64_t g_totalLimit;
-
 void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* totalAvailableMemoryBytes, uint64_t* lastRecordedMemLoadBytes, uint64_t* lastRecordedHeapSizeBytes, uint64_t* lastRecordedFragmentationBytes, uint64_t* totalCommittedBytes, uint64_t* promotedBytes, uint64_t* pinnedObjectCount, uint64_t* finalizationPendingCount, uint64_t* index, uint32_t* generation, uint32_t* pauseTimePct, bool* isCompaction, bool* isConcurrent, uint64_t* genInfoRaw, uint64_t* pauseInfoRaw, int kind)
 {
     LastRecordedGcInfo* lastGcInfo = m_heap->Recycler()->GetLastGcInfo((gc_kind)kind);
 
-    if (g_totalLimit == 0)
-        g_totalLimit = GCToOSInterface::GetPhysicalMemoryLimit();
-
-    uint64_t totalLimit = g_totalLimit;
-    *highMemLoadThresholdBytes = totalLimit * 99 / 100; // just say 99% for now
+    uint64_t totalLimit = g_totalPhysicalMem;
+    *highMemLoadThresholdBytes = totalLimit * SatoriUtil::HighMemoryPercent() / 100;
     *totalAvailableMemoryBytes = totalLimit;
 
     uint32_t memLoad = GetMemoryLoad();
@@ -726,7 +727,7 @@ uint32_t SatoriGC::GetMemoryLoad()
     if ((time >> 4) != (g_memLoadMsec >> 4))
     {
         uint64_t availPhysical, availPage;
-        GCToOSInterface::GetMemoryStatus(0, &g_memLoad, &availPhysical, &availPage);
+        GCToOSInterface::GetMemoryStatus(g_isRestrictedPhysicalMem ? g_totalPhysicalMem : 0, &g_memLoad, &availPhysical, &availPage);
         g_memLoadMsec = time;
     }
 
