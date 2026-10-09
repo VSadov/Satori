@@ -705,6 +705,11 @@ inline int32_t &SatoriRegion::OccupancyAtReuse()
     return m_occupancyAtReuse;
 }
 
+inline int32_t SatoriRegion::GetOccupancyAtReuse() const
+{
+    return m_occupancyAtReuse;
+}
+
 inline int32_t SatoriRegion::ObjCount()
 {
     return m_objCount;

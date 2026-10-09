@@ -495,7 +495,7 @@ tryAgain:
                 size_t allocated;
                 {
                     SatoriTraceScope traceZero(m_heap->Recycler(),
-                        region->OccupancyAtReuse() != 0 ? SatoriRecycler::TRACE_ZERO_REUSED : SatoriRecycler::TRACE_ZERO,
+                        region->GetOccupancyAtReuse() != 0 ? SatoriRecycler::TRACE_ZERO_REUSED : SatoriRecycler::TRACE_ZERO,
                         zeroInitialize ? moreSpace : 0);
                     allocated = region->Allocate(moreSpace, zeroInitialize);
                 }

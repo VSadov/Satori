@@ -661,6 +661,17 @@ public:
         return GCConfig::GetIncrMerge() != 0;
     }
 
+    static int IncrRelocReuseMode()
+    {
+        int64_t mode = GCConfig::GetIncrRelocReuse();
+        return mode >= 1 && mode <= 6 ? static_cast<int>(mode) : 0;
+    }
+
+    static bool IsIncrementalReuseFreshTargets()
+    {
+        return GCConfig::GetIncrRelocReuseFresh();
+    }
+
     // DOTNET_gcIncrRelocVerify
     static bool IsIncrementalRelocationVerify()
     {

@@ -44,6 +44,8 @@ struct SatoriIncrEntry
 {
     SatoriRegion* m_region;
     size_t m_key;
+    // Space unlikely to be reused, used for grading and for budget pruning after marking.
+    size_t m_benefit;
     uint32_t m_objCount;
     // candidates are at most half full, so the occupancy leaves a bit for the flag.
     uint32_t m_occupancy : 31;
@@ -51,7 +53,7 @@ struct SatoriIncrEntry
     uint32_t m_merge : 1;
 };
 
-static_assert(sizeof(SatoriIncrEntry) == sizeof(void*) + sizeof(size_t) + 2 * sizeof(uint32_t), "the flag should not make the entry larger");
+static_assert(sizeof(SatoriIncrEntry) == sizeof(void*) + 2 * sizeof(size_t) + 2 * sizeof(uint32_t), "the entry should not contain padding");
 
 // What selection of incremental relocation candidates takes from a Gen2 region.
 struct SatoriIncrRegionInfo
@@ -408,6 +410,7 @@ private:
     bool m_isIncrementalRelocation;
     int m_incrSourceCount;
     int m_incrTargetCount;
+    int m_incrReuseMode;
     SatoriRegion* m_incrSources[INCR_MAX_REGIONS];
     SatoriRegion* m_incrTargets[INCR_MAX_REGIONS];
     SatoriWorkList* m_recordedRefs;
@@ -434,6 +437,7 @@ private:
     // what the candidates were when selected
     size_t m_incrSourceObjs[INCR_MAX_REGIONS];
     size_t m_incrSourceBytes[INCR_MAX_REGIONS];
+    size_t m_incrSourceBenefit[INCR_MAX_REGIONS];
     bool m_incrSourceMerge[INCR_MAX_REGIONS];
     size_t m_incrSelectedObjs;
     // Sparse Gen2 regions are the backlog. This is what they could free if relocated,
@@ -494,6 +498,7 @@ private:
         int m_sourceCount;
         // what the eligible regions would free (the backlog), and large regions, which do not count toward Gen2 space
         size_t m_eligibleGain;
+        size_t m_eligibleBenefit;
         size_t m_eligibleCount;
         size_t m_largeRegions;
         size_t m_largeOccupancy;
@@ -633,7 +638,7 @@ private:
     void UpdateGcCounters(int64_t blockingStart);
 
     void SelectIncrementalRelocationCandidates();
-    static void IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, SatoriIncrRegionInfo& info);
+    static void IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, int reuseMode, SatoriIncrRegionInfo& info);
     void IncrSummarizeRegion(SatoriRegion* region);
     void IncrSummaryReset();
     bool PlanIncrementalRelocation(bool canRelocateRegularly);

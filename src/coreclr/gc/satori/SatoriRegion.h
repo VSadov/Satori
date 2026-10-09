@@ -201,6 +201,7 @@ public:
     void SetOccupancy(size_t occupancy);
     size_t Occupancy();
     int32_t& OccupancyAtReuse();
+    int32_t GetOccupancyAtReuse() const;
     int32_t ObjCount();
     size_t DemotedOccupancy();
 

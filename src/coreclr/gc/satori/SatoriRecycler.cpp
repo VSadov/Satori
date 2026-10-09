@@ -148,6 +148,8 @@ struct SatoriIncrStats
     int64_t incrBytesRelocated;
     int64_t incrFreshTargets;
     int64_t incrSourcesSkipped;
+    int64_t incrEmptySources;
+    int64_t incrTargetMisses;
     int64_t incrRefsExamined;
     int64_t incrRefsUpdated;
     int64_t incrCopiedObjs;
@@ -211,12 +213,18 @@ struct SatoriIncrGcInfo
     int64_t bytesRelocated;
     int64_t freshTargets;
     int64_t sourcesSkipped;
+    int64_t emptySources;
+    int64_t targetMisses;
     int64_t refsExamined;
     int64_t refsUpdated;
     int64_t copiedObjs;
     // how many gen2 regions were sparse enough (the backlog), and how much they could free
     int64_t eligible;
     int64_t eligibleGain;
+    int64_t reusePolicy;
+    int64_t eligibleBenefit;
+    int64_t selectedBenefit;
+    int64_t keptBenefit;
     // Gen2 space without large regions, and what the relocated candidates could free
     int64_t gen2Space;
     int64_t keptGain;
@@ -408,6 +416,8 @@ static void IncrStatsWriteSummary(bool force)
     INCR_DUMP(incrBytesRelocated);
     INCR_DUMP(incrFreshTargets);
     INCR_DUMP(incrSourcesSkipped);
+    INCR_DUMP(incrEmptySources);
+    INCR_DUMP(incrTargetMisses);
     INCR_DUMP(incrRefsExamined);
     INCR_DUMP(incrRefsUpdated);
     INCR_DUMP(incrCopiedObjs);
@@ -871,6 +881,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_isIncrementalRelocation = false;
     m_incrSourceCount = 0;
     m_incrTargetCount = 0;
+    m_incrReuseMode = SatoriUtil::IncrRelocReuseMode();
     m_incrRecordedRefs = 0;
     m_incrAbandonReason = 0;
     m_incrMaxRecordedRefs = 0;
@@ -5383,17 +5394,38 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         // nothing may be alive, but we still need a span to go through the motions.
         maxBytesToCopy = max(liveBytes, (size_t)Satori::MIN_FREELIST_CAPACITY);
 
+        if (m_incrReuseMode != 0 && liveBytes == 0)
+        {
+            // Sweeping will free it without copying or consuming a target's free span.
+            m_stayingRegions->Push(relocationSource);
+            INCR_GC_ADD(emptySources, 1);
+            INCR_GC_ADD(sourcesSkipped, 1);
+            INCR_STAT_ADD(incrEmptySources, 1);
+            return;
+        }
+
         // We selected this region to be relocated, so we do not want to make it a target instead.
         // Unless it is a merge - a region that could fit its objects in its own free span. Moving that into a fresh region
         // would free nothing, so as in regular relocation, it goes into an existing target, or into another such region,
         // or becomes a target for others.
         existingRegionOnly = isMerge && relocationSource->GetMaxFreeBucket() >= SatoriUtil::BucketForAlloc(maxBytesToCopy);
+        existingRegionOnly |= m_incrReuseMode != 0 && !SatoriUtil::IsIncrementalReuseFreshTargets();
     }
 
     SatoriRegion* relocationTarget = TryGetRelocationTarget(maxBytesToCopy, existingRegionOnly);
 
     if (!relocationTarget)
     {
+        if (m_isIncrementalRelocation && m_incrReuseMode != 0)
+        {
+            // A fragmented source must not become a target when no suitable receiver is available.
+            m_stayingRegions->Push(relocationSource);
+            INCR_GC_ADD(targetMisses, 1);
+            INCR_GC_ADD(sourcesSkipped, 1);
+            INCR_STAT_ADD(incrTargetMisses, 1);
+            return;
+        }
+
         if (existingRegionOnly)
         {
             // we did not found a target, but the region could fit into its own free.
@@ -5445,7 +5477,14 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         // Restore the target's free span and keep the source intact for sweeping.
         relocationTarget->StopAllocating();
         AddRelocationTarget(relocationTarget);
-        AddRelocationTarget(relocationSource);
+        if (m_isIncrementalRelocation && m_incrReuseMode != 0)
+        {
+            m_stayingRegions->Push(relocationSource);
+        }
+        else
+        {
+            AddRelocationTarget(relocationSource);
+        }
         if (m_isIncrementalRelocation)
         {
             INCR_GC_ADD(sourcesSkipped, 1);
@@ -6465,7 +6504,8 @@ void SatoriRecycler::IncrStatsWriteLog(const SatoriIncrGcSnapshot& snapshot)
             "selByApp=%lld mergeGainKB=%lld mergesSel=%lld mergesKept=%lld mergesReloc=%lld mergesTgt=%lld "
             "rSrc2=%lld rSrc1=%lld rFit2=%lld rFit1=%lld rRel2=%lld rRel1=%lld rFitRel=%lld rFitPair=%lld rFitTgt=%lld "
             "rFresh=%lld rEmpty=%lld rKB=%lld rFitKB=%lld rEstEphKB=%lld rEstTenKB=%lld rDesiredKB=%lld "
-            "gen2LiveKB=%lld limitKB=%lld compactedX100=%lld regPredUs=%lld regMeasUs=%lld regPerRegionX100=%lld\n",
+            "gen2LiveKB=%lld limitKB=%lld compactedX100=%lld regPredUs=%lld regMeasUs=%lld regPerRegionX100=%lld "
+            "reusePolicy=%lld eligibleBenefitKB=%lld selectedBenefitKB=%lld keptBenefitKB=%lld emptySrc=%lld targetMiss=%lld\n",
             (long long)snapshot.gen2Index, snapshot.pauseTicks * us, gc.phaseMarkTicks * us, gc.phasePlanTicks * us,
             gc.phaseRelocateTicks * us, gc.phaseUpdateTicks * us, gc.outcome,
             gc.sources, (long long)gc.sourceObjs, (long long)(gc.sourceBytes / 1024), (long long)gc.eligible, (long long)(gc.eligibleGain / 1024),
@@ -6491,7 +6531,10 @@ void SatoriRecycler::IncrStatsWriteLog(const SatoriIncrGcSnapshot& snapshot)
             (long long)(gc.regBytes / 1024), (long long)(gc.regFitBytes / 1024),
             (long long)(gc.regEstEphemeral / 1024), (long long)(gc.regEstTenured / 1024), (long long)(gc.regDesired / 1024),
             (long long)(gc.gen2Live / 1024), (long long)(gc.growthLimit / 1024), (long long)gc.compactedRatioX100,
-            (long long)gc.regularPredictedUs, (long long)gc.regularMeasuredUs, (long long)gc.regularUsPerRegionX100);
+            (long long)gc.regularPredictedUs, (long long)gc.regularMeasuredUs, (long long)gc.regularUsPerRegionX100,
+            (long long)gc.reusePolicy, (long long)(gc.eligibleBenefit / 1024),
+            (long long)(gc.selectedBenefit / 1024), (long long)(gc.keptBenefit / 1024),
+            (long long)gc.emptySources, (long long)gc.targetMisses);
         fclose(f);
     }
 
@@ -6613,6 +6656,36 @@ static size_t IncrRelocationGain(size_t bytes)
     return Satori::REGION_SIZE_GRANULARITY - bytes - sizeof(SatoriRegion);
 }
 
+static size_t IncrRelocationBenefit(size_t freeBytes, size_t capacity, size_t largeCapacity, int policy, uint32_t sweeps)
+{
+    _ASSERTE(largeCapacity <= capacity);
+    _ASSERTE(capacity <= freeBytes);
+
+    size_t reusable;
+    switch (policy)
+    {
+        case 1:
+            reusable = capacity;
+            break;
+        case 2:
+        case 4:
+            reusable = largeCapacity;
+            break;
+        case 3:
+            reusable = largeCapacity + (capacity - largeCapacity) / 2;
+            break;
+        case 5:
+        case 6:
+            // Capacity that has remained unused across collections is less likely to be consumed soon.
+            reusable = largeCapacity / (sweeps > 4 ? 4 : sweeps > 2 ? 2 : 1);
+            break;
+        default:
+            return freeBytes;
+    }
+
+    return freeBytes - reusable;
+}
+
 // Moves a calibrated value towards a new sample. The first sample replaces the initial guess.
 // Costlier than thought is followed quickly, since that could make pauses longer than the budget, cheaper - slowly.
 static void IncrCalibrate(double& value, int& samples, double sample)
@@ -6633,7 +6706,7 @@ static void IncrCalibrate(double& value, int& samples, double sample)
 }
 
 // Evaluates a Gen2 region for selection, as it enters the tenured queues (see IncrSummarizeRegion).
-void SatoriRecycler::IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, SatoriIncrRegionInfo& info)
+void SatoriRecycler::IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, int reuseMode, SatoriIncrRegionInfo& info)
 {
     info.m_occupancy = region->Occupancy();
     info.m_inSpace = false;
@@ -6667,6 +6740,35 @@ void SatoriRecycler::IncrEvaluateRegion(SatoriRegion* region, double refsPerObj,
     int bucket = region->GetMaxFreeBucket();
     info.m_bucket = bucket;
 
+    if (reuseMode != 0)
+    {
+        size_t gain = IncrRelocationGain(occupancy);
+        size_t capacity = region->FreeSpaceInTopNBuckets(Satori::FREELIST_COUNT);
+        size_t largeCapacity = region->FreeSpaceInTopNBuckets(Satori::LARGE_BUCKETS);
+        size_t benefit = IncrRelocationBenefit(gain, capacity, largeCapacity, reuseMode, region->SweepsSinceLastAllocation());
+        bool stableEnough = reuseMode != 4 || region->SweepsSinceLastAllocation() >= 2;
+        if (occupancy <= Satori::REGION_SIZE_GRANULARITY / 2 &&
+            benefit >= Satori::REGION_SIZE_GRANULARITY / 32 &&
+            (reuseMode == 6 || benefit * 2 >= occupancy) &&
+            stableEnough)
+        {
+            size_t cost = IncrRelocationCost(objCount, occupancy, static_cast<size_t>(objCount * refsPerObj));
+            info.m_isSource = true;
+            info.m_gain = gain;
+            info.m_source.m_region = region;
+            info.m_source.m_key = cost * 65536 / benefit;
+            info.m_source.m_benefit = benefit;
+            info.m_source.m_objCount = static_cast<uint32_t>(objCount);
+            info.m_source.m_occupancy = static_cast<uint32_t>(occupancy);
+            info.m_source.m_merge = 0;
+        }
+
+        info.m_isTarget = !info.m_isSource &&
+            bucket >= INCR_MIN_TARGET_BUCKET &&
+            largeCapacity >= gain / 2;
+        return;
+    }
+
     // As in ReclaimSizeIfRelocated, we do not want to move much.
     if (occupancy <= Satori::REGION_SIZE_GRANULARITY / 2)
     {
@@ -6682,6 +6784,7 @@ void SatoriRecycler::IncrEvaluateRegion(SatoriRegion* region, double refsPerObj,
             info.m_gain = gain;
             info.m_source.m_region = region;
             info.m_source.m_key = cost * 65536 / gain;
+            info.m_source.m_benefit = gain;
             info.m_source.m_objCount = (uint32_t)objCount;
             info.m_source.m_occupancy = (uint32_t)occupancy;
             info.m_source.m_merge = fitsOwnSpan ? 1 : 0;
@@ -6746,7 +6849,7 @@ void SatoriRecycler::IncrSummarizeRegion(SatoriRegion* region)
     int64_t startTicks = (++t_incrSummaryPushes & 15) == 0 ? INCR_TICKS() : 0;
 
     SatoriIncrRegionInfo info;
-    IncrEvaluateRegion(region, m_incrRefsPerObj, info);
+    IncrEvaluateRegion(region, m_incrRefsPerObj, m_incrReuseMode, info);
     bool isLarge = !info.m_inSpace;
     bool locked = isLarge || info.m_isSource || info.m_isTarget;
     int64_t lockTicks = 0;
@@ -6768,6 +6871,7 @@ void SatoriRecycler::IncrSummarizeRegion(SatoriRegion* region)
 
         if (info.m_isSource)
         {
+            shard.m_eligibleBenefit += info.m_source.m_benefit;
             // merges are not a part of the backlog, which measures what regular relocation would do better
             if (info.m_source.m_merge)
             {
@@ -6816,6 +6920,7 @@ void SatoriRecycler::IncrSummaryReset()
         IncrSummaryShard& shard = m_incrSummary[s];
         shard.m_sourceCount = 0;
         shard.m_eligibleGain = 0;
+        shard.m_eligibleBenefit = 0;
         shard.m_eligibleCount = 0;
         shard.m_largeRegions = 0;
         shard.m_largeOccupancy = 0;
@@ -6842,7 +6947,8 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
 
     // the summary exists only when incremental relocation is enabled
     if (m_condemnedGeneration != 2 ||
-        m_incrSummary == nullptr)
+        m_incrSummary == nullptr ||
+        (m_incrReuseMode != 0 && !IsLowLatencyMode()))
     {
         return;
     }
@@ -6862,6 +6968,7 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     int targetCount = 0;
     int64_t eligibleCount = 0;
     size_t eligibleGain = 0;
+    size_t eligibleBenefit = 0;
     size_t largeRegions = 0;
     size_t largeOccupancy = 0;
     size_t mergeGain = 0;
@@ -6897,6 +7004,7 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
 
         eligibleCount += (int64_t)shard.m_eligibleCount;
         eligibleGain += shard.m_eligibleGain;
+        eligibleBenefit += shard.m_eligibleBenefit;
         largeRegions += shard.m_largeRegions;
         largeOccupancy += shard.m_largeOccupancy;
         mergeGain += shard.m_mergeGain;
@@ -6921,7 +7029,7 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
             int n = min(shard.m_targetCounts[b], INCR_MAX_REGIONS * 2 - targetCount);
             for (int i = 0; i < n; i++)
             {
-                IncrEntry target = { shard.m_targets[b][i], (size_t)(Satori::FREELIST_COUNT - (b + INCR_MIN_TARGET_BUCKET)), 0, 0 };
+                IncrEntry target = { shard.m_targets[b][i], (size_t)(Satori::FREELIST_COUNT - (b + INCR_MIN_TARGET_BUCKET)), 0, 0, 0 };
                 targets[targetCount++] = target;
             }
 
@@ -6965,6 +7073,7 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     size_t selectedUnits = 0;
     size_t selectedBytes = 0;
     size_t selectedGain = 0;
+    size_t selectedBenefit = 0;
     int64_t mergesSelected = 0;
     for (int i = 0; i < sourceCount && m_incrSourceCount < maxSources; i++)
     {
@@ -6982,9 +7091,11 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
         selectedUnits += cost;
         selectedBytes += occupancy;
         selectedGain += IncrRelocationGain(occupancy);
+        selectedBenefit += sources[i].m_benefit;
         m_incrSelectedObjs += objCount;
         m_incrSourceObjs[m_incrSourceCount] = objCount;
         m_incrSourceBytes[m_incrSourceCount] = occupancy;
+        m_incrSourceBenefit[m_incrSourceCount] = sources[i].m_benefit;
         m_incrSourceMerge[m_incrSourceCount] = sources[i].m_merge != 0;
         mergesSelected += sources[i].m_merge;
         m_incrSources[m_incrSourceCount++] = region;
@@ -7059,6 +7170,16 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     m_incrEligibleGain = eligibleGain;
     m_incrGen2Space = gen2Space;
 
+    if (m_incrReuseMode != 0 && !SatoriUtil::IsIncrementalReuseFreshTargets() && targetCount == 0)
+    {
+        // There is nowhere to put the copies, so do not record references or pay for updating roots.
+        m_incrSourceCount = 0;
+        m_incrSelectedObjs = 0;
+        selectedBytes = 0;
+        selectedBenefit = 0;
+        mergesSelected = 0;
+    }
+
     for (int i = 0; i < m_incrSourceCount; i++)
     {
         _ASSERTE(m_incrSources[i]->Generation() == 2);
@@ -7125,6 +7246,9 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     g_incrGc.selectTicks = ticks;
     g_incrGc.eligible = eligibleCount;
     g_incrGc.eligibleGain = (int64_t)eligibleGain;
+    g_incrGc.reusePolicy = m_incrReuseMode;
+    g_incrGc.eligibleBenefit = static_cast<int64_t>(eligibleBenefit);
+    g_incrGc.selectedBenefit = static_cast<int64_t>(selectedBenefit);
     g_incrGc.mergeGain = (int64_t)mergeGain;
     g_incrGc.mergesSelected = mergesSelected;
     INCR_STAT_ADD(incrMergesSelected, mergesSelected);
@@ -7340,6 +7464,26 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
 
     // marking is done, so no more recording.
     m_incrRecording = false;
+    if (m_incrReuseMode != 0 && !IsLowLatencyMode())
+    {
+        // Latency mode may have changed during concurrent marking.
+        for (int i = 0; i < m_incrSourceCount; i++)
+        {
+            m_incrSources[i]->RelocationCandidateIndex() = 0;
+        }
+
+        FreeRecordedRefs();
+        m_incrSourceCount = 0;
+        m_incrTargetCount = 0;
+        m_incrSelectionDone = false;
+        if (!canRelocateRegularly)
+        {
+            DenyRelocation();
+        }
+
+        return !canRelocateRegularly;
+    }
+
     if (m_incrSpill)
     {
         PushRecordedChunk(m_incrSpill);
@@ -7363,8 +7507,10 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
     int keepIndex[INCR_MAX_REGIONS];
     size_t keepCost[INCR_MAX_REGIONS];
     size_t keepGain[INCR_MAX_REGIONS];
+    size_t keepBenefit[INCR_MAX_REGIONS];
     size_t keepTotalCost = 0;
     size_t keepTotalGain = 0;
+    size_t keepTotalBenefit = 0;
     int keepCount = 0;
     int droppedPinned = 0;
     int droppedCostly = 0;
@@ -7389,8 +7535,10 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
         keepIndex[keepCount] = i;
         keepCost[keepCount] = IncrRelocationCost(m_incrSourceObjs[i], m_incrSourceBytes[i], (size_t)m_incrSourceRefs[i]);
         keepGain[keepCount] = IncrRelocationGain(m_incrSourceBytes[i]);
+        keepBenefit[keepCount] = m_incrSourceBenefit[i];
         keepTotalCost += keepCost[keepCount];
         keepTotalGain += keepGain[keepCount];
+        keepTotalBenefit += keepBenefit[keepCount];
         keepCount++;
     }
 
@@ -7401,7 +7549,7 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
         int worst = 0;
         for (int i = 1; i < keepCount; i++)
         {
-            if ((double)keepCost[i] * keepGain[worst] > (double)keepCost[worst] * keepGain[i])
+            if ((double)keepCost[i] * keepBenefit[worst] > (double)keepCost[worst] * keepBenefit[i])
             {
                 worst = i;
             }
@@ -7409,11 +7557,13 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
 
         keepTotalCost -= keepCost[worst];
         keepTotalGain -= keepGain[worst];
+        keepTotalBenefit -= keepBenefit[worst];
         keepCount--;
         keep[worst] = keep[keepCount];
         keepIndex[worst] = keepIndex[keepCount];
         keepCost[worst] = keepCost[keepCount];
         keepGain[worst] = keepGain[keepCount];
+        keepBenefit[worst] = keepBenefit[keepCount];
         droppedCostly++;
     }
 
@@ -7421,6 +7571,7 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
     g_incrGc.droppedPopular = droppedCostly;
     g_incrGc.recordedRefs = recorded;
     g_incrGc.keptGain = (int64_t)keepTotalGain;
+    g_incrGc.keptBenefit = static_cast<int64_t>(keepTotalBenefit);
     INCR_STAT_ADD(incrDroppedPinned, droppedPinned);
     INCR_STAT_ADD(incrDroppedPopular, droppedCostly);
     INCR_STAT_ADD(incrRecordedRefs, recorded);
