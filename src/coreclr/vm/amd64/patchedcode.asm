@@ -221,8 +221,6 @@ LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
         mov     rax, [g_card_bundle_table] ; fetch the page byte map
         mov     r8,  rcx
         shr     r8,  30                    ; dst page index
-        cmp     r8, 40000h                 ; page map covers 48-bit addresses
-        jae     NotInHeap
         cmp     byte ptr [rax + r8], 0
         jne     CheckedEntry
 

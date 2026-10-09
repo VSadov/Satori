@@ -5,6 +5,7 @@
 #include "asmconstants.h"
 #include "asmmacros.h"
 #include "patchedcodeconstants.h"
+#include "satoriconstants.h"
 
     ;;like TEXTAREA, but with 64 byte alignment so that we can align the patchable pool below to 64 without warning
     AREA    |.text|,ALIGN=6,CODE,READONLY
@@ -485,7 +486,8 @@ exit$name
     WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
     ; See if dst is in GCHeap
         ldr     x16, wbs_card_bundle_table
-        lsr     x17, x14, #30                       ; src page index
+        ; Ignore native pointer tags only for the page-map lookup.
+        ubfx    x17, x14, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
         ldrb    w12, [x16, x17]
         cbnz    x12, CheckedEntry
 

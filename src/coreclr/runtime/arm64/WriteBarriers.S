@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 #include "AsmMacros_Shared.h"
+#include "../../inc/satoriconstants.h"
 
 #if defined(__APPLE__)
     // Currently the build is failing without this due to an issue if the first method in the assembly file has an alternate entry at the start of the file.
@@ -413,12 +414,10 @@ LOCAL_LABEL(NoBarrierXchg):
 //   x16  : trashed (ip0)
 //   x17  : trashed (ip1)
 LEAF_ENTRY RhpCheckedAssignRefArm64, _TEXT
-    // See if dst is in GCHeap
-    // The page map covers 48-bit addresses. Native pointers may be tagged.
-        lsr     x17, x14, #48
-        cbnz    x17, LOCAL_LABEL(NotInHeap)
+    // Native destinations may carry a top-byte tag, e.g. Android emutls TLS slots.
+    // Ignore the tag only for the page-map lookup; preserve x14 for the store.
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
-        lsr     x17, x14, #30                       // dst page index
+        ubfx    x17, x14, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
         ldrb    w12, [x16, x17]
         cbz     x12 , LOCAL_LABEL(NotInHeap)
         b       C_FUNC(RhpCheckedEntry)
@@ -459,9 +458,9 @@ ALTERNATE_ENTRY RhpCheckedEntry
 #endif
         and     x16,  x15, #0xFFFFFFFFFFE00000  // source region
         ldr     x12, [x16]                      // region tag
-#ifdef TARGET_APPLE
+#ifdef TARGET_OSX
         mrs     x17, TPIDRRO_EL0
-        and     x17, x17, #-8                   // thread tag on Apple platforms
+        and     x17, x17, #-8                   // thread tag on OSX
 #else
         mrs     x17, TPIDR_EL0                  // thread tag on other Unix
 #endif
@@ -645,13 +644,10 @@ LEAF_END RhpAssignRef, _TEXT
 //
 LEAF_ENTRY RhpCheckedLockCmpXchg
     // check if dst is in heap
-    // Keep tagged native pointers out of the 48-bit heap page map.
-        lsr     x12, x0, #48
-        cbnz    x12, LOCAL_LABEL(JustAssign_Cmp_Xchg)
     // x10 contains region map, also, nonzero x10 means do not skip cards 
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x10
-        add     x12, x10, x0, lsr #30
-        ldrb    w12, [x12]
+        ubfx    x12, x0, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
+        ldrb    w12, [x10, x12]
         cbz     x12, LOCAL_LABEL(JustAssign_Cmp_Xchg)
 
     // check for escaping assignment
@@ -665,9 +661,9 @@ LEAF_ENTRY RhpCheckedLockCmpXchg
 #endif
         and     x16,  x1, #0xFFFFFFFFFFE00000   // source region
         ldr     x12, [x16]                      // region tag
-#ifdef TARGET_APPLE
+#ifdef TARGET_OSX
         mrs     x17, TPIDRRO_EL0
-        and     x17, x17, #-8                   // thread tag on Apple platforms
+        and     x17, x17, #-8                   // thread tag on OSX
 #else
         mrs     x17, TPIDR_EL0                  // thread tag on other Unix
 #endif
@@ -857,13 +853,10 @@ LEAF_END RhpCheckedLockCmpXchg, _TEXT
 //
 LEAF_ENTRY RhpCheckedXchg, _TEXT
 
-    // Keep tagged native pointers out of the 48-bit heap page map.
-        lsr     x12, x0, #48
-        cbnz    x12, LOCAL_LABEL(JustAssign_Xchg)
     PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x10
     // check if dst is in heap
-        add     x12, x10, x0, lsr #30
-        ldrb    w12, [x12]
+        ubfx    x12, x0, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
+        ldrb    w12, [x10, x12]
         cbz     x12, LOCAL_LABEL(JustAssign_Xchg)
 
     // check for escaping assignment
@@ -877,9 +870,9 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
 #endif
         and     x16,  x1, #0xFFFFFFFFFFE00000   // source region
         ldr     x12, [x16]                      // region tag
-#ifdef TARGET_APPLE
+#ifdef TARGET_OSX
         mrs     x17, TPIDRRO_EL0
-        and     x17, x17, #-8                   // thread tag on Apple platforms
+        and     x17, x17, #-8                   // thread tag on OSX
 #else
         mrs     x17, TPIDR_EL0                  // thread tag on other Unix
 #endif
@@ -899,7 +892,8 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         tbnz        x17, #0, LOCAL_LABEL(RecordEscape_Xchg) // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign_Xchg):
-#ifdef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+// TODO: VS use LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT instead
+#ifdef TARGET_OSX
         swpal  x1, x0, [x0]                   // exchange
 #else
     LOCAL_LABEL(TryAgain_Xchg):
@@ -913,7 +907,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
 
     LOCAL_LABEL(AssignAndMarkCards_Xchg):
         mov    x14, x0                        // x14 = dst
-#ifdef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+#ifdef TARGET_OSX
         swpal  x1, x0, [x0]                   // exchange
 #else
     LOCAL_LABEL(TryAgain1_Xchg):

@@ -82,9 +82,11 @@ public:
         _ASSERTE((address & (sizeof(size_t) - 1)) == 0);
 
         size_t mapIndex = address >> Satori::PAGE_BITS;
-        // Native allocations can carry pointer tags (for example, on Android).
-        // Satori pages are untagged and fit within the fixed-size page map.
-        return mapIndex < (size_t(1) << pageCountBits) && s_pageByteMap[mapIndex] != 0;
+#ifdef TARGET_ARM64
+        // Ignore native pointer tags for the lookup; managed pointers are untagged.
+        mapIndex &= (size_t(1) << SATORI_PAGE_MAP_BITS) - 1;
+#endif
+        return s_pageByteMap[mapIndex] != 0;
     }
 
     SatoriRegion* RegionForAddressChecked(size_t address);
@@ -145,7 +147,7 @@ private:
     // - we can eventually support 53 bit (4 PB) and 57 bit (??) extensions, it is too early to worry about that.
     //
     // For consistency and uniform testing, we will default to 48 bit VA.
-    static const int availableAddressSpaceBits = 48;
+    static const int availableAddressSpaceBits = SATORI_ADDRESS_SPACE_BITS;
     static const int pageCountBits = availableAddressSpaceBits - Satori::PAGE_BITS;
 
     SatoriAllocator m_allocator;

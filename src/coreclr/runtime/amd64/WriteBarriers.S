@@ -262,8 +262,6 @@ LEAF_ENTRY RhpCheckedAssignRef, _TEXT
         mov     rax, [C_VAR(g_card_bundle_table)] // fetch the page byte map
         mov     r8, rdi
         shr     r8,  30                           // dst page index
-        cmp     r8, 0x40000                       // page map covers 48-bit addresses
-        jae     LOCAL_LABEL(NotInHeap)
         cmp     byte ptr [rax + r8], 0
         jne     C_FUNC(RhpCheckedEntry)
 
@@ -301,7 +299,7 @@ LEAF_ENTRY RhpAssignRef, _TEXT
         jz      LOCAL_LABEL(JustAssign)                 // assigning null
 #endif
 
-#ifdef TARGET_APPLE
+#ifdef TARGET_OSX
         mov     rax,  gs:[0]            // thread tag
 #else
         mov     rax,  fs:[0]            // thread tag
@@ -453,8 +451,6 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
     // check if dst is in heap
         mov     rdx, rdi
         shr     rdx, 30                    // round to page size ( >> PAGE_BITS )
-        cmp     rdx, 0x40000               // page map covers 48-bit addresses
-        jae     LOCAL_LABEL(JustAssign_CmpXchg)
         cmp     byte ptr [r11 + rdx], 0
         je      LOCAL_LABEL(JustAssign_CmpXchg)         // dst not in heap
 
@@ -474,7 +470,7 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         jz      LOCAL_LABEL(JustAssign_CmpXchg)         // assigning null
 #endif
 
-#ifdef TARGET_APPLE
+#ifdef TARGET_OSX
         mov     r11,  gs:[0]            // thread tag
 #else
         mov     r11,  fs:[0]            // thread tag
@@ -624,8 +620,6 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         // check if dst is in heap
         mov     rdx, rdi
         shr     rdx, 30                    // round to page size ( >> PAGE_BITS )
-        cmp     rdx, 0x40000               // page map covers 48-bit addresses
-        jae     LOCAL_LABEL(JustAssign_Xchg)
         cmp     byte ptr [r11 + rdx], 0
         je      LOCAL_LABEL(JustAssign_Xchg)            // dst not in heap
 
@@ -644,7 +638,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
 #ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
         jz      LOCAL_LABEL(JustAssign_Xchg)            // assigning null
 #endif
-#ifdef TARGET_APPLE
+#ifdef TARGET_OSX
         mov     r11,  gs:[0]            // thread tag
 #else
         mov     r11,  fs:[0]            // thread tag

@@ -29,6 +29,7 @@
 
 #include "common.h"
 #include "../gc.h"
+#include "../../inc/satoriconstants.h"
 
 // ForwardGCSafeCopy/BackwardGCSafeCopy below use SSE intrinsics on amd64.
 // MSVC gets these via <intrin.h> (included by gcenv.base.h), clang/gcc need
@@ -53,7 +54,7 @@ namespace Satori
     };
 
     // page granularity is 1 Gb, but they can be bigger
-    static const int PAGE_BITS = 30;
+    static const int PAGE_BITS = SATORI_PAGE_BITS;
     static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
 
     // regions are aligned at 2 Mb
@@ -192,7 +193,7 @@ public:
         return (size_t)__readgsqword(0x30);
 #endif
 
-#elif defined(TARGET_APPLE)
+#elif defined(TARGET_OSX)
 
         size_t tag;
 #if defined(TARGET_ARM64)

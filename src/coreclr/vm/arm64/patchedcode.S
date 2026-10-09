@@ -4,6 +4,7 @@
 #include "asmconstants.h"
 #include "unixasmmacros.inc"
 #include "patchedcodeconstants.h"
+#include "satoriconstants.h"
 
 // On Apple platforms we emit the whole patched region as single function
 // with .alt_entry labels for individual write barrier helpers. This ensures
@@ -520,12 +521,9 @@ LEAF_END_MARKED JIT_WriteBarrier_WriteWatch_Bit_Region64, _TEXT
 //   x17  : trashed (ip1)
 //
 WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
-    // See if dst is in GCHeap
-    // The page map covers 48-bit addresses. Native pointers may be tagged.
-        lsr     x17, x14, #48
-        cbnz    x17, LOCAL_LABEL(NotInHeap)
+    // Ignore native pointer tags only for the page-map lookup.
         ldr     x16, LOCAL_LABEL(wbs_card_bundle_table)
-        lsr     x17, x14, #30                       // dst page index
+        ubfx    x17, x14, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
         ldrb    w12, [x16, x17]
         cbz     x12 , LOCAL_LABEL(NotInHeap)
         b       C_FUNC(CheckedEntry)
