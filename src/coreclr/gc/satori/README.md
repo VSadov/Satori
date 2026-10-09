@@ -3,7 +3,7 @@
 A simple garbage collector that incorporates various ideas that I had over time. 
 
 ### Short term goals: ###
-- auto-tuning, auto-scaling, mostly ìknoblessî design.
+- auto-tuning, auto-scaling, mostly ‚Äúknobless‚Äù design.
 - avoid long pauses when user threads are not making progress.  
 
 ### Supported Features: ###
@@ -43,7 +43,7 @@ A simple garbage collector that incorporates various ideas that I had over time.
 | macOS   | <ul><li>- [x] </li> | <ul><li>- [x] </li> |
 
 ### Roadmap: ###
-- [ ]  explicit memory limits
+- [x]  explicit memory limits
 - [x]  immortal allocations
 - [x]  preallocated objects
 - [ ]  perf tuning (possibly a lot of opportunities)
