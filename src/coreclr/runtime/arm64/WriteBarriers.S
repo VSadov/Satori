@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 #include "AsmMacros_Shared.h"
+#include "../../inc/satoriconstants.h"
 
 #if defined(__APPLE__)
     // Currently the build is failing without this due to an issue if the first method in the assembly file has an alternate entry at the start of the file.
@@ -459,9 +460,10 @@ LEAF_END RhpByRefAssignRefArm64, _TEXT
 //   x16  : trashed (ip0)
 //   x17  : trashed (ip1)
 LEAF_ENTRY RhpCheckedAssignRefArm64, _TEXT
-    // See if dst is in GCHeap
+    // Native destinations may carry a top-byte tag, e.g. Android emutls TLS slots.
+    // Ignore the tag only for the page-map lookup; preserve x14 for the store.
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
-        lsr     x17, x14, #30                       // dst page index
+        ubfx    x17, x14, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
         ldrb    w12, [x16, x17]
         cbz     x12 , LOCAL_LABEL(NotInHeap)
         b       C_FUNC(RhpCheckedEntry)
@@ -689,8 +691,8 @@ LEAF_ENTRY RhpCheckedLockCmpXchg
     // check if dst is in heap
     // x10 contains region map, also, nonzero x10 means do not skip cards 
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x10
-        add     x12, x10, x0, lsr #30
-        ldrb    w12, [x12]
+        ubfx    x12, x0, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
+        ldrb    w12, [x10, x12]
         cbz     x12, LOCAL_LABEL(JustAssign_Cmp_Xchg)
 
     // check for escaping assignment
@@ -899,8 +901,8 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
 
     PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x10
     // check if dst is in heap
-        add     x12, x10, x0, lsr #30
-        ldrb    w12, [x12]
+        ubfx    x12, x0, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
+        ldrb    w12, [x10, x12]
         cbz     x12, LOCAL_LABEL(JustAssign_Xchg)
 
     // check for escaping assignment

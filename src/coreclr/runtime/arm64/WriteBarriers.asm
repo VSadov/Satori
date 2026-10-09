@@ -9,6 +9,7 @@
 ;;
 
 #include "AsmMacros_Shared.h"
+#include "../../inc/satoriconstants.h"
 
     TEXTAREA
 
@@ -432,9 +433,10 @@ NoBarrierXchg
 ;;   x16  : trashed (ip0)
 ;;   x17  : trashed (ip1)
     LEAF_ENTRY RhpCheckedAssignRefArm64, _TEXT
-    ;; See if dst is in GCHeap
+    ;; Native destinations may carry a top-byte tag (TBI/MTE).
+    ;; Ignore the tag only for the page-map lookup; preserve x14 for the store.
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
-        lsr     x17, x14, #30                       ;; dst page index
+        ubfx    x17, x14, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
         ldrb    w12, [x16, x17]
         cbnz    x12, RhpCheckedEntry
 
@@ -656,8 +658,8 @@ RecordEscape
     ;; check if dst is in heap
     ;; x10 contains region map, also, nonzero x10 means do not skip cards 
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x10
-        add     x12, x10, x0, lsr #30
-        ldrb    w12, [x12]
+        ubfx    x12, x0, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
+        ldrb    w12, [x10, x12]
         cbz     x12, JustAssign_Cmp_Xchg
 
     ;; check for escaping assignment
@@ -860,8 +862,8 @@ RecordEscape_Cmp_Xchg
 
     PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x10
     ;; check if dst is in heap
-        add     x12, x10, x0, lsr #30
-        ldrb    w12, [x12]
+        ubfx    x12, x0, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
+        ldrb    w12, [x10, x12]
         cbz     x12, JustAssign_Xchg
 
     ;; check for escaping assignment
