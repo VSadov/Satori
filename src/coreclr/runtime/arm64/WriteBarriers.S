@@ -640,7 +640,7 @@ LEAF_END RhpAssignRef, _TEXT
 //
 // On exit:
 //  x0: original value of objectref
-//  x10, x12, x16, x17: trashed
+//  x2-x17: trashed
 //
 LEAF_ENTRY RhpCheckedLockCmpXchg
     // check if dst is in heap
@@ -848,8 +848,7 @@ LEAF_END RhpCheckedLockCmpXchg, _TEXT
 //
 // On exit:
 //  x0: original value of objectref
-//  x10: trashed
-//  x12, x17: trashed
+//  x2-x17: trashed
 //
 LEAF_ENTRY RhpCheckedXchg, _TEXT
 
@@ -897,8 +896,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         tbz     w17, #ARM64_ATOMICS_FEATURE_FLAG_BIT, LOCAL_LABEL(TryAgain_Xchg)
 #endif
 
-        swpal   x1, x10, [x0]                 // exchange
-        mov     x0, x10
+        swpal   x1, x0, [x0]                  // exchange
 
 #ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
         b       LOCAL_LABEL(ExchangeComplete_Xchg)
@@ -920,8 +918,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         tbz     w17, #ARM64_ATOMICS_FEATURE_FLAG_BIT, LOCAL_LABEL(TryAgain1_Xchg)
 #endif
 
-        swpal   x1, x10, [x0]                 // exchange
-        mov     x0, x10
+        swpal   x1, x0, [x0]                  // exchange
 
 #ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
         b       LOCAL_LABEL(ExchangeComplete1_Xchg)
