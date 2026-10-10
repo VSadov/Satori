@@ -847,23 +847,47 @@ RecordEscape_Cmp_Xchg
         tbnz        x17, #0, RecordEscape_Xchg ;; target is exposed. record an escape.
 
 JustAssign_Xchg
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        PREPARE_EXTERNAL_VAR_INDIRECT_W g_cpuFeatures, 17
+        tbz     w17, #ARM64_ATOMICS_FEATURE_FLAG_BIT, TryAgain_Xchg
+#endif
+
+        swpal   x1, x10, [x0]                 ;; exchange
+        mov     x0, x10
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        b       ExchangeComplete_Xchg
 TryAgain_Xchg
-   ;; TODO: VS use LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT instead
         ldaxr   x17, [x0]
         stlxr   w12, x1, [x0]
         cbnz    w12, TryAgain_Xchg
         mov     x0, x17
         dmb     ish
+ExchangeComplete_Xchg
+#endif
         ret    lr
 
 AssignAndMarkCards_Xchg
         mov    x14, x0                        ;; x14 = dst
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        PREPARE_EXTERNAL_VAR_INDIRECT_W g_cpuFeatures, 17
+        tbz     w17, #ARM64_ATOMICS_FEATURE_FLAG_BIT, TryAgain1_Xchg
+#endif
+
+        swpal   x1, x10, [x0]                 ;; exchange
+        mov     x0, x10
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        b       ExchangeComplete1_Xchg
 TryAgain1_Xchg
         ldaxr   x17, [x0]
         stlxr   w12, x1, [x0]
         cbnz    w12, TryAgain1_Xchg
         mov     x0, x17
         dmb     ish
+ExchangeComplete1_Xchg
+#endif
 
     ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
     ;         needs to suspend EE, not sure if skipping mode check would worth that much.

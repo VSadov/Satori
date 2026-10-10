@@ -892,30 +892,46 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         tbnz        x17, #0, LOCAL_LABEL(RecordEscape_Xchg) // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign_Xchg):
-// TODO: VS use LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT instead
-#ifdef TARGET_OSX
-        swpal  x1, x0, [x0]                   // exchange
-#else
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        PREPARE_EXTERNAL_VAR_INDIRECT_W g_cpuFeatures, 17
+        tbz     w17, #ARM64_ATOMICS_FEATURE_FLAG_BIT, LOCAL_LABEL(TryAgain_Xchg)
+#endif
+
+        swpal   x1, x10, [x0]                 // exchange
+        mov     x0, x10
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        b       LOCAL_LABEL(ExchangeComplete_Xchg)
     LOCAL_LABEL(TryAgain_Xchg):
         ldaxr   x17, [x0]
         stlxr   w12, x1, [x0]
         cbnz    w12, LOCAL_LABEL(TryAgain_Xchg)
         mov     x0, x17
         dmb     ish
+    LOCAL_LABEL(ExchangeComplete_Xchg):
 #endif
         ret    lr
 
     LOCAL_LABEL(AssignAndMarkCards_Xchg):
         mov    x14, x0                        // x14 = dst
-#ifdef TARGET_OSX
-        swpal  x1, x0, [x0]                   // exchange
-#else
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        PREPARE_EXTERNAL_VAR_INDIRECT_W g_cpuFeatures, 17
+        tbz     w17, #ARM64_ATOMICS_FEATURE_FLAG_BIT, LOCAL_LABEL(TryAgain1_Xchg)
+#endif
+
+        swpal   x1, x10, [x0]                 // exchange
+        mov     x0, x10
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        b       LOCAL_LABEL(ExchangeComplete1_Xchg)
     LOCAL_LABEL(TryAgain1_Xchg):
         ldaxr   x17, [x0]
         stlxr   w12, x1, [x0]
         cbnz    w12, LOCAL_LABEL(TryAgain1_Xchg)
         mov     x0, x17
         dmb     ish
+    LOCAL_LABEL(ExchangeComplete1_Xchg):
 #endif
 
     // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
