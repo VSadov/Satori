@@ -11,5 +11,7 @@
     <CLRTestEnvironmentVariable Include="DOTNET_gcGen0" Value="1" />
     <CLRTestEnvironmentVariable Include="DOTNET_gcConcurrent" Value="0" />
     <CLRTestEnvironmentVariable Include="DOTNET_gcTrackBackoff" Value="0" />
+    <!-- Keep allocator-triggered global GCs out of the thread-local checks; explicit collections bypass this rate limit. -->
+    <CLRTestEnvironmentVariable Include="DOTNET_gcRate" Value="0xEA60" />
   </ItemGroup>
 </Project>

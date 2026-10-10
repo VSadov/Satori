@@ -3723,7 +3723,8 @@ void SatoriRecycler::LongWeakPtrScanWorker()
 
 void SatoriRecycler::ScanFinalizables()
 {
-    m_heap->FinalizationQueue()->ResetOverflow(m_condemnedGeneration);
+    SatoriFinalizationQueue* queue = m_heap->FinalizationQueue();
+    queue->ResetOverflow(m_condemnedGeneration);
     RunWithHelp(&SatoriRecycler::ScanAllFinalizableRegionsWorker);
 
     // the drains above are lock-free, restore what was actually drained
@@ -3735,6 +3736,12 @@ void SatoriRecycler::ScanFinalizables()
 
     RunWithHelp(&SatoriRecycler::QueueCriticalFinalizablesWorker);
     m_finalizationPendingRegions->ResetAfterUnsafeDrain();
+
+    // Marking-work allocation can fail; an empty overflowed queue also needs a finalizer retry.
+    if (queue->HasItems() || queue->OverflowedGen() != 0)
+    {
+        GCToEEInterface::EnableFinalization(true);
+    }
 }
 
 void SatoriRecycler::ScanAllFinalizableRegionsWorker()
@@ -3760,9 +3767,6 @@ void SatoriRecycler::ScanAllFinalizableRegionsWorker()
 
     if (c.m_WorkChunk != nullptr)
     {
-        // some dead finalizables were added to F-queue and made reachable.
-        // need to trace them, but also finalizer thread has work to do
-        GCToEEInterface::EnableFinalization(true);
         m_workList->Push(c.m_WorkChunk);
     }
 }
