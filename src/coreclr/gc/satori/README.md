@@ -43,6 +43,13 @@ A simple garbage collector that incorporates various ideas that I had over time.
 | Linux   | <ul><li>- [x] </li> | <ul><li>- [x] </li> |
 | macOS   | <ul><li>- [x] </li> | <ul><li>- [x] </li> |
 
+### Explicit Collections: ###
+
+- Forced blocking collections mark with the application stopped and finish sweeping before returning, including in low-latency mode.
+- A running concurrent collection is waited for without changing its marking or sweeping policy. Blocking callers help even when allocation pacing is disabled; other callers help when pacing allows or no workers are active. Forced blocking requests wait for a collection that starts with their requested work; they do not force an early blocking phase in the running collection.
+- Requests may share a collection only when it covers their generations and completes their requested blocking, compaction, and trim work.
+- Nonblocking requests still permit concurrent marking and deferred sweeping. Synchronous sweeping does not itself request compaction or OS decommit; aggressive mode additionally trims free regions inside the pause.
+
 ### Roadmap: ###
 - [x]  explicit memory limits
 - [x]  immortal allocations

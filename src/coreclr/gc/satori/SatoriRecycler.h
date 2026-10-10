@@ -85,7 +85,7 @@ public:
     int64_t GetCollectionCount(int gen);
 
     void TryStartGC(int generation, gc_reason reason);
-    void HelpOnce();
+    bool HelpOnce(bool waitForGC = false);
     void MaybeTriggerGC(gc_reason reason);
     bool IsBlockingPhase();
 
@@ -212,7 +212,7 @@ private:
 
     volatile int m_gcState;
 
-    // A GC snapshots accepted requests at start and acknowledges them after their work finishes.
+    // Requests name the earliest GC-start sequence that may satisfy them.
     struct CollectionRequest
     {
         size_t m_requested;
@@ -222,6 +222,8 @@ private:
 
     CollectionRequest m_compactionRequests[2];
     CollectionRequest m_trimRequest;
+    CollectionRequest m_blockingRequests[2];
+    size_t m_gcStartSequence;
 
     static const int CC_MARK_STATE_NONE = 0;
     static const int CC_MARK_STATE_SUSPENDING_EE = 1;
@@ -256,6 +258,7 @@ private:
     bool m_forceCompact;
     // the current GC accepted a trim request, see TryStartGC
     bool m_forceTrim;
+    bool m_forceBlocking;
     bool m_isLowLatencyMode;
     bool m_promoteAllRegions;
     volatile int m_barrierState;
@@ -355,6 +358,7 @@ private:
 
     void AdjustHeuristics();
     void DeactivateAllocatingRegions();
+    void RequestCollection(CollectionRequest* request, size_t requestNumber);
 
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();
