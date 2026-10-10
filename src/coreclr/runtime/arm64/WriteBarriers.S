@@ -419,8 +419,12 @@ LEAF_ENTRY RhpCheckedAssignRefArm64, _TEXT
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
         ubfx    x17, x14, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
         ldrb    w12, [x16, x17]
-        cbz     x12 , LOCAL_LABEL(NotInHeap)
+#if defined(__APPLE__)
+        cbz     x12, LOCAL_LABEL(NotInHeap)
         b       C_FUNC(RhpCheckedEntry)
+#else
+        cbnz    x12, LOCAL_LABEL(RhpCheckedEntryLocal)
+#endif
 
     LOCAL_LABEL(NotInHeap):
     ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
@@ -448,11 +452,13 @@ LEAF_ENTRY RhpAssignRefArm64, _TEXT
     // 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
+LOCAL_LABEL(RhpCheckedEntryLocal):
 ALTERNATE_ENTRY RhpCheckedEntry
         lsr     x17, x15, #30                   // src page index
         ldrb    w12, [x16, x17]
         cbz     x12, LOCAL_LABEL(JustAssign)    // null or external (immutable) object
 #else
+LOCAL_LABEL(RhpCheckedEntryLocal):
 ALTERNATE_ENTRY RhpCheckedEntry
         cbz     x15, LOCAL_LABEL(JustAssign)    // assigning null
 #endif
@@ -640,7 +646,7 @@ LEAF_END RhpAssignRef, _TEXT
 //
 // On exit:
 //  x0: original value of objectref
-//  x10, x12, x16, x17: trashed
+//  x2-x17: trashed
 //
 LEAF_ENTRY RhpCheckedLockCmpXchg
     // check if dst is in heap
@@ -692,39 +698,17 @@ LEAF_ENTRY RhpCheckedLockCmpXchg
 
 #ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
         PREPARE_EXTERNAL_VAR_INDIRECT_W g_cpuFeatures, 17
-        tbz    w17, #ARM64_ATOMICS_FEATURE_FLAG_BIT, LOCAL_LABEL(TryAgain1_Cmp_Xchg)
+        tbz     w17, #ARM64_ATOMICS_FEATURE_FLAG_BIT, LOCAL_LABEL(TryAgainCmpXchg)
 #endif
 
         mov    x17, x2
         casal  x2, x1, [x0]                  // exchange
         mov    x0, x2                        // x0 = result
         cmp    x2, x17
-        bne    LOCAL_LABEL(Exit_Cmp_XchgNoCards)
+        bne    LOCAL_LABEL(ExitCmpXchg)
 
-#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
-        b      LOCAL_LABEL(SkipLLScCmpXchg)
-LOCAL_LABEL(NoUpdate_Cmp_Xchg):
-        dmb     ish
-        ret     lr
-
-    LOCAL_LABEL(TryAgain1_Cmp_Xchg):
-        ldaxr   x0, [x14]
-        cmp     x0, x2
-        bne     LOCAL_LABEL(NoUpdate_Cmp_Xchg)
-
-        // Current value matches comparand, attempt to update with the new value.
-        stlxr   w12, x1, [x14]
-        cbnz    w12, LOCAL_LABEL(TryAgain1_Cmp_Xchg)  // if failed, try again
-        dmb     ish
-
-LOCAL_LABEL(SkipLLScCmpXchg):
-#endif
-
-        cbnz    x10, LOCAL_LABEL(DoCardsCmpXchg)
-LOCAL_LABEL(Exit_Cmp_XchgNoCards):
-        ret     lr
-
-LOCAL_LABEL(DoCardsCmpXchg):
+    LOCAL_LABEL(ExchangeCompleteCmpXchg):
+        cbz     x10, LOCAL_LABEL(ExitCmpXchg)
 
     // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
     //         needs to suspend EE, not sure if skipping mode check would worth that much.
@@ -732,9 +716,9 @@ LOCAL_LABEL(DoCardsCmpXchg):
 
     // check the barrier state. this must be done after the assignment (in program order)
     // if state == 2 we do not set or dirty cards.
-        tbnz    x17, #1, LOCAL_LABEL(Exit_Cmp_XchgNoCards)
+        tbnz    x17, #1, LOCAL_LABEL(ExitCmpXchg)
 
-    LOCAL_LABEL(DoCardsCmpXchg1):
+    LOCAL_LABEL(DoCardsCmpXchg):
     // if src and dst are in the same region, cards are not needed, unless concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
@@ -746,7 +730,7 @@ LOCAL_LABEL(DoCardsCmpXchg):
 
     LOCAL_LABEL(CheckConcurrentCmpXchg):
     // if not concurrent, exit
-        cbz     x17, LOCAL_LABEL(Exit_Cmp_XchgNoCards)
+        cbz     x17, LOCAL_LABEL(ExitCmpXchg)
 
     LOCAL_LABEL(MarkCardsCmpXchg):
     // x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
@@ -832,6 +816,23 @@ LOCAL_LABEL(DoCardsCmpXchg):
         mov     x10,#1
         and     x16,  x1, #0xFFFFFFFFFFE00000   // source region
         b       LOCAL_LABEL(AssignAndMarkCards_Cmp_Xchg)
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+    LOCAL_LABEL(TryAgainCmpXchg):
+        ldaxr   x0, [x14]
+        cmp     x0, x2
+        bne     LOCAL_LABEL(NoUpdateCmpXchg)
+
+        // Current value matches comparand, attempt to update with the new value.
+        stlxr   w12, x1, [x14]
+        cbnz    w12, LOCAL_LABEL(TryAgainCmpXchg)  // if failed, try again
+        dmb     ish
+        b       LOCAL_LABEL(ExchangeCompleteCmpXchg)
+
+    LOCAL_LABEL(NoUpdateCmpXchg):
+        dmb     ish
+        b       LOCAL_LABEL(ExitCmpXchg)
+#endif
 LEAF_END RhpCheckedLockCmpXchg, _TEXT
 
 // WARNING: Code in EHHelpers.cpp makes assumptions about write barrier code, in particular:
@@ -848,8 +849,8 @@ LEAF_END RhpCheckedLockCmpXchg, _TEXT
 //
 // On exit:
 //  x0: original value of objectref
-//  x10: trashed
-//  x12, x17: trashed
+//  x2-x17: trashed
+//  nonzero x10 means do not skip cards
 //
 LEAF_ENTRY RhpCheckedXchg, _TEXT
 
@@ -892,41 +893,27 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         tbnz        x17, #0, LOCAL_LABEL(RecordEscape_Xchg) // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign_Xchg):
-// TODO: VS use LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT instead
-#ifdef TARGET_OSX
-        swpal  x1, x0, [x0]                   // exchange
-#else
-    LOCAL_LABEL(TryAgain_Xchg):
-        ldaxr   x17, [x0]
-        stlxr   w12, x1, [x0]
-        cbnz    w12, LOCAL_LABEL(TryAgain_Xchg)
-        mov     x0, x17
-        dmb     ish
-#endif
-        ret    lr
+        mov    x10, #0                        // skip setting cards
 
     LOCAL_LABEL(AssignAndMarkCards_Xchg):
         mov    x14, x0                        // x14 = dst
-#ifdef TARGET_OSX
-        swpal  x1, x0, [x0]                   // exchange
-#else
-    LOCAL_LABEL(TryAgain1_Xchg):
-        ldaxr   x17, [x0]
-        stlxr   w12, x1, [x0]
-        cbnz    w12, LOCAL_LABEL(TryAgain1_Xchg)
-        mov     x0, x17
-        dmb     ish
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        PREPARE_EXTERNAL_VAR_INDIRECT_W g_cpuFeatures, 17
+        tbz     w17, #ARM64_ATOMICS_FEATURE_FLAG_BIT, LOCAL_LABEL(TryAgain_Xchg)
 #endif
+
+        swpal   x1, x0, [x0]                  // exchange
+
+    LOCAL_LABEL(ExchangeCompleteXchg):
+        cbz     x10, LOCAL_LABEL(ExitXchg)
 
     // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
     //         needs to suspend EE, not sure if skipping mode check would worth that much.
         PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
     // check the barrier state. this must be done after the assignment (in program order)
     // if state == 2 we do not set or dirty cards.
-        tbz     x17, #1, LOCAL_LABEL(DoCardsXchg)
-
-    LOCAL_LABEL(ExitNoCardsXchg):
-        ret     lr
+        tbnz    x17, #1, LOCAL_LABEL(ExitXchg)
 
     LOCAL_LABEL(DoCardsXchg):
     // if src and dst are in the same region, cards are not needed, unless concurrent
@@ -940,7 +927,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
 
     LOCAL_LABEL(CheckConcurrentXchg):
     // if not concurrent, exit
-        cbz     x17, LOCAL_LABEL(ExitNoCardsXchg)
+        cbz     x17, LOCAL_LABEL(ExitXchg)
 
     LOCAL_LABEL(MarkCardsXchg):
     // x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
@@ -1020,8 +1007,19 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         ldp     x0, x1,  [sp, 16 * 1]
         ldp     x29,x30, [sp], 16 * 2
 
+        mov     x10, #1
         and     x16,  x1, #0xFFFFFFFFFFE00000   // source region
         b       LOCAL_LABEL(AssignAndMarkCards_Xchg)
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+    LOCAL_LABEL(TryAgain_Xchg):
+        ldaxr   x17, [x0]
+        stlxr   w12, x1, [x0]
+        cbnz    w12, LOCAL_LABEL(TryAgain_Xchg)
+        mov     x0, x17
+        dmb     ish
+        b       LOCAL_LABEL(ExchangeCompleteXchg)
+#endif
 LEAF_END RhpCheckedXchg, _TEXT
 
 #ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
