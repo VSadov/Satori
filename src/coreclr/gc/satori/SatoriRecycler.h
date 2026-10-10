@@ -78,7 +78,7 @@ public:
 
     bool& IsLowLatencyMode();
 
-    void Collect(int generation, bool force, bool blocking, bool compact = false);
+    void Collect(int generation, bool force, bool blocking, bool compact = false, bool aggressive = false);
     int GetCondemnedGeneration();
     int GetRootScanTicket();
     size_t IncrementGen0Count();
@@ -243,6 +243,8 @@ private:
     bool m_isRelocating;
     // the current GC was asked to compact, see TryStartGC
     bool m_forceCompact;
+    // the current GC was asked to release as much memory as it can, see TryStartGC
+    bool m_forceTrim;
     bool m_isLowLatencyMode;
     bool m_promoteAllRegions;
     volatile int m_barrierState;

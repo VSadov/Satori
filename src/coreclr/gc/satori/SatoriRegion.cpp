@@ -701,7 +701,8 @@ bool SatoriRegion::Coalesce(SatoriRegion* next)
     return true;
 }
 
-bool SatoriRegion::TryCoalesceWithNext()
+// NB: drainsAreDone is for the blocking GC itself, once it is done with all its drains and nothing else is running.
+bool SatoriRegion::TryCoalesceWithNext(bool drainsAreDone)
 {
     SatoriRegion* next = NextInPage();
     if (next)
@@ -716,7 +717,7 @@ bool SatoriRegion::TryCoalesceWithNext()
                 // Taking `next` off the queue orders this check against the GC freeing it:
                 // if we do not see the blocking phase, `next` was freed by an earlier GC
                 // and no current drain can reach it.
-                if (!Recycler()->IsBlockingPhase() && Coalesce(next))
+                if ((drainsAreDone || !Recycler()->IsBlockingPhase()) && Coalesce(next))
                 {
                     return true;
                 }

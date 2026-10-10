@@ -253,13 +253,13 @@ HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
     generation = (generation < 0) ? 2 : min(generation, 2);
     generation = max(1, generation);
 
-    // NYI: forced decommit (collection_aggressive)
-
+    // collection_aggressive implies compaction, same as in the stock GC.
     m_heap->Recycler()->Collect(
         generation,
         !(mode & collection_mode::collection_optimized),
         mode & collection_mode::collection_blocking,
-        mode & collection_mode::collection_compacting
+        mode & collection_mode::collection_compacting,
+        mode & collection_mode::collection_aggressive
     );
 
     return S_OK;

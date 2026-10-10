@@ -65,7 +65,7 @@ public:
     bool TryDecommit();
     void TryCommit();
     bool CanCoalesceWithNext();
-    bool TryCoalesceWithNext();
+    bool TryCoalesceWithNext(bool drainsAreDone);
 
     void ZeroInitAndLink(SatoriRegion* prev);
 

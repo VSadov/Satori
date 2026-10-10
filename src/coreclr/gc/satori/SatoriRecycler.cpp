@@ -130,6 +130,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_condemnedGeneration = 0;
     m_forceCompact = false;
+    m_forceTrim = false;
 
     m_estimatedEphemeralReclaim = 0;
     m_estimatedTenuredReclaim = 0;
@@ -508,8 +509,10 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
         m_CurrentGcInfo->m_condemnedGeneration = (uint8_t)generation;
         m_CurrentGcInfo->m_concurrent = m_gcState == GC_STATE_CONCURRENT;
 
-        // only the GC that was asked to compact is forced to.
-        m_forceCompact = reason == gc_reason::reason_induced_compacting;
+        // only the GC that was asked to is forced to compact or to trim. Same as in the stock GC, aggressive implies compacting.
+        m_forceCompact = reason == gc_reason::reason_induced_compacting ||
+                         reason == gc_reason::reason_induced_aggressive;
+        m_forceTrim = reason == gc_reason::reason_induced_aggressive;
 
         FIRE_EVENT(GCTriggered, (uint32_t)reason);
 
@@ -1095,15 +1098,17 @@ void SatoriRecycler::AskForHelp()
     }
 }
 
-void SatoriRecycler::Collect(int generation, bool force, bool blocking, bool compact)
+void SatoriRecycler::Collect(int generation, bool force, bool blocking, bool compact, bool aggressive)
 {
     // only blocked & forced GC is strictly observable - via finalization.
     // otherwise it is kind of a suggestion to maybe start collecting
 
-    // same as in the stock GC, the request to compact is carried by the reason
-    gc_reason reason = compact ?
-        gc_reason::reason_induced_compacting :
-        (force ? gc_reason::reason_induced : gc_reason::reason_induced_noforce);
+    // same as in the stock GC, the request to compact or to trim is carried by the reason
+    gc_reason reason = aggressive ?
+        gc_reason::reason_induced_aggressive :
+        compact ?
+            gc_reason::reason_induced_compacting :
+            (force ? gc_reason::reason_induced : gc_reason::reason_induced_noforce);
 
     if (!force)
     {
@@ -1479,6 +1484,13 @@ void SatoriRecycler::BlockingCollectImpl()
     Plan();
     Relocate();
     Update();
+
+    // All regions are swept and every drain is done. When asked, release as much memory as we can before the world restarts.
+    // This counts as GC work, same as in the stock GC.
+    if (m_forceTrim)
+    {
+        m_trimmer->TrimNow();
+    }
 
     // we are done using workers.
     // undo the adjustment if we had to do one
@@ -4735,8 +4747,9 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::
                 }
             }
 
-            // make sure the region is swept and returned now, or later
-            if (!SatoriUtil::IsConcurrentEnabled())
+            // make sure the region is swept and returned now, or later.
+            // A GC that was asked to compact leaves the heap swept even if nothing could be relocated.
+            if (!SatoriUtil::IsConcurrentEnabled() || m_forceCompact)
             {
                 SweepAndReturnRegion(curRegion);
                 continue;
