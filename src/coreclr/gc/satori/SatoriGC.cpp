@@ -39,6 +39,7 @@
 #include "SatoriPage.h"
 #include "SatoriRegion.inl"
 #include "../gceventstatus.h"
+#include "../gcscan.h"
 
 static uint64_t g_totalPhysicalMem;
 static bool g_isRestrictedPhysicalMem;
@@ -578,7 +579,22 @@ void SatoriGC::DiagWalkObject(Object* obj, walk_fn fn, void* context)
 
 void SatoriGC::DiagWalkObject2(Object* obj, walk_fn2 fn, void* context)
 {
-    // NYI
+    if (obj == nullptr)
+    {
+        return;
+    }
+
+    bool keepWalking = true;
+    static_cast<SatoriObject*>(obj)->ForEachObjectRef(
+        [&](SatoriObject** ref)
+        {
+            if (keepWalking && *ref != nullptr)
+            {
+                keepWalking = fn(obj, reinterpret_cast<uint8_t**>(ref), context);
+            }
+        },
+        /* includeCollectibleAllocator */ true
+    );
 }
 
 void SatoriGC::DiagWalkHeap(walk_fn fn, void* context, int gen_number, bool walk_large_object_heap_p)
@@ -598,17 +614,29 @@ void SatoriGC::DiagWalkFinalizeQueue(void* gc_context, fq_walk_fn fn)
 
 void SatoriGC::DiagScanFinalizeQueue(fq_scan_fn fn, ScanContext* context)
 {
-    // NYI
+    ScanContext localContext;
+    if (context == nullptr)
+    {
+        context = &localContext;
+    }
+
+    context->thread_number = 0;
+    m_heap->FinalizationQueue()->ForEachObjectRef(
+        [&](SatoriObject** ref)
+        {
+            fn(reinterpret_cast<Object**>(ref), context, 0);
+        }
+    );
 }
 
 void SatoriGC::DiagScanHandles(handle_scan_fn fn, int gen_number, ScanContext* context)
 {
-    // NYI
+    GCScan::GcScanHandlesForProfilerAndETW(gen_number, context, fn);
 }
 
 void SatoriGC::DiagScanDependentHandles(handle_scan_fn fn, int gen_number, ScanContext* context)
 {
-    // NYI
+    GCScan::GcScanDependentHandlesForProfilerAndETW(gen_number, context, fn);
 }
 
 void SatoriGC::DiagDescrGenerations(gen_walk_fn fn, void* context)

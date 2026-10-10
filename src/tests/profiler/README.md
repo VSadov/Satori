@@ -17,3 +17,7 @@ export DOTNET_PROFILER_PATH=<Path to test binaries>/profiler/eventpipe/eventpipe
 ```
 
 **Note:** The `CORECLR_` prefix is still supported for backwards compatibility but may be removed in the future. Use the `DOTNET_` prefix for new projects.
+
+## Object-reference walking
+
+The `gcheapenumeration` test also has an `EnumerateObjectReferences` mode. Pass that argument to its generated test script to validate object fields, reference arrays, struct arrays, empty arrays, null filtering, and early callback termination. This mode does not require whole-heap walking or GC-event callbacks to be implemented.

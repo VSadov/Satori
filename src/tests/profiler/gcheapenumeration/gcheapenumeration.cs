@@ -8,6 +8,28 @@ using System.Threading;
 
 namespace Profiler.Tests
 {
+    [StructLayout(LayoutKind.Sequential)]
+    struct ReferencePair
+    {
+        public object First;
+        public int Padding;
+        public object Second;
+    }
+
+    class ObjectReferenceGraph
+    {
+        public object[] Array = new object[] { new object(), null, new object() };
+        public ReferencePair[] StructArray = new ReferencePair[]
+        {
+            new ReferencePair { First = new object(), Padding = 123, Second = null },
+            new ReferencePair { First = new object(), Padding = 456, Second = new object() }
+        };
+        public object[] EmptyArray = new object[0];
+        public object Missing = null;
+    }
+
+    class ObjectReferenceTrigger {}
+
     class GCHeapEnumerationTests
     {
         static readonly string ShouldSetMonitorGCEventMaskEnvVar = "Set_Monitor_GC_Event_Mask";
@@ -19,6 +41,14 @@ namespace Profiler.Tests
 
         [DllImport("Profiler")]
         private static extern void EnumerateGCHeapObjectsWithinProfilerRequestedRuntimeSuspension();
+
+        public static int EnumerateObjectReferences()
+        {
+            var graph = new ObjectReferenceGraph();
+            GC.KeepAlive(new ObjectReferenceTrigger());
+            GC.KeepAlive(graph);
+            return 100;
+        }
 
         public static int EnumerateGCHeapObjectsSingleThreadNoPriorSuspension()
         {
@@ -45,10 +75,17 @@ namespace Profiler.Tests
 
         public static int Main(string[] args)
         {
+            if (args.Length == 1 && args[0] == nameof(EnumerateObjectReferences))
+            {
+                return RunProfilerTest(nameof(EnumerateObjectReferences), false, true) ? 100 : 101;
+            }
             if (args.Length > 0 && args[0].Equals("RunTest", StringComparison.OrdinalIgnoreCase))
             {
                 switch (args[1])
                 {
+                    case nameof(EnumerateObjectReferences):
+                        return EnumerateObjectReferences();
+
                     case nameof(EnumerateGCHeapObjectsSingleThreadNoPriorSuspension):
                         return EnumerateGCHeapObjectsSingleThreadNoPriorSuspension();
 
@@ -78,7 +115,7 @@ namespace Profiler.Tests
             return 100;
         }
 
-        private static bool RunProfilerTest(string testName, bool shouldSetMonitorGCEventMask)
+        private static bool RunProfilerTest(string testName, bool shouldSetMonitorGCEventMask, bool referencesOnly = false)
         {
             try
             {
@@ -89,6 +126,7 @@ namespace Profiler.Tests
                                               envVars: new Dictionary<string, string>
                                               {
                                                 {ShouldSetMonitorGCEventMaskEnvVar, shouldSetMonitorGCEventMask ? "TRUE" : "FALSE"},
+                                                {"Test_Object_References_Only", referencesOnly ? "TRUE" : "FALSE"},
                                               }
                                               ) == 100;
             }

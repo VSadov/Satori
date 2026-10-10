@@ -51,3 +51,7 @@ A simple garbage collector that incorporates various ideas that I had over time.
 - [ ]  more and better diagnostics (support for debuggers and profilers)
 - [ ]  NUMA awareness
 
+### Diagnostics: ###
+
+- Object-reference walking and scanning finalizer-queue, handle, and dependent-handle roots are implemented.
+- Whole-heap and survivor walks are not yet implemented; these hooks alone do not enable complete profiler or event-tracing heap dumps.
