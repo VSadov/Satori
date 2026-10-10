@@ -79,6 +79,7 @@ public:
     bool IsUnfinished();
     void UnsetUnfinished();
 
+    bool HasEphemeralCollectibleAllocator();
     void DirtyCardsForContent();
 
     void EscapeCheckOnHandleCreation();

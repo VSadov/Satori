@@ -3559,12 +3559,17 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                     },
                                     start,
                                     end,
-                                    // the fake allocator ref location is not in the heap and we set cards for
-                                    // the ref location below, so it must not be included.
-                                    // (updating the ref would have no effect anyway - the allocator is reached
-                                    //  via a handle, which is updated separately)
+                                    // The allocator is updated through its handle; its synthetic ref location
+                                    // must not be used as a card address.
                                     /* includeCollectibleAllocator */ false
                                 );
+
+                                // The synthetic loader-allocator edge is remembered at the MethodTable slot.
+                                if (start <= o->Start() && o->HasEphemeralCollectibleAllocator())
+                                {
+                                    page->SetCardForAddressOnly(o->Start());
+                                }
+
                                 o = o->Next();
                                 hint = o;
                             } while (o->Start() < objLimit);
@@ -3899,8 +3904,7 @@ void SatoriRecycler::PromoteSurvivedHandlesAndFreeRelocatedRegionsWorker()
     FreeRelocatedRegionsWorker();
 }
 
-// noLock - if the current stage can only add more regions to the allocator
-void SatoriRecycler::FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool hasMarks, bool noLock)
+void SatoriRecycler::FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool hasMarks)
 {
     // Blank and return an unoccupied region.
     // The biggest cost here could be clearing marks, which is often is not needed
@@ -3923,14 +3927,8 @@ void SatoriRecycler::FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool hasM
     }
 
     curRegion->MakeBlank();
-    if (noLock)
-    {
-        m_heap->Allocator()->ReturnRegionNoLock(curRegion);
-    }
-    else
-    {
-        m_heap->Allocator()->ReturnRegion(curRegion);
-    }
+    // GC work-chunk allocations and the non-suspendable trimmer can use allocator queues even during blocking GC.
+    m_heap->Allocator()->ReturnRegion(curRegion);
 }
 
 void SatoriRecycler::FreeRelocatedRegionsWorker()
@@ -3941,7 +3939,7 @@ void SatoriRecycler::FreeRelocatedRegionsWorker()
         MaybeAskForHelp();
         do
         {
-            FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ true, /* noLock */ true);
+            FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ true);
         } while ((curRegion = m_relocatedRegions->TryPopDrainOnly()));
     }
 }
@@ -4105,7 +4103,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
 
             if (curRegion->Occupancy() == 0)
             {
-                FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ false, /*noLock*/ true);
+                FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ false);
             }
             // select relocation candidates and relocation targets according to sizes.
             else
@@ -4415,7 +4413,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     else
     {
         // relocationSource happened to be empty
-        FreeLogicallyEmptyRegion(relocationSource, /* hasMarks */ false, /* noLock */ false);
+        FreeLogicallyEmptyRegion(relocationSource, /* hasMarks */ false);
     }
 }
 
@@ -4680,7 +4678,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::
                 {
                     if (!curRegion->Sweep</*updatePointers*/ true>())
                     {
-                        FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ false, /*noLock*/ true);
+                        FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ false);
                         continue;
                     }
                 }
@@ -4700,7 +4698,7 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::
 
                 if (curRegion->Occupancy() == 0)
                 {
-                    FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ false, /*noLock*/ true);
+                    FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ false);
                 }
                 else
                 {
@@ -4998,7 +4996,7 @@ void SatoriRecycler::SweepAndReturnRegion(SatoriRegion* curRegion)
 
     if (curRegion->Occupancy() == 0)
     {
-        FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ false, /*noLock*/ IsBlockingPhase());
+        FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ false);
     }
     else
     {
