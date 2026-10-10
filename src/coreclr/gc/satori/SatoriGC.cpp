@@ -63,7 +63,8 @@ size_t SatoriGC::GetValidSegmentSize(bool large_seg)
 
 void SatoriGC::SetReservedVMLimit(size_t vmlimit)
 {
-    // NYI
+    // N/A. This appears to be dead code - nothing in the runtime calls it,
+    // so no implementation is needed.
 }
 
 void SatoriGC::WaitUntilConcurrentGCComplete()
