@@ -745,7 +745,7 @@ LEAF_ENTRY RhpCheckedLockCmpXchg
         casal  x2, x1, [x0]                  // exchange
         mov    x0, x2                        // x0 = result
         cmp    x2, x17
-        bne    LOCAL_LABEL(Exit_Cmp_XchgNoCards)
+        bne    LOCAL_LABEL(ExitNoCardsCmpXchg)
 
 #ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
         b      LOCAL_LABEL(SkipLLScCmpXchg)
@@ -766,11 +766,7 @@ LOCAL_LABEL(NoUpdate_Cmp_Xchg):
 LOCAL_LABEL(SkipLLScCmpXchg):
 #endif
 
-        cbnz    x10, LOCAL_LABEL(DoCardsCmpXchg)
-LOCAL_LABEL(Exit_Cmp_XchgNoCards):
-        ret     lr
-
-LOCAL_LABEL(DoCardsCmpXchg):
+        cbz     x10, LOCAL_LABEL(ExitNoCardsCmpXchg)
 
     // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
     //         needs to suspend EE, not sure if skipping mode check would worth that much.
@@ -778,9 +774,12 @@ LOCAL_LABEL(DoCardsCmpXchg):
 
     // check the barrier state. this must be done after the assignment (in program order)
     // if state == 2 we do not set or dirty cards.
-        tbnz    x17, #1, LOCAL_LABEL(Exit_Cmp_XchgNoCards)
+        tbz     x17, #1, LOCAL_LABEL(DoCardsCmpXchg)
 
-    LOCAL_LABEL(DoCardsCmpXchg1):
+    LOCAL_LABEL(ExitNoCardsCmpXchg):
+        ret     lr
+
+    LOCAL_LABEL(DoCardsCmpXchg):
     // if src and dst are in the same region, cards are not needed, unless concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
@@ -792,7 +791,7 @@ LOCAL_LABEL(DoCardsCmpXchg):
 
     LOCAL_LABEL(CheckConcurrentCmpXchg):
     // if not concurrent, exit
-        cbz     x17, LOCAL_LABEL(Exit_Cmp_XchgNoCards)
+        cbz     x17, LOCAL_LABEL(ExitNoCardsCmpXchg)
 
     LOCAL_LABEL(MarkCardsCmpXchg):
     // x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
