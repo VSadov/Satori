@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!-- Satori's approximate occupancy does not guarantee the allocation-size ordering this test requires. -->
+    <DisableProjectBuild>true</DisableProjectBuild>
     <CLRTestPriority>1</CLRTestPriority>
   </PropertyGroup>
   <PropertyGroup>
