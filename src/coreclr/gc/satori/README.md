@@ -20,6 +20,7 @@ A simple garbage collector that incorporates various ideas that I had over time.
    - younger generations can be collected without touching older ones
 - [x] Compacting GC.
    - can optionally relocate objects to reduce fragmentation.
+   - blocking compaction and aggressive-trim calls may share a collection, but return only after that collection finishes the requested work.
 - [x] Concurrent GC. 
    - all major phases, except optional relocation, can be done concurrently with user code.
 - [x] Parallel GC

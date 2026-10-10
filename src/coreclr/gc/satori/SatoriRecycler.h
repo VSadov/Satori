@@ -212,6 +212,17 @@ private:
 
     volatile int m_gcState;
 
+    // A GC snapshots accepted requests at start and acknowledges them after their work finishes.
+    struct CollectionRequest
+    {
+        size_t m_requested;
+        size_t m_started;
+        size_t m_completed;
+    };
+
+    CollectionRequest m_compactionRequests[2];
+    CollectionRequest m_trimRequest;
+
     static const int CC_MARK_STATE_NONE = 0;
     static const int CC_MARK_STATE_SUSPENDING_EE = 1;
     static const int CC_MARK_STATE_MARKING = 2;
@@ -241,9 +252,9 @@ private:
     volatile int m_concurrentCleaningState;
 
     bool m_isRelocating;
-    // the current GC was asked to compact, see TryStartGC
+    // the current GC accepted a compaction request, see TryStartGC
     bool m_forceCompact;
-    // the current GC was asked to release as much memory as it can, see TryStartGC
+    // the current GC accepted a trim request, see TryStartGC
     bool m_forceTrim;
     bool m_isLowLatencyMode;
     bool m_promoteAllRegions;

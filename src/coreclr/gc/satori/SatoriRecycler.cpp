@@ -129,6 +129,9 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_compactingGcCount[0] = m_compactingGcCount[1] = m_compactingGcCount[2] = 0;
 
     m_condemnedGeneration = 0;
+    m_compactionRequests[0] = {};
+    m_compactionRequests[1] = {};
+    m_trimRequest = {};
     m_forceCompact = false;
     m_forceTrim = false;
 
@@ -493,6 +496,15 @@ bool SatoriRecycler::ShouldDoConcurrent(int generation)
 
 void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
 {
+    if (m_gcState != GC_STATE_NONE)
+    {
+        return;
+    }
+
+    size_t gen1Requests = VolatileLoad(&m_compactionRequests[0].m_requested);
+    size_t gen2Requests = VolatileLoad(&m_compactionRequests[1].m_requested);
+    size_t trimRequests = VolatileLoad(&m_trimRequest.m_requested);
+
     if (m_nextGcIsFullGc)
     {
         generation = 2;
@@ -502,18 +514,39 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
         GC_STATE_CONCURRENT :
         GC_STATE_BLOCKING;
 
-    if (m_gcState == GC_STATE_NONE &&
-        Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
+    if (Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
     {
+        CollectionRequest& gen1Request = m_compactionRequests[0];
+        CollectionRequest& gen2Request = m_compactionRequests[1];
+        // Another GC may have completed newer requests between the snapshot and our start claim.
+        gen1Request.m_started = max(gen1Requests, gen1Request.m_completed);
+        gen2Request.m_started = max(gen2Requests, gen2Request.m_completed);
+        m_trimRequest.m_started = max(trimRequests, m_trimRequest.m_completed);
+
+        bool compactGen1 = gen1Request.m_started != gen1Request.m_completed;
+        bool compactGen2 = gen2Request.m_started != gen2Request.m_completed;
+        m_forceTrim = reason == gc_reason::reason_induced_aggressive ||
+                      m_trimRequest.m_started != m_trimRequest.m_completed;
+        m_forceCompact = reason == gc_reason::reason_induced_compacting ||
+                         compactGen1 || compactGen2 || m_forceTrim;
+
+        if (compactGen2 || m_forceTrim)
+        {
+            generation = 2;
+        }
+
         m_CurrentGcInfo = generation == 2 ? &m_lastTenuredGcInfo :&m_lastEphemeralGcInfo;
         m_CurrentGcInfo->m_condemnedGeneration = (uint8_t)generation;
         m_CurrentGcInfo->m_concurrent = m_gcState == GC_STATE_CONCURRENT;
 
-        // only the GC that was asked to is forced to compact or to trim. Same as in the stock GC, aggressive implies compacting.
-        m_forceCompact = reason == gc_reason::reason_induced_compacting ||
-                         reason == gc_reason::reason_induced_aggressive;
-        m_forceTrim = reason == gc_reason::reason_induced_aggressive;
-
+        if (m_forceTrim)
+        {
+            reason = gc_reason::reason_induced_aggressive;
+        }
+        else if (m_forceCompact)
+        {
+            reason = gc_reason::reason_induced_compacting;
+        }
         FIRE_EVENT(GCTriggered, (uint32_t)reason);
 
         m_trimmer->SetStopSuggested();
@@ -1100,6 +1133,8 @@ void SatoriRecycler::AskForHelp()
 
 void SatoriRecycler::Collect(int generation, bool force, bool blocking, bool compact, bool aggressive)
 {
+    _ASSERTE(generation == 1 || generation == 2);
+
     // only blocked & forced GC is strictly observable - via finalization.
     // otherwise it is kind of a suggestion to maybe start collecting
 
@@ -1117,23 +1152,38 @@ void SatoriRecycler::Collect(int generation, bool force, bool blocking, bool com
         return;
     }
 
+    CollectionRequest* request = aggressive ? &m_trimRequest :
+        compact ? &m_compactionRequests[generation - 1] : nullptr;
+    size_t requestNumber = 0;
     int64_t& collectionNumRef = (generation == 1 ? m_gcCount[1] : m_gcCount[2]);
-    int64_t desiredCollectionNum = collectionNumRef + 1;
-
-    // If we need to block for GC, a GC that is already in progress does not count.
-    // It may have marked what is not alive at the time of the Collect call and
-    // that is observably incorrect.
-    // We will wait until the completion of the next one.
-    if (m_gcState != GC_STATE_NONE)
+    int64_t desiredCollectionNum = 0;
+    if (request != nullptr)
     {
-        desiredCollectionNum++;
+        requestNumber = Interlocked::Increment(&request->m_requested);
+    }
+    else
+    {
+        desiredCollectionNum = VolatileLoad(&collectionNumRef) + 1;
+
+        // An already-running GC may have marked objects that died before this call.
+        if (m_gcState != GC_STATE_NONE)
+        {
+            desiredCollectionNum++;
+        }
     }
 
     do
     {
+        if (request != nullptr && VolatileLoad(&request->m_completed) >= requestNumber)
+        {
+            break;
+        }
+
         TryStartGC(generation, reason);
         HelpOnce();
-    } while (blocking && (desiredCollectionNum > collectionNumRef));
+    } while (blocking && (request != nullptr ?
+        VolatileLoad(&request->m_completed) < requestNumber :
+        desiredCollectionNum > VolatileLoad(&collectionNumRef)));
 }
 
 bool SatoriRecycler::IsBlockingPhase()
@@ -1557,6 +1607,19 @@ void SatoriRecycler::BlockingCollectImpl()
         (uint32_t)0,
         (uint32_t)0,
         (uint32_t)0);
+
+    if (m_forceCompact)
+    {
+        VolatileStore(&m_compactionRequests[0].m_completed, m_compactionRequests[0].m_started);
+        if (m_condemnedGeneration == 2)
+        {
+            VolatileStore(&m_compactionRequests[1].m_completed, m_compactionRequests[1].m_started);
+        }
+    }
+    if (m_forceTrim)
+    {
+        VolatileStore(&m_trimRequest.m_completed, m_trimRequest.m_started);
+    }
 
     m_prevCondemnedGeneration = m_condemnedGeneration;
     m_condemnedGeneration = 0;
