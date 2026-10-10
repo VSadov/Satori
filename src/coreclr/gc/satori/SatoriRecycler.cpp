@@ -129,6 +129,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_compactingGcCount[0] = m_compactingGcCount[1] = m_compactingGcCount[2] = 0;
 
     m_condemnedGeneration = 0;
+    m_forceCompact = false;
 
     m_estimatedEphemeralReclaim = 0;
     m_estimatedTenuredReclaim = 0;
@@ -506,6 +507,9 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
         m_CurrentGcInfo = generation == 2 ? &m_lastTenuredGcInfo :&m_lastEphemeralGcInfo;
         m_CurrentGcInfo->m_condemnedGeneration = (uint8_t)generation;
         m_CurrentGcInfo->m_concurrent = m_gcState == GC_STATE_CONCURRENT;
+
+        // only the GC that was asked to compact is forced to.
+        m_forceCompact = reason == gc_reason::reason_induced_compacting;
 
         FIRE_EVENT(GCTriggered, (uint32_t)reason);
 
@@ -1091,15 +1095,20 @@ void SatoriRecycler::AskForHelp()
     }
 }
 
-void SatoriRecycler::Collect(int generation, bool force, bool blocking)
+void SatoriRecycler::Collect(int generation, bool force, bool blocking, bool compact)
 {
     // only blocked & forced GC is strictly observable - via finalization.
     // otherwise it is kind of a suggestion to maybe start collecting
 
+    // same as in the stock GC, the request to compact is carried by the reason
+    gc_reason reason = compact ?
+        gc_reason::reason_induced_compacting :
+        (force ? gc_reason::reason_induced : gc_reason::reason_induced_noforce);
+
     if (!force)
     {
         // just check if it is time
-        MaybeTriggerGC(gc_reason::reason_induced_noforce);
+        MaybeTriggerGC(reason);
         return;
     }
 
@@ -1117,7 +1126,7 @@ void SatoriRecycler::Collect(int generation, bool force, bool blocking)
 
     do
     {
-        TryStartGC(generation, gc_reason::reason_induced);
+        TryStartGC(generation, reason);
         HelpOnce();
     } while (blocking && (desiredCollectionNum > collectionNumRef));
 }
@@ -1414,7 +1423,10 @@ void SatoriRecycler::BlockingCollectImpl()
 
     // assume that we will relocate. we will rethink later.
     m_isRelocating = m_condemnedGeneration == 2 ? SatoriUtil::IsRelocatingInGen2() : SatoriUtil::IsRelocatingInGen1();
-    if (IsLowLatencyMode())
+
+    // low latency mode does not relocate, unless asked to compact.
+    // same as in the stock GC, where induced GCs are not restricted by low latency mode.
+    if (IsLowLatencyMode() && !m_forceCompact)
     {
         m_isRelocating = false;
     }
@@ -4007,7 +4019,8 @@ void SatoriRecycler::Plan()
     //       We pay presweep price for the quality of relocation. Relocation
     //       is not cheap, so better be effective.
     size_t desiredReclaim = 0;
-    if (!SatoriUtil::IsForceCompact())
+    // forced compaction relocates whatever can be relocated.
+    if (!m_forceCompact && !SatoriUtil::IsForceCompact())
     {
         // Note: this is relative to region count not occupancy,
         //       since relocation has no effect on occipancy.
