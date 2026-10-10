@@ -242,6 +242,12 @@ inline void SatoriRegion::SetCardsForObject(SatoriObject* o, size_t size)
         },
         size
     );
+
+    if (o->HasEphemeralCollectibleAllocator())
+    {
+        // The loader-allocator edge is synthetic; its card belongs to the MethodTable slot.
+        ContainingPage()->DirtyCardForAddressConcurrent(o->Start());
+    }
 }
 
 template <typename F>

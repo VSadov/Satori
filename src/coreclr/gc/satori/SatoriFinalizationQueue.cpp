@@ -308,9 +308,13 @@ bool SatoriFinalizationQueue::HasItems()
     return m_enqueue != m_dequeue;
 }
 
-// returns current number of items
-// only makes sense in quiescent state
+// Exact when quiescent; an estimate while producers or the consumer advance.
 size_t SatoriFinalizationQueue::Count()
 {
-    return (m_enqueue - m_dequeue) & m_sizeMask;
+    size_t enq = VolatileLoad(&m_enqueue);
+    size_t deq = VolatileLoadWithoutBarrier(&m_dequeue);
+    // The consumer may pass the sampled enqueue position. Do not report unsigned underflow.
+    // The difference can equal the full capacity, so the slot-index mask must not be applied.
+    ptrdiff_t count = static_cast<ptrdiff_t>(enq - deq);
+    return count > 0 ? static_cast<size_t>(count) : 0;
 }

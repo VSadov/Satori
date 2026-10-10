@@ -88,8 +88,8 @@ void SatoriTrimmer::Loop()
                 break;
             }
 
-            Interlocked::CompareExchange(&m_state, TRIMMER_STATE_STOPPED, TRIMMER_STATE_RUNNING);
-            // we are not running here, so we can sleep a bit before continuing.
+            // Idle throttling must not revoke a GC's run permission. Only a GC-requested stop
+            // needs another SetOkToRun before the trimmer can continue.
             Pause(5000);
             StopAndWait();
         }
@@ -201,20 +201,31 @@ void SatoriTrimmer::StopAndWait()
 
 void SatoriTrimmer::SetOkToRun()
 {
-    int state = m_state;
-    switch (state)
+    while (true)
     {
-    case TRIMMER_STATE_BLOCKED:
-        // trimmer can't get out of BlOCKED by itself, ordinary assignment is ok
-        m_state = TRIMMER_STATE_OK_TO_RUN;
-        m_event->Set();
-        break;
-    case TRIMMER_STATE_STOPPED:
-        Interlocked::CompareExchange(&m_state, TRIMMER_STATE_OK_TO_RUN, state);
-        break;
-    case TRIMMER_STATE_STOP_SUGGESTED:
-        Interlocked::CompareExchange(&m_state, TRIMMER_STATE_RUNNING, state);
-        break;
+        int state = m_state;
+        switch (state)
+        {
+        case TRIMMER_STATE_BLOCKED:
+            // trimmer can't get out of BLOCKED by itself, ordinary assignment is ok
+            m_state = TRIMMER_STATE_OK_TO_RUN;
+            m_event->Set();
+            return;
+        case TRIMMER_STATE_STOPPED:
+            if (Interlocked::CompareExchange(&m_state, TRIMMER_STATE_OK_TO_RUN, state) == state)
+            {
+                return;
+            }
+            break;
+        case TRIMMER_STATE_STOP_SUGGESTED:
+            if (Interlocked::CompareExchange(&m_state, TRIMMER_STATE_RUNNING, state) == state)
+            {
+                return;
+            }
+            break;
+        default:
+            return;
+        }
     }
 }
 

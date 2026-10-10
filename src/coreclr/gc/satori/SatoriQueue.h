@@ -163,31 +163,6 @@ public:
         m_head = item;
     }
 
-    void PushNoLock(T* item)
-    {
-        _ASSERTE(item->m_next == nullptr);
-        _ASSERTE(item->m_prev == nullptr);
-        _ASSERTE(item->m_containingQueue == nullptr);
-
-        size_t oldCount = m_count;
-        Interlocked::Increment(&m_count);
-
-        T* head = Interlocked::ExchangePointer(&m_head, item);
-        if (head == nullptr)
-        {
-            _ASSERTE(m_tail == nullptr);
-            m_tail = item;
-        }
-        else
-        {
-            item->m_next = head;
-            head->m_prev = item;
-        }
-
-        item->m_containingQueue = this;
-        _ASSERTE(m_count > oldCount);
-    }
-
     T* TryPop()
     {
         if (IsEmpty())
