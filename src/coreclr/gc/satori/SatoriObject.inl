@@ -108,6 +108,19 @@ inline bool SatoriObject::IsFree()
     return RawGetMethodTable() == s_emptyObjectMt;
 }
 
+FORCEINLINE bool SatoriObject::HasEphemeralCollectibleAllocator()
+{
+    if (!RawGetMethodTable()->Collectible())
+    {
+        return false;
+    }
+
+    SatoriObject* loaderAllocator = (SatoriObject*)GCToEEInterface::GetLoaderAllocatorObjectForGC(this);
+    return loaderAllocator &&
+        !loaderAllocator->IsExternal() &&
+        loaderAllocator->ContainingRegion()->Generation() < 2;
+}
+
 #ifndef HOST_64BIT
 
 32bit is NYI
