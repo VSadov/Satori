@@ -171,6 +171,8 @@ tryAgain:
             Interlocked::Decrement(&m_singePageAdders);
             goto tryAgain;
         }
+
+        Interlocked::Decrement(&m_singePageAdders);
     }
     else
     {
@@ -215,16 +217,6 @@ void SatoriAllocator::ReturnRegion(SatoriRegion* region)
     _ASSERTE(region->IsAttachedToAllocatingOwner() == false);
     _ASSERTE(region->Generation() == -1);
     m_queues[SizeToBucket(region->Size())]->Push(region);
-}
-
-// can be used if no concurrent pops from the queue.
-void SatoriAllocator::ReturnRegionNoLock(SatoriRegion* region)
-{
-    _ASSERTE(region->IsAttachedToAllocatingOwner() == false);
-    _ASSERTE(region->Generation() == -1);
-    _ASSERTE(m_heap->Recycler()->IsBlockingPhase());
-
-    m_queues[SizeToBucket(region->Size())]->PushNoLock(region);
 }
 
 void SatoriAllocator::AllocationTickIncrement(AllocationTickKind allocationTickKind, size_t totalAdded, SatoriObject* obj, size_t objSize)
@@ -1020,12 +1012,15 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     // we will keep the region in gen -1 for now and make it gen1 or gen2 in PublishObject.
     hugeRegion->StopAllocating();
 
-    if ((flags & GC_ALLOC_FINALIZE) &&
-        !hugeRegion->RegisterForFinalization(result))
+    if (flags & GC_ALLOC_FINALIZE)
     {
-        hugeRegion->MakeBlank();
-        ReturnRegion(hugeRegion);
-        return nullptr;
+        hugeRegion->SetHasFinalizables();
+        if (!hugeRegion->RegisterForFinalization(result))
+        {
+            hugeRegion->MakeBlank();
+            ReturnRegion(hugeRegion);
+            return nullptr;
+        }
     }
 
     context->alloc_bytes_uoh += size;

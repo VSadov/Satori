@@ -64,8 +64,8 @@ public:
     static const int BARRIER_STATE_CONCURRENT = 1;
     // Not concurrent and the next GC is a full GC, thus cards are not needed.
     static const int BARRIER_STATE_SKIPPING_CARDS = 2;
-    // Transient, while a thread is toggling the barrier. Has no counterpart in the
-    // published state - the barrier is still in the previous state until the toggle is done.
+    // Transient, while a thread is toggling the barrier. The published barrier may already
+    // be concurrent before the toggle's process-wide fence completes.
     static const int BARRIER_STATE_SWITCHING = 3;
 
     void Initialize(SatoriHeap* heap);
@@ -118,10 +118,12 @@ public:
     void ScheduleMarkAsChildRanges(SatoriObject* o);
     bool ScheduleUpdateAsChildRanges(SatoriObject* o);
 
-    inline bool IsBarrierConcurrent()
+    inline bool IsBarrierConcurrent(bool includeSwitching = false)
     {
-        // NB: while switching the barrier is not concurrent yet.
-        return m_barrierState == BARRIER_STATE_CONCURRENT;
+        // Markers must wait for the toggle; writers must conservatively dirty cards during it.
+        int barrierState = m_barrierState;
+        return barrierState == BARRIER_STATE_CONCURRENT ||
+            (includeSwitching && barrierState == BARRIER_STATE_SWITCHING);
     }
 
     // Tells if the barrier needs to deal with cards.
@@ -406,7 +408,7 @@ private:
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);
-    void FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool hasMarks, bool noLock);
+    void FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool hasMarks);
     void FreeRelocatedRegionsWorker();
 
     void PromoteHandlesAndFreeRelocatedRegions();

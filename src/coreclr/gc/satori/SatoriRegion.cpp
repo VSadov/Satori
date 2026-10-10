@@ -2235,7 +2235,7 @@ tryAgain:
             if ((size_t)finalizable & Satori::FINALIZATION_PENDING_ANY)
             {
                 SatoriObject* o = (SatoriObject*)((size_t)finalizable & ~Satori::FINALIZATION_PENDING_ANY);
-                if (pendState == FinalizationPendState::PendRegular && o->RawGetMethodTable()->HasCriticalFinalizer())
+                if (pendState != FinalizationPendState::PendCritical && o->RawGetMethodTable()->HasCriticalFinalizer())
                 {
                     // within the same finalization set CF must finalize after ordinary F objects
                     pendState = FinalizationPendState::HasCritical;
