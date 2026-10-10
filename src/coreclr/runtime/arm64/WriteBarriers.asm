@@ -662,7 +662,7 @@ AssignAndMarkCards_Cmp_Xchg
         casal  x2, x1, [x0]                  ;; exchange
         mov    x0, x2                        ;; x0 = result
         cmp    x2, x17
-        bne    Exit_Cmp_XchgNoCards
+        bne    ExitNoCardsCmpXchg
 
 #ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
         b      SkipLLScCmpXchg
@@ -683,11 +683,7 @@ TryAgain1_Cmp_Xchg
 SkipLLScCmpXchg
 #endif
 
-        cbnz    x10, DoCardsCmpXchg
-Exit_Cmp_XchgNoCards
-        ret     lr
-
-DoCardsCmpXchg
+        cbz     x10, ExitNoCardsCmpXchg
 
     ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
     ;         needs to suspend EE, not sure if skipping mode check would worth that much.
@@ -695,8 +691,12 @@ DoCardsCmpXchg
 
     ; check the barrier state. this must be done after the assignment (in program order
     ; if state == 2 we do not set or dirty cards.
-        tbnz     x17, #1, Exit_Cmp_XchgNoCards
+        tbz     x17, #1, DoCardsCmpXchg
 
+ExitNoCardsCmpXchg
+        ret     lr
+
+DoCardsCmpXchg
     ; if src and dst are in the same region, cards are not needed, unless concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   ; target aligned to region
         cmp     x12, x16
@@ -708,7 +708,7 @@ DoCardsCmpXchg
 
 CheckConcurrentCmpXchg
     ; if not concurrent, exit
-        cbz     x17, Exit_Cmp_XchgNoCards
+        cbz     x17, ExitNoCardsCmpXchg
 
 MarkCardsCmpXchg
     ; x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
