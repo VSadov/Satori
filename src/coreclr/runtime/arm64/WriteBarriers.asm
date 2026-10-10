@@ -391,7 +391,7 @@ NoBarrierXchg
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
         ubfx    x17, x14, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
         ldrb    w12, [x16, x17]
-        cbnz    x12, RhpCheckedEntry
+        cbnz    x12, RhpCheckedEntryLocal
 
 NotInHeap
     ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
@@ -419,11 +419,13 @@ NotInHeap
     ;; 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
+RhpCheckedEntryLocal
     ALTERNATE_ENTRY RhpCheckedEntry
         lsr     x17, x15, #30                   ;; src page index
         ldrb    w12, [x16, x17]
         cbz     x12, JustAssign                 ;; null or external (immutable) object
 #else
+RhpCheckedEntryLocal
     ALTERNATE_ENTRY RhpCheckedEntry
         cbz     x15, JustAssign                 ;; assigning null
 #endif
@@ -846,6 +848,11 @@ RecordEscape_Cmp_Xchg
         tbnz        x17, #0, RecordEscape_Xchg ;; target is exposed. record an escape.
 
 JustAssign_Xchg
+        mov    x10, #0                        ;; skip setting cards
+
+AssignAndMarkCards_Xchg
+        mov    x14, x0                        ;; x14 = dst
+
 #ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
         PREPARE_EXTERNAL_VAR_INDIRECT_W g_cpuFeatures, 17
         tbz     w17, #ARM64_ATOMICS_FEATURE_FLAG_BIT, TryAgain_Xchg
@@ -854,37 +861,17 @@ JustAssign_Xchg
         swpal   x1, x0, [x0]                  ;; exchange
 
 #ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
-        b       ExchangeComplete_Xchg
+        b       ExchangeComplete1_Xchg
 TryAgain_Xchg
         ldaxr   x17, [x0]
         stlxr   w12, x1, [x0]
         cbnz    w12, TryAgain_Xchg
         mov     x0, x17
         dmb     ish
-ExchangeComplete_Xchg
-#endif
-        ret    lr
-
-AssignAndMarkCards_Xchg
-        mov    x14, x0                        ;; x14 = dst
-
-#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
-        PREPARE_EXTERNAL_VAR_INDIRECT_W g_cpuFeatures, 17
-        tbz     w17, #ARM64_ATOMICS_FEATURE_FLAG_BIT, TryAgain1_Xchg
-#endif
-
-        swpal   x1, x0, [x0]                  ;; exchange
-
-#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
-        b       ExchangeComplete1_Xchg
-TryAgain1_Xchg
-        ldaxr   x17, [x0]
-        stlxr   w12, x1, [x0]
-        cbnz    w12, TryAgain1_Xchg
-        mov     x0, x17
-        dmb     ish
 ExchangeComplete1_Xchg
 #endif
+
+        cbz     x10, ExitNoCardsXchg
 
     ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
     ;         needs to suspend EE, not sure if skipping mode check would worth that much.
@@ -989,6 +976,7 @@ RecordEscape_Xchg
         ldp     x0, x1,  [sp, 16 * 1]
         ldp     x29,x30, [sp], 16 * 2
 
+        mov     x10, #1
         and     x16,  x1, #0xFFFFFFFFFFE00000   ;; source region
         b       AssignAndMarkCards_Xchg
     LEAF_END RhpCheckedXchg
