@@ -37,6 +37,7 @@
 #include "SatoriHeap.h"
 #include "SatoriRegion.h"
 #include "SatoriPage.h"
+#include "SatoriPage.inl"
 #include "SatoriRegion.inl"
 #include "../gceventstatus.h"
 #include "../gcscan.h"
@@ -599,7 +600,49 @@ void SatoriGC::DiagWalkObject2(Object* obj, walk_fn2 fn, void* context)
 
 void SatoriGC::DiagWalkHeap(walk_fn fn, void* context, int gen_number, bool walk_large_object_heap_p)
 {
-    // NYI
+    SatoriRecycler* recycler = m_heap->Recycler();
+    if (!recycler->IsBlockingPhase())
+    {
+        STRESS_LOG0(LF_GC, LL_WARNING, "DiagWalkHeap requires a blocking collection.\n");
+        _ASSERTE(!"DiagWalkHeap requires a blocking collection.");
+        return;
+    }
+    recycler->WaitForTrimmerToStop();
+    _ASSERTE(gen_number >= 0 && gen_number <= max_generation);
+
+    // Satori has no separate large-object heap to select.
+    UNREFERENCED_PARAMETER(walk_large_object_heap_p);
+
+    bool keepWalking = true;
+    m_heap->ForEachPageUntil(
+        [&](SatoriPage* page)
+        {
+            page->ForEachRegion(
+                [&](SatoriRegion* region)
+                {
+                    int generation = region->Generation();
+                    if (!keepWalking || generation < 0 ||
+                        (gen_number < max_generation && generation > gen_number))
+                    {
+                        return;
+                    }
+
+                    _ASSERTE(!region->IsAllocating());
+                    // Objects start only in the first granule; a huge object's tail may be uncommitted.
+                    size_t limit = region->Start() + Satori::REGION_SIZE_GRANULARITY;
+                    for (SatoriObject* object = region->FirstObject(); object->Start() < limit; object = object->Next())
+                    {
+                        if (!object->IsFree() && !fn(object, context))
+                        {
+                            keepWalking = false;
+                            break;
+                        }
+                    }
+                }
+            );
+            return !keepWalking;
+        }
+    );
 }
 
 void SatoriGC::DiagWalkSurvivorsWithType(void* gc_context, record_surv_fn fn, void* diag_context, walk_surv_type type, int gen_number)

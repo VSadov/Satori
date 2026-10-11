@@ -1240,6 +1240,12 @@ bool SatoriRecycler::IsBlockingPhase()
     return m_gcState == GC_STATE_BLOCKED;
 }
 
+void SatoriRecycler::WaitForTrimmerToStop()
+{
+    _ASSERTE(IsBlockingPhase());
+    m_trimmer->WaitForStop();
+}
+
 //TUNING: We use a very simplistic approach for GC triggering here.
 //        By default: 
 //          SatoriUtil::Gen2Target() triggers Gen2 GC when heap size doubles.
@@ -1591,6 +1597,9 @@ void SatoriRecycler::BlockingCollectImpl()
         m_trimmer->TrimNow();
     }
 
+    bool walkHeapForDiagnostics = m_forceBlocking && m_condemnedGeneration == max_generation &&
+        GCEventStatus::IsEnabled(GCEventProvider_Default, GCEventKeyword_GCHeapDump, GCEventLevel_Information);
+
     // we are done using workers.
     // undo the adjustment if we had to do one
     if (IsWorkerThread())
@@ -1626,6 +1635,12 @@ void SatoriRecycler::BlockingCollectImpl()
     // we may still have some deferred sweeping to do, but
     // that is unobservable to EE, so tell EE that we are done
     GCToEEInterface::GcDone(m_condemnedGeneration);
+
+    if (walkHeapForDiagnostics)
+    {
+        _ASSERTE(m_deferredSweepRegions->IsEmpty());
+        GCToEEInterface::DiagGCEnd(GlobalGcIndex(), m_condemnedGeneration, reason_empty, /* fConcurrent */ false);
+    }
 
     FIRE_EVENT(GCEnd_V1, (uint32_t)GlobalGcIndex(), (uint32_t)m_condemnedGeneration);
 

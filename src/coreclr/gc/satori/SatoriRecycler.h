@@ -88,6 +88,7 @@ public:
     bool HelpOnce(bool waitForGC = false);
     void MaybeTriggerGC(gc_reason reason);
     bool IsBlockingPhase();
+    void WaitForTrimmerToStop();
 
     bool ShouldDoConcurrent(int generation);
     void ConcurrentWorkerFn();

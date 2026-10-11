@@ -60,5 +60,8 @@ A simple garbage collector that incorporates various ideas that I had over time.
 
 ### Diagnostics: ###
 
-- Object-reference walking and scanning finalizer-queue, handle, and dependent-handle roots are implemented.
-- Whole-heap and survivor walks are not yet implemented; these hooks alone do not enable complete profiler or event-tracing heap dumps.
+- Object-reference and whole-heap walking, plus scanning finalizer-queue, handle, and dependent-handle roots, are implemented.
+- Requested ETW/EventPipe heap dumps run inside a forced blocking full collection, after sweeping and any aggressive trim. The object walker waits for the background trimmer before traversing regions; it remains quiescent throughout the object walk. Heap events precede the GC-end event.
+- Whole-heap walks include immortal objects and skip free space. Satori has no separate large-object heap, so that heap-selection flag does not select a distinct set of regions.
+- GC lifecycle, survivor/movement, and finalizable-object-queued profiler notifications are not implemented. Heap walking outside a GC with allocation-context handling is also not yet implemented.
+- Satori NativeAOT also limits snapshots to diagnostic requests. Its bulk type events contain type IDs but no names; Runtime Async dump coverage verifies that captured continuation payloads remain in the snapshot.
