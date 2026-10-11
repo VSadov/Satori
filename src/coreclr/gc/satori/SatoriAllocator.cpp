@@ -429,20 +429,13 @@ tryAgain:
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
                 if (zeroInitialize)
                 {
-                    // Take more than needed, so that we come here less often.
-                    // If we stop allocating here before using the extra, it goes back to the free list
-                    // with a note that it is zeroed, so the zeroing is not wasted.
-                    // What is already known to be zeroed costs nothing, we take at least that much.
-                    size_t desiredSpace = max(SatoriUtil::MinZeroInitSize(), region->GetAllocZeroedRemaining());
-                    if (moreSpace < desiredSpace)
+                    // We do not want to pre-zero extra bytes if they may not fit the next allocation,
+                    // but if we will have more than LARGE_OBJECT_THRESHOLD remaining, everything will fit.
+                    // In such case we will zero out extra.
+                    if (moreSpace + Satori::LARGE_OBJECT_THRESHOLD < allocRemaining &&
+                        moreSpace < SatoriUtil::MinZeroInitSize())
                     {
-                        moreSpace = min(desiredSpace, allocRemaining);
-                    }
-
-                    // Do not leave a small remainder behind, it would cost another trip here.
-                    if (allocRemaining - moreSpace < SatoriUtil::MinZeroInitSize() / 2)
-                    {
-                        moreSpace = allocRemaining;
+                        moreSpace = min(SatoriUtil::MinZeroInitSize(), allocRemaining - Satori::LARGE_OBJECT_THRESHOLD);
                     }
 
                     // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity

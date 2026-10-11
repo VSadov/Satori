@@ -73,7 +73,6 @@ public:
 
     size_t GetAllocStart();
     size_t GetAllocRemaining();
-    size_t GetAllocZeroedRemaining();
     size_t Allocate(size_t size, bool zeroInitialize);
     size_t AllocateHuge(size_t size, bool zeroInitialize);
 
