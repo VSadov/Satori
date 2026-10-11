@@ -283,7 +283,7 @@ int BulkTypeEventLogger::LogSingleType(MethodTable * pEEType)
     // Determine this MethodTable's module.
     RuntimeInstance * pRuntimeInstance = GetRuntimeInstance();
 
-    // EEType for GC statics are not fully populated and they do not have a valid TypeManager. We will identify them by checking for `ElementType_Unknown`.
+    // Data-only EETypes, including GC statics and async continuations, get their TypeManager from their base type.
     ULONGLONG osModuleHandle = 0;
     if (pEEType->GetElementType() != ElementType_Unknown)
     {
@@ -292,7 +292,7 @@ int BulkTypeEventLogger::LogSingleType(MethodTable * pEEType)
     else
     {
         MethodTable * pBaseEEType = pEEType->GetNonArrayBaseType();
-        _ASSERTE(pBaseEEType->GetNonArrayBaseType() == NULL);
+        _ASSERTE(pBaseEEType != nullptr);
         osModuleHandle = (ULONGLONG) pBaseEEType->GetTypeManagerPtr()->AsTypeManager()->GetOsModuleHandle();
     }
 

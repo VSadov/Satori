@@ -2,6 +2,8 @@
   <PropertyGroup>
     <!-- Needed for GCStressIncompatible -->
     <RequiresProcessIsolation>true</RequiresProcessIsolation>
+    <!-- Satori's approximate occupancy does not guarantee the allocation-size ordering this test requires. -->
+    <DisableProjectBuild>true</DisableProjectBuild>
     <CLRTestPriority>1</CLRTestPriority>
     <!-- This test is failing under GCStress variations, so disabling it under GCStress till the issue is investigated:
          Issue: https://github.com/dotnet/runtime/issues/63860

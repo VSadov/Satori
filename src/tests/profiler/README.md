@@ -15,3 +15,7 @@ export CORECLR_PROFILER_PATH=<Path to test binaries>/profiler/eventpipe/eventpip
 
 <Path to test binaries>/Core_Root/corerun <Path to test binaries>/profiler/eventpipe/eventpipe/eventpipe.dll RunTest
 ```
+
+## Object-reference walking
+
+The `gcheapenumeration` test also has an `EnumerateObjectReferences` mode. Pass that argument to its generated test script to validate object fields, reference arrays, struct arrays, empty arrays, null filtering, and early callback termination. This mode does not require whole-heap walking or GC-event callbacks to be implemented.

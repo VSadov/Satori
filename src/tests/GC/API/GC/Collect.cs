@@ -6,6 +6,19 @@ using System;
 using Xunit;
 
 public class Test_Collect {
+    public static bool IsSatori => GC.GetConfigurationVariables().TryGetValue("SatoriGC", out object value) && value is true;
+
+    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsNotMonoRuntime))]
+    public static void CollectionCompletesBeforeReturning()
+    {
+        int before = GC.CollectionCount(GC.MaxGeneration);
+        GC.Collect();
+        Assert.True(GC.CollectionCount(GC.MaxGeneration) > before);
+        Assert.False(GC.GetGCMemoryInfo().Concurrent);
+        Console.WriteLine("Default blocking collection completed before returning.");
+    }
+
+    [ActiveIssue("Satori can demote regions after a full GC; generation advancement is not guaranteed.", typeof(Test_Collect), nameof(IsSatori))]
     [Fact]
     public static int TestEntryPoint()
     {

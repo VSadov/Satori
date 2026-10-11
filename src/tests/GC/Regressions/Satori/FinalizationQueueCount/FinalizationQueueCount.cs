@@ -45,7 +45,33 @@ public static class FinalizationQueueCount
             }
         }
 
+        VerifyGlobalFinalizationWakeup();
+
         return 100;
+    }
+
+    private static void VerifyGlobalFinalizationWakeup()
+    {
+        PrepareThreadLocalRegion();
+        int count = QueueCapacity + 1;
+        int expected = Volatile.Read(ref s_finalizedCount) + count;
+        Func<bool> finalized = () => Volatile.Read(ref s_finalizedCount) == expected;
+
+        try
+        {
+            AllocateFinalizables(count);
+            GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+
+            // Waiting must not explicitly wake the finalizer or collect again.
+            if (!SpinWait.SpinUntil(finalized, TimeSpan.FromSeconds(30)))
+            {
+                throw new InvalidOperationException($"Expected {expected} finalizers; observed {s_finalizedCount}. Pending finalizers: {GC.GetGCMemoryInfo().FinalizationPendingCount}.");
+            }
+        }
+        finally
+        {
+            GC.WaitForPendingFinalizers();
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -60,7 +86,7 @@ public static class FinalizationQueueCount
             GC.Collect(2, GCCollectionMode.Forced, blocking: true);
             if (!s_finalizerStarted.Wait(TimeSpan.FromSeconds(30)))
             {
-                throw new InvalidOperationException("The blocking finalizer did not start.");
+                throw new InvalidOperationException($"The blocking finalizer did not start. Pending finalizers: {GC.GetGCMemoryInfo().FinalizationPendingCount}.");
             }
 
             if (!VerifyPendingCount(0))

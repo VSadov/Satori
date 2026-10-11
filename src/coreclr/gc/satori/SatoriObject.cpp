@@ -128,10 +128,14 @@ void SatoriObject::Validate()
         }
         else
         {
+            // a non-escaped object has no exposed fields.
+            // the first words hold the object's own mark, escaped and pinned bits. A non-escaped object
+            // can be marked or pinned during thread-local GC, so only the words after those are checked.
+            size_t exposedOffset = (SatoriRegion::MarkOffset::Pinned + 1) * sizeof(size_t);
             size_t size = Size();
-            for (size_t i = Start(); i < size; i++)
+            if (size > exposedOffset)
             {
-                _ASSERTE(!((SatoriObject*)i)->IsMarked());
+                _ASSERTE(!ContainingRegion()->AnyExposed(Start() + exposedOffset, size - exposedOffset));
             }
         }
     }
