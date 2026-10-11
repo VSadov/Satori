@@ -35,6 +35,7 @@ namespace Profiler.Tests
         static readonly string ShouldSetMonitorGCEventMaskEnvVar = "Set_Monitor_GC_Event_Mask";
         static readonly Guid GCHeapEnumerationProfilerGuid = new Guid("8753F0E1-6D6D-4329-B8E1-334918869C15");
         static List<object> _rootObjects = new List<object>();
+        static bool IsSatori => GC.GetConfigurationVariables().TryGetValue("SatoriGC", out object value) && value is true;
 
         [DllImport("Profiler")]
         private static extern void EnumerateGCHeapObjectsWithoutProfilerRequestedRuntimeSuspension();
@@ -95,6 +96,12 @@ namespace Profiler.Tests
                     case nameof(EnumerateGCHeapObjectsMultiThreadWithCompetingRuntimeSuspension):
                         return EnumerateGCHeapObjectsMultiThreadWithCompetingRuntimeSuspension();
                 }
+            }
+
+            if (IsSatori)
+            {
+                // Profiler suspension does not provide the blocking-GC phase Satori needs for whole-heap walks.
+                return RunProfilerTest(nameof(EnumerateObjectReferences), false, true) ? 100 : 101;
             }
 
             if (!RunProfilerTest(nameof(EnumerateGCHeapObjectsSingleThreadNoPriorSuspension), false))
