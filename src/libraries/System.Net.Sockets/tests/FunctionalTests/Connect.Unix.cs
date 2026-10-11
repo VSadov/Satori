@@ -194,7 +194,6 @@ namespace System.Net.Sockets.Tests
         }
 
         [ActiveIssue("https://github.com/dotnet/runtime/issues/128141", TestPlatforms.Android)]
-        [ActiveIssue("SATORI: intermittent socket blocking-mode assertion in local runs", TestPlatforms.Linux)]
         [Fact]
         public async Task ConnectAsync_WithBuffer_Succeeds()
         {

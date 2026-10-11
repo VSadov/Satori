@@ -2222,9 +2222,6 @@ namespace System.Net.Http.Functional.Tests
             });
         }
 
-#if WINHTTPHANDLER_TEST
-        [ActiveIssue("SATORI: intermittent WinHTTP loopback disconnects (error 12030) in local runs")]
-#endif
         [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsNotBrowser))]
         [InlineData('\u0001', HeaderType.Request)]
         [InlineData('\u0007', HeaderType.Request)]
