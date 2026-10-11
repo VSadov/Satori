@@ -144,6 +144,12 @@ inline size_t SatoriRegion::GetAllocRemaining()
     return diff >= 0 ? (size_t)diff : 0;
 }
 
+inline size_t SatoriRegion::GetAllocZeroedRemaining()
+{
+    _ASSERTE(m_allocZeroedEnd <= m_allocEnd);
+    return m_allocZeroedEnd > m_allocStart ? m_allocZeroedEnd - m_allocStart : 0;
+}
+
 inline size_t SatoriRegion::RegionSizeForAlloc(size_t allocSize)
 {
     return ALIGN_UP(allocSize + offsetof(SatoriRegion, m_firstObject) + Satori::MIN_FREE_SIZE, Satori::REGION_SIZE_GRANULARITY);

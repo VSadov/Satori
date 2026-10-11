@@ -437,6 +437,15 @@ tryAgain:
                     {
                         moreSpace = min(SatoriUtil::MinZeroInitSize(), allocRemaining - Satori::LARGE_OBJECT_THRESHOLD);
                     }
+                    else if (allocRemaining <= Satori::LARGE_OBJECT_THRESHOLD &&
+                             allocRemaining >= Satori::INDEX_GRANULARITY)
+                    {
+                        // Limit tail zeroing ahead while avoiding repeated index-sized refills.
+                        size_t tailQuantum = min(SatoriUtil::MinZeroInitSize(), SatoriUtil::RoundDownPwr2(allocRemaining));
+                        moreSpace = max(moreSpace, tailQuantum);
+                    }
+
+                    moreSpace = max(moreSpace, min(region->GetAllocZeroedRemaining(), allocRemaining));
 
                     // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
                     // to improve chances that the object that is allocated here will be indexed
