@@ -59,12 +59,13 @@ void SatoriObject::EscapeCheckOnHandleCreation()
     }
 }
 
-SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
+SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size, size_t zeroedEnd)
 {
     _ASSERTE(location == ALIGN_UP(location, Satori::OBJECT_ALIGNMENT));
     _ASSERTE(size == ALIGN_UP(size, Satori::OBJECT_ALIGNMENT));
     _ASSERTE(size >= Satori::MIN_FREE_SIZE);
     _ASSERTE(size < Satori::REGION_SIZE_GRANULARITY);
+    _ASSERTE(zeroedEnd <= location + size);
 
     SatoriObject* o = (SatoriObject*)location;
     _ASSERTE(o->ContainingRegion()->m_used > (location + 2 * sizeof(size_t)));
@@ -75,7 +76,20 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size)
     {
         dirtySize = size;
     }
-    memset((void*)(location - sizeof(size_t)), 0xAC, dirtySize);
+
+    size_t junkStart = location - sizeof(size_t);
+    size_t junkEnd = junkStart + dirtySize;
+    // do not junk-fill what is known to be zeroed.
+    // the header part will be overwritten below anyways.
+    if (zeroedEnd > junkStart)
+    {
+        junkStart = zeroedEnd;
+    }
+
+    if (junkEnd > junkStart)
+    {
+        memset((void*)junkStart, 0xAC, junkEnd - junkStart);
+    }
 #endif
 
     o->CleanSyncBlock();

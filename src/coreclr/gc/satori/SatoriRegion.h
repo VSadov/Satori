@@ -73,16 +73,19 @@ public:
 
     size_t GetAllocStart();
     size_t GetAllocRemaining();
+    size_t GetAllocZeroedRemaining();
     size_t Allocate(size_t size, bool zeroInitialize);
     size_t AllocateHuge(size_t size, bool zeroInitialize);
 
     size_t StartAllocating(size_t minSize);
-    void StopAllocating(size_t allocPtr);
+    // The caller may know that [allocPtr, zeroedEnd) contains zeroes,
+    // like the unused part of an allocation context does.
+    void StopAllocating(size_t allocPtr, size_t zeroedEnd = 0);
     void StopAllocating();
     bool IsAllocating();
 
     void AddFreeSpace(SatoriObject* freeObj, size_t size);
-    void ReturnFreeSpace(SatoriObject * freeObj, size_t size);
+    void ReturnFreeSpace(SatoriObject * freeObj, size_t size, size_t zeroedEnd = 0);
 
     int GetMaxFreeBucket();
     bool HasFreeSpaceInTopBucket();
@@ -309,6 +312,9 @@ private:
             // The range is in terms of objects, there is embedded off-by-one error for syncblocks.
             size_t m_allocStart;
             size_t m_allocEnd;
+            // While allocating, [m_allocStart, m_allocZeroedEnd) is known to contain zeroes
+            // in addition to everything above m_used. Allocations do not need to zero that again.
+            size_t m_allocZeroedEnd;
 
             // dirty and comitted watermarks
             size_t m_used;

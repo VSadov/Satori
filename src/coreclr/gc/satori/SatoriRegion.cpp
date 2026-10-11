@@ -154,6 +154,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
 
     result->m_allocStart = (size_t)&result->m_firstObject;
     result->m_allocEnd = result->End();
+    result->m_allocZeroedEnd = 0;
     result->m_occupancy = result->m_allocEnd - result->m_allocStart;
     result->m_demotedOccupancy = 0;
     result->m_escapeFunc = nullptr;
@@ -253,6 +254,7 @@ void SatoriRegion::MakeBlank()
 
     m_allocStart = (size_t)&m_firstObject;
     m_allocEnd = End();
+    m_allocZeroedEnd = 0;
 
     // m_used                    stays the same
     // m_committed               stays the same
@@ -437,11 +439,31 @@ hasObj:
     size_t freeObjSize = freeObj->FreeObjSize();
     _ASSERTE(freeObjSize >= minAllocSize + Satori::MIN_FREE_SIZE);
     _ASSERTE(freeObj->FreeObjCapacity() ==  freeObjSize - Satori::MIN_FREE_SIZE);
+    size_t zeroedEnd = freeObj->ZeroedEnd();
 
     m_freeListCapacities[bucket] -= (freeObjSize - Satori::MIN_FREE_SIZE);
     _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
     m_allocStart = freeObj->Start();
     m_allocEnd = m_allocStart + freeObjSize;
+    m_allocZeroedEnd = 0;
+
+    if (zeroedEnd > m_allocStart + sizeof(SatoriFreeListObject))
+    {
+        _ASSERTE(zeroedEnd <= m_allocEnd);
+
+        // The free space after the free list header is known to be zeroed.
+        // Zero the header too, then the whole range up to zeroedEnd will not need zeroing.
+        memset((void*)m_allocStart, 0, sizeof(SatoriFreeListObject));
+        m_allocZeroedEnd = zeroedEnd;
+
+#ifdef _DEBUG
+        for (size_t i = m_allocStart; i < m_allocZeroedEnd; i += sizeof(size_t))
+        {
+            _ASSERTE(*(size_t*)i == 0);
+        }
+#endif
+    }
+
     // Assume all will be used.
     // We will deduct back the unused part when we stop allocating.
     SetOccupancy(m_occupancy + freeObjSize);
@@ -452,25 +474,49 @@ hasObj:
     return m_allocStart;
 }
 
-void SatoriRegion::StopAllocating(size_t allocPtr)
+void SatoriRegion::StopAllocating(size_t allocPtr, size_t zeroedEnd)
 {
     _ASSERTE(IsAllocating());
     _ASSERTE(allocPtr != 0);
+    _ASSERTE(zeroedEnd <= m_allocStart);
 
     // Make unused allocation span parseable
     // Unbuffered allocs like Huge, will consume whole allocation.
     // Buffered/FreeList allocs will have extra space enough to fit a terminator.
     if (allocPtr != m_allocEnd)
     {
+        // The unused span starts with [allocPtr, zeroedEnd) that the caller knows to be zeroed.
+        // If that reaches m_allocStart, it continues with what we know to be zeroed.
+        // Remember that, so that we would not zero it again when we allocate from this span.
+        zeroedEnd = max(zeroedEnd, allocPtr);
+        if (zeroedEnd == m_allocStart)
+        {
+            zeroedEnd = max(zeroedEnd, m_allocZeroedEnd);
+        }
+
+        if (zeroedEnd <= allocPtr + sizeof(SatoriFreeListObject))
+        {
+            // nothing worth remembering
+            zeroedEnd = 0;
+        }
+
+#ifdef _DEBUG
+        for (size_t i = allocPtr; i < zeroedEnd; i += sizeof(size_t))
+        {
+            _ASSERTE(*(size_t*)i == 0);
+        }
+#endif
+
         m_used = max(m_used, allocPtr + Satori::MIN_FREE_SIZE);
         size_t unused = m_allocEnd - allocPtr;
         _ASSERTE(m_occupancy >= unused);
         SetOccupancy(m_occupancy - unused);
-        SatoriObject* freeObj = SatoriObject::FormatAsFree(allocPtr, unused);
-        ReturnFreeSpace(freeObj, unused);
+        SatoriObject* freeObj = SatoriObject::FormatAsFree(allocPtr, unused, zeroedEnd);
+        ReturnFreeSpace(freeObj, unused, zeroedEnd);
     }
 
     m_allocStart = m_allocEnd = 0;
+    m_allocZeroedEnd = 0;
 }
 
 void SatoriRegion::StopAllocating()
@@ -499,6 +545,8 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
 
     _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
     _ASSERTE(capacity == freeListObj->FreeObjCapacity());
+    // FormatAsFree clears this. We do not know if the space is zeroed.
+    _ASSERTE(freeListObj->ZeroedEnd() <= freeListObj->Start());
     m_freeListCapacities[bucket] += capacity;
 
     // insert at the tail
@@ -516,7 +564,7 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
     m_freeListTails[bucket] = freeListObj;
 }
 
-void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
+void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size, size_t zeroedEnd)
 {
     _ASSERTE(freeObj->Size() == size);
     _ASSERTE(size >= Satori::MIN_FREE_SIZE);
@@ -541,6 +589,9 @@ void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
 
     // insert at the head, since we are returning what we recently took.
     freeListObj->m_nextInFreeList = m_freeLists[bucket];
+    // remember how much is known to be zeroed, if anything.
+    _ASSERTE(zeroedEnd <= freeListObj->Start() + size);
+    freeListObj->SetZeroedEnd(zeroedEnd);
 
     if (m_freeLists[bucket] == nullptr)
     {
@@ -820,11 +871,20 @@ size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
 
         if (zeroInitialize)
         {
+            // what is below m_allocZeroedEnd or above m_used is already zeroed.
+            size_t zeroFrom = max(chunkStart, m_allocZeroedEnd);
             size_t zeroUpTo = min(m_used, chunkEnd);
-            ptrdiff_t zeroInitCount = zeroUpTo - chunkStart;
-            if (zeroInitCount > 0)
+
+#ifdef _DEBUG
+            for (size_t i = chunkStart; i < min(chunkEnd, m_allocZeroedEnd); i += sizeof(size_t))
             {
-                memset((void*)chunkStart, 0, zeroInitCount);
+                _ASSERTE(*(size_t*)i == 0);
+            }
+#endif
+
+            if (zeroUpTo > zeroFrom)
+            {
+                memset((void*)zeroFrom, 0, zeroUpTo - zeroFrom);
             }
         }
 
