@@ -438,7 +438,7 @@ NoBarrierXchg
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
         ubfx    x17, x14, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
         ldrb    w12, [x16, x17]
-        cbnz    x12, RhpCheckedEntry
+        cbnz    x12, RhpCheckedEntryLocal
 
 NotInHeap
     ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
@@ -466,11 +466,13 @@ NotInHeap
     ;; 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         PREPARE_EXTERNAL_VAR_INDIRECT g_card_bundle_table, x16
+RhpCheckedEntryLocal
     ALTERNATE_ENTRY RhpCheckedEntry
         lsr     x17, x15, #30                   ;; src page index
         ldrb    w12, [x16, x17]
         cbz     x12, JustAssign                 ;; null or external (immutable) object
 #else
+RhpCheckedEntryLocal
     ALTERNATE_ENTRY RhpCheckedEntry
         cbz     x15, JustAssign                 ;; assigning null
 #endif
@@ -652,7 +654,7 @@ RecordEscape
 ;;
 ;; On exit:
 ;;  x0: original value of objectref
-;;  x10, x12, x16, x17: trashed
+;;  x2-x17: trashed
 ;;
     LEAF_ENTRY RhpCheckedLockCmpXchg
     ;; check if dst is in heap
@@ -699,39 +701,17 @@ AssignAndMarkCards_Cmp_Xchg
 
 #ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
         PREPARE_EXTERNAL_VAR_INDIRECT_W g_cpuFeatures, 17
-        tbz    w17, #ARM64_ATOMICS_FEATURE_FLAG_BIT, TryAgain1_Cmp_Xchg
+        tbz    w17, #ARM64_ATOMICS_FEATURE_FLAG_BIT, TryAgainCmpXchg
 #endif
 
         mov    x17, x2
         casal  x2, x1, [x0]                  ;; exchange
         mov    x0, x2                        ;; x0 = result
         cmp    x2, x17
-        bne    Exit_Cmp_XchgNoCards
+        bne    ExitCmpXchg
 
-#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
-        b      SkipLLScCmpXchg
-NoUpdate_Cmp_Xchg
-        dmb     ish
-        ret     lr
-
-TryAgain1_Cmp_Xchg
-        ldaxr   x0, [x14]
-        cmp     x0, x2
-        bne     NoUpdate_Cmp_Xchg
-
-        ;; Current value matches comparand, attempt to update with the new value.
-        stlxr   w12, x1, [x14]
-        cbnz    w12, TryAgain1_Cmp_Xchg  ;; if failed, try again
-        dmb     ish
-
-SkipLLScCmpXchg
-#endif
-
-        cbnz    x10, DoCardsCmpXchg
-Exit_Cmp_XchgNoCards
-        ret     lr
-
-DoCardsCmpXchg
+ExchangeCompleteCmpXchg
+        cbz     x10, ExitCmpXchg
 
     ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
     ;         needs to suspend EE, not sure if skipping mode check would worth that much.
@@ -739,8 +719,9 @@ DoCardsCmpXchg
 
     ; check the barrier state. this must be done after the assignment (in program order
     ; if state == 2 we do not set or dirty cards.
-        tbnz     x17, #1, Exit_Cmp_XchgNoCards
+        tbnz    x17, #1, ExitCmpXchg
 
+DoCardsCmpXchg
     ; if src and dst are in the same region, cards are not needed, unless concurrent
         and     x12, x14, #0xFFFFFFFFFFE00000   ; target aligned to region
         cmp     x12, x16
@@ -752,7 +733,7 @@ DoCardsCmpXchg
 
 CheckConcurrentCmpXchg
     ; if not concurrent, exit
-        cbz     x17, Exit_Cmp_XchgNoCards
+        cbz     x17, ExitCmpXchg
 
 MarkCardsCmpXchg
     ; x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
@@ -839,6 +820,23 @@ RecordEscape_Cmp_Xchg
         mov     x10,#1
         and     x16,  x1, #0xFFFFFFFFFFE00000  ;; source region
         b       AssignAndMarkCards_Cmp_Xchg
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+TryAgainCmpXchg
+        ldaxr   x0, [x14]
+        cmp     x0, x2
+        bne     NoUpdateCmpXchg
+
+        ;; Current value matches comparand, attempt to update with the new value.
+        stlxr   w12, x1, [x14]
+        cbnz    w12, TryAgainCmpXchg  ;; if failed, try again
+        dmb     ish
+        b       ExchangeCompleteCmpXchg
+
+NoUpdateCmpXchg
+        dmb     ish
+        b       ExitCmpXchg
+#endif
     LEAF_END RhpCheckedLockCmpXchg
 
 ;; WARNING: Code in EHHelpers.cpp makes assumptions about write barrier code, in particular:
@@ -855,8 +853,8 @@ RecordEscape_Cmp_Xchg
 ;;
 ;; On exit:
 ;;  x0: original value of objectref
-;;  x10: trashed
-;;  x12, x17: trashed
+;;  x2-x17: trashed
+;;  nonzero x10 means do not skip cards
 ;;
     LEAF_ENTRY RhpCheckedXchg, _TEXT
 
@@ -894,23 +892,20 @@ RecordEscape_Cmp_Xchg
         tbnz        x17, #0, RecordEscape_Xchg ;; target is exposed. record an escape.
 
 JustAssign_Xchg
-TryAgain_Xchg
-   ;; TODO: VS use LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT instead
-        ldaxr   x17, [x0]
-        stlxr   w12, x1, [x0]
-        cbnz    w12, TryAgain_Xchg
-        mov     x0, x17
-        dmb     ish
-        ret    lr
+        mov    x10, #0                        ;; skip setting cards
 
 AssignAndMarkCards_Xchg
         mov    x14, x0                        ;; x14 = dst
-TryAgain1_Xchg
-        ldaxr   x17, [x0]
-        stlxr   w12, x1, [x0]
-        cbnz    w12, TryAgain1_Xchg
-        mov     x0, x17
-        dmb     ish
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+        PREPARE_EXTERNAL_VAR_INDIRECT_W g_cpuFeatures, 17
+        tbz     w17, #ARM64_ATOMICS_FEATURE_FLAG_BIT, TryAgain_Xchg
+#endif
+
+        swpal   x1, x0, [x0]                  ;; exchange
+
+ExchangeCompleteXchg
+        cbz     x10, ExitXchg
 
     ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
     ;         needs to suspend EE, not sure if skipping mode check would worth that much.
@@ -918,10 +913,7 @@ TryAgain1_Xchg
 
     ; check the barrier state. this must be done after the assignment (in program order
     ; if state == 2 we do not set or dirty cards.
-        tbz     x17, #1, DoCardsXchg
-
-ExitNoCardsXchg
-        ret     lr
+        tbnz    x17, #1, ExitXchg
 
 DoCardsXchg
     ; if src and dst are in the same region, cards are not needed, unless concurrent
@@ -935,7 +927,7 @@ DoCardsXchg
 
 CheckConcurrentXchg
     ; if not concurrent, exit
-        cbz     x17, ExitNoCardsXchg
+        cbz     x17, ExitXchg
 
 MarkCardsXchg
     ; x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
@@ -1015,8 +1007,19 @@ RecordEscape_Xchg
         ldp     x0, x1,  [sp, 16 * 1]
         ldp     x29,x30, [sp], 16 * 2
 
+        mov     x10, #1
         and     x16,  x1, #0xFFFFFFFFFFE00000   ;; source region
         b       AssignAndMarkCards_Xchg
+
+#ifndef LSE_INSTRUCTIONS_ENABLED_BY_DEFAULT
+TryAgain_Xchg
+        ldaxr   x17, [x0]
+        stlxr   w12, x1, [x0]
+        cbnz    w12, TryAgain_Xchg
+        mov     x0, x17
+        dmb     ish
+        b       ExchangeCompleteXchg
+#endif
     LEAF_END RhpCheckedXchg
 
 #endif // FEATURE_NATIVEAOT
