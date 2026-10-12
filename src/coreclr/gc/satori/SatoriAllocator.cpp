@@ -429,22 +429,20 @@ tryAgain:
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
                 if (zeroInitialize)
                 {
-                    // We do not want to pre-zero extra bytes if they may not fit the next allocation,
-                    // but if we will have more than LARGE_OBJECT_THRESHOLD remaining, everything will fit.
-                    // In such case we will zero out extra.
-                    if (moreSpace + Satori::LARGE_OBJECT_THRESHOLD < allocRemaining &&
-                        moreSpace < SatoriUtil::MinZeroInitSize())
+                    // Take more than needed, so that we come here less often, but zero ahead at most MinZeroInitSize,
+                    // so that the zeroed memory is still in cache when we use it and not much is wasted if we stop
+                    // allocating here before using it all. (the unused part goes back to the free list with a note
+                    // that it is zeroed, but that is lost if the region is swept before the space is reused)
+                    // With MinZeroInitSize or more remaining, this takes MinZeroInitSize. Closer to the end of the span,
+                    // it takes the largest power of two that fits, to use up the rest in a few trips.
+                    // These are multiples of INDEX_GRANULARITY, so alloc_limit stays misaligned as described below.
+                    if (allocRemaining >= Satori::INDEX_GRANULARITY)
                     {
-                        moreSpace = min(SatoriUtil::MinZeroInitSize(), allocRemaining - Satori::LARGE_OBJECT_THRESHOLD);
-                    }
-                    else if (allocRemaining <= Satori::LARGE_OBJECT_THRESHOLD &&
-                             allocRemaining >= Satori::INDEX_GRANULARITY)
-                    {
-                        // Limit tail zeroing ahead while avoiding repeated index-sized refills.
-                        size_t tailQuantum = min(SatoriUtil::MinZeroInitSize(), SatoriUtil::RoundDownPwr2(allocRemaining));
-                        moreSpace = max(moreSpace, tailQuantum);
+                        size_t quantum = min(SatoriUtil::MinZeroInitSize(), SatoriUtil::RoundDownPwr2(allocRemaining));
+                        moreSpace = max(moreSpace, quantum);
                     }
 
+                    // What is already known to be zeroed costs nothing to take.
                     moreSpace = max(moreSpace, min(region->GetAllocZeroedRemaining(), allocRemaining));
 
                     // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
