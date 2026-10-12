@@ -98,6 +98,10 @@ SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size, size_t ze
 
     // deduct the size of Array header + syncblock and set the size of the free bytes.
     ((size_t*)o)[1] = size - Satori::MIN_FREE_SIZE;
+
+    // The length is 32-bit, the rest of that word is padding. Record there whether the free space
+    // is known to be zeroed. Set explicitly, the store above clears it only on little-endian.
+    ((SatoriFreeListObject*)o)->SetZeroedEnd(zeroedEnd);
     return o;
 }
 

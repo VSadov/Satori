@@ -512,7 +512,7 @@ void SatoriRegion::StopAllocating(size_t allocPtr, size_t zeroedEnd)
         _ASSERTE(m_occupancy >= unused);
         SetOccupancy(m_occupancy - unused);
         SatoriObject* freeObj = SatoriObject::FormatAsFree(allocPtr, unused, zeroedEnd);
-        ReturnFreeSpace(freeObj, unused, zeroedEnd);
+        ReturnFreeSpace(freeObj, unused);
     }
 
     m_allocStart = m_allocEnd = 0;
@@ -545,7 +545,7 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
 
     _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
     _ASSERTE(capacity == freeListObj->FreeObjCapacity());
-    // FormatAsFree clears this. We do not know if the space is zeroed.
+    // Space found by sweeping or compacting is not known to be zeroed. (see FormatAsFree)
     _ASSERTE(freeListObj->ZeroedEnd() <= freeListObj->Start());
     m_freeListCapacities[bucket] += capacity;
 
@@ -564,7 +564,7 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
     m_freeListTails[bucket] = freeListObj;
 }
 
-void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size, size_t zeroedEnd)
+void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
 {
     _ASSERTE(freeObj->Size() == size);
     _ASSERTE(size >= Satori::MIN_FREE_SIZE);
@@ -589,9 +589,6 @@ void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size, size_t ze
 
     // insert at the head, since we are returning what we recently took.
     freeListObj->m_nextInFreeList = m_freeLists[bucket];
-    // remember how much is known to be zeroed, if anything.
-    _ASSERTE(zeroedEnd <= freeListObj->Start() + size);
-    freeListObj->SetZeroedEnd(zeroedEnd);
 
     if (m_freeLists[bucket] == nullptr)
     {
