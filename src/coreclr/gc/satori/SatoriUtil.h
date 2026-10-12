@@ -526,13 +526,47 @@ public:
         }
     }
 
-    // TUNING: Needs tuning?
     // When doing regular allocation we clean this much memory
     // if we do cleaning, and if available.
-    // Set to 1/2 of a typical 32K L1 cache for now
+    // Zeroing a contiguous range takes a fraction of every set in L1, so we aim for no more than
+    // about half of L1 per thread, to leave room for whatever else the thread is working with.
+    //  - x64 has 32-48K L1D, typically shared by 2 SMT threads.
+    //    Other architectures that we may run on have 32-64K L1D, some with SMT.
+    //  - arm64 currently has no SMT, and 64K+ L1D on Apple, Neoverse (Graviton, Cobalt), Oryon
+    //    and current big Cortex cores.
     static const size_t MinZeroInitSize()
     {
+#if defined(TARGET_ARM64)
+        return 32 * 1024;
+#else
         return 16 * 1024;
+#endif
+    }
+
+    // Zeroes memory that allocations are about to use, from the start up.
+    // We zero in blocks, from the last block to the first one, so that the start is written last
+    // and is the most likely to be still in cache when used. Whatever the cache size, the part
+    // that fits stays hot, instead of losing all of it once the range does not fit.
+    // Within a block we use memset, which knows the best way to zero on the given hardware.
+    // Bigger ranges are object-sized zeroing rather than zeroing ahead. We leave them to memset,
+    // which may choose to not pollute the cache with them.
+    static void ZeroInitForAllocation(size_t start, size_t end)
+    {
+        const size_t blockSize = 4 * 1024;
+
+        _ASSERTE(start <= end);
+        if (end - start > 2 * MinZeroInitSize())
+        {
+            memset((void*)start, 0, end - start);
+            return;
+        }
+
+        while (end > start)
+        {
+            size_t blockStart = max(start, ALIGN_DOWN(end - 1, blockSize));
+            memset((void*)blockStart, 0, end - blockStart);
+            end = blockStart;
+        }
     }
 
     // DOTNET_gcConservative

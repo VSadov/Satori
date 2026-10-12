@@ -881,7 +881,7 @@ size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
 
             if (zeroUpTo > zeroFrom)
             {
-                memset((void*)zeroFrom, 0, zeroUpTo - zeroFrom);
+                SatoriUtil::ZeroInitForAllocation(zeroFrom, zeroUpTo);
             }
         }
 
