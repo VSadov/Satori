@@ -47,7 +47,8 @@ public:
     ~SatoriObject() = delete;
 
     // zeroedEnd, when above the location, tells that the memory from the location up to zeroedEnd
-    // contains zeroes and must keep containing zeroes (it matters for debug junk-filling).
+    // contains zeroes. That is recorded in the free object (see SatoriFreeListObject::ZeroedEnd)
+    // and the memory after the header is kept that way (it matters for debug junk-filling).
     static SatoriObject* FormatAsFree(size_t location, size_t size, size_t zeroedEnd = 0);
 
     SatoriRegion* ContainingRegion();
@@ -121,8 +122,8 @@ class SatoriFreeListObject : public SatoriObject
 private:
     uint32_t       m_Length;
 #if defined(HOST_64BIT)
-    // Array alignment padding, not a part of the length. FormatAsFree sets it to 0.
-    // Free lists use it to record how much of the free space is known to contain zeroes.
+    // Array alignment padding, not a part of the length.
+    // FormatAsFree uses it to record how much of the free space is known to contain zeroes, if anything.
     uint32_t       m_zeroedSize;
 #endif // HOST_64BIT
 

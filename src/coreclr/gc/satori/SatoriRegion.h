@@ -85,7 +85,7 @@ public:
     bool IsAllocating();
 
     void AddFreeSpace(SatoriObject* freeObj, size_t size);
-    void ReturnFreeSpace(SatoriObject * freeObj, size_t size, size_t zeroedEnd = 0);
+    void ReturnFreeSpace(SatoriObject * freeObj, size_t size);
 
     int GetMaxFreeBucket();
     bool HasFreeSpaceInTopBucket();
