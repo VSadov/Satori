@@ -423,7 +423,17 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
     {
         _ASSERTE(IsBlockingPhase());
         _ASSERTE(!region->HasPinnedObjects());
-        region->ClearMarks();
+        if (region->IsDemoted())
+        {
+            // A demoted region reused for gen0. Its demoted objects will be marked as roots
+            // and the region may get pinned in this GC, which escape tracking does not allow.
+            // Stop tracking, the region continues as a regular gen1 region.
+            region->StopEscapeTracking();
+        }
+        else
+        {
+            region->ClearMarks();
+        }
     }
     else
     {
@@ -2145,11 +2155,7 @@ bool SatoriRecycler::MarkDemotedInReusableConcurrent(int64_t deadline)
             MaybeAskForHelp();
             do
             {
-                if (curRegion->HasUnmarkedDemotedObjects() &&
-                    curRegion->ReusableFor() != SatoriRegion::ReuseLevel::Gen0)
-                {
-                    MarkDemoted(curRegion, &markContext);
-                }
+                MarkDemotedInReusable(curRegion, &markContext);
 
                 // reusables are kept with the top-bucket-free ones at the tail, which is the
                 // end TryGetReusableForLarge takes from. re-derive that, same as KeepRegion does.
@@ -2289,6 +2295,30 @@ void SatoriRecycler::MarkDemoted(SatoriRegion* curRegion, MarkContext* markConte
     }
 }
 
+// Marks demoted objects of a region taken out of a reusable queue during concurrent marking.
+// A gen0 candidate cannot be marked in, since its bitmap may be in use for escape tracking
+// once an allocator takes it. We switch the region to gen1 first. That is ok without stopping EE:
+//  - the region is not in a queue now, thus no allocator can take it while it is still a gen0 candidate.
+//    When it goes back to a queue, the queue lock publishes the new level to whoever takes it next.
+//  - concurrent markers that still see the old level just defer marking via dirty cards.
+//    The bitmap is not in use either way, so marking in it right away is fine too.
+void SatoriRecycler::MarkDemotedInReusable(SatoriRegion* curRegion, MarkContext* markContext)
+{
+    _ASSERTE(!IsBlockingPhase());
+    _ASSERTE(!curRegion->IsAttachedToAllocatingOwner());
+    _ASSERTE(!curRegion->IsEscapeTracking());
+
+    if (curRegion->HasUnmarkedDemotedObjects())
+    {
+        if (curRegion->ReusableFor() == SatoriRegion::ReuseLevel::Gen0)
+        {
+            VolatileStore(&curRegion->ReusableFor(), SatoriRegion::ReuseLevel::Gen1);
+        }
+
+        MarkDemoted(curRegion, markContext);
+    }
+}
+
 void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
 {
     // mark roots for all stacks
@@ -2356,11 +2386,7 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
             MaybeAskForHelp();
             do
             {
-                if (curRegion->HasUnmarkedDemotedObjects() &&
-                    curRegion->ReusableFor() != SatoriRegion::ReuseLevel::Gen0)
-                {
-                    MarkDemoted(curRegion, &markContext);
-                }
+                MarkDemotedInReusable(curRegion, &markContext);
 
                 if (curRegion->HasFreeSpaceInTopBucket())
                 {
@@ -4954,9 +4980,14 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
                                             SatoriRegion::ReuseLevel::Gen0 :
                                             SatoriRegion::ReuseLevel::Gen1;
 #endif
-            // we can't mark through gen0 candidates concurrently, so we would not put demoted there
-            // it would work, but could reduce concurrent gen2 efficiency.
-            if (!SatoriUtil::IsGen0Enabled() || curRegion->IsDemoted())
+            // Demoted regions can be gen0 candidates too. When a region starts escape tracking,
+            // all its objects, including the demoted ones, are escaped, so thread-local GC keeps
+            // them alive and in place.
+            // We can't mark in gen0 candidates concurrently, but demoted objects must be marked as roots,
+            // so when concurrent marking starts, it switches demoted gen0 candidates to gen1.
+            // See MarkDemotedInReusable.
+            // NB: sweeping completes before concurrent marking starts, so no new candidates appear after that.
+            if (!SatoriUtil::IsGen0Enabled())
             {
                 curRegion->ReusableFor() = SatoriRegion::ReuseLevel::Gen1;
             }

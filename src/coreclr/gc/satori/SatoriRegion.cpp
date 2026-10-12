@@ -2838,7 +2838,9 @@ bool SatoriRegion::NothingMarked()
 
 void SatoriRegion::ClearMarks()
 {
-    _ASSERTE(this->HasUnmarkedDemotedObjects() == false);
+    // Marks of a region with unmarked demoted objects can only be escape marks
+    // (a demoted region reused for gen0), which we clear when escape tracking stops.
+    _ASSERTE(this->HasUnmarkedDemotedObjects() == false || IsEscapeTracking() || m_staleEscapeMarks);
     memset((void*)&m_bitmap[BITMAP_START], 0, (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
 }
 
