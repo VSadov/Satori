@@ -78,16 +78,17 @@ public:
 
     bool& IsLowLatencyMode();
 
-    void Collect(int generation, bool force, bool blocking);
+    void Collect(int generation, bool force, bool blocking, bool compact = false, bool aggressive = false);
     int GetCondemnedGeneration();
     int GetRootScanTicket();
     size_t IncrementGen0Count();
     int64_t GetCollectionCount(int gen);
 
     void TryStartGC(int generation, gc_reason reason);
-    void HelpOnce();
+    bool HelpOnce(bool waitForGC = false);
     void MaybeTriggerGC(gc_reason reason);
     bool IsBlockingPhase();
+    void WaitForTrimmerToStop();
 
     bool ShouldDoConcurrent(int generation);
     void ConcurrentWorkerFn();
@@ -212,6 +213,19 @@ private:
 
     volatile int m_gcState;
 
+    // Requests name the earliest GC-start sequence that may satisfy them.
+    struct CollectionRequest
+    {
+        size_t m_requested;
+        size_t m_started;
+        size_t m_completed;
+    };
+
+    CollectionRequest m_compactionRequests[2];
+    CollectionRequest m_trimRequest;
+    CollectionRequest m_blockingRequests[2];
+    size_t m_gcStartSequence;
+
     static const int CC_MARK_STATE_NONE = 0;
     static const int CC_MARK_STATE_SUSPENDING_EE = 1;
     static const int CC_MARK_STATE_MARKING = 2;
@@ -241,6 +255,11 @@ private:
     volatile int m_concurrentCleaningState;
 
     bool m_isRelocating;
+    // the current GC accepted a compaction request, see TryStartGC
+    bool m_forceCompact;
+    // the current GC accepted a trim request, see TryStartGC
+    bool m_forceTrim;
+    bool m_forceBlocking;
     bool m_isLowLatencyMode;
     bool m_promoteAllRegions;
     volatile int m_barrierState;
@@ -340,6 +359,7 @@ private:
 
     void AdjustHeuristics();
     void DeactivateAllocatingRegions();
+    void RequestCollection(CollectionRequest* request, size_t requestNumber);
 
     void IncrementRootScanTicket();
     void IncrementCardScanTicket();

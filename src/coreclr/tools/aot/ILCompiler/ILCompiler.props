@@ -66,12 +66,14 @@
     <Content Include="$(CoreCLRArtifactsPath)/$(JitInterfaceLibraryName)"
       CopyToOutputDirectory="PreserveNewest"
       CopyToPublishDirectory="PreserveNewest"
+      ExcludeFromSingleFile="$(PublishSingleFile)"
       Link="%(FileName)%(Extension)"
       />
 
     <Content Include="$(CoreCLRArtifactsPath)/$(_LibPrefix)clrjit_*_$(TargetArchitectureForSharedLibraries)$(_LibSuffix)"
       CopyToOutputDirectory="PreserveNewest"
       CopyToPublishDirectory="PreserveNewest"
+      ExcludeFromSingleFile="$(PublishSingleFile)"
       Link="%(FileName)%(Extension)"
       />
   </ItemGroup>

@@ -2,6 +2,8 @@
   <PropertyGroup>
     <!-- Needed for GCStressIncompatible, GC.WaitForPendingFinalizers -->
     <RequiresProcessIsolation>true</RequiresProcessIsolation>
+    <!-- Satori reports last-GC occupancy, not the immediate allocation deltas this test requires. -->
+    <DisableProjectBuild>true</DisableProjectBuild>
 
     <!-- Test needs explicit Main as it uses command-line parameters -->
     <ReferenceXUnitWrapperGenerator>false</ReferenceXUnitWrapperGenerator>

@@ -6,7 +6,8 @@
     <DisableProjectBuild Condition="'$(RuntimeFlavor)' == 'mono'">true</DisableProjectBuild>
   </PropertyGroup>
   <ItemGroup>
-    <MergedWrapperProjectReference Include="*/**/*.csproj" Exclude="common/**/*.csproj;unittest/unloadlibrary.csproj" />
+    <!-- Keep profiler coverage limited to the APIs implemented by Satori. -->
+    <MergedWrapperProjectReference Include="gcheapenumeration/gcheapenumeration.csproj" />
   </ItemGroup>
 
   <Import Project="$(TestSourceDir)MergedTestRunner.targets" />

@@ -2,7 +2,7 @@
   <PropertyGroup>
     <!-- Needed for GCStressIncompatible -->
     <RequiresProcessIsolation>true</RequiresProcessIsolation>
-    <CLRTestPriority>1</CLRTestPriority>
+    <CLRTestPriority>0</CLRTestPriority>
     <GCStressIncompatible>true</GCStressIncompatible>
   </PropertyGroup>
   <PropertyGroup>
@@ -10,5 +10,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Collect.cs" />
+    <ProjectReference Include="$(TestLibraryProjectPath)" />
   </ItemGroup>
 </Project>

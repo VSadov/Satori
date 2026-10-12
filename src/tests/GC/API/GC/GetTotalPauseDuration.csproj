@@ -10,6 +10,8 @@
         correctly under GCStress.
      -->
     <GCStressIncompatible>true</GCStressIncompatible>
+    <!-- Satori's thread-local and concurrent pauses invalidate this test's single-GC accounting assumption. -->
+    <DisableProjectBuild>true</DisableProjectBuild>
     <CLRTestPriority>1</CLRTestPriority>
   </PropertyGroup>
   <PropertyGroup>

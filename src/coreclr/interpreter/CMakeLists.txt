@@ -49,6 +49,11 @@ endif()
 
 add_library_clr(clrinterpreter ${LIBRARY_TYPE} ${INTERPRETER_SOURCES})
 
+if(CLR_CMAKE_HOST_WIN32 AND LIBRARY_TYPE STREQUAL "SHARED")
+  target_sources(clrinterpreter PRIVATE Native.rc)
+  target_compile_definitions(clrinterpreter PRIVATE FX_VER_INTERNALNAME_STR=clrinterpreter.dll)
+endif()
+
 if (NOT CMAKE_GENERATOR MATCHES "Visual Studio")
   set_target_properties(clrinterpreter PROPERTIES EXCLUDE_FROM_ALL $<NOT:${FEATURE_INTERPRETER}>)
 endif()
