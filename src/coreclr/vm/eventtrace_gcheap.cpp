@@ -13,6 +13,7 @@
 #include "typestring.h"
 
 #include "eventtracepriv.h"
+#include "forcedgcholder.h"
 
 //---------------------------------------------------------------------------------------
 // Code for sending GC heap object events is generally the same for both FEATURE_NATIVEAOT
@@ -20,12 +21,6 @@
 //---------------------------------------------------------------------------------------
 
 bool s_forcedGCInProgress = false;
-class ForcedGCHolder
-{
-public:
-    ForcedGCHolder() { LIMITED_METHOD_CONTRACT; s_forcedGCInProgress = true; }
-    ~ForcedGCHolder() { LIMITED_METHOD_CONTRACT; s_forcedGCInProgress = false; }
-};
 
 
 // Simple helpers called by the GC to decide whether it needs to do a walk of heap

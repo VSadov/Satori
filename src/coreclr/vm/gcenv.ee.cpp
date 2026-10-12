@@ -944,6 +944,15 @@ void GCToEEInterface::DiagUpdateGenerationBounds()
 
 void GCToEEInterface::DiagGCEnd(size_t index, int gen, int reason, bool fConcurrent)
 {
+#ifdef FEATURE_SATORI_GC
+#ifdef FEATURE_EVENT_TRACE
+    if (!fConcurrent)
+    {
+        // Profiler heap walks need the lifecycle and survivor/movement notifications Satori does not send yet.
+        GCProfileWalkHeap(/* etwOnly */ true);
+    }
+#endif // FEATURE_EVENT_TRACE
+#else // FEATURE_SATORI_GC
 #if defined(GC_PROFILING) || defined(PERFTRACING_DISABLE_THREADS)
     // We were only doing generation bounds and GC finish callback for non concurrent GCs so
     // I am keeping that behavior to not break profilers. But if BasicGC monitoring is enabled
@@ -961,6 +970,7 @@ void GCToEEInterface::DiagGCEnd(size_t index, int gen, int reason, bool fConcurr
         GarbageCollectionFinishedCallback();
     }
 #endif // GC_PROFILING
+#endif // FEATURE_SATORI_GC
 }
 
 void GCToEEInterface::DiagWalkFReachableObjects(void* gcContext)

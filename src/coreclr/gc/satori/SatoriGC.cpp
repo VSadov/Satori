@@ -37,8 +37,10 @@
 #include "SatoriHeap.h"
 #include "SatoriRegion.h"
 #include "SatoriPage.h"
+#include "SatoriPage.inl"
 #include "SatoriRegion.inl"
 #include "../gceventstatus.h"
+#include "../gcscan.h"
 
 static uint64_t g_totalPhysicalMem;
 static bool g_isRestrictedPhysicalMem;
@@ -63,7 +65,8 @@ size_t SatoriGC::GetValidSegmentSize(bool large_seg)
 
 void SatoriGC::SetReservedVMLimit(size_t vmlimit)
 {
-    // NYI
+    // N/A. This appears to be dead code - nothing in the runtime calls it,
+    // so no implementation is needed.
 }
 
 void SatoriGC::WaitUntilConcurrentGCComplete()
@@ -252,12 +255,13 @@ HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
     generation = (generation < 0) ? 2 : min(generation, 2);
     generation = max(1, generation);
 
-    // NYI: forced compaction
-
+    // collection_aggressive implies compaction, same as in the stock GC.
     m_heap->Recycler()->Collect(
         generation,
         !(mode & collection_mode::collection_optimized),
-        mode & collection_mode::collection_blocking
+        mode & collection_mode::collection_blocking,
+        mode & collection_mode::collection_compacting,
+        mode & collection_mode::collection_aggressive
     );
 
     return S_OK;
@@ -576,12 +580,69 @@ void SatoriGC::DiagWalkObject(Object* obj, walk_fn fn, void* context)
 
 void SatoriGC::DiagWalkObject2(Object* obj, walk_fn2 fn, void* context)
 {
-    // NYI
+    if (obj == nullptr)
+    {
+        return;
+    }
+
+    bool keepWalking = true;
+    static_cast<SatoriObject*>(obj)->ForEachObjectRef(
+        [&](SatoriObject** ref)
+        {
+            if (keepWalking && *ref != nullptr)
+            {
+                keepWalking = fn(obj, reinterpret_cast<uint8_t**>(ref), context);
+            }
+        },
+        /* includeCollectibleAllocator */ true
+    );
 }
 
 void SatoriGC::DiagWalkHeap(walk_fn fn, void* context, int gen_number, bool walk_large_object_heap_p)
 {
-    // NYI
+    SatoriRecycler* recycler = m_heap->Recycler();
+    if (!recycler->IsBlockingPhase())
+    {
+        STRESS_LOG0(LF_GC, LL_WARNING, "DiagWalkHeap requires a blocking collection.\n");
+        _ASSERTE(!"DiagWalkHeap requires a blocking collection.");
+        return;
+    }
+    recycler->WaitForTrimmerToStop();
+    _ASSERTE(gen_number >= 0 && gen_number <= max_generation);
+
+    // Satori has no separate large-object heap to select.
+    UNREFERENCED_PARAMETER(walk_large_object_heap_p);
+
+    bool keepWalking = true;
+    m_heap->ForEachPageUntil(
+        [&](SatoriPage* page)
+        {
+            page->ForEachRegion(
+                [&](SatoriRegion* region)
+                {
+                    int generation = region->Generation();
+                    if (!keepWalking || generation < 0 ||
+                        (gen_number < max_generation && generation > gen_number))
+                    {
+                        return;
+                    }
+
+                    _ASSERTE(!region->IsAllocating());
+                    // Objects start only in the first granule; a huge object's tail may be uncommitted.
+                    size_t limit = region->Start() + Satori::REGION_SIZE_GRANULARITY;
+                    for (SatoriObject* object = region->FirstObject(); object->Start() < limit; object = object->Next())
+                    {
+                        if (!object->IsFree() && !fn(object, context))
+                        {
+                            keepWalking = false;
+                            break;
+                        }
+                    }
+                }
+            );
+            return !keepWalking;
+        }
+    );
 }
 
 void SatoriGC::DiagWalkSurvivorsWithType(void* gc_context, record_surv_fn fn, void* diag_context, walk_surv_type type, int gen_number)
@@ -596,17 +657,29 @@ void SatoriGC::DiagWalkFinalizeQueue(void* gc_context, fq_walk_fn fn)
 
 void SatoriGC::DiagScanFinalizeQueue(fq_scan_fn fn, ScanContext* context)
 {
-    // NYI
+    ScanContext localContext;
+    if (context == nullptr)
+    {
+        context = &localContext;
+    }
+
+    context->thread_number = 0;
+    m_heap->FinalizationQueue()->ForEachObjectRef(
+        [&](SatoriObject** ref)
+        {
+            fn(reinterpret_cast<Object**>(ref), context, 0);
+        }
+    );
 }
 
 void SatoriGC::DiagScanHandles(handle_scan_fn fn, int gen_number, ScanContext* context)
 {
-    // NYI
+    GCScan::GcScanHandlesForProfilerAndETW(gen_number, context, fn);
 }
 
 void SatoriGC::DiagScanDependentHandles(handle_scan_fn fn, int gen_number, ScanContext* context)
 {
-    // NYI
+    GCScan::GcScanDependentHandlesForProfilerAndETW(gen_number, context, fn);
 }
 
 void SatoriGC::DiagDescrGenerations(gen_walk_fn fn, void* context)

@@ -17,3 +17,11 @@ export DOTNET_PROFILER_PATH=<Path to test binaries>/profiler/eventpipe/eventpipe
 ```
 
 **Note:** The `CORECLR_` prefix is still supported for backwards compatibility but may be removed in the future. Use the `DOTNET_` prefix for new projects.
+
+## Object-reference walking
+
+The default profiler runner includes `gcheapenumeration`. Under Satori, it runs the object-reference walking checks without an extra argument: object fields, reference arrays, struct arrays, empty arrays, null filtering, and early callback termination. The other profiler projects remain excluded from the merged runner.
+
+Satori skips the three whole-heap enumeration scenarios because profiler suspension alone does not provide the blocking-GC phase needed to walk allocating regions safely. Whole-heap walking during a forced blocking collection is covered by the `gcdump` and `gcdump_runtimeasync` tests in the tracing runner.
+
+The explicit `EnumerateObjectReferences` mode remains available for focused runs. Non-Satori runtimes retain the existing whole-heap enumeration scenarios.

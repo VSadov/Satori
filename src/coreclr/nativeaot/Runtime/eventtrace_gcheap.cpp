@@ -25,6 +25,11 @@
 #include "eventtracepriv.h"
 #include "profheapwalkhelper.h"
 
+#ifdef FEATURE_SATORI_GC
+#include "../../inc/forcedgcholder.h"
+bool s_forcedGCInProgress = false;
+#endif // FEATURE_SATORI_GC
+
 /****************************************************************************/
 /* Methods that are called from the runtime */
 /****************************************************************************/
@@ -35,14 +40,22 @@
 
 BOOL ETW::GCLog::ShouldWalkHeapObjectsForEtw()
 {
-    return RUNTIME_PROVIDER_CATEGORY_ENABLED(
+    return
+#ifdef FEATURE_SATORI_GC
+        s_forcedGCInProgress &&
+#endif // FEATURE_SATORI_GC
+        RUNTIME_PROVIDER_CATEGORY_ENABLED(
             TRACE_LEVEL_INFORMATION,
             CLR_GCHEAPDUMP_KEYWORD);
 }
 
 BOOL ETW::GCLog::ShouldWalkHeapRootsForEtw()
 {
-    return RUNTIME_PROVIDER_CATEGORY_ENABLED(
+    return
+#ifdef FEATURE_SATORI_GC
+        s_forcedGCInProgress &&
+#endif // FEATURE_SATORI_GC
+        RUNTIME_PROVIDER_CATEGORY_ENABLED(
             TRACE_LEVEL_INFORMATION,
             CLR_GCHEAPDUMP_KEYWORD);
 }
@@ -460,6 +473,9 @@ HRESULT ETW::GCLog::ForceGCForDiagnostics()
     pThread->SetDeferredTransitionFrameForNativeHelperThread();
     pThread->DisablePreemptiveMode();
 
+#ifdef FEATURE_SATORI_GC
+    ForcedGCHolder forcedGCHolder;
+#endif // FEATURE_SATORI_GC
     hr = GCHeapUtilities::GetGCHeap()->GarbageCollect(
         -1,     // all generations should be collected
         FALSE,  // low_memory_p

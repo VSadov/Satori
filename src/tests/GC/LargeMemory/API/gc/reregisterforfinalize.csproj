@@ -3,6 +3,8 @@
     <!-- Needed for GCStressIncompatible, GC.WaitForPendingFinalizers -->
     <RequiresProcessIsolation>true</RequiresProcessIsolation>
     <GCStressIncompatible>true</GCStressIncompatible>
+    <!-- Satori's finalization timing does not guarantee two runs after this fixed sequence of collections. -->
+    <DisableProjectBuild>true</DisableProjectBuild>
 
     <!-- Test needs explicit Main as it uses command-line parameters -->
     <ReferenceXUnitWrapperGenerator>false</ReferenceXUnitWrapperGenerator>
