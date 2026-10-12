@@ -244,7 +244,9 @@ void SatoriAllocator::AllocationTickIncrement(AllocationTickKind allocationTickK
 
 void SatoriAllocator::AllocationTickDecrement(size_t totalUnused)
 {
-    if (EVENT_ENABLED(GCAllocationTick_V4))
+    // Only need to correct the amount when the event is enabled, since only then it is incremented.
+    // Otherwise this would be a pointless interlocked operation on a location shared by all allocating threads.
+    if (!EVENT_ENABLED(GCAllocationTick_V4))
     {
         return;
     }
