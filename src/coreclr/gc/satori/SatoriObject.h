@@ -121,11 +121,9 @@ class SatoriFreeListObject : public SatoriObject
 {
 private:
     uint32_t       m_Length;
-#if defined(HOST_64BIT)
     // Array alignment padding, not a part of the length.
     // FormatAsFree uses it to record how much of the free space is known to contain zeroes, if anything.
     uint32_t       m_zeroedSize;
-#endif // HOST_64BIT
 
 public:
     SatoriFreeListObject() = delete;
@@ -135,18 +133,12 @@ public:
     // When ZeroedEnd() is not above the header, nothing is known.
     size_t ZeroedEnd()
     {
-#if defined(HOST_64BIT)
         return (size_t)this + m_zeroedSize;
-#else
-        return 0;
-#endif // HOST_64BIT
     }
 
     void SetZeroedEnd(size_t zeroedEnd)
     {
-#if defined(HOST_64BIT)
         m_zeroedSize = zeroedEnd > (size_t)this ? (uint32_t)(zeroedEnd - (size_t)this) : 0;
-#endif // HOST_64BIT
     }
 
     SatoriFreeListObject* m_nextInFreeList;

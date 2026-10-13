@@ -154,11 +154,7 @@ public:
     {
         _ASSERTE(value > 0);
         DWORD highestBit;
-#ifdef HOST_64BIT
         BitScanReverse64(&highestBit, value);
-#else
-        BitScanReverse(&highestBit, value);
-#endif
         return (size_t)1 << highestBit;
     }
 

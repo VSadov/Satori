@@ -817,8 +817,12 @@ inline bool SatoriRegion::IsAttachedToAllocatingOwner()
 inline bool SatoriRegion::MaybeAllocatingAcquire()
 {
     // must check reusable level before the attach point, before doing whatever follows
+    // The unfinished allocation count must be read with acquire as well. In a detached shared region it can be
+    // the only thing that keeps the caller from parsing the region, and the parsing must not read objects ahead
+    // of seeing the count drop to zero. (possible on weak memory models)
     return VolatileLoad((uint8_t*)&m_reusableFor) ||
-        VolatileLoad(&m_allocatingOwnerAttachmentPoint) || m_unfinishedAllocationCount;
+        VolatileLoad(&m_allocatingOwnerAttachmentPoint) ||
+        VolatileLoad(&m_unfinishedAllocationCount);
 }
 
 inline void SatoriRegion::ResetReusableForRelease()
