@@ -227,7 +227,9 @@ void SatoriAllocator::AllocationTickIncrement(AllocationTickKind allocationTickK
             m_largeAllocTickAmount :
             m_pinnedAllocTickAmount;
 
-    const size_t etw_allocation_tick = 100 * 1024;
+    // Signed, so that the comparison below is signed. The amount can be negative if space claimed before
+    // the event was enabled is returned after, and that must not look like a large amount.
+    const int64_t etw_allocation_tick = 100 * 1024;
     size_t current = Interlocked::ExchangeAdd64(&tickAmout, totalAdded) + totalAdded;
 
     if ((int64_t)current > etw_allocation_tick &&
@@ -378,6 +380,9 @@ SatoriObject* SatoriAllocator::AllocRegular(SatoriAllocationContext* context, si
 {
     // when allocations cross certain thresholds, check if GC should start or help is needed.
     UpdateAllocStatsAndHelpIfNeeded(context);
+
+    // The region we have just given up, if any. Used as a hint when getting the next one.
+    SatoriRegion* prevRegion = nullptr;
 
 tryAgain: 
 
@@ -536,9 +541,15 @@ tryAgain:
             m_heap->Recycler()->AddEphemeralRegion(region);
 
             // could not allocate, start over with trying to get a region
+            prevRegion = region;
             goto tryAgain;
         }
 
+        // Prefer a neighbor of the region we have just given up. (see TryGetRegularRegion)
+        // The previous region is detached and owned by the recycler now, but, same as in AllocRegularShared,
+        // we only use it to look at its neighbor in the page.
+        _ASSERTE(region == nullptr);
+        region = prevRegion;
         TryGetRegularRegion(region);
 
         if (region == nullptr)
@@ -1051,14 +1062,16 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
         return AllocHuge(context, size, flags);
     }
 
+    // when allocations cross certain thresholds, check if GC should start or help is needed.
+    // NB: not while holding the lock. This may trigger a GC or do some GC work and, while the lock is held,
+    //     all other pinned allocations would be diverted to AllocLarge.
+    UpdateAllocStatsAndHelpIfNeeded(context);
+
     // if can't get a lock, let AllocLarge handle this.
     if (!m_pinnedAllocLock.TryEnter())
     {
         return AllocLarge(context, size, flags);
     }
-
-    // when allocations cross certain thresholds, check if GC should start or help is needed.
-    UpdateAllocStatsAndHelpIfNeeded(context);
 
     SatoriRegion* region = m_pinnedRegion;
     while (true)

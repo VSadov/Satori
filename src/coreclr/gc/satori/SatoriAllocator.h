@@ -122,11 +122,7 @@ private:
         _ASSERTE(size >= Satori::REGION_SIZE_GRANULARITY);
 
         DWORD highestBit;
-#ifdef HOST_64BIT
         BitScanReverse64(&highestBit, size);
-#else
-        BitScanReverse(&highestBit, value);
-#endif
         return min((int)highestBit - Satori::REGION_BITS, Satori::ALLOCATOR_BUCKET_COUNT - 1);
     }
 };
