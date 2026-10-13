@@ -299,7 +299,7 @@ LEAF_ENTRY RhpAssignRef, _TEXT
         jz      LOCAL_LABEL(JustAssign)                 // assigning null
 #endif
 
-#ifdef TARGET_OSX
+#ifdef TARGET_APPLE
         mov     rax,  gs:[0]            // thread tag
 #else
         mov     rax,  fs:[0]            // thread tag
@@ -470,7 +470,7 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         jz      LOCAL_LABEL(JustAssign_CmpXchg)         // assigning null
 #endif
 
-#ifdef TARGET_OSX
+#ifdef TARGET_APPLE
         mov     r11,  gs:[0]            // thread tag
 #else
         mov     r11,  fs:[0]            // thread tag
@@ -638,7 +638,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
 #ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
         jz      LOCAL_LABEL(JustAssign_Xchg)            // assigning null
 #endif
-#ifdef TARGET_OSX
+#ifdef TARGET_APPLE
         mov     r11,  gs:[0]            // thread tag
 #else
         mov     r11,  fs:[0]            // thread tag

@@ -464,7 +464,7 @@ ALTERNATE_ENTRY RhpCheckedEntry
 #endif
         and     x16,  x15, #0xFFFFFFFFFFE00000  // source region
         ldr     x12, [x16]                      // region tag
-#ifdef TARGET_OSX
+#ifdef TARGET_APPLE
         mrs     x17, TPIDRRO_EL0
         and     x17, x17, #-8                   // thread tag on OSX
 #else
@@ -667,7 +667,7 @@ LEAF_ENTRY RhpCheckedLockCmpXchg
 #endif
         and     x16,  x1, #0xFFFFFFFFFFE00000   // source region
         ldr     x12, [x16]                      // region tag
-#ifdef TARGET_OSX
+#ifdef TARGET_APPLE
         mrs     x17, TPIDRRO_EL0
         and     x17, x17, #-8                   // thread tag on OSX
 #else
@@ -871,7 +871,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
 #endif
         and     x16,  x1, #0xFFFFFFFFFFE00000   // source region
         ldr     x12, [x16]                      // region tag
-#ifdef TARGET_OSX
+#ifdef TARGET_APPLE
         mrs     x17, TPIDRRO_EL0
         and     x17, x17, #-8                   // thread tag on OSX
 #else

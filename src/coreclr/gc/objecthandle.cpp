@@ -587,7 +587,7 @@ int getNumberOfSlots()
     // when Ref_Initialize called, IGCHeap::GetNumberOfHeaps() is still 0, so use #procs as a workaround
     // it is legal since even if later #heaps < #procs we create handles by thread home heap
     // and just have extra unused slots in HandleTableBuckets, which does not take a lot of space
-    if (!IsServerHeap())
+    if (!IsServerHeap() && !IsSatoriHeap())
         return 1;
 
     return GCToOSInterface::GetTotalProcessorCount();
@@ -789,7 +789,7 @@ int getSlotNumber(ScanContext* sc)
 {
     WRAPPER_NO_CONTRACT;
 
-    return (IsServerHeap() ? sc->thread_number : 0);
+    return ((IsServerHeap() || IsSatoriHeap()) ? sc->thread_number : 0);
 }
 
 int getThreadCount(ScanContext* sc)
@@ -1634,7 +1634,7 @@ void Ref_UpdatePointers(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Re
     // @TODO cwb: wait for compelling performance measurements.</REVISIT_TODO>
     BOOL bDo = TRUE;
 
-    if (IsServerHeap())
+    if (IsServerHeap() || IsSatoriHeap())
     {
         bDo = (Interlocked::Increment(&uCount) == 1);
         Interlocked::CompareExchange (&uCount, 0, g_theGCHeap->GetNumberOfHeaps());

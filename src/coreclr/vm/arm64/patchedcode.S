@@ -560,7 +560,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 #endif
         and     x16,  x15, #0xFFFFFFFFFFE00000  // source region
         ldr     x12, [x16]                      // region tag
-#ifdef TARGET_OSX
+#ifdef TARGET_APPLE
         mrs     x17, TPIDRRO_EL0
         and     x17, x17, #-8                   // thread tag on OSX
 #else
