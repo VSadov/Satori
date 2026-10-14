@@ -294,6 +294,10 @@ private:
             void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
             int m_generation;
             // above fields are accessed from asm helpers
+            // NB: the write barrier reads this cache line on nearly every reference store, and concurrent marking
+            //     reads it for every child. Keep it free of frequently written fields, even though there is room
+            //     after m_generation. (e.g. m_unfinishedAllocationCount, which is updated with interlocked operations
+            //     while allocating in shared regions, would cause false sharing here)
 
             // the following fields change rarely or not at all.
             size_t m_end;
