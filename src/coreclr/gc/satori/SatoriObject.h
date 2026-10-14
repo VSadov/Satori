@@ -120,6 +120,13 @@ public:
     template <typename F> void ForEachObjectRef(F lambda, size_t, size_t) = delete;
 
 private:
+    // the walk of the whole object, shared by the overloads above that differ in how they get the method table and the size.
+    template <typename F>
+    void ForEachObjectRefCore(MethodTable* mt, size_t size, F lambda, bool includeCollectibleAllocator);
+
+    template <typename F>
+    void ReportCollectibleAllocator(MethodTable* mt, F lambda);
+
     static MethodTable* s_emptyObjectMt;
     static void Initialize();
 };
