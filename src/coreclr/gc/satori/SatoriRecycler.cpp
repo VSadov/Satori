@@ -2522,7 +2522,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
 
             srcChunk = nullptr;
             // mark children in the range
-            o->ForEachObjectRef(markChildFn, start, end, /* includeCollectibleAllocator */ true);
+            o->ForEachObjectRef(markChildFn, o->Size(), start, end, /* includeCollectibleAllocator */ true);
         }
         else
         {
@@ -2682,7 +2682,10 @@ bool SatoriRecycler::ScheduleUpdateAsChildRanges(SatoriObject* o)
             return false;
         }
 
-        // Skip the method table; the remaining ranges must not overlap because
+        // Skip the method table, it is not a reference.
+        // TakeObjectRange splits the range into pieces that do not overlap, so every reference is updated once.
+        // NB: that is not needed for correctness. Updating a reference again would find it already updated,
+        //     since the new location is not in a relocated region. It would just be wasted work.
         chunk->SetRange(o, o->Start() + sizeof(size_t), o->Start() + o->Size());
         m_workList->Push(chunk);
     }
@@ -2766,7 +2769,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
 
             srcChunk = nullptr;
             // mark children in the range
-            o->ForEachObjectRef(markChildFn, start, end, /* includeCollectibleAllocator */ true);
+            o->ForEachObjectRef(markChildFn, o->Size(), start, end, /* includeCollectibleAllocator */ true);
         }
         else
         {
@@ -3016,6 +3019,8 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
 
                             do
                             {
+                                size_t size = o->Size();
+
                                 // everything is effectively marked in gen2 remembered set
                                 // if (o->IsMarked())
                                 {
@@ -3051,9 +3056,9 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
 
                                             parentRegion->ContainingPage()->DirtyCardForAddressConcurrent((size_t)ref);
                                         }
-                                    }, start, end, /* includeCollectibleAllocator */ true);
+                                    }, size, start, end, /* includeCollectibleAllocator */ true);
                                 }
-                                o = o->Next();
+                                o = (SatoriObject*)(o->Start() + size);
                                 hint = o;
                             } while (o->Start() < objLimit);
                         }
@@ -3264,6 +3269,8 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                                     }
                                 }
 
+                                size_t size = o->Size();
+
                                 // if (considerAllMarked || o->IsMarked())
                                 {
                                     o->ForEachObjectRef(
@@ -3300,9 +3307,9 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
 
                                                 parentRegion->ContainingPage()->DirtyCardForAddressConcurrent((size_t)ref);
                                             }
-                                        }, start, end, /* includeCollectibleAllocator */ true);
+                                        }, size, start, end, /* includeCollectibleAllocator */ true);
                                 }
-                                o = o->Next();
+                                o = (SatoriObject*)(o->Start() + size);
                                 hint = o;
                             }
                         }
@@ -3449,6 +3456,7 @@ void SatoriRecycler::MarkThroughCards()
                             SatoriObject* o = region->FindObject(start, hint);
                             do
                             {
+                                size_t size = o->Size();
                                 o->ForEachObjectRef(
                                     [&](SatoriObject** ref)
                                     {
@@ -3463,8 +3471,8 @@ void SatoriRecycler::MarkThroughCards()
                                                 this->PushToMarkQueuesSlow(dstChunk, child);
                                             }
                                         }
-                                    }, start, end, /* includeCollectibleAllocator */ true);
-                                o = o->Next();
+                                    }, size, start, end, /* includeCollectibleAllocator */ true);
+                                o = (SatoriObject*)(o->Start() + size);
                                 hint = o;
                             } while (o->Start() < objLimit);
                         }
@@ -3600,6 +3608,8 @@ void SatoriRecycler::CleanCards()
                                     }
                                 }
 
+                                size_t size = o->Size();
+
                                 // if (considerAllMarked || o->IsMarked())
                                 {
                                     o->ForEachObjectRef(
@@ -3616,9 +3626,9 @@ void SatoriRecycler::CleanCards()
                                                     this->PushToMarkQueuesSlow(dstChunk, child);
                                                 }
                                             }
-                                        }, start, end, /* includeCollectibleAllocator */ true);
+                                        }, size, start, end, /* includeCollectibleAllocator */ true);
                                 }
-                                o = o->Next();
+                                o = (SatoriObject*)(o->Start() + size);
                                 hint = o;
                             }
                         }
@@ -3718,8 +3728,15 @@ void SatoriRecycler::UpdatePointersThroughCards()
                             size_t end = page->LocationForCard(&cards[j]);
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
                             SatoriObject* o = region->FindObject(start, hint);
+
+                            // Refs are visited in address order, so refs in the same card come one after another
+                            // and a card often has several that need it. Set each card once, when the first one is seen.
+                            // (cards are aligned in absolute addresses, since pages are, thus address / card size
+                            //  identifies the card)
+                            size_t lastRememberedCard = 0;
                             do
                             {
+                                size_t size = o->Size();
                                 o->ForEachObjectRef(
                                     [&](SatoriObject** ppObject)
                                     {
@@ -3738,10 +3755,16 @@ void SatoriRecycler::UpdatePointersThroughCards()
 
                                             if (child->ContainingRegion()->Generation() < 2)
                                             {
-                                                page->SetCardForAddressOnly((size_t)ppObject);
+                                                size_t card = (size_t)ppObject / Satori::BYTES_PER_CARD_BYTE;
+                                                if (card != lastRememberedCard)
+                                                {
+                                                    page->SetCardForAddressOnly((size_t)ppObject);
+                                                    lastRememberedCard = card;
+                                                }
                                             }
                                         }
                                     },
+                                    size,
                                     start,
                                     end,
                                     // The allocator is updated through its handle; its synthetic ref location
@@ -3755,7 +3778,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                     page->SetCardForAddressOnly(o->Start());
                                 }
 
-                                o = o->Next();
+                                o = (SatoriObject*)(o->Start() + size);
                                 hint = o;
                             } while (o->Start() < objLimit);
                         }
@@ -4592,6 +4615,10 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         relocationSource->IsRelocated() = true;
         if (relocationIsPromotion)
         {
+            // Targets in a higher generation are added to the plan only when all regions are promoted.
+            // NB: UpdatePointersInPromotedObjects relies on that and does not remember the loader allocator edge
+            //     of collectible objects - the allocator is promoted as well.
+            _ASSERTE(m_promoteAllRegions);
             relocationTarget->AcceptedPromotedObjects() = true;
             m_relocatedToHigherGenRegions->Push(relocationSource);
         }
@@ -4804,8 +4831,10 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
                         }
                     }
                 },
+                o->Size(),
                 start,
-                end);
+                end,
+                /* includeCollectibleAllocator */ false);
         } while ((srcChunk = m_workList->TryPop()));
     }
 }

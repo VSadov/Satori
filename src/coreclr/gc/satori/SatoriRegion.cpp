@@ -140,6 +140,10 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     static_assert(Satori::FREELIST_COUNT <= sizeof(SatoriRegion::m_nonEmptyFreeLists) * 8,
         "m_nonEmptyFreeLists has a bit for every free list.");
 
+    // regions are aligned, so the first 64 bytes of the header are one cache line.
+    static_assert(offsetof(SatoriRegion, m_reusableFor) < 64 && offsetof(SatoriRegion, m_staleEscapeMarks) < 64,
+        "the fields that MaybeEscapeTrackingAcquire reads are in the first cache line of the header.");
+
     // clear the header if was used before
     size_t zeroUpTo = min(used, (size_t)&result->m_syncBlock);
     memset((void*)address, 0, zeroUpTo - address);
@@ -1324,8 +1328,10 @@ bool SatoriRegion::CheckEscapeRange(size_t dst, size_t src, size_t len)
                     EscapeRecursively(child);
                 }
             },
+            containingDstObj->Size(),
             dst,
-            dst + len
+            dst + len,
+            /* includeCollectibleAllocator */ false
         );
 
         return false;
@@ -1350,8 +1356,10 @@ bool SatoriRegion::CheckEscapeRange(size_t dst, size_t src, size_t len)
                         EscapeRecursively(child);
                     }
                 },
+                containingSrcObj->Size(),
                 src,
-                src + len
+                src + len,
+                /* includeCollectibleAllocator */ false
             );
         }
 
@@ -2095,6 +2103,7 @@ void SatoriRegion::ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache)
             int escapedOffset = markBitOffset + 1;
             bool escaped = m_bitmap[bitmapIndex + (escapedOffset >> 6)] & ((size_t)1 << (escapedOffset & 63));
             SatoriObject* o = ObjectForMarkBit(bitmapIndex, markBitOffset);
+            size_t size = o->Size();
             if (escaped)
             {
                 _ASSERTE(ObjectForMarkBit(bitmapIndex, markBitOffset)->GetLocalReloc() == 0);
@@ -2116,12 +2125,13 @@ void SatoriRegion::ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache)
                                 _ASSERTE((*ppObject)->SameRegion(this));
                             }
                         }
-                    }
+                    },
+                    size
                 );
             }
 
             // skip the object
-            markBitOffset = o->Next()->GetMarkBitAndWord(&bitmapIndex);
+            markBitOffset = ((SatoriObject*)(o->Start() + size))->GetMarkBitAndWord(&bitmapIndex);
         }
         else
         {

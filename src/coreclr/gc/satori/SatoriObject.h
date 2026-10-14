@@ -102,6 +102,10 @@ public:
 
     void Validate();
 
+    // Calls "lambda" with the location of every reference field.
+    // The size, if given, must be the Size() of the object. The ranged version visits only the fields in [start, end).
+    // NB: the ranged version takes the size too. The callers that walk objects one after another need it
+    //     to get to the next object anyways, and the walk needs it too, so it is computed once.
     template <typename F>
     void ForEachObjectRef(F lambda, bool includeCollectibleAllocator = false);
 
@@ -109,7 +113,11 @@ public:
     void ForEachObjectRef(F lambda, size_t size, bool includeCollectibleAllocator = false);
 
     template <typename F>
-    void ForEachObjectRef(F lambda, size_t start, size_t end, bool includeCollectibleAllocator = false);
+    void ForEachObjectRef(F lambda, size_t size, size_t start, size_t end, bool includeCollectibleAllocator);
+
+    // The ranged version used to be "lambda, start, end". Make sure that a call written that way
+    // does not quietly bind to the sized overload with "end" converted to bool.
+    template <typename F> void ForEachObjectRef(F lambda, size_t, size_t) = delete;
 
 private:
     static MethodTable* s_emptyObjectMt;
