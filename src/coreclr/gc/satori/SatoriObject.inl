@@ -363,6 +363,7 @@ inline void SatoriObject::ForEachObjectRef(F lambda, bool includeCollectibleAllo
 template <typename F>
 inline void SatoriObject::ForEachObjectRef(F lambda, size_t size, bool includeCollectibleAllocator)
 {
+    _ASSERTE(size == Size());
     MethodTable* mt = RawGetMethodTable();
 
     if (includeCollectibleAllocator && mt->Collectible())
@@ -427,8 +428,9 @@ inline void SatoriObject::ForEachObjectRef(F lambda, size_t size, bool includeCo
 }
 
 template <typename F>
-inline void SatoriObject::ForEachObjectRef(F lambda, size_t start, size_t end, bool includeCollectibleAllocator)
+inline void SatoriObject::ForEachObjectRef(F lambda, size_t size, size_t start, size_t end, bool includeCollectibleAllocator)
 {
+    _ASSERTE(size == Size());
     MethodTable* mt = RawGetMethodTable();
 
     if (includeCollectibleAllocator && start <= Start() && mt->Collectible())
@@ -456,16 +458,10 @@ inline void SatoriObject::ForEachObjectRef(F lambda, size_t start, size_t end, b
     {
         CGCDescSeries* last = map->GetLowestSeries();
 
-        // series size is offset by the object size, so need to compensate for that.
-        size_t size = mt->GetBaseSize();
-        if (mt->HasComponentSize())
-        {
-            size += (size_t)((ArrayBase*)this)->GetNumComponents() * mt->RawGetComponentSize();
-        }
-
         do
         {
             size_t refPtr = (size_t)this + cur->GetSeriesOffset();
+            // series size is offset by the object size, so need to compensate for that.
             size_t refPtrStop = refPtr + size + cur->GetSeriesSize();
 
             refPtr = max(refPtr, start);

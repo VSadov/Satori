@@ -295,11 +295,17 @@ private:
             int m_generation;
             // above fields are accessed from asm helpers
 
-            // the following 5 fields change rarely or not at all.
+            // the following fields change rarely or not at all.
             size_t m_end;
             SatoriPage* m_containingPage;
 
             ReuseLevel m_reusableFor;
+            // escape tracking was stopped by the barrier and the mark bitmap still has escape bits.
+            // concurrent marking must treat the region as escape tracking until the owner clears the marks.
+            // NB: MaybeEscapeTrackingAcquire reads this, m_reusableFor and m_ownerThreadTag for every child that
+            //     concurrent marking looks at. Keep them in the same cache line. (this one fits in the padding)
+            //     It changes when escape tracking stops, together with m_ownerThreadTag.
+            bool m_staleEscapeMarks;
             int32_t m_occupancyAtReuse;
 
             SatoriRegion** m_allocatingOwnerAttachmentPoint;
@@ -358,9 +364,6 @@ private:
             bool m_hasUnmarkedDemotedObjects;
             // TODO: VS can fold with m_doNotSweep?
             bool m_hasMarksSet;
-            // escape tracking was stopped by the barrier and the mark bitmap still has escape bits.
-            // concurrent marking must treat the region as escape tracking until the owner clears the marks.
-            bool m_staleEscapeMarks;
 
             size_t m_freeListCapacities[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];

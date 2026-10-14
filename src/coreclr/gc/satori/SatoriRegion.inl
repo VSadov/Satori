@@ -1093,6 +1093,9 @@ inline void SatoriRegion::ClearIndicesForAllocRange()
     }
 }
 
+// NB: objects are relocated to a higher generation only when all regions are promoted (see RelocateRegion),
+//     so promotingAllRegions is always true here at the moment.
+//     Otherwise the loader allocator edge of collectible objects would need a card as well.
 template <bool promotingAllRegions>
 void SatoriRegion::UpdatePointersInPromotedObjects()
 {
