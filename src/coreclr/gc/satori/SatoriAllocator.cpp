@@ -403,9 +403,9 @@ tryAgain:
             {
                 if (freeObj && freeObj->ContainingRegion() == m_regularRegion)
                 {
-                    size_t size = freeObj->FreeObjSize();
-                    m_regularRegion->SetOccupancy(m_regularRegion->Occupancy() - size);
-                    m_regularRegion->ReturnFreeSpace(freeObj, size);
+                    size_t freeSize = freeObj->FreeObjSize();
+                    m_regularRegion->SetOccupancy(m_regularRegion->Occupancy() - freeSize);
+                    m_regularRegion->ReturnFreeSpace(freeObj, freeSize);
                 }
 
                 return AllocRegularShared(context, size, flags);
@@ -450,7 +450,10 @@ tryAgain:
                     }
 
                     // What is already known to be zeroed costs nothing to take.
-                    moreSpace = max(moreSpace, min(region->GetAllocZeroedRemaining(), allocRemaining));
+                    // In fresh memory that can be the rest of the region, so take at most PACE_BUDGET.
+                    // Allocation pacing runs when we come here, and it needs that much allocated since the last time.
+                    size_t zeroedRemaining = min(region->GetAllocZeroedRemaining(), (size_t)Satori::PACE_BUDGET);
+                    moreSpace = max(moreSpace, min(zeroedRemaining, allocRemaining));
 
                     // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
                     // to improve chances that the object that is allocated here will be indexed

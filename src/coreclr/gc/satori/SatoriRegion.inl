@@ -144,10 +144,19 @@ inline size_t SatoriRegion::GetAllocRemaining()
     return diff >= 0 ? (size_t)diff : 0;
 }
 
+// The size of the zeroed run that starts at m_allocStart.
 inline size_t SatoriRegion::GetAllocZeroedRemaining()
 {
     _ASSERTE(m_allocZeroedEnd <= m_allocEnd);
-    return m_allocZeroedEnd > m_allocStart ? m_allocZeroedEnd - m_allocStart : 0;
+    size_t zeroedEnd = max(m_allocStart, m_allocZeroedEnd);
+
+    // everything at or above m_used is zeroed too, so if the run reaches m_used, it goes all the way.
+    if (zeroedEnd >= m_used)
+    {
+        zeroedEnd = m_allocEnd;
+    }
+
+    return zeroedEnd - m_allocStart;
 }
 
 inline size_t SatoriRegion::RegionSizeForAlloc(size_t allocSize)
