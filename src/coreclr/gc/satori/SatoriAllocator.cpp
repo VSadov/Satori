@@ -42,6 +42,19 @@
 #include "SatoriWorkChunk.h"
 #include "SatoriWorkList.h"
 
+// Zeroes [start + sizeof(size_t), end - sizeof(size_t)), but only the part of it in [dirtyStart, dirtyEnd).
+// The rest is known to be zeroed already. (see SatoriRegion::AllocateDirty)
+// NB: the first word is the MethodTable and the last one is the syncblock of whatever follows. Neither is zeroed here.
+static void ZeroInitDirtyBody(size_t start, size_t end, size_t dirtyStart, size_t dirtyEnd)
+{
+    size_t zeroFrom = max(start + sizeof(size_t), dirtyStart);
+    size_t zeroUpTo = min(end - sizeof(size_t), dirtyEnd);
+    if (zeroUpTo > zeroFrom)
+    {
+        memset((void*)zeroFrom, 0, zeroUpTo - zeroFrom);
+    }
+}
+
 void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
     m_heap = heap;
@@ -652,7 +665,8 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
                 }
 
                 // do not zero-initialize just yet, we will do that after leaving the lock.
-                SatoriObject* result = (SatoriObject*)region->Allocate(moreSpace, /*zeroInitialize*/ false);
+                size_t dirtyStart, dirtyEnd;
+                SatoriObject* result = (SatoriObject*)region->AllocateDirty(moreSpace, &dirtyStart, &dirtyEnd);
                 if (!result)
                 {
                     //OOM, nothing to undo.
@@ -693,7 +707,7 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
                 region->SetIndicesForObject(result, result->Start() + size);
                 if (zeroInitialize)
                 {
-                    memset((uint8_t*)result + sizeof(size_t), 0, moreSpace - 2 * sizeof(size_t));
+                    ZeroInitDirtyBody(result->Start(), result->Start() + moreSpace, dirtyStart, dirtyEnd);
                 }
 
                 if (EVENT_ENABLED(GCAllocationTick_V4))
@@ -915,7 +929,8 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
             if (region->GetAllocRemaining() >= size)
             {
                 // do not zero-initialize just yet, we will do that after leaving the lock.
-                SatoriObject* result = (SatoriObject*)region->Allocate(size, /*zeroInitialize*/ false);
+                size_t dirtyStart, dirtyEnd;
+                SatoriObject* result = (SatoriObject*)region->AllocateDirty(size, &dirtyStart, &dirtyEnd);
                 if (!result)
                 {
                     //OOM, nothing to undo
@@ -946,7 +961,7 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
                 region->SetIndicesForObject(result, result->Start() + size);
                 if (!(flags & GC_ALLOC_ZEROING_OPTIONAL))
                 {
-                    memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));
+                    ZeroInitDirtyBody(result->Start(), result->Start() + size, dirtyStart, dirtyEnd);
                 }
 
                 if (EVENT_ENABLED(GCAllocationTick_V4))
@@ -1084,7 +1099,8 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
             if (region->GetAllocRemaining() >= size)
             {
                 // do not zero-initialize just yet, we will do that after leaving the lock.
-                SatoriObject* result = (SatoriObject*)region->Allocate(size, /*zeroInitialize*/ false);
+                size_t dirtyStart, dirtyEnd;
+                SatoriObject* result = (SatoriObject*)region->AllocateDirty(size, &dirtyStart, &dirtyEnd);
                 if (!result)
                 {
                     //OOM, nothing to undo
@@ -1115,7 +1131,7 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
                 region->SetIndicesForObject(result, result->Start() + size);
                 if (!(flags & GC_ALLOC_ZEROING_OPTIONAL))
                 {
-                    memset((uint8_t*)result + sizeof(size_t), 0, size - 2 * sizeof(size_t));
+                    ZeroInitDirtyBody(result->Start(), result->Start() + size, dirtyStart, dirtyEnd);
                 }
 
                 if (EVENT_ENABLED(GCAllocationTick_V4))

@@ -849,6 +849,21 @@ void SatoriRegion::ZeroInitAndLink(SatoriRegion* prev)
 
 size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
 {
+    size_t dirtyStart, dirtyEnd;
+    size_t chunkStart = AllocateDirty(size, &dirtyStart, &dirtyEnd);
+    if (chunkStart && zeroInitialize && dirtyEnd > dirtyStart)
+    {
+        SatoriUtil::ZeroInitForAllocation(dirtyStart, dirtyEnd);
+    }
+
+    return chunkStart;
+}
+
+// Same as Allocate without zeroing. [dirtyStart, dirtyEnd) is the part of the allocated chunk that is not known
+// to contain zeroes. (it may be empty)
+// This is for allocating under a lock - the caller zeroes after leaving the lock, and only what needs it.
+size_t SatoriRegion::AllocateDirty(size_t size, size_t* dirtyStart, size_t* dirtyEnd)
+{
     _ASSERTE(m_containingQueue == nullptr);
 
     size_t chunkStart = m_allocStart;
@@ -870,24 +885,17 @@ size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
             m_committed = newComitted;
         }
 
-        if (zeroInitialize)
-        {
-            // what is below m_allocZeroedEnd or above m_used is already zeroed.
-            size_t zeroFrom = max(chunkStart, m_allocZeroedEnd);
-            size_t zeroUpTo = min(m_used, chunkEnd);
+        // what is below m_allocZeroedEnd or above m_used is already zeroed.
+        // NB: this must be computed before m_used moves past the chunk.
+        *dirtyStart = max(chunkStart, m_allocZeroedEnd);
+        *dirtyEnd = min(m_used, chunkEnd);
 
 #ifdef _DEBUG
-            for (size_t i = chunkStart; i < min(chunkEnd, m_allocZeroedEnd); i += sizeof(size_t))
-            {
-                _ASSERTE(*(size_t*)i == 0);
-            }
-#endif
-
-            if (zeroUpTo > zeroFrom)
-            {
-                SatoriUtil::ZeroInitForAllocation(zeroFrom, zeroUpTo);
-            }
+        for (size_t i = chunkStart; i < min(chunkEnd, m_allocZeroedEnd); i += sizeof(size_t))
+        {
+            _ASSERTE(*(size_t*)i == 0);
         }
+#endif
 
         m_allocStart = chunkEnd;
         m_used = max(m_used, chunkEnd);
