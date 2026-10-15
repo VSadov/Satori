@@ -100,6 +100,7 @@ struct SatoriLocalRootCache
 struct SatoriLocalScanContext : ScanContext
 {
     SatoriLocalRootCache* rootCache;
+    uint32_t stackSlots;
 };
 
 SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used)
@@ -140,6 +141,10 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     static_assert(Satori::FREELIST_COUNT <= sizeof(SatoriRegion::m_nonEmptyFreeLists) * 8,
         "m_nonEmptyFreeLists has a bit for every free list.");
 
+    // regions are aligned, so the first 64 bytes of the header are one cache line.
+    static_assert(offsetof(SatoriRegion, m_reusableFor) < 64 && offsetof(SatoriRegion, m_staleEscapeMarks) < 64,
+        "the fields that MaybeEscapeTrackingAcquire reads are in the first cache line of the header.");
+
     // clear the header if was used before
     size_t zeroUpTo = min(used, (size_t)&result->m_syncBlock);
     memset((void*)address, 0, zeroUpTo - address);
@@ -154,6 +159,14 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
 
     result->m_allocStart = (size_t)&result->m_firstObject;
     result->m_allocEnd = result->End();
+    result->m_tlgcAllocEnd = result->m_allocEnd;
+    result->m_maxParseableEnd = result->m_allocStart;
+    result->m_unusableInPrefix = 0;
+    result->m_escapedSizeAtCollect = 0;
+    result->m_reclaimedInRegion = 0;
+    result->m_lastStackSlots = 0;
+    result->m_tlgcCount = 0;
+    result->m_allocZeroedEnd = 0;
     result->m_occupancy = result->m_allocEnd - result->m_allocStart;
     result->m_demotedOccupancy = 0;
     result->m_escapeFunc = nullptr;
@@ -253,6 +266,14 @@ void SatoriRegion::MakeBlank()
 
     m_allocStart = (size_t)&m_firstObject;
     m_allocEnd = End();
+    m_tlgcAllocEnd = m_allocEnd;
+    m_maxParseableEnd = m_allocStart;
+    m_unusableInPrefix = 0;
+    m_escapedSizeAtCollect = 0;
+    m_reclaimedInRegion = 0;
+    m_lastStackSlots = 0;
+    m_tlgcCount = 0;
+    m_allocZeroedEnd = 0;
 
     // m_used                    stays the same
     // m_committed               stays the same
@@ -336,7 +357,7 @@ bool SatoriRegion::ValidateBlank()
         return false;
     }
 
-    if (m_allocStart != (size_t)&m_firstObject || m_allocEnd != m_end)
+    if (m_allocStart != (size_t)&m_firstObject || m_allocEnd != m_end || m_tlgcAllocEnd != m_allocEnd)
     {
         _ASSERTE(false);
         return false;
@@ -370,7 +391,7 @@ bool SatoriRegion::ValidateIndexEmpty()
     return true;
 }
 
-size_t SatoriRegion::StartAllocating(size_t minAllocSize)
+size_t SatoriRegion::StartAllocating(size_t minAllocSize, size_t allocBytes)
 {
     _ASSERTE(!IsAllocating());
 
@@ -437,40 +458,88 @@ hasObj:
     size_t freeObjSize = freeObj->FreeObjSize();
     _ASSERTE(freeObjSize >= minAllocSize + Satori::MIN_FREE_SIZE);
     _ASSERTE(freeObj->FreeObjCapacity() ==  freeObjSize - Satori::MIN_FREE_SIZE);
+    size_t zeroedEnd = freeObj->ZeroedEnd();
 
     m_freeListCapacities[bucket] -= (freeObjSize - Satori::MIN_FREE_SIZE);
     _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
     m_allocStart = freeObj->Start();
     m_allocEnd = m_allocStart + freeObjSize;
+    m_allocZeroedEnd = 0;
+
+    if (zeroedEnd > m_allocStart + sizeof(SatoriFreeListObject))
+    {
+        _ASSERTE(zeroedEnd <= m_allocEnd);
+
+        // The free space after the free list header is known to be zeroed.
+        // Zero the header too, then the whole range up to zeroedEnd will not need zeroing.
+        memset((void*)m_allocStart, 0, sizeof(SatoriFreeListObject));
+        m_allocZeroedEnd = zeroedEnd;
+
+#ifdef _DEBUG
+        for (size_t i = m_allocStart; i < m_allocZeroedEnd; i += sizeof(size_t))
+        {
+            _ASSERTE(*(size_t*)i == 0);
+        }
+#endif
+    }
+
     // Assume all will be used.
     // We will deduct back the unused part when we stop allocating.
     SetOccupancy(m_occupancy + freeObjSize);
+    m_tlgcAllocEnd = ComputeTlgcAllocEnd(minAllocSize, allocBytes);
     ClearIndicesForAllocRange();
     _ASSERTE(GetAllocRemaining() >= minAllocSize);
+    _ASSERTE(GetTlgcAllocRemaining() >= minAllocSize);
     m_sweepsSinceLastAllocation = 0;
 
     return m_allocStart;
 }
 
-void SatoriRegion::StopAllocating(size_t allocPtr)
+void SatoriRegion::StopAllocating(size_t allocPtr, size_t zeroedEnd)
 {
     _ASSERTE(IsAllocating());
     _ASSERTE(allocPtr != 0);
+    _ASSERTE(zeroedEnd <= m_allocStart);
+
+    m_maxParseableEnd = max(m_maxParseableEnd, allocPtr);
 
     // Make unused allocation span parseable
     // Unbuffered allocs like Huge, will consume whole allocation.
     // Buffered/FreeList allocs will have extra space enough to fit a terminator.
     if (allocPtr != m_allocEnd)
     {
+        // The unused span starts with [allocPtr, zeroedEnd) that the caller knows to be zeroed.
+        // If that reaches m_allocStart, it continues with what we know to be zeroed.
+        // Remember that, so that we would not zero it again when we allocate from this span.
+        zeroedEnd = max(zeroedEnd, allocPtr);
+        if (zeroedEnd == m_allocStart)
+        {
+            zeroedEnd = max(zeroedEnd, m_allocZeroedEnd);
+        }
+
+        if (zeroedEnd <= allocPtr + sizeof(SatoriFreeListObject))
+        {
+            // nothing worth remembering
+            zeroedEnd = 0;
+        }
+
+#ifdef _DEBUG
+        for (size_t i = allocPtr; i < zeroedEnd; i += sizeof(size_t))
+        {
+            _ASSERTE(*(size_t*)i == 0);
+        }
+#endif
+
         m_used = max(m_used, allocPtr + Satori::MIN_FREE_SIZE);
         size_t unused = m_allocEnd - allocPtr;
         _ASSERTE(m_occupancy >= unused);
         SetOccupancy(m_occupancy - unused);
-        SatoriObject* freeObj = SatoriObject::FormatAsFree(allocPtr, unused);
+        SatoriObject* freeObj = SatoriObject::FormatAsFree(allocPtr, unused, zeroedEnd);
         ReturnFreeSpace(freeObj, unused);
     }
 
-    m_allocStart = m_allocEnd = 0;
+    m_allocStart = m_allocEnd = m_tlgcAllocEnd = 0;
+    m_allocZeroedEnd = 0;
 }
 
 void SatoriRegion::StopAllocating()
@@ -499,6 +568,8 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
 
     _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
     _ASSERTE(capacity == freeListObj->FreeObjCapacity());
+    // Space found by sweeping or compacting is not known to be zeroed. (see FormatAsFree)
+    _ASSERTE(freeListObj->ZeroedEnd() <= freeListObj->Start());
     m_freeListCapacities[bucket] += capacity;
 
     // insert at the tail
@@ -601,6 +672,7 @@ void SatoriRegion::SplitCore(size_t regionSize, size_t& nextStart, size_t& nextC
     m_committed = min(newEnd, m_committed);
     m_used = min(newEnd, m_used);
     m_allocEnd = newEnd;
+    m_tlgcAllocEnd = m_allocEnd;
     m_occupancy = m_allocEnd - m_allocStart;
 
     _ASSERTE(Size() >= Satori::REGION_SIZE_GRANULARITY);
@@ -616,6 +688,7 @@ void SatoriRegion::UndoSplitCore(size_t regionSize, size_t nextStart, size_t nex
     m_committed = max(m_committed, nextCommitted);
     m_used = max(m_used, nextUsed);
     m_allocEnd = m_end;
+    m_tlgcAllocEnd = m_allocEnd;
     m_occupancy = m_allocEnd - m_allocStart;
 }
 
@@ -696,6 +769,7 @@ bool SatoriRegion::Coalesce(SatoriRegion* next)
 
     m_end = next_end;
     m_allocEnd = next_allocEnd;
+    m_tlgcAllocEnd = m_allocEnd;
     m_containingPage->OnRegionInitialized(this);
 
     return true;
@@ -797,6 +871,21 @@ void SatoriRegion::ZeroInitAndLink(SatoriRegion* prev)
 
 size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
 {
+    size_t dirtyStart, dirtyEnd;
+    size_t chunkStart = AllocateDirty(size, &dirtyStart, &dirtyEnd);
+    if (chunkStart && zeroInitialize && dirtyEnd > dirtyStart)
+    {
+        SatoriUtil::ZeroInitForAllocation(dirtyStart, dirtyEnd);
+    }
+
+    return chunkStart;
+}
+
+// Same as Allocate without zeroing. [dirtyStart, dirtyEnd) is the part of the allocated chunk that is not known
+// to contain zeroes. (it may be empty)
+// This is for allocating under a lock - the caller zeroes after leaving the lock, and only what needs it.
+size_t SatoriRegion::AllocateDirty(size_t size, size_t* dirtyStart, size_t* dirtyEnd)
+{
     _ASSERTE(m_containingQueue == nullptr);
 
     size_t chunkStart = m_allocStart;
@@ -818,15 +907,17 @@ size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
             m_committed = newComitted;
         }
 
-        if (zeroInitialize)
+        // what is below m_allocZeroedEnd or above m_used is already zeroed.
+        // NB: this must be computed before m_used moves past the chunk.
+        *dirtyStart = max(chunkStart, m_allocZeroedEnd);
+        *dirtyEnd = min(m_used, chunkEnd);
+
+#ifdef _DEBUG
+        for (size_t i = chunkStart; i < min(chunkEnd, m_allocZeroedEnd); i += sizeof(size_t))
         {
-            size_t zeroUpTo = min(m_used, chunkEnd);
-            ptrdiff_t zeroInitCount = zeroUpTo - chunkStart;
-            if (zeroInitCount > 0)
-            {
-                memset((void*)chunkStart, 0, zeroInitCount);
-            }
+            _ASSERTE(*(size_t*)i == 0);
         }
+#endif
 
         m_allocStart = chunkEnd;
         m_used = max(m_used, chunkEnd);
@@ -886,6 +977,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     }
 
     m_used = max(m_used, chunkEnd);
+    m_maxParseableEnd = max(m_maxParseableEnd, chunkEnd);
 
     // if did not allocate from start, there could be MIN_FREE_SIZE fillable space before the obj.
     m_allocEnd = chunkStart;
@@ -1057,6 +1149,7 @@ SatoriObject* SatoriRegion::FindMarkedObjectFrom(size_t location, size_t limit, 
 template <bool isConservative>
 void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
 {
+    ((SatoriLocalScanContext*)sc)->stackSlots++;
     SatoriRegion* region = (SatoriRegion*)sc->_unused1;
     size_t location = (size_t)*ppObject;
 
@@ -1267,8 +1360,10 @@ bool SatoriRegion::CheckEscapeRange(size_t dst, size_t src, size_t len)
                     EscapeRecursively(child);
                 }
             },
+            containingDstObj->Size(),
             dst,
-            dst + len
+            dst + len,
+            /* includeCollectibleAllocator */ false
         );
 
         return false;
@@ -1293,8 +1388,10 @@ bool SatoriRegion::CheckEscapeRange(size_t dst, size_t src, size_t len)
                         EscapeRecursively(child);
                     }
                 },
+                containingSrcObj->Size(),
                 src,
-                src + len
+                src + len,
+                /* includeCollectibleAllocator */ false
             );
         }
 
@@ -1356,16 +1453,32 @@ bool SatoriRegion::CheckEscapeRange(size_t dst, size_t src, size_t len)
 void SatoriRegion::EscapeAll()
 {
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+    size_t lastEscapedEnd = FirstObject()->Start();
+    size_t largeFree = 0;
+    size_t pendingLargeFree = 0;
     for (SatoriObject* o = FirstObject(); o->Start() < objLimit;)
     {
         size_t size = o->Size();
         if (!o->IsFree())
         {
             EscapeShallow(o, size);
+            lastEscapedEnd = o->Start() + size;
+            largeFree += pendingLargeFree;
+            pendingLargeFree = 0;
+        }
+        else if (size >= SatoriUtil::MinZeroInitSize() + Satori::MIN_FREE_SIZE)
+        {
+            pendingLargeFree += size;
         }
 
         o = (SatoriObject*)(o->Start() + size);
     }
+
+    m_maxParseableEnd = lastEscapedEnd;
+    m_unusableInPrefix = (lastEscapedEnd - FirstObject()->Start()) - largeFree;
+
+    size_t firstIndex = LocationToIndex(lastEscapedEnd) + 1;
+    memset((void*)&m_index[firstIndex], 0, (Satori::INDEX_LENGTH + 2 - firstIndex) * sizeof(int));
 }
 
 // do not recurse into children
@@ -1416,6 +1529,7 @@ namespace
 {
     struct EscapeTrackingHistory
     {
+        size_t stackBase;
         // length of the current untracked span, doubles on every unproductive probe
         uint8_t backoff;
         // eligible regions to attach untracked before the next probe
@@ -1427,6 +1541,19 @@ namespace
     };
 
     thread_local EscapeTrackingHistory t_trackingHistory;
+}
+
+size_t SatoriRegion::CurrentStackDepth()
+{
+    size_t sp = (size_t)&sp;
+    EscapeTrackingHistory& h = t_trackingHistory;
+    if (sp > h.stackBase || h.stackBase - sp > Satori::REGION_SIZE_GRANULARITY)
+    {
+        h.stackBase = sp;
+        return 0;
+    }
+
+    return h.stackBase - sp;
 }
 
 bool SatoriRegion::ShouldStartEscapeTracking(bool allowBackoff)
@@ -1505,14 +1632,15 @@ static bool ThreadLocalCollectionEventEnabled()
     return EVENT_ENABLED(GCThreadLocalCollection);
 }
 
-bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
+bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
 {
     if (m_escapedSize > Satori::MAX_ESCAPE_SIZE)
     {
         return false;
     }
 
-    if (allocBytes - m_allocBytesAtCollect < Satori::REGION_SIZE_GRANULARITY / 4)
+    size_t minProgress = atTlgcLimit ? 2 * SatoriUtil::MinZeroInitSize() : Satori::REGION_SIZE_GRANULARITY / 4;
+    if (allocBytes - m_allocBytesAtCollect < minProgress)
     {
         // this is too soon. last collection did not buy us as much as we wanted
         // either due to fragmentation or unfortunate allocation pattern in this thread.
@@ -1533,10 +1661,17 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes)
     bool shouldCollect = ThreadLocalMark(&rootCache);
     if (shouldCollect)
     {
-        t_trackingHistory.collected = true;
+        m_tlgcCount++;
         ThreadLocalPlan();
         ThreadLocalUpdatePointers(&rootCache);
         ThreadLocalCompact();
+        _ASSERTE(m_occupancy <= occupancyBefore);
+        size_t reclaimed = occupancyBefore - m_occupancy;
+        m_reclaimedInRegion = (uint32_t)min((size_t)UINT32_MAX, (size_t)m_reclaimedInRegion + reclaimed);
+        if (m_reclaimedInRegion >= Satori::REGION_SIZE_GRANULARITY / 4)
+        {
+            t_trackingHistory.collected = true;
+        }
     }
 
     // schedule pending finalizables if we have them
@@ -1619,6 +1754,13 @@ bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache)
 
     // escaped objects are already marked, see SetEscaped.
 #ifdef _DEBUG
+    // Planning clears the index for junk-filling, so check the bounded-clearing invariant before that.
+    size_t lastIndex = LocationToIndex(min(m_maxParseableEnd, Start() + Satori::REGION_SIZE_GRANULARITY));
+    for (size_t i = lastIndex + 1; i < Satori::INDEX_LENGTH + 2; i++)
+    {
+        _ASSERTE(m_index[i] == 0);
+    }
+
     // nothing else should be marked yet.
     size_t escaped = 0;
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
@@ -1656,11 +1798,14 @@ bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache)
     sc.promotion = TRUE;
     sc._unused1 = this;
     sc.rootCache = rootCache;
+    sc.stackSlots = 0;
 
     if (SatoriUtil::IsConservativeMode())
         GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn<true>, &sc);
     else
         GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn<false>, &sc);
+
+    m_lastStackSlots = sc.stackSlots;
 
     // now recursively mark all the objects reachable from the stack roots.
  propagateMarks:
@@ -1755,7 +1900,7 @@ void SatoriRegion::ThreadLocalPlan()
 
     // moveable: starts at first movable and reachable, as long as there is any free space to slide in
     size_t lastMarkedEnd = FirstObject()->Start();
-    moveable = SkipUnmarked(FirstObject());
+    moveable = SkipUnmarkedThreadLocal(FirstObject());
     bool sawFree = false;
     while (true)
     {
@@ -1790,7 +1935,7 @@ void SatoriRegion::ThreadLocalPlan()
         }
 
         lastMarkedEnd = moveable->Start() + moveableSize;
-        moveable = SkipUnmarked((SatoriObject*)lastMarkedEnd);
+        moveable = SkipUnmarkedThreadLocal((SatoriObject*)lastMarkedEnd);
     }
 
     while (true)
@@ -1811,7 +1956,7 @@ void SatoriRegion::ThreadLocalPlan()
         }
 
         // dst end: skip until next unmovable
-        for (dstEnd = dstStart; dstEnd < End(); dstEnd = SkipUnmarked(((SatoriObject*)dstEnd)->Next())->Start())
+        for (dstEnd = dstStart; dstEnd < End(); dstEnd = SkipUnmarkedThreadLocal(((SatoriObject*)dstEnd)->Next())->Start())
         {
             if (IsEscapedOrPinned((SatoriObject*)dstEnd))
             {
@@ -1836,7 +1981,7 @@ void SatoriRegion::ThreadLocalPlan()
             while (true)
             {
                 lastMarkedEnd = moveable->Start() + moveableSize;
-                moveable = SkipUnmarked((SatoriObject*)lastMarkedEnd);
+                moveable = SkipUnmarkedThreadLocal((SatoriObject*)lastMarkedEnd);
 
                 size_t skipped = moveable->Start() - lastMarkedEnd;
                 if (skipped)
@@ -2025,9 +2170,10 @@ void SatoriRegion::ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache)
     }
 
     // go through all live objects and update pointers if targets are planned for relocation.
+    size_t bitmapLimit = ParseableBitmapLimit();
     size_t bitmapIndex = BITMAP_START;
     int markBitOffset = 0;
-    while (bitmapIndex < BITMAP_LENGTH)
+    while (bitmapIndex < bitmapLimit)
     {
         DWORD step;
         if (BitScanForward64(&step, m_bitmap[bitmapIndex] >> markBitOffset))
@@ -2038,6 +2184,7 @@ void SatoriRegion::ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache)
             int escapedOffset = markBitOffset + 1;
             bool escaped = m_bitmap[bitmapIndex + (escapedOffset >> 6)] & ((size_t)1 << (escapedOffset & 63));
             SatoriObject* o = ObjectForMarkBit(bitmapIndex, markBitOffset);
+            size_t size = o->Size();
             if (escaped)
             {
                 _ASSERTE(ObjectForMarkBit(bitmapIndex, markBitOffset)->GetLocalReloc() == 0);
@@ -2059,18 +2206,19 @@ void SatoriRegion::ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache)
                                 _ASSERTE((*ppObject)->SameRegion(this));
                             }
                         }
-                    }
+                    },
+                    size
                 );
             }
 
             // skip the object
-            markBitOffset = o->Next()->GetMarkBitAndWord(&bitmapIndex);
+            markBitOffset = ((SatoriObject*)(o->Start() + size))->GetMarkBitAndWord(&bitmapIndex);
         }
         else
         {
             // skip empty mark words
             markBitOffset = 0;
-            while (++bitmapIndex < BITMAP_LENGTH && m_bitmap[bitmapIndex] == 0) {}
+            while (++bitmapIndex < bitmapLimit && m_bitmap[bitmapIndex] == 0) {}
         }
     }
 
@@ -2106,11 +2254,17 @@ void SatoriRegion::ThreadLocalCompact()
     SatoriObject* d2 = FirstObject();
 
     size_t foundFree = 0;
+    size_t oldMaxParseableEnd = m_maxParseableEnd;
+    bool skipSmallFragments = (End() - oldMaxParseableEnd) >= Satori::REGION_SIZE_GRANULARITY / 4;
+    size_t largeFreeInPrefix = 0;
 
     // we will be building new free lists
     ClearFreeLists();
     // compacting may invalidate indices, since objects move around.
-    ClearIndex();
+    size_t lastIndex = LocationToIndex(min(m_maxParseableEnd, Start() + Satori::REGION_SIZE_GRANULARITY));
+    memset((void*)&m_index, 0, (lastIndex + 1) * sizeof(int));
+
+    size_t lastSurvivorEnd = FirstObject()->Start();
 
     // when d1 reaches the end everything is copied or swept
     while (d1->Start() < End())
@@ -2133,14 +2287,33 @@ void SatoriRegion::ThreadLocalCompact()
         while (d1->Start() < relocTarget)
         {
             _ASSERTE(d1->Start() <= d2->Start());
-            d2 = SkipUnmarked(d2, relocTarget);
+            d2 = SkipUnmarkedThreadLocal(d2);
+            if (d2->Start() > relocTarget)
+            {
+                d2 = (SatoriObject*)relocTarget;
+            }
 
             if (d1 != d2)
             {
                 size_t freeSpace = d2->Start() - d1->Start();
                 SatoriObject* freeObj = SatoriObject::FormatAsFree(d1->Start(), freeSpace);
-                SetIndicesForObject(freeObj, d2->Start());
-                AddFreeSpace(freeObj, freeSpace);
+                if (d2->Start() < End())
+                {
+                    SetIndicesForObject(freeObj, d2->Start());
+                    if (freeSpace >= SatoriUtil::MinZeroInitSize() + Satori::MIN_FREE_SIZE)
+                    {
+                        largeFreeInPrefix += freeSpace;
+                        AddFreeSpace(freeObj, freeSpace);
+                    }
+                    else if (!skipSmallFragments)
+                    {
+                        AddFreeSpace(freeObj, freeSpace);
+                    }
+                }
+                else
+                {
+                    AddFreeSpace(freeObj, freeSpace);
+                }
                 foundFree += freeSpace;
 
                 d1 = d2;
@@ -2156,6 +2329,7 @@ void SatoriRegion::ThreadLocalCompact()
             SatoriObject* next = d1->Next();
             // opportunistically mark the index if d1 is indexable
             SetIndicesForObject(d1, next->Start());
+            lastSurvivorEnd = next->Start();
             d2 = d1 = next;
         }
 
@@ -2190,6 +2364,7 @@ void SatoriRegion::ThreadLocalCompact()
 
         if (reloc)
         {
+            lastSurvivorEnd = relocTargetEnd;
             // moving objects with syncblocks, thus the "- sizeof(size_t)" adjustment
             memmove(
                 (void*)(relocTarget - sizeof(size_t)),
@@ -2197,6 +2372,10 @@ void SatoriRegion::ThreadLocalCompact()
                 s2->Start() - s1->Start());
         }
     }
+
+    m_maxParseableEnd = lastSurvivorEnd;
+    m_unusableInPrefix = (lastSurvivorEnd - FirstObject()->Start()) - largeFreeInPrefix;
+    m_escapedSizeAtCollect = (uint32_t)m_escapedSize;
 
     Verify();
 
@@ -2395,6 +2574,51 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
                 break;
             }
         } while (bitmapIndex < SatoriRegion::BITMAP_LENGTH);
+    }
+
+    return ObjectForMarkBit(bitmapIndex, markBitOffset);
+}
+
+SatoriObject* SatoriRegion::SkipUnmarkedThreadLocal(SatoriObject* from)
+{
+    _ASSERTE(from->Start() < End());
+    if (from->Start() >= m_maxParseableEnd)
+    {
+        return (SatoriObject*)End();
+    }
+
+    size_t bitmapIndex;
+    int markBitOffset = from->GetMarkBitAndWord(&bitmapIndex);
+
+    DWORD offset;
+    if (BitScanForward64(&offset, m_bitmap[bitmapIndex] >> markBitOffset))
+    {
+        markBitOffset += offset;
+    }
+    else
+    {
+        size_t limit = ParseableBitmapLimit();
+        markBitOffset = 0;
+        for (;;)
+        {
+            bitmapIndex++;
+            if (bitmapIndex >= limit)
+            {
+#ifdef _DEBUG
+                for (size_t i = limit; i < SatoriRegion::BITMAP_LENGTH; i++)
+                {
+                    _ASSERTE(m_bitmap[i] == 0);
+                }
+#endif
+                return (SatoriObject*)End();
+            }
+
+            if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
+            {
+                markBitOffset = offset;
+                break;
+            }
+        }
     }
 
     return ObjectForMarkBit(bitmapIndex, markBitOffset);
@@ -2778,7 +3002,9 @@ bool SatoriRegion::NothingMarked()
 
 void SatoriRegion::ClearMarks()
 {
-    _ASSERTE(this->HasUnmarkedDemotedObjects() == false);
+    // Marks of a region with unmarked demoted objects can only be escape marks
+    // (a demoted region reused for gen0), which we clear when escape tracking stops.
+    _ASSERTE(this->HasUnmarkedDemotedObjects() == false || IsEscapeTracking() || m_staleEscapeMarks);
     memset((void*)&m_bitmap[BITMAP_START], 0, (BITMAP_LENGTH - BITMAP_START) * sizeof(size_t));
 }
 
@@ -2849,6 +3075,7 @@ void SatoriRegion::PreSweep()
     _ASSERTE(o->Start() == objLimit || End() > objLimit);
 
     this->m_hasFinalizables = hasFinalizables;
+    this->m_maxParseableEnd = objLimit;
     SetOccupancy(occupancy, objCount);
     this->IsPreSwept() = true;
 }

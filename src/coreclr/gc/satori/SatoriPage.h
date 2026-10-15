@@ -111,7 +111,19 @@ public:
         }
     }
 
-    void SetCardForAddressOnly(size_t address);
+    // Only sets the card, not the card group or the page state.
+    // Used when refreshing cards, where the group and the page are already in the right state.
+    inline void SetCardForAddressOnly(size_t address)
+    {
+        size_t offset = address - (size_t)this;
+        size_t cardByteOffset = offset / Satori::BYTES_PER_CARD_BYTE;
+
+        _ASSERTE(cardByteOffset >= m_cardTableStart);
+        _ASSERTE(cardByteOffset < m_cardTableSize);
+
+        m_cardTable[cardByteOffset] = Satori::CardState::REMEMBERED;
+    }
+
     void DirtyCardForAddress(size_t address);
     void SetCardsForRange(size_t start, size_t end);
     void DirtyCardsForRange(size_t start, size_t length);

@@ -187,19 +187,6 @@ SatoriRegion* SatoriPage::RegionForCardGroup(size_t group)
     return (SatoriRegion*)((mapIndex << Satori::REGION_BITS) + Start());
 }
 
-// only set cards, does not set card groups and page state
-// used in card refreshing
-void SatoriPage::SetCardForAddressOnly(size_t address)
-{
-    size_t offset = address - Start();
-    size_t cardByteOffset = offset / Satori::BYTES_PER_CARD_BYTE;
-
-    _ASSERTE(cardByteOffset >= m_cardTableStart);
-    _ASSERTE(cardByteOffset < m_cardTableSize);
-
-    m_cardTable[cardByteOffset] = Satori::CardState::REMEMBERED;
-}
-
 // setting cards is never concurent with unsetting (unlike dirtying)
 // so there are no ordering implications.
 void SatoriPage::SetCardsForRange(size_t start, size_t end)
