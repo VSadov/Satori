@@ -135,8 +135,11 @@ if (CLR_CMAKE_TARGET_ARCH_ARM64 OR CLR_CMAKE_TARGET_ARCH_AMD64)
 endif (CLR_CMAKE_TARGET_ARCH_ARM64 OR CLR_CMAKE_TARGET_ARCH_AMD64)
 
 target_compile_definitions(Runtime.ServerGC PRIVATE FEATURE_SVR_GC)
-# TODO: Satori WKS does not really exist, do the same as SVR
-target_compile_definitions(Runtime.WorkstationGC PRIVATE FEATURE_SVR_GC)
+# Satori uses the same collector in both libraries. Match CoreCLR's Apple-mobile
+# configuration so the workstation library does not report unsupported server GC.
+if (NOT CLR_CMAKE_TARGET_APPLE_MOBILE)
+  target_compile_definitions(Runtime.WorkstationGC PRIVATE FEATURE_SVR_GC)
+endif()
 
 if (CLR_CMAKE_TARGET_WIN32)
   set_target_properties(aotminipal PROPERTIES
