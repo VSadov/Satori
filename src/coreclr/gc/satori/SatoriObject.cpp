@@ -144,7 +144,7 @@ void SatoriObject::Validate()
                 }
             );
         }
-        else
+        else if (!IsFree())
         {
             // a non-escaped object has no exposed fields.
             // the first words hold the object's own mark, escaped and pinned bits. A non-escaped object
