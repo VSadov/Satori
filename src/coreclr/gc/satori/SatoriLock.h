@@ -32,7 +32,7 @@
 #include "SatoriUtil.h"
 #include "SatoriGate.h"
 
-#if defined(TARGET_OSX)
+#if defined(TARGET_APPLE)
 #include <time.h>
 #endif
 

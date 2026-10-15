@@ -321,7 +321,7 @@ LEAF_ENTRY GetTlsIndexObjectDescOffset, _TEXT
         int 3
 LEAF_END GetTlsIndexObjectDescOffset, _TEXT
 #endif // !FEATURE_EMULATED_TLS
-#endif // !TARGET_OSX
+#endif // !TARGET_APPLE
 
 LEAF_ENTRY  JIT_PollGC, _TEXT
         PREPARE_EXTERNAL_VAR g_TrapReturningThreads, rax

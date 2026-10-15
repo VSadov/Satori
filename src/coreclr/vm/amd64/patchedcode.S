@@ -366,7 +366,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 #ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
         jz      LOCAL_LABEL(JustAssign)                 // assigning null
 #endif
-#ifdef TARGET_OSX
+#ifdef TARGET_APPLE
         mov     rax,  gs:[0]            // thread tag
 #else
         mov     rax,  fs:[0]            // thread tag

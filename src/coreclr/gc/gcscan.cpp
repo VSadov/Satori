@@ -236,14 +236,14 @@ void GCScan::GcRuntimeStructuresValid (BOOL bValid)
 void GCScan::GcDemote (int condemned, int max_gen, ScanContext* sc)
 {
     Ref_RejuvenateHandles (condemned, max_gen, sc);
-    if (!IsServerHeap() || sc->thread_number == 0)
+    if ((!IsServerHeap() && !IsSatoriHeap()) || sc->thread_number == 0)
         GCToEEInterface::SyncBlockCacheDemote(max_gen);
 }
 
 void GCScan::GcPromotionsGranted (int condemned, int max_gen, ScanContext* sc)
 {
     Ref_AgeHandles(condemned, max_gen, sc);
-    if (!IsServerHeap() || sc->thread_number == 0)
+    if ((!IsServerHeap() && !IsSatoriHeap()) || sc->thread_number == 0)
         GCToEEInterface::SyncBlockCachePromotionsGranted(max_gen);
 }
 

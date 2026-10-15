@@ -108,6 +108,13 @@ if(NOT CLR_CROSS_COMPONENTS_BUILD)
     set(CORERUN_LIBS_ONLY 1)
   endif()
   add_subdirectory(${CLR_SRC_NATIVE_DIR}/libs libs-native)
+  if(CLR_CMAKE_TARGET_APPLE_MOBILE)
+    # The runtime component installs these shims into sharedFramework.
+    add_dependencies(runtime
+      System.IO.Compression.Native-Static
+      System.Native-Static
+      System.Globalization.Native-Static)
+  endif()
 endif()
 
 #-----------------------------------------
