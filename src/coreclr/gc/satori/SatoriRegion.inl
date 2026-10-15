@@ -144,6 +144,87 @@ inline size_t SatoriRegion::GetAllocRemaining()
     return diff >= 0 ? (size_t)diff : 0;
 }
 
+inline size_t SatoriRegion::ComputeTlgcWindow()
+{
+    // Dyadic ("ruler-function") schedule: baseWindow << tzcnt(m_tlgcCount + 1).
+    // Half of collections use baseWindow, 1/4 use 2 * baseWindow, 1/8 use 4 * baseWindow, etc.,
+    // so every level of the cache hierarchy captures all scales that fit in it without knowing cache sizes.
+    DWORD scale;
+    BitScanForward64(&scale, (size_t)m_tlgcCount + 1);
+    size_t baseWindow = 4 * SatoriUtil::MinZeroInitSize();
+    size_t dyadicWindow = scale < 6 ? (baseWindow << scale) : Satori::REGION_SIZE_GRANULARITY;
+    dyadicWindow = min(dyadicWindow, (size_t)Satori::REGION_SIZE_GRANULARITY);
+
+    // Scale up by total unrecoverable/live bytes (survivors + escaped + sub-quantum fragments)
+    // so at least ~75% of the window is free space (matching TLGC_MIN_FREE_PERCENT = 70),
+    // and by stack depth / root count so deep stacks do not scan on small windows.
+    size_t escapedSinceCollect = (size_t)m_escapedSize > m_escapedSizeAtCollect ?
+        (size_t)m_escapedSize - m_escapedSizeAtCollect : 0;
+    size_t unusableBytes = max((size_t)m_escapedSize, m_unusableInPrefix + escapedSinceCollect);
+    size_t liveFloor = unusableBytes * 4;
+    size_t stackFloor = max(CurrentStackDepth() * 8, (size_t)m_lastStackSlots * 256);
+    return min((size_t)Satori::REGION_SIZE_GRANULARITY, max(dyadicWindow, max(liveFloor, stackFloor)));
+}
+
+inline size_t SatoriRegion::ComputeTlgcAllocEnd(size_t minAllocSize, size_t allocBytes)
+{
+    if (!IsEscapeTracking())
+    {
+        return m_allocEnd;
+    }
+
+    size_t totalWindow = ComputeTlgcWindow();
+    size_t alreadyAllocated = (m_allocBytesAtCollect != 0 && allocBytes > m_allocBytesAtCollect) ?
+        allocBytes - m_allocBytesAtCollect : 0;
+    size_t remainingWindow = totalWindow > alreadyAllocated ? totalWindow - alreadyAllocated : 0;
+    size_t spanWindow = max(minAllocSize, remainingWindow);
+    size_t limit = ALIGN_UP(m_allocStart + spanWindow + Satori::MIN_FREE_SIZE, Satori::INDEX_GRANULARITY);
+    return min(m_allocEnd, limit);
+}
+
+inline size_t SatoriRegion::GetTlgcAllocRemaining()
+{
+    size_t limit = IsEscapeTracking() ? m_tlgcAllocEnd : m_allocEnd;
+    ptrdiff_t diff = limit - m_allocStart - Satori::MIN_FREE_SIZE;
+    _ASSERTE(!IsAllocating() || diff >= 0);
+    return diff >= 0 ? (size_t)diff : 0;
+}
+
+inline bool SatoriRegion::ShouldCollectAtTlgcLimit(size_t allocBytes)
+{
+    if (!IsEscapeTracking() || !IsAllocating())
+    {
+        return false;
+    }
+
+    size_t alreadyAllocated = (m_allocBytesAtCollect != 0 && allocBytes > m_allocBytesAtCollect) ?
+        allocBytes - m_allocBytesAtCollect : 0;
+
+    if (m_tlgcAllocEnd < m_allocEnd)
+    {
+        size_t escapedSinceCollect = (size_t)m_escapedSize > m_escapedSizeAtCollect ?
+            (size_t)m_escapedSize - m_escapedSizeAtCollect : 0;
+        if (escapedSinceCollect * 4 > alreadyAllocated)
+        {
+            // Too much of the current window escaped; extend the window instead of collecting early.
+            m_tlgcCount++;
+            return false;
+        }
+
+        return true;
+    }
+
+    return alreadyAllocated >= ComputeTlgcWindow();
+}
+
+inline size_t SatoriRegion::ParseableBitmapLimit()
+{
+    size_t end = min(m_maxParseableEnd, Start() + Satori::REGION_SIZE_GRANULARITY);
+    size_t limit = (end - Start() + Satori::BYTES_PER_CARD_BYTE - 1) / Satori::BYTES_PER_CARD_BYTE;
+    _ASSERTE(limit <= SatoriRegion::BITMAP_LENGTH);
+    return limit;
+}
+
 // The size of the zeroed run that starts at m_allocStart.
 inline size_t SatoriRegion::GetAllocZeroedRemaining()
 {
@@ -169,13 +250,22 @@ inline SatoriObject* SatoriRegion::FirstObject()
     return &m_firstObject;
 }
 
-inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag)
+inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag, size_t allocBytes, size_t minAllocSize)
 {
     _ASSERTE(m_generation == -1 || m_reusableFor == ReuseLevel::Gen0);
     _ASSERTE(!m_staleEscapeMarks);
     m_escapeFunc = EscapeFn;
     m_ownerThreadTag = threadTag;
+    m_allocBytesAtCollect = allocBytes;
+    m_tlgcCount = 0;
+    m_escapedSizeAtCollect = (uint32_t)m_escapedSize;
+    m_reclaimedInRegion = 0;
+    m_lastStackSlots = 0;
     VolatileStore(&m_generation, 0);
+    if (IsAllocating())
+    {
+        m_tlgcAllocEnd = ComputeTlgcAllocEnd(minAllocSize, allocBytes);
+    }
 }
 
 inline void SatoriRegion::StopEscapeTracking()
@@ -677,6 +767,7 @@ bool SatoriRegion::Sweep()
     this->DoNotSweep() = true;
     this->HasPinnedObjects() = false;
     this->m_individuallyPromoted = false;
+    this->m_maxParseableEnd = objLimit;
 
     SetOccupancy(occupancy, objCount);
     if (objCount !=0)

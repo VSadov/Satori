@@ -443,7 +443,7 @@ tryAgain:
             size_t moreSpace = context->alloc_ptr + size - context->alloc_limit;
 
             // try allocate more to form a contiguous chunk to fit size
-            size_t allocRemaining = region->GetAllocRemaining();
+            size_t allocRemaining = region->GetTlgcAllocRemaining();
             if (moreSpace <= allocRemaining)
             {
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
@@ -463,9 +463,10 @@ tryAgain:
                     }
 
                     // What is already known to be zeroed costs nothing to take.
-                    // In fresh memory that can be the rest of the region, so take at most PACE_BUDGET.
-                    // Allocation pacing runs when we come here, and it needs that much allocated since the last time.
-                    size_t zeroedRemaining = min(region->GetAllocZeroedRemaining(), (size_t)Satori::PACE_BUDGET);
+                    // In fresh memory that can be the rest of the region, so take at most PACE_BUDGET / 2 (64 KB):
+                    // the fast-path array allocator assumes the allocation context never exceeds LARGE_OBJECT_SIZE,
+                    // and allocation pacing runs when we come here.
+                    size_t zeroedRemaining = min(region->GetAllocZeroedRemaining(), (size_t)(Satori::PACE_BUDGET / 2));
                     moreSpace = max(moreSpace, min(zeroedRemaining, allocRemaining));
 
                     // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
@@ -514,6 +515,8 @@ tryAgain:
             context->alloc_bytes -= unused;
             AllocationTickDecrement(unused);
 
+            bool collectAtTlgcLimit = region->ShouldCollectAtTlgcLimit(context->alloc_bytes);
+
             if (region->IsAllocating())
             {
                 // the unused part of the allocation context is zeroed.
@@ -524,8 +527,17 @@ tryAgain:
                 _ASSERTE(context->alloc_ptr == nullptr);
             }
 
+            if (collectAtTlgcLimit)
+            {
+                if (!region->ThreadLocalCollect(context->alloc_bytes, /* atTlgcLimit */ true))
+                {
+                    SatoriRegion::OnEscapeTrackingEnded();
+                    region->StopEscapeTracking();
+                }
+            }
+
             // try get from the free list
-            if (region->StartAllocating(size))
+            if (region->StartAllocating(size, context->alloc_bytes))
             {
                 // we have enough free space in the region to continue
                 context->alloc_ptr = context->alloc_limit = (uint8_t*)region->GetAllocStart();
@@ -537,7 +549,7 @@ tryAgain:
                 // try performing thread local collection and see if we have enough space after that.
                 if (region->ThreadLocalCollect(context->alloc_bytes))
                 {
-                    if (region->StartAllocating(size))
+                    if (region->StartAllocating(size, context->alloc_bytes))
                     {
                         // we have enough free space in the region to continue
                         context->alloc_ptr = context->alloc_limit = (uint8_t*)region->GetAllocStart();
@@ -607,7 +619,7 @@ tryAgain:
 
             fallthrough:
                 //NB: sets Generation to 0
-                region->StartEscapeTrackingRelease(SatoriUtil::GetCurrentThreadTag());
+                region->StartEscapeTrackingRelease(SatoriUtil::GetCurrentThreadTag(), context->alloc_bytes, size);
                 break;
             case SatoriRegion::ReuseLevel::Gen1:
                 region->SetGenerationRelease(1);
