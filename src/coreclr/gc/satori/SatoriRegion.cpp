@@ -1665,6 +1665,9 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
         ThreadLocalPlan();
         ThreadLocalUpdatePointers(&rootCache);
         ThreadLocalCompact();
+        _ASSERTE(m_occupancy <= occupancyBefore);
+        size_t reclaimed = occupancyBefore - m_occupancy;
+        m_reclaimedInRegion = (uint32_t)min((size_t)UINT32_MAX, (size_t)m_reclaimedInRegion + reclaimed);
         if (m_reclaimedInRegion >= Satori::REGION_SIZE_GRANULARITY / 4)
         {
             t_trackingHistory.collected = true;
@@ -1751,6 +1754,13 @@ bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache)
 
     // escaped objects are already marked, see SetEscaped.
 #ifdef _DEBUG
+    // Planning clears the index for junk-filling, so check the bounded-clearing invariant before that.
+    size_t lastIndex = LocationToIndex(min(m_maxParseableEnd, Start() + Satori::REGION_SIZE_GRANULARITY));
+    for (size_t i = lastIndex + 1; i < Satori::INDEX_LENGTH + 2; i++)
+    {
+        _ASSERTE(m_index[i] == 0);
+    }
+
     // nothing else should be marked yet.
     size_t escaped = 0;
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
@@ -2252,12 +2262,6 @@ void SatoriRegion::ThreadLocalCompact()
     ClearFreeLists();
     // compacting may invalidate indices, since objects move around.
     size_t lastIndex = LocationToIndex(min(m_maxParseableEnd, Start() + Satori::REGION_SIZE_GRANULARITY));
-#ifdef _DEBUG
-    for (size_t i = lastIndex + 1; i < Satori::INDEX_LENGTH + 2; i++)
-    {
-        _ASSERTE(m_index[i] == 0);
-    }
-#endif
     memset((void*)&m_index, 0, (lastIndex + 1) * sizeof(int));
 
     size_t lastSurvivorEnd = FirstObject()->Start();
@@ -2372,9 +2376,6 @@ void SatoriRegion::ThreadLocalCompact()
     m_maxParseableEnd = lastSurvivorEnd;
     m_unusableInPrefix = (lastSurvivorEnd - FirstObject()->Start()) - largeFreeInPrefix;
     m_escapedSizeAtCollect = (uint32_t)m_escapedSize;
-    size_t activePrefix = oldMaxParseableEnd - FirstObject()->Start();
-    size_t reclaimed = activePrefix > m_unusableInPrefix ? activePrefix - m_unusableInPrefix : 0;
-    m_reclaimedInRegion = (uint32_t)min((size_t)UINT32_MAX, (size_t)m_reclaimedInRegion + reclaimed);
 
     Verify();
 
