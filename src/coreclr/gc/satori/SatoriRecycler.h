@@ -369,6 +369,7 @@ private:
     void MarkThroughCards();
     bool MarkThroughCardsConcurrent(int64_t deadline);
     void MarkDemoted(SatoriRegion* curRegion, MarkContext* markContext);
+    void MarkDemotedInReusable(SatoriRegion* curRegion, MarkContext* markContext);
     void MarkAllStacksFinalizationAndDemotedRoots();
 
     void PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o);

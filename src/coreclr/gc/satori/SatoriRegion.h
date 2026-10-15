@@ -73,11 +73,17 @@ public:
 
     size_t GetAllocStart();
     size_t GetAllocRemaining();
+    size_t GetTlgcAllocRemaining();
+    bool ShouldCollectAtTlgcLimit(size_t allocBytes);
+    size_t GetAllocZeroedRemaining();
     size_t Allocate(size_t size, bool zeroInitialize);
+    size_t AllocateDirty(size_t size, size_t* dirtyStart, size_t* dirtyEnd);
     size_t AllocateHuge(size_t size, bool zeroInitialize);
 
-    size_t StartAllocating(size_t minSize);
-    void StopAllocating(size_t allocPtr);
+    size_t StartAllocating(size_t minSize, size_t allocBytes = 0);
+    // The caller may know that [allocPtr, zeroedEnd) contains zeroes,
+    // like the unused part of an allocation context does.
+    void StopAllocating(size_t allocPtr, size_t zeroedEnd = 0);
     void StopAllocating();
     bool IsAllocating();
 
@@ -88,7 +94,7 @@ public:
     bool HasFreeSpaceInTopBucket();
     size_t FreeSpaceInTopNBuckets(int n);
 
-    void StartEscapeTrackingRelease(size_t threadTag);
+    void StartEscapeTrackingRelease(size_t threadTag, size_t allocBytes = 0, size_t minAllocSize = 0);
     void StopEscapeTracking();
     // NB: called from the write barrier - must not touch vector registers or TLS.
     void StopEscapeTrackingFromBarrier();
@@ -153,6 +159,7 @@ public:
     void DecrementUnfinishedAlloc();
 
     SatoriObject* SkipUnmarked(SatoriObject* from);
+    SatoriObject* SkipUnmarkedThreadLocal(SatoriObject* from);
     SatoriObject* SkipUnmarkedAndClear(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
 
@@ -237,7 +244,7 @@ public:
 
     // we tell where we are in terms of alloc bytes, so we do not collect too soon
     // returns true if it actually did a collection.
-    bool ThreadLocalCollect(size_t allocBytes);
+    bool ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit = false);
 
     SatoriPage* ContainingPage();
     SatoriRegion* NextInPage();
@@ -291,12 +298,22 @@ private:
             void (*m_escapeFunc)(SatoriObject**, SatoriObject*, SatoriRegion*);
             int m_generation;
             // above fields are accessed from asm helpers
+            // NB: the write barrier reads this cache line on nearly every reference store, and concurrent marking
+            //     reads it for every child. Keep it free of frequently written fields, even though there is room
+            //     after m_generation. (e.g. m_unfinishedAllocationCount, which is updated with interlocked operations
+            //     while allocating in shared regions, would cause false sharing here)
 
-            // the following 5 fields change rarely or not at all.
+            // the following fields change rarely or not at all.
             size_t m_end;
             SatoriPage* m_containingPage;
 
             ReuseLevel m_reusableFor;
+            // escape tracking was stopped by the barrier and the mark bitmap still has escape bits.
+            // concurrent marking must treat the region as escape tracking until the owner clears the marks.
+            // NB: MaybeEscapeTrackingAcquire reads this, m_reusableFor and m_ownerThreadTag for every child that
+            //     concurrent marking looks at. Keep them in the same cache line. (this one fits in the padding)
+            //     It changes when escape tracking stops, together with m_ownerThreadTag.
+            bool m_staleEscapeMarks;
             int32_t m_occupancyAtReuse;
 
             SatoriRegion** m_allocatingOwnerAttachmentPoint;
@@ -309,6 +326,9 @@ private:
             // The range is in terms of objects, there is embedded off-by-one error for syncblocks.
             size_t m_allocStart;
             size_t m_allocEnd;
+            // While allocating, [m_allocStart, m_allocZeroedEnd) is known to contain zeroes
+            // in addition to everything above m_used. Allocations do not need to zero that again.
+            size_t m_allocZeroedEnd;
 
             // dirty and comitted watermarks
             size_t m_used;
@@ -328,6 +348,8 @@ private:
             uint32_t m_sweepsSinceLastAllocation;
             // Bit N is set when free list N is not empty.
             uint16_t m_nonEmptyFreeLists;
+            // Number of thread-local collections performed in this region, drives the dyadic window schedule.
+            uint16_t m_tlgcCount;
 
             // ===== 128  bytes boundary
             SatoriRegion* m_prev;
@@ -336,6 +358,15 @@ private:
 
             size_t m_occupancy;
             size_t m_demotedOccupancy;
+            // End of the current dyadic allocation window (<= m_allocEnd) when escape-tracking.
+            size_t m_tlgcAllocEnd;
+            // Upper bound on the end of all non-free objects in the region, bounds thread-local bitmap and index scans.
+            size_t m_maxParseableEnd;
+            // Bytes in [FirstObject(), m_maxParseableEnd) not in >= MinZeroInitSize() free spans after the last collect.
+            size_t m_unusableInPrefix;
+            uint32_t m_escapedSizeAtCollect;
+            uint32_t m_reclaimedInRegion;
+            uint32_t m_lastStackSlots;
             int32_t m_objCount;
 
             int32_t m_unfinishedAllocationCount;
@@ -352,9 +383,6 @@ private:
             bool m_hasUnmarkedDemotedObjects;
             // TODO: VS can fold with m_doNotSweep?
             bool m_hasMarksSet;
-            // escape tracking was stopped by the barrier and the mark bitmap still has escape bits.
-            // concurrent marking must treat the region as escape tracking until the owner clears the marks.
-            bool m_staleEscapeMarks;
 
             size_t m_freeListCapacities[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];
@@ -368,6 +396,10 @@ private:
     SatoriObject m_firstObject;
 
 private:
+    static size_t CurrentStackDepth();
+    size_t ComputeTlgcWindow();
+    size_t ComputeTlgcAllocEnd(size_t minAllocSize, size_t allocBytes);
+    size_t ParseableBitmapLimit();
     bool CanSplitWithoutCommit(size_t size);
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
     void UndoSplitCore(size_t regionSize, size_t nextStart, size_t nextCommitted, size_t nextUsed);
