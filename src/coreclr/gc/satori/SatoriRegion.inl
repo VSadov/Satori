@@ -174,7 +174,7 @@ inline size_t SatoriRegion::ComputeTlgcAllocEnd(size_t minAllocSize, size_t allo
     }
 
     size_t totalWindow = ComputeTlgcWindow();
-    size_t alreadyAllocated = (m_allocBytesAtCollect != 0 && allocBytes > m_allocBytesAtCollect) ?
+    size_t alreadyAllocated = allocBytes > m_allocBytesAtCollect ?
         allocBytes - m_allocBytesAtCollect : 0;
     size_t remainingWindow = totalWindow > alreadyAllocated ? totalWindow - alreadyAllocated : 0;
     size_t spanWindow = max(minAllocSize, remainingWindow);
@@ -197,17 +197,23 @@ inline bool SatoriRegion::ShouldCollectAtTlgcLimit(size_t allocBytes)
         return false;
     }
 
-    size_t alreadyAllocated = (m_allocBytesAtCollect != 0 && allocBytes > m_allocBytesAtCollect) ?
+    size_t alreadyAllocated = allocBytes > m_allocBytesAtCollect ?
         allocBytes - m_allocBytesAtCollect : 0;
 
     if (m_tlgcAllocEnd < m_allocEnd)
     {
+        // A large request may not fit before enough allocation has occurred to justify collecting.
+        // Defer instead of letting ThreadLocalCollect reject the region and end escape tracking.
+        if (alreadyAllocated < 2 * SatoriUtil::MinZeroInitSize())
+        {
+            return false;
+        }
+
         size_t escapedSinceCollect = (size_t)m_escapedSize > m_escapedSizeAtCollect ?
             (size_t)m_escapedSize - m_escapedSizeAtCollect : 0;
         if (escapedSinceCollect * 4 > alreadyAllocated)
         {
-            // Too much of the current window escaped; extend the window instead of collecting early.
-            m_tlgcCount++;
+            // Too much of the current window escaped; let the live-size floor extend it instead of collecting early.
             return false;
         }
 
