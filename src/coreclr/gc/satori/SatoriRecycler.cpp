@@ -4567,6 +4567,8 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     _ASSERTE(relocationTarget->HasMarksSet() == needToCopyMarks);
 
     int32_t objectsRelocated = 0;
+    SatoriRegion::SweepPrefetcher prefetcher;
+    relocationSource->SweepPrefetchStart(prefetcher, o);
     do
     {
         o = relocationSource->SkipUnmarked(o);
@@ -4579,6 +4581,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         _ASSERTE(o->IsMarked());
         _ASSERTE(!o->IsFree());
         _ASSERTE(!o->IsUnmovable());
+        relocationSource->SweepPrefetchAdvance(prefetcher, o);
 
         size_t size = o->Size();
         memcpy((void*)(dst - sizeof(size_t)), (void*)(o->Start() - sizeof(size_t)), size);
