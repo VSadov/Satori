@@ -108,6 +108,8 @@ void SatoriTrimmer::Loop()
             StopAndWait();
         }
 
+        // a release target that a GC sets while we scan is kept for the next pass
+        size_t releaseUntil = m_releaseUntil;
         m_heap->ForEachPage(
             [&](SatoriPage* page)
             {
@@ -162,7 +164,7 @@ void SatoriTrimmer::Loop()
             }
         );
 
-        m_releaseUntil = SIZE_MAX;
+        Interlocked::CompareExchange(&m_releaseUntil, (size_t)SIZE_MAX, releaseUntil);
     }
 }
 
