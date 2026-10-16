@@ -313,7 +313,12 @@ private:
 
     SatoriGate* m_workerGate;
 
+    // Idle workers poll this while spinning. Keep it on a cache line of its own, away from the counters
+    // below, which are updated with interlocked operations. (the next field starts a new line)
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     volatile int m_gateSignaled;
+
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     volatile int m_workerWoken;
     volatile int m_activeWorkers;
     volatile int m_totalWorkers;

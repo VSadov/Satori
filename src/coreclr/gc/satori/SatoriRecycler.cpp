@@ -208,14 +208,18 @@ void SatoriRecycler::WorkerThreadMainLoop(void* param)
 
             // spin for ~10 microseconds (GcSpin)
             // the OS timer here - only the clock ends this wait, so it must not be the inline one
-            int64_t limit = GCToOSInterface::QueryPerformanceCounter() +
-                recycler->m_osTicksPerMicro * SatoriUtil::GcSpin();
+            const int64_t ticksPerMicro = recycler->m_osTicksPerMicro;
+            int64_t lastTick = GCToOSInterface::QueryPerformanceCounter();
+            int64_t limit = lastTick + ticksPerMicro * SatoriUtil::GcSpin();
 
-            int i = 0;
+            // We do not know how long YieldProcessor takes, it varies a lot between hardware.
+            // Start with a short batch and keep doubling it, but only while batches take less than a microsecond.
+            // After that the batch stays the same, so the clock is read about once per microsecond
+            // and we overshoot the limit by no more than one batch.
+            int i = 1;
+            int64_t now;
             do
             {
-                i++;
-                i = min(30, i);
                 int j = (1 << i);
                 while (--j > 0)
                 {
@@ -227,8 +231,16 @@ void SatoriRecycler::WorkerThreadMainLoop(void* param)
                         goto released;
                     }
                 }
+
+                now = GCToOSInterface::QueryPerformanceCounter();
+                if (now - lastTick < ticksPerMicro)
+                {
+                    i = min(30, i + 1);
+                }
+
+                lastTick = now;
             }
-            while(GCToOSInterface::QueryPerformanceCounter() < limit);
+            while (now < limit);
 
             // Wait returns true if was woken up.
             if (!recycler->m_workerGate->TimedWait(10000))
