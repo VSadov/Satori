@@ -79,9 +79,21 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     m_regularAllocLock.Initialize();
 
     m_singePageAdders = 0;
+    m_regionBytesTaken = 0;
 }
 
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
+{
+    SatoriRegion* region = GetRegionCore(regionSize);
+    if (region)
+    {
+        Interlocked::ExchangeAdd64(&m_regionBytesTaken, region->Size());
+    }
+
+    return region;
+}
+
+SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize)
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
     int64_t newPageDeadline = 0;
@@ -1038,6 +1050,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
 
     size_t regionSize = SatoriRegion::RegionSizeForAlloc(size);
     _ASSERTE(regionSize > Satori::REGION_SIZE_GRANULARITY);
+    m_heap->Recycler()->CheckMemoryBeforeAlloc(regionSize);
     SatoriRegion* hugeRegion = GetRegion(regionSize);
     if (!hugeRegion)
     {

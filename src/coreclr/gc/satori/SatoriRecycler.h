@@ -87,6 +87,7 @@ public:
     void TryStartGC(int generation, gc_reason reason);
     bool HelpOnce(bool waitForGC = false);
     void MaybeTriggerGC(gc_reason reason);
+    void CheckMemoryBeforeAlloc(size_t allocSize);
     bool IsBlockingPhase();
     void WaitForTrimmerToStop();
 
@@ -294,6 +295,12 @@ private:
     size_t m_gen1CountAtLastGen2;
     size_t m_gcNextTimeTarget;
 
+    // set when memory is low, see AdjustHeuristics
+    size_t m_releaseTarget;
+    size_t m_committedAfterTrim;
+    // the value of RegionBytesTaken at which CheckMemoryBeforeAlloc reads the memory status again
+    size_t m_nextMemoryCheck;
+
     size_t m_occupancy[3];
     size_t m_occupancyAcc[3];
     size_t m_demotedOccupancyAcc;
@@ -358,6 +365,7 @@ private:
     void PushToTenuredQueues(SatoriRegion* region);
 
     void AdjustHeuristics();
+    size_t CheckAvailableMemory(size_t* margin);
     void DeactivateAllocatingRegions();
     void RequestCollection(CollectionRequest* request, size_t requestNumber);
 

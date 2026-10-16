@@ -54,6 +54,8 @@ public:
     Object* Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     SatoriRegion* GetRegion(size_t minSize);
+    // the size of all regions that GetRegion returned
+    size_t RegionBytesTaken() { return m_regionBytesTaken; }
     void AddRegion(SatoriRegion* region);
     void ReturnRegion(SatoriRegion* region);
 
@@ -101,9 +103,14 @@ private:
     DECLSPEC_ALIGN(64)
     size_t m_smallAllocTickAmount;
 
+    DECLSPEC_ALIGN(64)
+    size_t m_regionBytesTaken;
+
 private:
     DECLSPEC_ALIGN(64)
     volatile int32_t m_singePageAdders;
+
+    SatoriRegion* GetRegionCore(size_t regionSize);
 
     void UpdateAllocStatsAndHelpIfNeeded(SatoriAllocationContext * context);
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
