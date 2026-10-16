@@ -493,6 +493,13 @@ tryAgain:
                     if ((flags & GC_ALLOC_FINALIZE) &&
                         !region->RegisterForFinalization(result))
                     {
+                        // OOM. Close the context, otherwise it keeps the space for this object too, and that can
+                        // be more than the limit above. moreSpace is not counted for allocation ticks yet.
+                        size_t unused = context->alloc_limit - context->alloc_ptr;
+                        context->alloc_bytes -= unused;
+                        context->alloc_limit = context->alloc_ptr = nullptr;
+                        AllocationTickDecrement(unused - moreSpace);
+                        region->StopAllocating((size_t)result, (size_t)result);
                         return nullptr;
                     }
 
