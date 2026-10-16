@@ -1310,24 +1310,28 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 
 // Allocations can take a lot of memory between GCs, so check the memory again when regions of half of
 // what was available at the last check are taken, or when this allocation can be larger than what is left.
-// If the allocation would go past the high memory threshold, collect now.
+// If the allocation does not fit below the memory limit, collect now. If it only goes past the high memory
+// threshold, collect only after committed memory has grown by the margin since the last such GC, so that
+// a process that stays above the threshold does not collect after every few regions.
 void SatoriRecycler::CheckMemoryBeforeAlloc(size_t allocSize)
 {
     size_t nextMemoryCheck = m_nextMemoryCheck;
     if (m_heap->Allocator()->RegionBytesTaken() + allocSize > nextMemoryCheck &&
         Interlocked::CompareExchange(&m_nextMemoryCheck, SIZE_MAX, nextMemoryCheck) == nextMemoryCheck)
     {
-        size_t margin;
-        if (CheckAvailableMemory(&margin) <= allocSize &&
-            m_heap->GetBytesCommitted() > m_committedAfterTrim + margin)
+        size_t margin, toLimit;
+        size_t available = CheckAvailableMemory(&margin, &toLimit);
+        if (toLimit <= allocSize ||
+            (available <= allocSize && m_heap->GetBytesCommitted() > m_committedAfterTrim + margin))
         {
             Collect(2, /* force */ true, /* blocking */ true, /* compact */ true, /* aggressive */ true);
         }
     }
 }
 
-// Returns the memory that is available above the reserve, and the memory limit in *total.
-size_t GetAvailableMemory(size_t* total)
+// Returns the memory that is available above the reserve, the memory that is available up to the memory limit
+// in *toLimit, and the memory limit in *total.
+size_t GetAvailableMemory(size_t* total, size_t* toLimit)
 {
     bool isRestricted;
     uint64_t limit = GCToOSInterface::GetPhysicalMemoryLimit(&isRestricted);
@@ -1347,6 +1351,12 @@ size_t GetAvailableMemory(size_t* total)
         available = min(available, restrictedAvailable);
     }
 
+#ifdef TARGET_WINDOWS
+    *toLimit = (size_t)min(available, availableCommit);
+#else
+    *toLimit = (size_t)available;
+#endif
+
     // Keep at least 5% free, or more when the configured threshold is lower.
     uint64_t reserve = limit * max(5u, 100u - SatoriUtil::HighMemoryPercent()) / 100;
     available = available > reserve ? available - reserve : 0;
@@ -1359,12 +1369,12 @@ size_t GetAvailableMemory(size_t* total)
     return (size_t)available;
 }
 
-// Reads the memory status and sets when CheckMemoryBeforeAlloc reads it again.
-// Returns the memory that is available above the reserve, and 1/20 of the memory limit in *margin.
-size_t SatoriRecycler::CheckAvailableMemory(size_t* margin)
+// Reads the memory status and sets when CheckMemoryBeforeAlloc reads it again. Returns the memory that is
+// available above the reserve, 1/20 of the memory limit in *margin, and the memory up to the limit in *toLimit.
+size_t SatoriRecycler::CheckAvailableMemory(size_t* margin, size_t* toLimit)
 {
     size_t total;
-    size_t available = GetAvailableMemory(&total);
+    size_t available = GetAvailableMemory(&total, toLimit);
     *margin = total / 20;
     m_nextMemoryCheck = m_heap->Allocator()->RegionBytesTaken() + max(available / 2, (size_t)Satori::REGION_SIZE_GRANULARITY);
     return available;
@@ -1436,8 +1446,8 @@ void SatoriRecycler::AdjustHeuristics()
     }
 
     // limit budget to available memory
-    size_t margin;
-    size_t available = CheckAvailableMemory(&margin);
+    size_t margin, toLimit;
+    size_t available = CheckAvailableMemory(&margin, &toLimit);
     if (available < m_gen1Budget)
     {
         m_gen1Budget = available;
