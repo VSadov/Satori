@@ -2674,22 +2674,20 @@ void SatoriRecycler::ScheduleMarkAsChildRanges(SatoriObject* o)
 
 bool SatoriRecycler::ScheduleUpdateAsChildRanges(SatoriObject* o)
 {
-    if (o->RawGetMethodTable()->ContainsGCPointers())
-    {
-        SatoriWorkChunk* chunk = m_heap->Allocator()->TryGetWorkChunk();
-        if (chunk == nullptr)
-        {
-            return false;
-        }
+    _ASSERTE(o->RawGetMethodTable()->ContainsGCPointers());
 
-        // Skip the method table, it is not a reference.
-        // TakeObjectRange splits the range into pieces that do not overlap, so every reference is updated once.
-        // NB: that is not needed for correctness. Updating a reference again would find it already updated,
-        //     since the new location is not in a relocated region. It would just be wasted work.
-        chunk->SetRange(o, o->Start() + sizeof(size_t), o->Start() + o->Size());
-        m_workList->Push(chunk);
+    SatoriWorkChunk* chunk = m_heap->Allocator()->TryGetWorkChunk();
+    if (chunk == nullptr)
+    {
+        return false;
     }
 
+    // Skip the method table, it is not a reference.
+    // TakeObjectRange splits the range into pieces that do not overlap, so every reference is updated once.
+    // NB: that is not needed for correctness. Updating a reference again would find it already updated,
+    //     since the new location is not in a relocated region. It would just be wasted work.
+    chunk->SetRange(o, o->Start() + sizeof(size_t), o->Start() + o->Size());
+    m_workList->Push(chunk);
     return true;
 }
 
@@ -3700,6 +3698,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                         int8_t* cards = page->CardsForGroup(i);
                         // where the previous walk in this group stopped, see FindObject
                         SatoriObject* hint = nullptr;
+                        SatoriRelocatedRefQueue<8> updateQueue;
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
                         {
                             // cards are often sparsely set, if j is aligned, check the entire size_t for 0
@@ -3747,10 +3746,9 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                             (((size_t)ppObject ^ (size_t)child) >= Satori::REGION_SIZE_GRANULARITY) &&
                                             !child->IsExternal())
                                         {
-                                            SatoriObject* newLocation;
-                                            if (child->IsRelocatedTo</*notExternal*/true>(&newLocation))
+                                            if (child->IsRelocated</*notExternal*/true>())
                                             {
-                                                VolatileStoreWithoutBarrier(ppObject, newLocation);
+                                                updateQueue.Push(ppObject, child);
                                             }
 
                                             if (child->ContainingRegion()->Generation() < 2)
@@ -3782,6 +3780,8 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                 hint = o;
                             } while (o->Start() < objLimit);
                         }
+
+                        updateQueue.Flush();
                     }
                 }
 
@@ -4807,6 +4807,7 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
     if (srcChunk)
     {
         MaybeAskForHelp();
+        SatoriRelocatedRefQueue<8> updateQueue;
         do
         {
             _ASSERTE(srcChunk->IsRange());
@@ -4820,18 +4821,15 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
 
             // update children in the range
             o->ForEachObjectRef(
-                [](SatoriObject** ppObject)
+                [&updateQueue](SatoriObject** ppObject)
                 {
                     SatoriObject* child = *ppObject;
                     // ignore common cases - child is null or in the same region
                     if (child &&
-                        (((size_t)ppObject ^ (size_t)child) >= Satori::REGION_SIZE_GRANULARITY))
+                        (((size_t)ppObject ^ (size_t)child) >= Satori::REGION_SIZE_GRANULARITY) &&
+                        child->IsRelocated())
                     {
-                        SatoriObject* newLocation;
-                        if (child->IsRelocatedTo(&newLocation))
-                        {
-                            *ppObject = newLocation;
-                        }
+                        updateQueue.Push(ppObject, child);
                     }
                 },
                 o->Size(),
@@ -4839,6 +4837,8 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
                 end,
                 /* includeCollectibleAllocator */ false);
         } while ((srcChunk = m_workList->TryPop()));
+
+        updateQueue.Flush();
     }
 }
 

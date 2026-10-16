@@ -90,4 +90,53 @@ private:
     int m_count;
 };
 
+// A small FIFO of references to relocated objects whose forwarding pointers are prefetched.
+// Each entry records the reference slot and the relocated target object, so flushing or
+// evicting the oldest entry reads the prefetched forwarding pointer without re-reading the slot.
+template <int SIZE>
+class SatoriRelocatedRefQueue
+{
+    static_assert(SIZE > 0 && (SIZE & (SIZE - 1)) == 0, "size must be a power of 2");
+
+public:
+    SatoriRelocatedRefQueue()
+        : m_head(0), m_count(0)
+    {
+    }
+
+    FORCEINLINE void Push(SatoriObject** ppObject, SatoriObject* child)
+    {
+        SatoriUtil::Prefetch((SatoriObject**)child - 1);
+        if (m_count == SIZE)
+        {
+            VolatileStoreWithoutBarrier(m_slots[m_head], m_children[m_head]->RelocatedToUnchecked());
+            m_slots[m_head] = ppObject;
+            m_children[m_head] = child;
+            m_head = (m_head + 1) & (SIZE - 1);
+            return;
+        }
+
+        int index = (m_head + m_count) & (SIZE - 1);
+        m_slots[index] = ppObject;
+        m_children[index] = child;
+        m_count++;
+    }
+
+    FORCEINLINE void Flush()
+    {
+        while (m_count > 0)
+        {
+            VolatileStoreWithoutBarrier(m_slots[m_head], m_children[m_head]->RelocatedToUnchecked());
+            m_head = (m_head + 1) & (SIZE - 1);
+            m_count--;
+        }
+    }
+
+private:
+    SatoriObject** m_slots[SIZE];
+    SatoriObject* m_children[SIZE];
+    int m_head;
+    int m_count;
+};
+
 #endif

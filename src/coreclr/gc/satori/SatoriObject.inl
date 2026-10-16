@@ -225,7 +225,7 @@ inline SatoriObject* SatoriObject::RelocatedToUnchecked()
 }
 
 template <bool notExternal>
-FORCEINLINE bool SatoriObject::IsRelocatedTo(SatoriObject** newLocation)
+FORCEINLINE bool SatoriObject::IsRelocated()
 {
     if (notExternal)
     {
@@ -236,7 +236,13 @@ FORCEINLINE bool SatoriObject::IsRelocatedTo(SatoriObject** newLocation)
         return false;
     }
 
-    if (this->ContainingRegion()->IsRelocated())
+    return this->ContainingRegion()->IsRelocated();
+}
+
+template <bool notExternal>
+FORCEINLINE bool SatoriObject::IsRelocatedTo(SatoriObject** newLocation)
+{
+    if (IsRelocated<notExternal>())
     {
         *newLocation = RelocatedToUnchecked();
         return true;
