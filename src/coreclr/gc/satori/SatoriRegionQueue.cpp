@@ -99,21 +99,23 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
 {
     m_lock.Enter();
 
-    SatoriRegion* result = m_head;
-    while (true)
+    SatoriRegion* result = nullptr;
+    for (SatoriRegion* cur = m_head; cur != nullptr; cur = cur->m_next)
     {
-        if (result == nullptr)
+        if (cur->Size() >= regionSize && (result == nullptr || cur->Size() < result->Size()))
         {
-            m_lock.Leave();
-            return nullptr;
+            result = cur;
+            if (cur->Size() == regionSize)
+            {
+                break;
+            }
         }
+    }
 
-        if (result->Size() >= regionSize)
-        {
-            break;
-        }
-
-        result = result->m_next;
+    if (result == nullptr)
+    {
+        m_lock.Leave();
+        return nullptr;
     }
 
     _ASSERTE(result->ValidateBlank());
