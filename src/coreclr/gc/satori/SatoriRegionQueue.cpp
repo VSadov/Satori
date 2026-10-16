@@ -100,12 +100,15 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
     m_lock.Enter();
 
     SatoriRegion* result = nullptr;
+    size_t resultSize = SIZE_MAX;
     for (SatoriRegion* cur = m_head; cur != nullptr; cur = cur->m_next)
     {
-        if (cur->Size() >= regionSize && (result == nullptr || cur->Size() < result->Size()))
+        size_t curSize = cur->Size();
+        if (curSize >= regionSize && curSize < resultSize)
         {
             result = cur;
-            if (cur->Size() == regionSize)
+            resultSize = curSize;
+            if (curSize == regionSize)
             {
                 break;
             }
