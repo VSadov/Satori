@@ -32,6 +32,7 @@
 #include "SatoriHeap.h"
 #include "SatoriUtil.h"
 #include "SatoriObject.h"
+#include "SatoriPrefetchQueue.h"
 
 class SatoriAllocator;
 class SatoriRegionQueue;
@@ -181,7 +182,7 @@ public:
     void IndividuallyPromote();
     void UpdateFinalizableTrackers();
     void UpdatePointers();
-    void UpdatePointersInObject(SatoriObject* o, size_t size);
+    void UpdatePointersInObject(SatoriObject* o, size_t size, SatoriRelocatedRefQueue<8>& updateQueue);
     void SetCardsForObject(SatoriObject* o, size_t size);
 
     template <bool promotingAllRegions>
