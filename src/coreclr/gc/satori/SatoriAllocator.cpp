@@ -449,6 +449,8 @@ tryAgain:
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
                 if (zeroInitialize)
                 {
+                    size_t neededSpace = moreSpace;
+
                     // Take more than needed, so that we come here less often, but zero ahead at most MinZeroInitSize,
                     // so that the zeroed memory is still in cache when we use it and not much is wasted if we stop
                     // allocating here before using it all. (the unused part goes back to the free list with a note
@@ -463,11 +465,13 @@ tryAgain:
                     }
 
                     // What is already known to be zeroed costs nothing to take.
-                    // In fresh memory that can be the rest of the region, so take at most PACE_BUDGET / 2 (64 KB):
-                    // the fast-path array allocator assumes the allocation context never exceeds LARGE_OBJECT_SIZE,
-                    // and allocation pacing runs when we come here.
-                    size_t zeroedRemaining = min(region->GetAllocZeroedRemaining(), (size_t)(Satori::PACE_BUDGET / 2));
-                    moreSpace = max(moreSpace, min(zeroedRemaining, allocRemaining));
+                    moreSpace = max(moreSpace, min(region->GetAllocZeroedRemaining(), allocRemaining));
+
+                    // The fast-path allocators take any object that fits in the allocation context, so what remains in
+                    // the context after this allocation must be less than the large object threshold. Otherwise an object
+                    // that must be allocated as large could be allocated from the context. The rounding below adds less
+                    // than INDEX_GRANULARITY. The limit also keeps allocation pacing, which runs when we come here, frequent.
+                    moreSpace = min(moreSpace, neededSpace + Satori::LARGE_OBJECT_THRESHOLD - Satori::INDEX_GRANULARITY);
 
                     // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
                     // to improve chances that the object that is allocated here will be indexed
@@ -493,6 +497,7 @@ tryAgain:
                     }
 
                     context->alloc_ptr += size;
+                    _ASSERTE((size_t)(context->alloc_limit - context->alloc_ptr) < Satori::LARGE_OBJECT_THRESHOLD);
                     result->CleanSyncBlock();
                     region->SetIndicesForObject(result, result->Start() + size);
 
