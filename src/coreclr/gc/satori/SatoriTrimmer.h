@@ -45,6 +45,7 @@ public:
     bool IsActive();
 
     void TrimNow();
+    void SetReleaseTarget(size_t bytes);
 
 private:
     static const int TRIMMER_STATE_BLOCKED = -1;
@@ -59,9 +60,12 @@ private:
     size_t       m_lastGen2Count;
     volatile int m_state;
     volatile bool m_paused;
+    // trim without delays while more than this is committed, SIZE_MAX when there is no target
+    volatile size_t m_releaseUntil;
 
     static void LoopFn(void* inst);
     void Loop();
+    bool IsReleasing();
     bool TryTrimRegion(SatoriRegion* region, bool drainsAreDone);
     void StopAndWait();
     void Pause(int msec);

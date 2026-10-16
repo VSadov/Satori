@@ -476,7 +476,15 @@ size_t SatoriGC::GetNow()
 
 Object* SatoriGC::Alloc(gc_alloc_context* acontext, size_t size, uint32_t flags)
 {
-    return m_heap->Allocator()->Alloc((SatoriAllocationContext*)acontext, size, flags);
+    Object* result = m_heap->Allocator()->Alloc((SatoriAllocationContext*)acontext, size, flags);
+    if (result == nullptr && !(flags & GC_ALLOC_IMMORTAL))
+    {
+        // Out of memory. Before we give up, compact, release all free memory and try once more.
+        m_heap->Recycler()->Collect(2, /* force */ true, /* blocking */ true, /* compact */ true, /* aggressive */ true);
+        result = m_heap->Allocator()->Alloc((SatoriAllocationContext*)acontext, size, flags);
+    }
+
+    return result;
 }
 
 void SatoriGC::PublishObject(uint8_t* obj)
