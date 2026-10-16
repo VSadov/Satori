@@ -365,7 +365,7 @@ private:
     void PushToTenuredQueues(SatoriRegion* region);
 
     void AdjustHeuristics();
-    size_t CheckAvailableMemory(size_t* margin);
+    size_t CheckAvailableMemory(size_t* margin, size_t* toLimit);
     void DeactivateAllocatingRegions();
     void RequestCollection(CollectionRequest* request, size_t requestNumber);
 
