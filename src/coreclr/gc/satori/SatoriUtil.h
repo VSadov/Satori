@@ -138,6 +138,8 @@ namespace Satori
     static const int MIN_FREELIST_CAPACITY_BITS = 11;
     static const size_t MIN_FREELIST_CAPACITY = 1 << MIN_FREELIST_CAPACITY_BITS;
     static const int FREELIST_COUNT = Satori::REGION_BITS - MIN_FREELIST_CAPACITY_BITS;
+    // free spans from this capacity up to MIN_FREELIST_CAPACITY go to a separate list, used only when memory is low.
+    static const size_t MIN_SMALL_FREELIST_CAPACITY = 256;
 
     // large bucket size is 32K+ - so that any small obj would fit
     static const int LARGE_BUCKETS = 6;

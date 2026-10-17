@@ -134,7 +134,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     // the header itself (i.e. below BITMAP_START), otherwise it would corrupt live mark bits.
     // NB: this is not implied by the assert above - that one ties BITMAP_START to the location
     //     of the first object, it does not constrain the size of the header.
-    static_assert(offsetof(SatoriRegion, m_freeListTails) + sizeof(SatoriRegion::m_freeListTails) <= BITMAP_START * sizeof(size_t),
+    static_assert(offsetof(SatoriRegion, m_smallFreeListCapacity) + sizeof(SatoriRegion::m_smallFreeListCapacity) <= BITMAP_START * sizeof(size_t),
         "SatoriRegion header does not fit in the unused part of the mark bitmap.");
 
     static_assert(Satori::FREELIST_COUNT <= sizeof(SatoriRegion::m_nonEmptyFreeLists) * 8,
@@ -435,7 +435,21 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize, size_t allocBytes)
         size_t nonEmpty = (size_t)m_nonEmptyFreeLists >> bucket;
         if (nonEmpty == 0)
         {
-            return 0;
+            // when memory is low, take a span that is too small for the free lists.
+            freeObj = m_smallFreeList;
+            if (freeObj == nullptr || freeObj->FreeObjCapacity() < minAllocSize || !Recycler()->IsMemoryLow())
+            {
+                return 0;
+            }
+
+            m_smallFreeList = freeObj->m_nextInFreeList;
+            if (m_smallFreeList == nullptr)
+            {
+                m_smallFreeListTail = nullptr;
+            }
+
+            m_smallFreeListCapacity -= freeObj->FreeObjCapacity();
+            goto hasSpan;
         }
 
         DWORD offset;
@@ -446,21 +460,25 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize, size_t allocBytes)
     }
 
 hasObj:
-    SatoriFreeListObject* next = freeObj->m_nextInFreeList;
-    m_freeLists[bucket] = next;
-    if (next == nullptr)
     {
-        m_freeListTails[bucket] = nullptr;
-        m_nonEmptyFreeLists &= (uint16_t)~(1u << bucket);
+        SatoriFreeListObject* next = freeObj->m_nextInFreeList;
+        m_freeLists[bucket] = next;
+        if (next == nullptr)
+        {
+            m_freeListTails[bucket] = nullptr;
+            m_nonEmptyFreeLists &= (uint16_t)~(1u << bucket);
+        }
+
+        m_freeListCapacities[bucket] -= freeObj->FreeObjCapacity();
+        _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
     }
 
+hasSpan:
     size_t freeObjSize = freeObj->FreeObjSize();
     _ASSERTE(freeObjSize >= minAllocSize + Satori::MIN_FREE_SIZE);
     _ASSERTE(freeObj->FreeObjCapacity() ==  freeObjSize - Satori::MIN_FREE_SIZE);
     size_t zeroedEnd = freeObj->ZeroedEnd();
 
-    m_freeListCapacities[bucket] -= (freeObjSize - Satori::MIN_FREE_SIZE);
-    _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
     m_allocStart = freeObj->Start();
     m_allocEnd = m_allocStart + freeObjSize;
     m_allocZeroedEnd = 0;
@@ -555,6 +573,11 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
     size_t capacity = size - Satori::MIN_FREE_SIZE;
     if (capacity < Satori::MIN_FREELIST_CAPACITY)
     {
+        if (capacity >= Satori::MIN_SMALL_FREELIST_CAPACITY)
+        {
+            AddSmallFreeSpace((SatoriFreeListObject*)freeObj, capacity, /* atHead */ false);
+        }
+
         return;
     }
 
@@ -595,6 +618,11 @@ void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
     size_t capacity = size - Satori::MIN_FREE_SIZE;
     if (capacity < Satori::MIN_FREELIST_CAPACITY)
     {
+        if (capacity >= Satori::MIN_SMALL_FREELIST_CAPACITY)
+        {
+            AddSmallFreeSpace((SatoriFreeListObject*)freeObj, capacity, /* atHead */ true);
+        }
+
         return;
     }
 
@@ -2802,7 +2830,13 @@ bool SatoriRegion::IsReuseCandidate()
 {
     // just ask for enough of usable capaciity to make it worthwile.
     // taking a lock when adding/removing the region to reusables
-    return FreeSpaceInTopNBuckets(Satori::FREELIST_COUNT) > Satori::REGION_SIZE_GRANULARITY / 32;
+    size_t usable = FreeSpaceInTopNBuckets(Satori::FREELIST_COUNT);
+    if (Recycler()->IsMemoryLow())
+    {
+        usable += m_smallFreeListCapacity;
+    }
+
+    return usable > Satori::REGION_SIZE_GRANULARITY / 32;
 }
 
 bool SatoriRegion::IsDemotionCandidate(bool nextGcIsFullGC)
@@ -3014,6 +3048,31 @@ void SatoriRegion::ClearFreeLists()
     // clear free lists and free list tails
     memset(m_freeListCapacities, 0, sizeof(m_freeListCapacities) + sizeof(m_freeLists) + sizeof(m_freeListTails));
     m_nonEmptyFreeLists = 0;
+    m_smallFreeList = m_smallFreeListTail = nullptr;
+    m_smallFreeListCapacity = 0;
+}
+
+// Free spans smaller than the free lists take. Allocation uses them only when memory is low (see StartAllocating),
+// but every sweep keeps them, so that they are there when memory becomes low before the next sweep.
+void SatoriRegion::AddSmallFreeSpace(SatoriFreeListObject* freeListObj, size_t capacity, bool atHead)
+{
+    _ASSERTE(capacity == freeListObj->FreeObjCapacity());
+    m_smallFreeListCapacity += capacity;
+    if (atHead || m_smallFreeList == nullptr)
+    {
+        freeListObj->m_nextInFreeList = m_smallFreeList;
+        m_smallFreeList = freeListObj;
+        if (m_smallFreeListTail == nullptr)
+        {
+            m_smallFreeListTail = freeListObj;
+        }
+
+        return;
+    }
+
+    freeListObj->m_nextInFreeList = nullptr;
+    m_smallFreeListTail->m_nextInFreeList = freeListObj;
+    m_smallFreeListTail = freeListObj;
 }
 
 void SatoriRegion::PreSweep()
