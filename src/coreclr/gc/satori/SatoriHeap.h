@@ -46,7 +46,7 @@ public:
     SatoriHeap() = delete;
     ~SatoriHeap() = delete;
 
-    static SatoriHeap* Create();
+    static SatoriHeap* Create(size_t hardLimit);
 
     bool TryAddRegularPage(SatoriPage*& newPage);
     SatoriPage* AddLargePage(size_t size);
@@ -122,11 +122,7 @@ public:
         }
     }
 
-    void IncBytesCommitted(size_t bytes)
-    {
-        Interlocked::ExchangeAdd64(&m_committedBytes, bytes);
-        _ASSERTE((ptrdiff_t)m_committedBytes > 0);
-    }
+    bool Commit(void* address, size_t size);
 
     void DecBytesCommitted(size_t bytes)
     {
@@ -137,6 +133,17 @@ public:
     size_t GetBytesCommitted()
     {
         return m_committedBytes;
+    }
+
+    // 0 when there is no limit.
+    size_t HardLimit()
+    {
+        return m_hardLimit;
+    }
+
+    void SetHardLimit(size_t hardLimit)
+    {
+        m_hardLimit = hardLimit;
     }
 
 private:
@@ -159,6 +166,7 @@ private:
     SatoriLock m_mapLock;
 
     size_t m_committedBytes;
+    size_t m_hardLimit;
 
     DECLSPEC_ALIGN(64)
     SatoriFinalizationQueue m_finalizationQueue;

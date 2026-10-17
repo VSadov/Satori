@@ -1330,8 +1330,8 @@ void SatoriRecycler::CheckMemoryBeforeAlloc(size_t allocSize)
 }
 
 // Returns the memory that is available above the reserve, the memory that is available up to the memory limit
-// in *toLimit, and the memory limit in *total.
-size_t GetAvailableMemory(size_t* total, size_t* toLimit)
+// in *toLimit, and the memory limit in *total. With a hard limit, the heap must also stay below the hard limit.
+size_t GetAvailableMemory(SatoriHeap* heap, size_t* total, size_t* toLimit)
 {
     bool isRestricted;
     uint64_t limit = GCToOSInterface::GetPhysicalMemoryLimit(&isRestricted);
@@ -1358,13 +1358,26 @@ size_t GetAvailableMemory(size_t* total, size_t* toLimit)
 #endif
 
     // Keep at least 5% free, or more when the configured threshold is lower.
-    uint64_t reserve = limit * max(5u, 100u - SatoriUtil::HighMemoryPercent()) / 100;
+    uint32_t reservePercent = max(5u, 100u - SatoriUtil::HighMemoryPercent());
+    uint64_t reserve = limit * reservePercent / 100;
     available = available > reserve ? available - reserve : 0;
 
 #ifdef TARGET_WINDOWS
     // Windows reports commit headroom; Unix reports free swap, which is not a commit limit.
     available = min(available, availableCommit);
 #endif
+
+    // Below the hard limit, keep the same reserve.
+    size_t hardLimit = heap->HardLimit();
+    if (hardLimit != 0)
+    {
+        size_t committed = heap->GetBytesCommitted();
+        size_t toHardLimit = hardLimit > committed ? hardLimit - committed : 0;
+        size_t hardReserve = hardLimit / 100 * reservePercent;
+        *total = min(*total, hardLimit);
+        *toLimit = min(*toLimit, toHardLimit);
+        available = min(available, (uint64_t)(toHardLimit > hardReserve ? toHardLimit - hardReserve : 0));
+    }
 
     return (size_t)available;
 }
@@ -1374,7 +1387,7 @@ size_t GetAvailableMemory(size_t* total, size_t* toLimit)
 size_t SatoriRecycler::CheckAvailableMemory(size_t* margin, size_t* toLimit)
 {
     size_t total;
-    size_t available = GetAvailableMemory(&total, toLimit);
+    size_t available = GetAvailableMemory(m_heap, &total, toLimit);
     *margin = total / 20;
     m_nextMemoryCheck = m_heap->Allocator()->RegionBytesTaken() + max(available / 2, (size_t)Satori::REGION_SIZE_GRANULARITY);
     return available;

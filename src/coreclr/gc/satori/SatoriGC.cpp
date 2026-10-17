@@ -316,15 +316,92 @@ size_t SatoriGC::GetLastGCGenerationSize(int gen)
     return m_heap->Recycler()->GetOccupancy(gen);
 }
 
+// Computes the GC heap hard limit from the settings in the same way as the stock GC does in
+// gc_heap::compute_hard_limit and gc_heap::compute_memory_settings. Satori has no separate object heaps,
+// so it limits the sum of the SOH, LOH and POH limits. Returns false for settings that the stock GC rejects.
+static bool ComputeHardLimit(uint64_t totalPhysicalMem, bool isRestricted, size_t* hardLimit)
+{
+    size_t limit = (size_t)GCConfig::GetGCHeapHardLimit();
+    size_t limitSoh = (size_t)GCConfig::GetGCHeapHardLimitSOH();
+    size_t limitLoh = (size_t)GCConfig::GetGCHeapHardLimitLOH();
+    size_t limitPoh = (size_t)GCConfig::GetGCHeapHardLimitPOH();
+
+    if (limitSoh || limitLoh || limitPoh)
+    {
+        if (!limitSoh || !limitLoh)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        uint32_t percentSoh = (uint32_t)GCConfig::GetGCHeapHardLimitSOHPercent();
+        uint32_t percentLoh = (uint32_t)GCConfig::GetGCHeapHardLimitLOHPercent();
+        uint32_t percentPoh = (uint32_t)GCConfig::GetGCHeapHardLimitPOHPercent();
+        if (percentSoh || percentLoh || percentPoh)
+        {
+            if (percentSoh == 0 || percentSoh >= 100 ||
+                percentLoh == 0 || percentLoh >= 100 ||
+                percentPoh >= 100 ||
+                percentSoh + percentLoh + percentPoh >= 100)
+            {
+                return false;
+            }
+
+            limitSoh = (size_t)(totalPhysicalMem * percentSoh / 100);
+            limitLoh = (size_t)(totalPhysicalMem * percentLoh / 100);
+            limitPoh = (size_t)(totalPhysicalMem * percentPoh / 100);
+        }
+    }
+
+    if (limitSoh)
+    {
+        // The stock GC allows no POH limit only with large pages, which Satori does not use.
+        if (!limitPoh)
+        {
+            return false;
+        }
+
+        limit = limitSoh + limitLoh + limitPoh;
+    }
+
+    if (!limit)
+    {
+        uint32_t percent = (uint32_t)GCConfig::GetGCHeapHardLimitPercent();
+        if (percent > 0 && percent < 100)
+        {
+            limit = (size_t)(totalPhysicalMem * percent / 100);
+        }
+    }
+
+    // In a container, the default limit is 75% of the container memory.
+    if (!limit && isRestricted)
+    {
+        limit = (size_t)max((uint64_t)20 * 1024 * 1024, totalPhysicalMem * 75 / 100);
+    }
+
+    *hardLimit = limit;
+    return true;
+}
+
 HRESULT SatoriGC::Initialize()
 {
     g_totalPhysicalMem = GCToOSInterface::GetPhysicalMemoryLimit(&g_isRestrictedPhysicalMem);
     GCConfig::SetGCHighMemPercent(SatoriUtil::HighMemoryPercent());
 
+    size_t hardLimit;
+    if (!ComputeHardLimit(g_totalPhysicalMem, g_isRestrictedPhysicalMem, &hardLimit))
+    {
+        GCToEEInterface::LogErrorToHost("The heap hard limit settings are not valid.");
+        return CLR_E_GC_BAD_HARD_LIMIT;
+    }
+
+    GCConfig::SetGCHeapHardLimit((int64_t)hardLimit);
+
     SatoriUtil::Initialize();
     SatoriObject::Initialize();
     SatoriHandlePartitioner::Initialize();
-    m_heap = SatoriHeap::Create();
+    m_heap = SatoriHeap::Create(hardLimit);
     if (m_heap == nullptr)
     {
         return E_OUTOFMEMORY;
@@ -771,7 +848,7 @@ void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* tota
 
     uint64_t totalLimit = g_totalPhysicalMem;
     *highMemLoadThresholdBytes = totalLimit * SatoriUtil::HighMemoryPercent() / 100;
-    *totalAvailableMemoryBytes = totalLimit;
+    *totalAvailableMemoryBytes = m_heap->HardLimit() != 0 ? m_heap->HardLimit() : totalLimit;
 
     uint32_t memLoad = GetMemoryLoad();
     *lastRecordedMemLoadBytes = memLoad * totalLimit / 100;
@@ -923,7 +1000,25 @@ void SatoriGC::BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteC
 
 int SatoriGC::RefreshMemoryLimit()
 {
-    return 0;
+    bool isRestricted;
+    uint64_t totalPhysicalMem = GCToOSInterface::GetPhysicalMemoryLimit(&isRestricted);
+
+    GCConfig::RefreshHeapHardLimitSettings();
+    size_t hardLimit;
+    if (!ComputeHardLimit(totalPhysicalMem, isRestricted, &hardLimit))
+    {
+        return refresh_hard_limit_invalid;
+    }
+
+    if (hardLimit != 0 && hardLimit < m_heap->GetBytesCommitted())
+    {
+        return refresh_hard_limit_too_low;
+    }
+
+    g_totalPhysicalMem = totalPhysicalMem;
+    g_isRestrictedPhysicalMem = isRestricted;
+    m_heap->SetHardLimit(hardLimit);
+    return refresh_success;
 }
 
 enable_no_gc_region_callback_status SatoriGC::EnableNoGCRegionCallback(NoGCRegionCallbackFinalizerWorkItem* callback, uint64_t callback_threshold)

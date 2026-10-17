@@ -119,13 +119,12 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     if (committed < minCommitted)
     {
         size_t toCommit = minCommitted - committed;
-        if (!GCToOSInterface::VirtualCommit((void*)committed, toCommit))
+        if (!containingPage->Heap()->Commit((void*)committed, toCommit))
         {
             // OOM
             return nullptr;
         }
 
-        containingPage->Heap()->IncBytesCommitted(toCommit);
         committed = minCommitted;
     }
 
@@ -847,9 +846,8 @@ void SatoriRegion::TryCommit()
     if (m_committed < m_end)
     {
         size_t toCommit =  m_end - m_committed;
-        if (GCToOSInterface::VirtualCommit((void*)m_committed, toCommit))
+        if (m_containingPage->Heap()->Commit((void*)m_committed, toCommit))
         {
-            m_containingPage->Heap()->IncBytesCommitted(toCommit);
             m_committed = m_end;
         }
     }
@@ -898,12 +896,11 @@ size_t SatoriRegion::AllocateDirty(size_t size, size_t* dirtyStart, size_t* dirt
         {
             size_t newComitted = ALIGN_UP(ensureCommitted, SatoriUtil::CommitGranularity());
             size_t toCommit = newComitted - m_committed;
-            if (!GCToOSInterface::VirtualCommit((void*)m_committed, toCommit))
+            if (!m_containingPage->Heap()->Commit((void*)m_committed, toCommit))
             {
                 return 0;
             }
 
-            m_containingPage->Heap()->IncBytesCommitted(toCommit);
             m_committed = newComitted;
         }
 
@@ -956,12 +953,11 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
         size_t newComitted = ALIGN_UP(ensureCommitted, GCToOSInterface::GetPageSize());
         _ASSERTE(newComitted <= End());
         size_t toCommit = newComitted - m_committed;
-        if (!GCToOSInterface::VirtualCommit((void*)m_committed, toCommit))
+        if (!m_containingPage->Heap()->Commit((void*)m_committed, toCommit))
         {
             return 0;
         }
 
-        m_containingPage->Heap()->IncBytesCommitted(toCommit);
         m_committed = newComitted;
     }
 
