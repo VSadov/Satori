@@ -102,6 +102,7 @@ SatoriHeap* SatoriHeap::Create(size_t hardLimit)
     heap->m_hardLimit = hardLimit;
     InitWriteBarrier(heap->m_pageMap, s_pageByteMap, heap->CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
     heap->m_mapLock.Initialize();
+    heap->m_commitLock.Initialize();
     heap->m_nextPageIndex = 1;
     heap->m_usedMapLength = 1;
 
@@ -141,22 +142,16 @@ bool SatoriHeap::CommitMoreMap(size_t currentCommittedMapSize)
 // Commits memory and counts it in the committed bytes. Fails if that would go past the hard limit.
 bool SatoriHeap::Commit(void* address, size_t size)
 {
-    // count first, so that concurrent commits cannot go past the limit together.
-    size_t committed = m_committedBytes;
-    while (true)
+    // Reserve the bytes before committing, under the same lock as changes to the limit.
     {
+        SatoriLockHolder holder(&m_commitLock);
+        size_t committed = m_committedBytes;
         if (m_hardLimit != 0 && committed + size > m_hardLimit)
         {
             return false;
         }
 
-        size_t prev = Interlocked::CompareExchange(&m_committedBytes, committed + size, committed);
-        if (prev == committed)
-        {
-            break;
-        }
-
-        committed = prev;
+        Interlocked::ExchangeAdd64(&m_committedBytes, size);
     }
 
     if (!GCToOSInterface::VirtualCommit(address, size))
@@ -165,6 +160,18 @@ bool SatoriHeap::Commit(void* address, size_t size)
         return false;
     }
 
+    return true;
+}
+
+bool SatoriHeap::TrySetHardLimit(size_t hardLimit)
+{
+    SatoriLockHolder holder(&m_commitLock);
+    if (hardLimit != 0 && hardLimit < m_committedBytes)
+    {
+        return false;
+    }
+
+    VolatileStore(&m_hardLimit, hardLimit);
     return true;
 }
 

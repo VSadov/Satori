@@ -848,7 +848,8 @@ void SatoriGC::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes, uint64_t* tota
 
     uint64_t totalLimit = g_totalPhysicalMem;
     *highMemLoadThresholdBytes = totalLimit * SatoriUtil::HighMemoryPercent() / 100;
-    *totalAvailableMemoryBytes = m_heap->HardLimit() != 0 ? m_heap->HardLimit() : totalLimit;
+    size_t hardLimit = m_heap->HardLimit();
+    *totalAvailableMemoryBytes = hardLimit != 0 ? hardLimit : totalLimit;
 
     uint32_t memLoad = GetMemoryLoad();
     *lastRecordedMemLoadBytes = memLoad * totalLimit / 100;
@@ -1010,14 +1011,13 @@ int SatoriGC::RefreshMemoryLimit()
         return refresh_hard_limit_invalid;
     }
 
-    if (hardLimit != 0 && hardLimit < m_heap->GetBytesCommitted())
+    if (!m_heap->TrySetHardLimit(hardLimit))
     {
         return refresh_hard_limit_too_low;
     }
 
     g_totalPhysicalMem = totalPhysicalMem;
     g_isRestrictedPhysicalMem = isRestricted;
-    m_heap->SetHardLimit(hardLimit);
     return refresh_success;
 }
 

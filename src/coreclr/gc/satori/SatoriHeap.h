@@ -138,13 +138,10 @@ public:
     // 0 when there is no limit.
     size_t HardLimit()
     {
-        return m_hardLimit;
+        return VolatileLoad(&m_hardLimit);
     }
 
-    void SetHardLimit(size_t hardLimit)
-    {
-        m_hardLimit = hardLimit;
-    }
+    bool TrySetHardLimit(size_t hardLimit);
 
 private:
     // We need to cover the whole addressable space, but no need to handle inaccessible VA.
@@ -164,6 +161,7 @@ private:
     size_t m_usedMapLength;
     size_t m_nextPageIndex;
     SatoriLock m_mapLock;
+    SatoriLock m_commitLock;
 
     size_t m_committedBytes;
     size_t m_hardLimit;
