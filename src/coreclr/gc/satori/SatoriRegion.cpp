@@ -436,16 +436,39 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize, size_t allocBytes)
         if (nonEmpty == 0)
         {
             // when memory is low, take a span that is too small for the free lists.
-            freeObj = m_smallFreeList;
-            if (freeObj == nullptr || freeObj->FreeObjCapacity() < minAllocSize || !Recycler()->IsMemoryLow())
+            if (minAllocSize >= Satori::MIN_FREELIST_CAPACITY || !Recycler()->IsMemoryLow())
             {
                 return 0;
             }
 
-            m_smallFreeList = freeObj->m_nextInFreeList;
-            if (m_smallFreeList == nullptr)
+            SatoriFreeListObject* previous = nullptr;
+            for (freeObj = m_smallFreeList; freeObj != nullptr; freeObj = freeObj->m_nextInFreeList)
             {
-                m_smallFreeListTail = nullptr;
+                if (freeObj->FreeObjCapacity() >= minAllocSize)
+                {
+                    break;
+                }
+
+                previous = freeObj;
+            }
+
+            if (freeObj == nullptr)
+            {
+                return 0;
+            }
+
+            if (previous != nullptr)
+            {
+                previous->m_nextInFreeList = freeObj->m_nextInFreeList;
+            }
+            else
+            {
+                m_smallFreeList = freeObj->m_nextInFreeList;
+            }
+
+            if (m_smallFreeListTail == freeObj)
+            {
+                m_smallFreeListTail = previous;
             }
 
             m_smallFreeListCapacity -= freeObj->FreeObjCapacity();
