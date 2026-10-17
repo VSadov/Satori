@@ -89,6 +89,7 @@ public:
 
     void AddFreeSpace(SatoriObject* freeObj, size_t size);
     void ReturnFreeSpace(SatoriObject * freeObj, size_t size);
+    void AddSmallFreeSpace(SatoriFreeListObject* freeListObj, size_t capacity, bool atHead);
 
     int GetMaxFreeBucket();
     bool HasFreeSpaceInTopBucket();
@@ -387,6 +388,11 @@ private:
             size_t m_freeListCapacities[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeListTails[Satori::FREELIST_COUNT];
+
+            // free spans smaller than the free lists take, see AddFreeSpace
+            SatoriFreeListObject* m_smallFreeList;
+            SatoriFreeListObject* m_smallFreeListTail;
+            size_t m_smallFreeListCapacity;
         };
     };
 

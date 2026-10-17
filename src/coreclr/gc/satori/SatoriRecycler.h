@@ -78,6 +78,12 @@ public:
 
     bool& IsLowLatencyMode();
 
+    // less than the margin is left above the high memory threshold, see AdjustHeuristics
+    bool IsMemoryLow()
+    {
+        return m_isMemoryLow;
+    }
+
     void Collect(int generation, bool force, bool blocking, bool compact = false, bool aggressive = false);
     int GetCondemnedGeneration();
     int GetRootScanTicket();
@@ -297,6 +303,7 @@ private:
 
     // set when memory is low, see AdjustHeuristics
     size_t m_releaseTarget;
+    bool m_isMemoryLow;
     size_t m_committedAfterTrim;
     // the value of RegionBytesTaken at which CheckMemoryBeforeAlloc reads the memory status again
     size_t m_nextMemoryCheck;

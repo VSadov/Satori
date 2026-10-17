@@ -158,6 +158,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_prevCondemnedGeneration = 2;
     m_gcNextTimeTarget = 0;
     m_releaseTarget = 0;
+    m_isMemoryLow = false;
     m_committedAfterTrim = 0;
     m_nextMemoryCheck = 0;
 
@@ -1486,9 +1487,10 @@ void SatoriRecycler::AdjustHeuristics()
 
     // Closer than the margin to the threshold, allocations must use the free space in the heap instead of
     // new memory, also in regions that do not relocate (pinned or more than half full). Offer every region
-    // that has free-list space for reuse. The next GC is then a full GC, so that gen2 regions demote without
-    // tracking their objects (see TryDemote).
-    if (available < margin)
+    // that has free-list space for reuse, also the free spans too small for the free lists (see StartAllocating).
+    // The next GC is then a full GC, so that gen2 regions demote without tracking their objects (see TryDemote).
+    m_isMemoryLow = available < margin;
+    if (m_isMemoryLow)
     {
         m_reusableLimit = INT64_MAX;
         m_nextGcIsFullGc = true;
