@@ -245,8 +245,11 @@ size_t SatoriGC::GetCurrentObjSize()
 uint64_t SatoriGC::GetTotalAllocatedBytes()
 {
     // monotonically increasing number produced by allocator when allocating objects.
-    // threads know their number and we update the total when doing GCs
-    return m_heap->Recycler()->GetTotalAllocatedBytes();
+    // threads count their allocations and publish the counts to shared counters as they allocate.
+    // this is the sum of those counters. it does not include what threads have allocated since
+    // they published last time - up to PACE_BUDGET or so per thread and kind of allocations.
+    // (see SatoriAllocator::PublishAllocatedBytes)
+    return m_heap->Allocator()->GetTotalAllocatedBytes();
 }
 
 HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
@@ -424,8 +427,10 @@ uint32_t SatoriGC::WaitUntilGCComplete(bool bConsiderGCStart)
 void SatoriGC::FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
 {
     // this is only called when thread is terminating and about to clear its context.
-    ((SatoriAllocationContext*)acontext)->Deactivate(m_heap->Recycler(), /*detach*/ true);
-    m_heap->Recycler()->ReportThreadAllocBytes(acontext->alloc_bytes + acontext->alloc_bytes_uoh, /*isLive*/ false);
+    // NB: it is called on the terminating thread itself.
+    SatoriAllocationContext* context = (SatoriAllocationContext*)acontext;
+    context->Deactivate(m_heap->Recycler(), /*detach*/ true);
+    m_heap->Allocator()->PublishAllocatedBytesOnThreadExit(context);
 }
 
 void SatoriGC::SetGCInProgress(bool fInProgress)

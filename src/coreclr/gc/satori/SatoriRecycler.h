@@ -101,9 +101,6 @@ public:
     SatoriRegion* TryGetReusable();
     SatoriRegion* TryGetReusableForLarge();
 
-    void ReportThreadAllocBytes(int64_t bytes, bool isLive);
-    int64_t GetTotalAllocatedBytes();
-
     void RecordOccupancy(int generation, size_t size);
     void RecordDemotedOccupancy(ptrdiff_t demotedOccupancy);
     void UpdateGenerationOccupancies();
@@ -302,10 +299,6 @@ private:
     size_t m_estimatedEphemeralReclaim;
     size_t m_estimatedTenuredReclaim;
     size_t m_promotionEstimate;
-
-    int64_t m_currentAllocBytesLiveThreads;
-    int64_t m_currentAllocBytesDeadThreads;
-    int64_t m_totalAllocBytes;
 
     int64_t m_osTicksPerMilli;
     int64_t m_osTicksPerMicro;

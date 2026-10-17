@@ -998,14 +998,12 @@ extern "C" INT64 QCALLTYPE GCInterface_GetTotalAllocatedBytesPrecise()
 
     BEGIN_QCALL;
 
-    GCX_COOP();
-
 #if FEATURE_SATORI_GC
-
-    GCHeapUtilities::GetGCHeap()->GarbageCollect(1);
-
+    // TODO: Satori: the precise count is NYI. For now it is the same as the approximate one.
     allocated = GCHeapUtilities::GetGCHeap()->GetTotalAllocatedBytes();
 #else
+    GCX_COOP();
+
     // We need to suspend/restart the EE to get each thread's
     // non-allocated memory from their allocation contexts
 

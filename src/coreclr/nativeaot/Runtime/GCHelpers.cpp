@@ -474,13 +474,7 @@ EXTERN_C void QCALLTYPE RhEnableNoGCRegionCallback(NoGCRegionCallbackFinalizerWo
 EXTERN_C int64_t QCALLTYPE RhGetTotalAllocatedBytesPrecise()
 {
 #if FEATURE_SATORI_GC
-    Thread* pThread = ThreadStore::GetCurrentThread();
-    pThread->DeferTransitionFrame();
-    pThread->DisablePreemptiveMode();
-
-    GCHeapUtilities::GetGCHeap()->GarbageCollect(1);
-
-    pThread->EnablePreemptiveMode();
+    // TODO: Satori: the precise count is NYI. For now it is the same as the approximate one.
     return GCHeapUtilities::GetGCHeap()->GetTotalAllocatedBytes();
 #else
     int64_t allocated;
