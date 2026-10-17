@@ -65,7 +65,7 @@ private:
 
     static void LoopFn(void* inst);
     void Loop();
-    bool IsReleasing();
+    bool IsReleasing(size_t releaseUntil = SIZE_MAX);
     bool TryTrimRegion(SatoriRegion* region, bool drainsAreDone);
     void StopAndWait();
     void Pause(int msec);

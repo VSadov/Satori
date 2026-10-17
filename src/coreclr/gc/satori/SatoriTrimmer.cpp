@@ -71,13 +71,13 @@ void SatoriTrimmer::Unpause()
 void SatoriTrimmer::SetReleaseTarget(size_t bytes)
 {
     size_t committed = m_heap->GetBytesCommitted();
-    m_releaseUntil = committed > bytes ? committed - bytes : 0;
+    Interlocked::Exchange(&m_releaseUntil, committed > bytes ? committed - bytes : 0);
     Unpause();
 }
 
-bool SatoriTrimmer::IsReleasing()
+bool SatoriTrimmer::IsReleasing(size_t releaseUntil)
 {
-    return m_heap->GetBytesCommitted() > m_releaseUntil;
+    return m_heap->GetBytesCommitted() > min(releaseUntil, VolatileLoad(&m_releaseUntil));
 }
 
 void SatoriTrimmer::LoopFn(void* inst)
@@ -108,13 +108,13 @@ void SatoriTrimmer::Loop()
             StopAndWait();
         }
 
-        // a release target that a GC sets while we scan is kept for the next pass
-        size_t releaseUntil = m_releaseUntil;
+        // Leave requests received during this pass for the next pass.
+        size_t releaseUntil = Interlocked::Exchange(&m_releaseUntil, (size_t)SIZE_MAX);
         m_heap->ForEachPage(
             [&](SatoriPage* page)
             {
                 // limit the rate of scanning to 1 page/msec.
-                if (!IsReleasing())
+                if (!IsReleasing(releaseUntil))
                 {
                     Pause(1);
                 }
@@ -132,7 +132,7 @@ void SatoriTrimmer::Loop()
                         if (TryTrimRegion(region, /* drainsAreDone */ false))
                         {
                             // limit the decommit/coalesce rate to 1 region/10 msec.
-                            if (!IsReleasing())
+                            if (!IsReleasing(releaseUntil))
                             {
                                 Pause(10);
                             }
@@ -149,7 +149,7 @@ void SatoriTrimmer::Loop()
                         if (newGen1 != lastGen1)
                         {
                             lastGen1 = newGen1;
-                            if (!IsReleasing())
+                            if (!IsReleasing(releaseUntil))
                             {
                                 Pause(1000);
                             }
@@ -163,8 +163,6 @@ void SatoriTrimmer::Loop()
                 );
             }
         );
-
-        Interlocked::CompareExchange(&m_releaseUntil, (size_t)SIZE_MAX, releaseUntil);
     }
 }
 
