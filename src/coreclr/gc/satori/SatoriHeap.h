@@ -46,7 +46,7 @@ public:
     SatoriHeap() = delete;
     ~SatoriHeap() = delete;
 
-    static SatoriHeap* Create();
+    static SatoriHeap* Create(size_t hardLimit);
 
     bool TryAddRegularPage(SatoriPage*& newPage);
     SatoriPage* AddLargePage(size_t size);
@@ -122,11 +122,7 @@ public:
         }
     }
 
-    void IncBytesCommitted(size_t bytes)
-    {
-        Interlocked::ExchangeAdd64(&m_committedBytes, bytes);
-        _ASSERTE((ptrdiff_t)m_committedBytes > 0);
-    }
+    bool Commit(void* address, size_t size);
 
     void DecBytesCommitted(size_t bytes)
     {
@@ -138,6 +134,14 @@ public:
     {
         return m_committedBytes;
     }
+
+    // 0 when there is no limit.
+    size_t HardLimit()
+    {
+        return VolatileLoad(&m_hardLimit);
+    }
+
+    bool TrySetHardLimit(size_t hardLimit);
 
 private:
     // We need to cover the whole addressable space, but no need to handle inaccessible VA.
@@ -157,8 +161,10 @@ private:
     size_t m_usedMapLength;
     size_t m_nextPageIndex;
     SatoriLock m_mapLock;
+    SatoriLock m_commitLock;
 
     size_t m_committedBytes;
+    size_t m_hardLimit;
 
     DECLSPEC_ALIGN(64)
     SatoriFinalizationQueue m_finalizationQueue;

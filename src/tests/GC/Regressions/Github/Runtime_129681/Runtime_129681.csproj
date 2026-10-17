@@ -2,8 +2,7 @@
   <PropertyGroup>
     <RequiresProcessIsolation>true</RequiresProcessIsolation>
     <CLRTestPriority>1</CLRTestPriority>
-    <!-- Requires stock GCHeapHardLimit enforcement, which Satori and Mono do not implement. -->
-    <DisableProjectBuild>true</DisableProjectBuild>
+    <DisableProjectBuild Condition="'$(RuntimeFlavor)' == 'mono'">true</DisableProjectBuild>
     <!-- CrossGen2 reserves 6 GiB for regions which exceeds the 64 MiB hard limit - https://github.com/dotnet/runtime/issues/132062 -->
     <CrossGenTest>false</CrossGenTest>
 

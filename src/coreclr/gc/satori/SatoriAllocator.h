@@ -54,6 +54,8 @@ public:
     Object* Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     SatoriRegion* GetRegion(size_t minSize);
+    // the size of all regions that GetRegion returned
+    size_t RegionBytesTaken() { return m_regionBytesTaken; }
     void AddRegion(SatoriRegion* region);
     void ReturnRegion(SatoriRegion* region);
 
@@ -61,6 +63,7 @@ public:
     void AllocationTickDecrement(size_t totalUnused);
 
     SatoriWorkChunk* TryGetWorkChunk();
+    void ResetWorkChunkFailure() { m_workChunkRegionFailed = false; }
     SatoriWorkChunk* GetWorkChunk();
     void ReturnWorkChunk(SatoriWorkChunk* chunk);
     void ReturnWorkChunks(SatoriWorkChunk* first, SatoriWorkChunk* last);
@@ -101,9 +104,17 @@ private:
     DECLSPEC_ALIGN(64)
     size_t m_smallAllocTickAmount;
 
+    DECLSPEC_ALIGN(64)
+    size_t m_regionBytesTaken;
+
 private:
     DECLSPEC_ALIGN(64)
     volatile int32_t m_singePageAdders;
+
+    // set when TryGetWorkChunk could not get a region, until the next GC starts or ends
+    bool m_workChunkRegionFailed;
+
+    SatoriRegion* GetRegionCore(size_t regionSize);
 
     void UpdateAllocStatsAndHelpIfNeeded(SatoriAllocationContext * context);
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);
