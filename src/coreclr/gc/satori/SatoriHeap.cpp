@@ -73,7 +73,7 @@ static void UpdateWriteBarrier(void* pageMap, void* pageByteMap, size_t highest_
     GCToEEInterface::StompWriteBarrier(&args);
 }
 
-SatoriHeap* SatoriHeap::Create()
+SatoriHeap* SatoriHeap::Create(size_t hardLimit)
 {
     const int mapSize = (1 << pageCountBits) * sizeof(SatoriPage*);
     size_t reserveSize = mapSize + offsetof(SatoriHeap, m_pageMap);
@@ -99,6 +99,7 @@ SatoriHeap* SatoriHeap::Create()
     heap->m_reservedMapSize = mapSize;
     heap->m_committedMapSize = commitSize - offsetof(SatoriHeap, m_pageMap);
     heap->m_committedBytes = commitSize;
+    heap->m_hardLimit = hardLimit;
     InitWriteBarrier(heap->m_pageMap, s_pageByteMap, heap->CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
     heap->m_mapLock.Initialize();
     heap->m_nextPageIndex = 1;
@@ -121,11 +122,10 @@ bool SatoriHeap::CommitMoreMap(size_t currentCommittedMapSize)
         void* commitFrom = (void*)((size_t)&m_pageMap + currentCommittedMapSize);
         size_t commitSize = SatoriUtil::CommitGranularity();
         _ASSERTE(m_committedMapSize + commitSize <= m_reservedMapSize);
-        if (GCToOSInterface::VirtualCommit(commitFrom, commitSize))
+        if (Commit(commitFrom, commitSize))
         {
             // we did the commit
             m_committedMapSize += commitSize;
-            IncBytesCommitted(commitSize);
             UpdateWriteBarrier(m_pageMap, s_pageByteMap, CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
         }
     }
@@ -136,6 +136,36 @@ bool SatoriHeap::CommitMoreMap(size_t currentCommittedMapSize)
 
     // either we did commit or someone else did, otherwise this is a failure.
     return m_committedMapSize > currentCommittedMapSize;
+}
+
+// Commits memory and counts it in the committed bytes. Fails if that would go past the hard limit.
+bool SatoriHeap::Commit(void* address, size_t size)
+{
+    // count first, so that concurrent commits cannot go past the limit together.
+    size_t committed = m_committedBytes;
+    while (true)
+    {
+        if (m_hardLimit != 0 && committed + size > m_hardLimit)
+        {
+            return false;
+        }
+
+        size_t prev = Interlocked::CompareExchange(&m_committedBytes, committed + size, committed);
+        if (prev == committed)
+        {
+            break;
+        }
+
+        committed = prev;
+    }
+
+    if (!GCToOSInterface::VirtualCommit(address, size))
+    {
+        DecBytesCommitted(size);
+        return false;
+    }
+
+    return true;
 }
 
 bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)

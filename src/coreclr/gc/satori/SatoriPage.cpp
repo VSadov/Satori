@@ -57,14 +57,13 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
         pageSize :
         ALIGN_UP(cardTableSize, SatoriUtil::CommitGranularity());
 
-    if (!GCToOSInterface::VirtualCommit((void*)address, commitSize))
+    if (!heap->Commit((void*)address, commitSize))
     {
         GCToOSInterface::VirtualRelease(result, pageSize);
         commitFailed = true;
         return nullptr;
     }
 
-    heap->IncBytesCommitted(commitSize);
     result->m_end = address + pageSize;
     result->m_firstRegion = address + cardTableSize;
     result->m_initialCommit = address + commitSize;
