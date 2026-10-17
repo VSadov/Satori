@@ -20,6 +20,11 @@ namespace Refresh
                 {
                     return true;
                 }
+                // Satori uses regions too, but it does not report GCRegionRange.
+                if (GC.GetConfigurationVariables().TryGetValue("SatoriGC", out object? satori) && satori is true)
+                {
+                    return true;
+                }
                 return false;
             }
         }
