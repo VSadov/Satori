@@ -95,25 +95,32 @@ SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*
     return result;
 }
 
-SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegion*& putBack)
+SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegion*& putBack, size_t maxRegions)
 {
     m_lock.Enter();
 
-    SatoriRegion* result = m_head;
-    while (true)
+    // Limit the search unless the allocator could not get memory elsewhere.
+    // Freed regions are pushed to the head, so the recently freed ones are among them.
+    SatoriRegion* result = nullptr;
+    size_t resultSize = SIZE_MAX;
+    for (SatoriRegion* cur = m_head; cur != nullptr && maxRegions > 0; cur = cur->m_next, maxRegions--)
     {
-        if (result == nullptr)
+        size_t curSize = cur->Size();
+        if (curSize >= regionSize && curSize < resultSize)
         {
-            m_lock.Leave();
-            return nullptr;
+            result = cur;
+            resultSize = curSize;
+            if (curSize == regionSize)
+            {
+                break;
+            }
         }
+    }
 
-        if (result->Size() >= regionSize)
-        {
-            break;
-        }
-
-        result = result->m_next;
+    if (result == nullptr)
+    {
+        m_lock.Leave();
+        return nullptr;
     }
 
     _ASSERTE(result->ValidateBlank());

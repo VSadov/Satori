@@ -177,7 +177,12 @@ tryAgain:
                 region = putBack->TrySplit(regionSize);
                 AddRegion(putBack);
                 Interlocked::Decrement(&m_singePageAdders);
-                return region;
+                if (region)
+                {
+                    return region;
+                }
+
+                goto allocationFailed;
             }
 
             // Someone added a page, but not us. There could be more regions.
@@ -209,8 +214,26 @@ tryAgain:
                 }
             }
 
-            return region;
+            if (region)
+            {
+                return region;
+            }
         }
+    }
+
+allocationFailed:
+    // The bounded search may have skipped a region that fits.
+    bucket = SizeToBucket(regionSize);
+    if (bucket != 0)
+    {
+        putBack = nullptr;
+        region = m_queues[bucket]->TryRemoveWithSize(regionSize, putBack, SIZE_MAX);
+        if (putBack)
+        {
+            AddRegion(putBack);
+        }
+
+        return region;
     }
 
     // most likely OOM
