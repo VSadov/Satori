@@ -63,6 +63,7 @@ public:
     void AllocationTickDecrement(size_t totalUnused);
 
     SatoriWorkChunk* TryGetWorkChunk();
+    void ResetWorkChunkFailure() { m_workChunkRegionFailed = false; }
     SatoriWorkChunk* GetWorkChunk();
     void ReturnWorkChunk(SatoriWorkChunk* chunk);
     void ReturnWorkChunks(SatoriWorkChunk* first, SatoriWorkChunk* last);
@@ -109,6 +110,9 @@ private:
 private:
     DECLSPEC_ALIGN(64)
     volatile int32_t m_singePageAdders;
+
+    // set when TryGetWorkChunk could not get a region, until the next GC starts or ends
+    bool m_workChunkRegionFailed;
 
     SatoriRegion* GetRegionCore(size_t regionSize);
 

@@ -79,6 +79,7 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     m_regularAllocLock.Initialize();
 
     m_singePageAdders = 0;
+    m_workChunkRegionFailed = false;
     m_regionBytesTaken = 0;
 }
 
@@ -1331,8 +1332,16 @@ SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
 #endif
     SatoriWorkChunk* chunk = m_workChunks->TryPop();
 
-    while (!chunk && AddMoreWorkChunks())
+    // When no region can be had, for example at the heap hard limit, do not try again for every object.
+    // Each try goes through the region queues, and the callers handle a missing chunk.
+    while (!chunk && !m_workChunkRegionFailed)
     {
+        if (!AddMoreWorkChunks())
+        {
+            m_workChunkRegionFailed = true;
+            break;
+        }
+
         chunk = m_workChunks->TryPop();
     }
 

@@ -543,6 +543,7 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
     if (Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
     {
         VolatileStore(&m_gcStartSequence, m_gcStartSequence + 1);
+        m_heap->Allocator()->ResetWorkChunkFailure();
 
         CollectionRequest& gen1Request = m_compactionRequests[0];
         CollectionRequest& gen2Request = m_compactionRequests[1];
@@ -1786,6 +1787,7 @@ void SatoriRecycler::BlockingCollectImpl()
 
     m_prevCondemnedGeneration = m_condemnedGeneration;
     m_condemnedGeneration = 0;
+    m_heap->Allocator()->ResetWorkChunkFailure();
     m_gcState = GC_STATE_NONE;
 
     if (SatoriUtil::IsConcurrentEnabled() && !m_deferredSweepRegions->IsEmpty())
