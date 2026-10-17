@@ -1484,6 +1484,16 @@ void SatoriRecycler::AdjustHeuristics()
     // the budget is final, allow parking reusables against it again
     m_reusableLimit = (int64_t)(m_gen1Budget / 100 * m_reusableTargetPercent);
 
+    // Closer than the margin to the threshold, allocations must use the free space in the heap instead of
+    // new memory, also in regions that do not relocate (pinned or more than half full). Offer every region
+    // that has free-list space for reuse. The next GC is then a full GC, so that gen2 regions demote without
+    // tracking their objects (see TryDemote).
+    if (available < margin)
+    {
+        m_reusableLimit = INT64_MAX;
+        m_nextGcIsFullGc = true;
+    }
+
     // now figure if we will promote
     m_promoteAllRegions = false;
     size_t promotionEstimate = m_promotionEstimate;
