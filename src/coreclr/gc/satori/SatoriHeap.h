@@ -126,14 +126,15 @@ public:
 
     void DecBytesCommitted(size_t bytes)
     {
-        Interlocked::ExchangeAdd64(&m_committedBytes, (size_t)(-(ptrdiff_t)bytes));
-        _ASSERTE((ptrdiff_t)m_committedBytes > 0);
+        size_t previous = Interlocked::ExchangeAdd64(&m_commitCharge, (size_t)(-(ptrdiff_t)bytes));
+        _ASSERTE(previous > bytes);
     }
 
-    size_t GetBytesCommitted()
-    {
-        return m_committedBytes;
-    }
+    size_t GetBytesCommitted();
+    void ReleaseThreadBudget();
+    void AccountRegionAllocation(size_t size);
+    bool TryClaimMemoryCheck(size_t size);
+    void SetMemoryCheckBudget(size_t bytes);
 
     // 0 when there is no limit.
     size_t HardLimit()
@@ -160,16 +161,43 @@ private:
     size_t m_committedMapSize;
     size_t m_usedMapLength;
     size_t m_nextPageIndex;
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     SatoriLock m_mapLock;
-    SatoriLock m_commitLock;
 
-    size_t m_committedBytes;
+    struct DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY) AllocationBudget
+    {
+        size_t m_commitBytes;
+        size_t m_regionBytes;
+        AllocationBudget* m_next;
+        AllocationBudget* m_previous;
+        void* m_storage;
+    };
+
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
+    SatoriLock m_budgetLock;
+    AllocationBudget* m_allocationBudgets;
+    // Includes unused allowances and commits in progress.
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
+    size_t m_commitCharge;
+    // Upper bound; local consumption does not update this field.
+    size_t m_unusedCommitBudget;
+    size_t m_memoryCheckBudget;
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     size_t m_hardLimit;
+    // 0: allowance available, 1: check requested, 2: check in progress.
+    int m_memoryCheckState;
 
-    DECLSPEC_ALIGN(64)
+    static thread_local AllocationBudget* t_allocationBudget;
+    AllocationBudget* GetAllocationBudget();
+    bool ReserveCommit(AllocationBudget* budget, size_t size);
+    void ReclaimCommitBudget();
+    void ReclaimRegionBudget();
+    bool RefillRegionBudget(AllocationBudget* budget, size_t size, bool consume);
+
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     SatoriFinalizationQueue m_finalizationQueue;
 
-    DECLSPEC_ALIGN(64)
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     int8_t m_pageByteMap[1 << pageCountBits]{};
     static int8_t* s_pageByteMap;
 

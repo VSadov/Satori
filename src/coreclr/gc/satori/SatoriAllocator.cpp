@@ -80,7 +80,6 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
 
     m_singePageAdders = 0;
     m_workChunkRegionFailed = false;
-    m_regionBytesTaken = 0;
 }
 
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
@@ -88,7 +87,7 @@ SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
     SatoriRegion* region = GetRegionCore(regionSize);
     if (region)
     {
-        Interlocked::ExchangeAdd64(&m_regionBytesTaken, region->Size());
+        m_heap->AccountRegionAllocation(region->Size());
     }
 
     return region;
@@ -823,6 +822,10 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region)
 
         region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
         _ASSERTE(region == nullptr || region->NothingMarked());
+        if (region == nullptr)
+        {
+            region = m_heap->Recycler()->TryGetReusable(/*wait*/ true);
+        }
     }
 }
 

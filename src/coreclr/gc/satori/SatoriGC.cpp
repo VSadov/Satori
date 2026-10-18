@@ -503,6 +503,7 @@ void SatoriGC::FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap
     // this is only called when thread is terminating and about to clear its context.
     ((SatoriAllocationContext*)acontext)->Deactivate(m_heap->Recycler(), /*detach*/ true);
     m_heap->Recycler()->ReportThreadAllocBytes(acontext->alloc_bytes + acontext->alloc_bytes_uoh, /*isLive*/ false);
+    m_heap->ReleaseThreadBudget();
 }
 
 void SatoriGC::SetGCInProgress(bool fInProgress)

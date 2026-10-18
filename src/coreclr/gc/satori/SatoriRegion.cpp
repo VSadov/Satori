@@ -143,6 +143,8 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     // regions are aligned, so the first 64 bytes of the header are one cache line.
     static_assert(offsetof(SatoriRegion, m_reusableFor) < 64 && offsetof(SatoriRegion, m_staleEscapeMarks) < 64,
         "the fields that MaybeEscapeTrackingAcquire reads are in the first cache line of the header.");
+    static_assert(offsetof(SatoriRegion, m_allocStart) >= Satori::CACHE_LINE_GRANULARITY,
+        "allocation fields must not share the barrier's cache line.");
 
     // clear the header if was used before
     size_t zeroUpTo = min(used, (size_t)&result->m_syncBlock);
@@ -436,39 +438,69 @@ size_t SatoriRegion::StartAllocating(size_t minAllocSize, size_t allocBytes)
         if (nonEmpty == 0)
         {
             // when memory is low, take a span that is too small for the free lists.
-            if (minAllocSize >= Satori::MIN_FREELIST_CAPACITY || !Recycler()->IsMemoryLow())
+            if (minAllocSize >= Satori::MIN_FREELIST_CAPACITY || !Recycler()->IsMemoryLow() ||
+                minAllocSize >= m_smallFreeListMiss)
             {
                 return 0;
             }
 
-            SatoriFreeListObject* previous = nullptr;
-            for (freeObj = m_smallFreeList; freeObj != nullptr; freeObj = freeObj->m_nextInFreeList)
+            DWORD smallBucket;
+            BitScanReverse64(&smallBucket, max(minAllocSize, Satori::MIN_SMALL_FREELIST_CAPACITY));
+            smallBucket -= Satori::MIN_SMALL_FREELIST_CAPACITY_BITS;
+            SatoriFreeListObject* previous = m_smallFreeListTails[smallBucket];
+            freeObj = previous != nullptr ? previous->m_nextInFreeList : nullptr;
+            if (freeObj == nullptr || freeObj->FreeObjCapacity() < minAllocSize)
             {
-                if (freeObj->FreeObjCapacity() >= minAllocSize)
+                DWORD larger = smallBucket + 1;
+                for (; larger < Satori::SMALL_FREELIST_COUNT; larger++)
                 {
-                    break;
+                    if (m_smallFreeListTails[larger] != nullptr)
+                    {
+                        break;
+                    }
                 }
 
-                previous = freeObj;
+                if (larger < Satori::SMALL_FREELIST_COUNT)
+                {
+                    smallBucket = larger;
+                    previous = m_smallFreeListTails[smallBucket];
+                    freeObj = previous->m_nextInFreeList;
+                }
+                else
+                {
+                    // A fitting span may remain behind smaller spans in this bucket.
+                    SatoriFreeListObject* first = freeObj;
+                    while (freeObj != nullptr)
+                    {
+                        if (freeObj->FreeObjCapacity() >= minAllocSize)
+                        {
+                            break;
+                        }
+                        previous = freeObj;
+                        freeObj = freeObj->m_nextInFreeList;
+                        if (freeObj == first)
+                        {
+                            freeObj = nullptr;
+                        }
+                    }
+                }
             }
 
             if (freeObj == nullptr)
             {
+                m_smallFreeListMiss = (uint16_t)minAllocSize;
                 return 0;
             }
 
-            if (previous != nullptr)
+            if (previous != freeObj)
             {
                 previous->m_nextInFreeList = freeObj->m_nextInFreeList;
+                // Leave the skipped prefix at the end for the next allocation.
+                m_smallFreeListTails[smallBucket] = previous;
             }
             else
             {
-                m_smallFreeList = freeObj->m_nextInFreeList;
-            }
-
-            if (m_smallFreeListTail == freeObj)
-            {
-                m_smallFreeListTail = previous;
+                m_smallFreeListTails[smallBucket] = nullptr;
             }
 
             m_smallFreeListCapacity -= freeObj->FreeObjCapacity();
@@ -598,7 +630,7 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
     {
         if (capacity >= Satori::MIN_SMALL_FREELIST_CAPACITY)
         {
-            AddSmallFreeSpace((SatoriFreeListObject*)freeObj, capacity, /* atHead */ false);
+            AddSmallFreeSpace((SatoriFreeListObject*)freeObj, capacity, /*atHead*/ false);
         }
 
         return;
@@ -643,7 +675,7 @@ void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
     {
         if (capacity >= Satori::MIN_SMALL_FREELIST_CAPACITY)
         {
-            AddSmallFreeSpace((SatoriFreeListObject*)freeObj, capacity, /* atHead */ true);
+            AddSmallFreeSpace((SatoriFreeListObject*)freeObj, capacity, /*atHead*/ true);
         }
 
         return;
@@ -3071,8 +3103,9 @@ void SatoriRegion::ClearFreeLists()
     // clear free lists and free list tails
     memset(m_freeListCapacities, 0, sizeof(m_freeListCapacities) + sizeof(m_freeLists) + sizeof(m_freeListTails));
     m_nonEmptyFreeLists = 0;
-    m_smallFreeList = m_smallFreeListTail = nullptr;
+    memset(m_smallFreeListTails, 0, sizeof(m_smallFreeListTails));
     m_smallFreeListCapacity = 0;
+    m_smallFreeListMiss = UINT16_MAX;
 }
 
 // Free spans smaller than the free lists take. Allocation uses them only when memory is low (see StartAllocating),
@@ -3081,21 +3114,29 @@ void SatoriRegion::AddSmallFreeSpace(SatoriFreeListObject* freeListObj, size_t c
 {
     _ASSERTE(capacity == freeListObj->FreeObjCapacity());
     m_smallFreeListCapacity += capacity;
-    if (atHead || m_smallFreeList == nullptr)
+    DWORD bucket;
+    BitScanReverse64(&bucket, capacity);
+    bucket -= Satori::MIN_SMALL_FREELIST_CAPACITY_BITS;
+    SatoriFreeListObject* tail = m_smallFreeListTails[bucket];
+    if (tail == nullptr)
     {
-        freeListObj->m_nextInFreeList = m_smallFreeList;
-        m_smallFreeList = freeListObj;
-        if (m_smallFreeListTail == nullptr)
+        freeListObj->m_nextInFreeList = freeListObj;
+        m_smallFreeListTails[bucket] = freeListObj;
+    }
+    else
+    {
+        freeListObj->m_nextInFreeList = tail->m_nextInFreeList;
+        tail->m_nextInFreeList = freeListObj;
+        if (!atHead)
         {
-            m_smallFreeListTail = freeListObj;
+            m_smallFreeListTails[bucket] = freeListObj;
         }
-
-        return;
     }
 
-    freeListObj->m_nextInFreeList = nullptr;
-    m_smallFreeListTail->m_nextInFreeList = freeListObj;
-    m_smallFreeListTail = freeListObj;
+    if (capacity >= m_smallFreeListMiss)
+    {
+        m_smallFreeListMiss = UINT16_MAX;
+    }
 }
 
 void SatoriRegion::PreSweep()

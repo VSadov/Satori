@@ -105,7 +105,7 @@ public:
     void BlockingMarkForConcurrent();
     void MaybeAskForHelp();
 
-    SatoriRegion* TryGetReusable();
+    SatoriRegion* TryGetReusable(bool wait = false);
     SatoriRegion* TryGetReusableForLarge();
 
     void ReportThreadAllocBytes(int64_t bytes, bool isLive);
@@ -291,24 +291,28 @@ private:
     // how much more free space may be parked in reusable regions. set from the gen1 budget
     // once it is known, and spent as regions are parked. 0 stops parking any more.
     int m_reusableTargetPercent;
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     int64_t m_reusableLimit;
-    bool m_nextGcIsFullGc;
 
     size_t m_condemnedRegionsCount;
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     size_t m_deferredSweepCount;
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     size_t m_gen1AddedSinceLastCollection;
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     size_t m_gen2AddedSinceLastCollection;
     size_t m_gen1CountAtLastGen2;
     size_t m_gcNextTimeTarget;
 
     // set when memory is low, see AdjustHeuristics
     size_t m_releaseTarget;
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     bool m_isMemoryLow;
+    bool m_nextGcIsFullGc;
     size_t m_committedAfterTrim;
-    // the value of RegionBytesTaken at which CheckMemoryBeforeAlloc reads the memory status again
-    size_t m_nextMemoryCheck;
 
     size_t m_occupancy[3];
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     size_t m_occupancyAcc[3];
     size_t m_demotedOccupancyAcc;
     bool m_occupancyReportingEnabled;
@@ -321,17 +325,20 @@ private:
     int64_t m_currentAllocBytesDeadThreads;
     int64_t m_totalAllocBytes;
 
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     int64_t m_osTicksPerMilli;
     int64_t m_osTicksPerMicro;
     int64_t m_timeStampTicksPerMilli;
 
     SatoriGate* m_workerGate;
 
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     volatile int m_gateSignaled;
     volatile int m_workerWoken;
     volatile int m_activeWorkers;
     volatile int m_totalWorkers;
 
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     void(SatoriRecycler::* volatile m_activeWorkerFn)();
 
     int64_t m_noWorkSince;

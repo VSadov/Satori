@@ -77,7 +77,8 @@ void SatoriTrimmer::SetReleaseTarget(size_t bytes)
 
 bool SatoriTrimmer::IsReleasing(size_t releaseUntil)
 {
-    return m_heap->GetBytesCommitted() > min(releaseUntil, VolatileLoad(&m_releaseUntil));
+    size_t target = min(releaseUntil, VolatileLoad(&m_releaseUntil));
+    return target != SIZE_MAX && m_heap->GetBytesCommitted() > target;
 }
 
 void SatoriTrimmer::LoopFn(void* inst)

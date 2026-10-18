@@ -160,7 +160,6 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_releaseTarget = 0;
     m_isMemoryLow = false;
     m_committedAfterTrim = 0;
-    m_nextMemoryCheck = 0;
 
     m_activeWorkerFn = nullptr;
     m_rootScanTicket = 0;
@@ -240,6 +239,7 @@ void SatoriRecycler::WorkerThreadMainLoop(void* param)
                 // we timed out (very rare case)
                 // we did not consume the wake, but there could be no more workers sleeping.
                 Interlocked::Decrement(&recycler->m_totalWorkers);
+                recycler->m_heap->ReleaseThreadBudget();
                 return;
             }
 
@@ -316,14 +316,14 @@ size_t SatoriRecycler::RegionCount()
     return Gen1RegionCount() + Gen2RegionCount();
 }
 
-SatoriRegion* SatoriRecycler::TryGetReusable()
+SatoriRegion* SatoriRecycler::TryGetReusable(bool wait)
 {
-    SatoriRegion* reusable = m_reusableRegions->TryPopWithTryEnter();
+    SatoriRegion* reusable = wait ? m_reusableRegions->TryPop() : m_reusableRegions->TryPopWithTryEnter();
     if (reusable == nullptr)
     {
         // concurrent filtering parks already filtered regions here until prep.
         // they are usable as-is, no reason to make the app wait for prep to hand them back.
-        reusable = m_reusableRegionsAlternate->TryPopWithTryEnter();
+        reusable = wait ? m_reusableRegionsAlternate->TryPop() : m_reusableRegionsAlternate->TryPopWithTryEnter();
     }
 
     if (reusable)
@@ -1317,9 +1317,7 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 // a process that stays above the threshold does not collect after every few regions.
 void SatoriRecycler::CheckMemoryBeforeAlloc(size_t allocSize)
 {
-    size_t nextMemoryCheck = m_nextMemoryCheck;
-    if (m_heap->Allocator()->RegionBytesTaken() + allocSize > nextMemoryCheck &&
-        Interlocked::CompareExchange(&m_nextMemoryCheck, SIZE_MAX, nextMemoryCheck) == nextMemoryCheck)
+    if (m_heap->TryClaimMemoryCheck(allocSize))
     {
         size_t margin, toLimit;
         size_t available = CheckAvailableMemory(&margin, &toLimit);
@@ -1391,7 +1389,7 @@ size_t SatoriRecycler::CheckAvailableMemory(size_t* margin, size_t* toLimit)
     size_t total;
     size_t available = GetAvailableMemory(m_heap, &total, toLimit);
     *margin = total / 20;
-    m_nextMemoryCheck = m_heap->Allocator()->RegionBytesTaken() + max(available / 2, (size_t)Satori::REGION_SIZE_GRANULARITY);
+    m_heap->SetMemoryCheckBudget(max(available / 2, (size_t)Satori::REGION_SIZE_GRANULARITY));
     return available;
 }
 
@@ -4398,6 +4396,7 @@ void SatoriRecycler::PlanWorker()
 void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
 {
     _ASSERTE(m_isRelocating);
+    size_t estimatedReclaim = 0;
 
     SatoriRegion* curRegion = regions->TryPopDrainOnly();
     if (curRegion)
@@ -4425,7 +4424,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
                 {
                     // we use m_estimatedEphemeralReclaim to accumulate current estimate
                     // which is likely to come up with a better estimate if we did any presweeping.
-                    Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, reclaim);
+                    estimatedReclaim += reclaim;
 
                     // When relocating, we want to start with larger regions
                     // They are harder to fit and if cannot fit, we get extra targets.
@@ -4448,6 +4447,11 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
                 }
             }
         } while ((curRegion = regions->TryPopDrainOnly()));
+    }
+
+    if (estimatedReclaim != 0)
+    {
+        Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, estimatedReclaim);
     }
 }
 
@@ -5074,6 +5078,12 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::
 // so parking more than the mutator can consume before then only adds to that drain.
 bool SatoriRecycler::ShouldReuse(SatoriRegion* curRegion)
 {
+    int64_t limit = VolatileLoad(&m_reusableLimit);
+    if (limit == INT64_MAX || limit <= 0)
+    {
+        return limit == INT64_MAX;
+    }
+
     size_t freeSpace = curRegion->FreeSpaceInTopNBuckets(Satori::FREELIST_COUNT);
     return Interlocked::ExchangeAdd64(&m_reusableLimit, -(int64_t)freeSpace) > 0;
 }
