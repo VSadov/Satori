@@ -95,6 +95,8 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
 
     m_largeAllocatedBytes = {};
     m_pinnedAllocatedBytes = {};
+    m_deadThreadsAllocatedBytes = 0;
+    m_lastPreciseAllocatedBytes = 0;
 }
 
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
@@ -260,8 +262,10 @@ void SatoriAllocator::ReturnRegion(SatoriRegion* region)
 // Allocation ticks are fired when publishing and must report an object of the published kind. If one kind
 // published for another, a kind that is always published along with another one would never tick.
 //
-// The total allocated bytes is the sum of the shared counters. It only grows, but does not include what
-// live threads have allocated since they published last time, up to PACE_BUDGET or so per thread and kind.
+// The approximate total is the sum of the shared counters, or the last precise total, whichever is greater.
+// It only grows, but can lag behind live allocations by up to PACE_BUDGET or so per thread and kind.
+// NB: the precise total does not use the shared counters. With EE suspended, it sums up the counts in allocation
+//     contexts of live threads and adds what terminated threads have allocated. (see GetTotalAllocatedBytesPrecise)
 //
 // Allocation tick events are driven by the same counters. (see MaybeFireAllocationTick)
 
@@ -283,6 +287,12 @@ struct UnpublishedAllocatedBytes
 static int64_t SmallAllocatedBytes(SatoriAllocationContext* context)
 {
     return context->alloc_bytes - (context->alloc_limit - context->alloc_ptr);
+}
+
+// All bytes allocated in the context, precisely. (same as GC.GetAllocatedBytesForCurrentThread)
+static int64_t AllocatedBytes(SatoriAllocationContext* context)
+{
+    return SmallAllocatedBytes(context) + context->alloc_bytes_uoh;
 }
 
 // The counter for the small objects allocated on the current processor.
@@ -320,6 +330,21 @@ size_t SatoriAllocator::GetTotalAllocatedBytes()
         total += VolatileLoadWithoutBarrier(&m_smallAllocatedBytes[i].bytes);
     }
 
+    return max(total, VolatileLoadWithoutBarrier(&m_lastPreciseAllocatedBytes));
+}
+
+static void AddAllocatedBytesFn(gc_alloc_context* gcContext, void* param)
+{
+    *(size_t*)param += (size_t)AllocatedBytes((SatoriAllocationContext*)gcContext);
+}
+
+// The precise total. EE must be suspended, so that the counts in allocation contexts do not change.
+// What terminated threads have allocated is not in any context. (see PublishAllocatedBytesOnThreadExit)
+size_t SatoriAllocator::GetTotalAllocatedBytesPrecise()
+{
+    size_t total = m_deadThreadsAllocatedBytes;
+    GCToEEInterface::GcEnumAllocContexts(AddAllocatedBytesFn, &total);
+    VolatileStore(&m_lastPreciseAllocatedBytes, total);
     return total;
 }
 
@@ -500,7 +525,8 @@ void SatoriAllocator::OnLargeOrPinnedAllocated(SatoriAllocationContext* context,
 }
 
 // The current thread is terminating and its allocation context is about to be cleared.
-// Publishes all that is not published yet and resets the accounting to match the cleared context.
+// Publishes all that is not published yet, moves the precise count from the context to the total
+// for terminated threads, and resets the accounting to match the cleared context.
 // NB: this runs on the terminating thread itself, after its allocation context is deactivated.
 void SatoriAllocator::PublishAllocatedBytesOnThreadExit(SatoriAllocationContext* context)
 {
@@ -508,6 +534,13 @@ void SatoriAllocator::PublishAllocatedBytesOnThreadExit(SatoriAllocationContext*
     PublishAllocatedBytes(context, AllocationTickKind::Large, /*obj*/ nullptr, /*size*/ 0);
     PublishAllocatedBytes(context, AllocationTickKind::Pinned, /*obj*/ nullptr, /*size*/ 0);
     t_unpublishedAllocatedBytes = {};
+
+    // The runtime calls this when EE cannot be suspended (in cooperative mode or holding the thread store lock),
+    // so GetTotalAllocatedBytesPrecise sees the count either in the context or in the total, never in both.
+    // Other threads may be terminating concurrently though.
+    Interlocked::ExchangeAdd64(&m_deadThreadsAllocatedBytes, (size_t)AllocatedBytes(context));
+    context->alloc_bytes = 0;
+    context->alloc_bytes_uoh = 0;
 }
 
 Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags)
