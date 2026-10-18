@@ -824,6 +824,10 @@ public:
 
     virtual uint64_t GetTotalAllocatedBytes() PURE_VIRTUAL
 
+    // Gets the total number of bytes allocated, precisely. This may suspend EE, so the
+    // caller must be prepared for that the same way as when calling GarbageCollect.
+    virtual uint64_t GetTotalAllocatedBytesPrecise() PURE_VIRTUAL
+
     // Forces a garbage collection of the given generation. Also used extensively
     // throughout the VM.
     virtual HRESULT GarbageCollect(int generation = -1, bool low_memory_p = false, int mode = collection_blocking) PURE_VIRTUAL

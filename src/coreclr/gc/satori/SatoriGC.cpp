@@ -246,10 +246,21 @@ uint64_t SatoriGC::GetTotalAllocatedBytes()
 {
     // monotonically increasing number produced by allocator when allocating objects.
     // threads count their allocations and publish the counts to shared counters as they allocate.
-    // this is the sum of those counters. it does not include what threads have allocated since
-    // they published last time - up to PACE_BUDGET or so per thread and kind of allocations.
+    // this is the sum of those counters, or the last precise total, whichever is greater.
+    // it can lag behind live allocations by up to PACE_BUDGET or so per thread and kind of allocations.
     // (see SatoriAllocator::PublishAllocatedBytes)
     return m_heap->Allocator()->GetTotalAllocatedBytes();
+}
+
+uint64_t SatoriGC::GetTotalAllocatedBytesPrecise()
+{
+    // allocation contexts have precise counts of what their threads have allocated,
+    // but the counts change as threads allocate. with EE suspended they cannot change.
+    // NB: this is not a GC, but like other suspensions that are not GCs, we suspend "for GC prep".
+    GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
+    uint64_t allocated = m_heap->Allocator()->GetTotalAllocatedBytesPrecise();
+    GCToEEInterface::RestartEE(false);
+    return allocated;
 }
 
 HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)

@@ -58,6 +58,7 @@ public:
     void ReturnRegion(SatoriRegion* region);
 
     size_t GetTotalAllocatedBytes();
+    size_t GetTotalAllocatedBytesPrecise();
     void PublishAllocatedBytesOnThreadExit(SatoriAllocationContext* context);
 
     SatoriWorkChunk* TryGetWorkChunk();
@@ -113,6 +114,12 @@ private:
     AllocatedBytesCounter m_smallAllocatedBytes[Satori::MAX_ALLOCATED_BYTES_COUNTERS];
     AllocatedBytesCounter m_largeAllocatedBytes;
     AllocatedBytesCounter m_pinnedAllocatedBytes;
+
+    // What terminated threads have allocated, precisely. (see GetTotalAllocatedBytesPrecise)
+    size_t m_deadThreadsAllocatedBytes;
+
+    // A floor for approximate reads after a precise total has been observed.
+    size_t m_lastPreciseAllocatedBytes;
 
 private:
     DECLSPEC_ALIGN(64)
