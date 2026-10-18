@@ -685,7 +685,7 @@ public:
             // minimum rate-limiting in debug
             return 0;
 #else
-            return 3;
+            return 2;
 #endif
         }
 

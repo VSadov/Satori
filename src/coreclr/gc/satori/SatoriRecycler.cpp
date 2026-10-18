@@ -502,8 +502,9 @@ size_t SatoriRecycler::IncrementGen0Count()
 #if _DEBUG
 static const int concMarkThreshold = 0;
 #else
-// Assuming very roughly 100ns per live object, 10K object graph marks in 1ms by a single thread.
-static const int concMarkThreshold = 1024  * 10 * MIN_OBJECT_SIZE;
+// Empirical cutoff: on small heaps, concurrent-marking overhead may outweigh its benefit.
+// Last-reported occupancy is only a proxy for collection cost, not a pause-time bound.
+static const int concMarkThreshold = 1024  * 1024 * 1;
 #endif
 
 bool SatoriRecycler::ShouldDoConcurrent(int generation)
