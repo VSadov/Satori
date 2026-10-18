@@ -2879,19 +2879,27 @@ void SatoriRegion::IndividuallyPromote()
     RearmCardsForTenured();
 }
 
-// ideally, we just reuse the region for allocations.
-// TUNING: any situations when we want to require more?
-bool SatoriRegion::IsReuseCandidate()
+size_t SatoriRegion::FreeSpaceForReuse(bool committedOnly)
 {
-    // just ask for enough of usable capaciity to make it worthwile.
-    // taking a lock when adding/removing the region to reusables
     size_t usable = FreeSpaceInTopNBuckets(Satori::FREELIST_COUNT);
     if (Recycler()->IsMemoryLow())
     {
         usable += m_smallFreeListCapacity;
     }
 
-    return usable > Satori::REGION_SIZE_GRANULARITY / 32;
+    if (committedOnly)
+    {
+        usable -= min(usable, m_end - m_committed);
+    }
+
+    return usable;
+}
+
+// ideally, we just reuse the region for allocations.
+// TUNING: any situations when we want to require more?
+bool SatoriRegion::IsReuseCandidate()
+{
+    return FreeSpaceForReuse(/*committedOnly*/ false) > Satori::REGION_SIZE_GRANULARITY / 32;
 }
 
 bool SatoriRegion::IsDemotionCandidate(bool nextGcIsFullGC)

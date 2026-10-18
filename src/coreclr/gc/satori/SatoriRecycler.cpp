@@ -1393,7 +1393,7 @@ size_t SatoriRecycler::CheckAvailableMemory(size_t* margin, size_t* toLimit)
     return available;
 }
 
-void SatoriRecycler::AdjustHeuristics()
+void SatoriRecycler::AdjustHeuristics(size_t reusableBytes)
 {
     // All sweeping should be done by now and occupancies should reflect live set as of last GC.
     // m_gen1AddedSinceLastCollection collects direct allocs into gen1 and is not reflected in that.
@@ -1458,12 +1458,12 @@ void SatoriRecycler::AdjustHeuristics()
         m_nextGcIsFullGc = false;
     }
 
-    // limit budget to available memory
+    // Reusing committed free space does not need additional memory.
     size_t margin, toLimit;
     size_t available = CheckAvailableMemory(&margin, &toLimit);
     if (available < m_gen1Budget)
     {
-        m_gen1Budget = available;
+        m_gen1Budget = available + min(reusableBytes, m_gen1Budget - available);
     }
 
     // Closer than the margin to the high memory threshold, the trimmer releases free memory
@@ -1650,7 +1650,7 @@ void SatoriRecycler::BlockingCollectImpl()
 
     // Deliberately not RunWithHelp - the queue is a pointer chase, so discovery is serial
     // no matter how many threads we throw at it, and helpers only add contention on the head.
-    DrainReusableQueue();
+    size_t reusableBytes = DrainReusableQueue();
     m_reusableRegions->ResetAfterUnsafeDrain();
 
     // all sweeping should be done by now
@@ -1668,7 +1668,7 @@ void SatoriRecycler::BlockingCollectImpl()
     //       That is intentional. We could glance into current state (i.e. m_gen1AddedSinceLastCollection + Nursery regions),
     //       but we have only vague idea of how much of that is alive until we mark. And if we
     //       need to guess, we'd guess "same as before" - thus counts at last GC are close enough.
-    AdjustHeuristics();
+    AdjustHeuristics(reusableBytes);
     
     // Here we know if the next GC will surely be a full GC.
     int newBarrierState = m_nextGcIsFullGc ? BARRIER_STATE_SKIPPING_CARDS : BARRIER_STATE_NOT_CONCURRENT;
@@ -5185,7 +5185,7 @@ void SatoriRecycler::DrainDeferredSweepQueue()
 // and these are just regular gen1 regions now. Runs on one thread - see the call site.
 // NOTE: the routing below is a batched PushToEphemeralQueues.
 //       Changes here likely need to be mirrored there.
-void SatoriRecycler::DrainReusableQueue()
+size_t SatoriRecycler::DrainReusableQueue()
 {
     _ASSERTE(IsBlockingPhase());
 
@@ -5194,12 +5194,17 @@ void SatoriRecycler::DrainReusableQueue()
     SatoriRegionQueue::Batch demotedLocal(m_ephemeralWithUnmarkedDemoted);
     SatoriRegionQueue::Batch finalizationTrackingLocal(m_ephemeralFinalizationTrackingRegions);
     SatoriRegionQueue::Batch ephemeralLocal(m_ephemeralRegions);
+    size_t reusableBytes = 0;
     size_t estimatedReclaim = 0;
     size_t promotionEstimate = 0;
 
     SatoriRegion* curReusableRegion = m_reusableRegions->TryPopUnsafe();
     while (curReusableRegion)
     {
+        if (m_isMemoryLow)
+        {
+            reusableBytes += curReusableRegion->FreeSpaceForReuse(/*committedOnly*/ true);
+        }
         curReusableRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
         if (curReusableRegion->HasUnmarkedDemotedObjects())
         {
@@ -5241,6 +5246,8 @@ void SatoriRecycler::DrainReusableQueue()
     {
         Interlocked::ExchangeAdd64(&m_promotionEstimate, promotionEstimate);
     }
+
+    return reusableBytes;
 }
 
 bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)

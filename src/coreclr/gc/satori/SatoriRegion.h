@@ -94,6 +94,7 @@ public:
     int GetMaxFreeBucket();
     bool HasFreeSpaceInTopBucket();
     size_t FreeSpaceInTopNBuckets(int n);
+    size_t FreeSpaceForReuse(bool committedOnly);
 
     void StartEscapeTrackingRelease(size_t threadTag, size_t allocBytes = 0, size_t minAllocSize = 0);
     void StopEscapeTracking();

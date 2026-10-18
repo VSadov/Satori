@@ -378,7 +378,7 @@ private:
     void PushToEphemeralQueues(SatoriRegion* region);
     void PushToTenuredQueues(SatoriRegion* region);
 
-    void AdjustHeuristics();
+    void AdjustHeuristics(size_t reusableBytes);
     size_t CheckAvailableMemory(size_t* margin, size_t* toLimit);
     void DeactivateAllocatingRegions();
     void RequestCollection(CollectionRequest* request, size_t requestNumber);
@@ -468,7 +468,7 @@ private:
     void KeepRegion(SatoriRegion* curRegion);
     bool ShouldReuse(SatoriRegion* curRegion);
     void DrainDeferredSweepQueue();
-    void DrainReusableQueue();
+    size_t DrainReusableQueue();
     bool DrainDeferredSweepQueueConcurrent(int64_t deadline = 0);
     void DrainDeferredSweepQueueWorkerFn();
     void SweepAndReturnRegion(SatoriRegion* curRegion);
