@@ -222,12 +222,12 @@ tryAgain:
     }
 
 allocationFailed:
-    // The bounded search may have skipped a region that fits.
+    // Prefer a region that can be split without another commit attempt.
     bucket = SizeToBucket(regionSize);
     if (bucket != 0)
     {
         putBack = nullptr;
-        region = m_queues[bucket]->TryRemoveWithSize(regionSize, putBack, SIZE_MAX);
+        region = m_queues[bucket]->TryRemoveWithSize(regionSize, putBack, SIZE_MAX, /*preferCommitted*/ true);
         if (putBack)
         {
             AddRegion(putBack);

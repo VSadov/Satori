@@ -95,7 +95,7 @@ SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*
     return result;
 }
 
-SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegion*& putBack, size_t maxRegions)
+SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegion*& putBack, size_t maxRegions, bool preferCommitted)
 {
     m_lock.Enter();
 
@@ -103,13 +103,22 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
     // Freed regions are pushed to the head, so the recently freed ones are among them.
     SatoriRegion* result = nullptr;
     size_t resultSize = SIZE_MAX;
+    bool resultNeedsCommit = true;
     for (SatoriRegion* cur = m_head; cur != nullptr && maxRegions > 0; cur = cur->m_next, maxRegions--)
     {
         size_t curSize = cur->Size();
-        if (curSize >= regionSize && curSize < resultSize)
+        if (curSize < regionSize)
+        {
+            continue;
+        }
+
+        bool needsCommit = preferCommitted && curSize != regionSize && !cur->CanSplitWithoutCommit(regionSize);
+        if ((resultNeedsCommit && !needsCommit) ||
+            (resultNeedsCommit == needsCommit && curSize < resultSize))
         {
             result = cur;
             resultSize = curSize;
+            resultNeedsCommit = needsCommit;
             if (curSize == regionSize)
             {
                 break;

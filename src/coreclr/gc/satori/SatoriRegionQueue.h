@@ -40,7 +40,7 @@ public:
         SatoriQueue<SatoriRegion>(kind) {}
 
     SatoriRegion* TryPopWithSize(size_t regionSize, SatoriRegion* &putBack);
-    SatoriRegion* TryRemoveWithSize(size_t regionSize, SatoriRegion*& putBack, size_t maxRegions = 64);
+    SatoriRegion* TryRemoveWithSize(size_t regionSize, SatoriRegion*& putBack, size_t maxRegions = 64, bool preferCommitted = false);
     SatoriRegion* TryDequeueIfHasFreeSpaceInTopBucket();
 
     static SatoriRegionQueue* AllocAligned(QueueKind kind);
