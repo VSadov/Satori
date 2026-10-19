@@ -42,6 +42,7 @@ SatoriTrimmer::SatoriTrimmer(SatoriHeap* heap)
     m_lastGen2Count = 0;
     m_heap  = heap;
     m_state = TRIMMER_STATE_STOPPED;
+    m_releaseUntil = SIZE_MAX;
 
     m_event = new (nothrow) GCEvent;
     m_event->CreateAutoEventNoThrow(false);
@@ -66,6 +67,20 @@ void SatoriTrimmer::Unpause()
     m_sleepGate->WakeOne();
 }
 
+// Asks to release this much committed memory without the usual delays, in one pass over the heap at most.
+void SatoriTrimmer::SetReleaseTarget(size_t bytes)
+{
+    size_t committed = m_heap->GetBytesCommitted();
+    Interlocked::Exchange(&m_releaseUntil, committed > bytes ? committed - bytes : 0);
+    Unpause();
+}
+
+bool SatoriTrimmer::IsReleasing(size_t releaseUntil)
+{
+    size_t target = min(releaseUntil, VolatileLoad(&m_releaseUntil));
+    return target != SIZE_MAX && m_heap->GetBytesCommitted() > target;
+}
+
 void SatoriTrimmer::LoopFn(void* inst)
 {
     SatoriTrimmer* ths = (SatoriTrimmer*)inst;
@@ -82,7 +97,7 @@ void SatoriTrimmer::Loop()
         while (true)
         {
             int64_t newGen2 = m_heap->Recycler()->GetCollectionCount(2);
-            if (lastGen2 != newGen2)
+            if (lastGen2 != newGen2 || IsReleasing())
             {
                 lastGen2 = newGen2;
                 break;
@@ -94,11 +109,17 @@ void SatoriTrimmer::Loop()
             StopAndWait();
         }
 
+        // Leave requests received during this pass for the next pass.
+        size_t releaseUntil = Interlocked::Exchange(&m_releaseUntil, (size_t)SIZE_MAX);
         m_heap->ForEachPage(
             [&](SatoriPage* page)
             {
                 // limit the rate of scanning to 1 page/msec.
-                Pause(1);
+                if (!IsReleasing(releaseUntil))
+                {
+                    Pause(1);
+                }
+
                 if (m_state != TRIMMER_STATE_RUNNING)
                 {
                     StopAndWait();
@@ -112,7 +133,11 @@ void SatoriTrimmer::Loop()
                         if (TryTrimRegion(region, /* drainsAreDone */ false))
                         {
                             // limit the decommit/coalesce rate to 1 region/10 msec.
-                            Pause(10);
+                            if (!IsReleasing(releaseUntil))
+                            {
+                                Pause(10);
+                            }
+
                             if (m_state != TRIMMER_STATE_RUNNING)
                             {
                                 StopAndWait();
@@ -125,7 +150,10 @@ void SatoriTrimmer::Loop()
                         if (newGen1 != lastGen1)
                         {
                             lastGen1 = newGen1;
-                            Pause(1000);
+                            if (!IsReleasing(releaseUntil))
+                            {
+                                Pause(1000);
+                            }
                         }
 
                         if (m_state != TRIMMER_STATE_RUNNING)

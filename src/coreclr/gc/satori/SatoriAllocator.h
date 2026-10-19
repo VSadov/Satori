@@ -61,6 +61,7 @@ public:
     void AllocationTickDecrement(size_t totalUnused);
 
     SatoriWorkChunk* TryGetWorkChunk();
+    void ResetWorkChunkFailure() { m_workChunkRegionFailed = false; }
     SatoriWorkChunk* GetWorkChunk();
     void ReturnWorkChunk(SatoriWorkChunk* chunk);
     void ReturnWorkChunks(SatoriWorkChunk* first, SatoriWorkChunk* last);
@@ -74,36 +75,40 @@ private:
     SatoriRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
     SatoriWorkList* m_workChunks;
 
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
+    SatoriLock m_regularAllocLock;
     SatoriRegion* m_regularRegion;
-    SatoriRegion* m_largeRegion;
-    SatoriRegion* m_pinnedRegion;
+
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
+    SatoriLock m_immortalAllocLock;
     SatoriRegion* m_immortalRegion;
 
-    DECLSPEC_ALIGN(64)
-    SatoriLock m_regularAllocLock;
-
-    DECLSPEC_ALIGN(64)
-    SatoriLock m_immortalAllocLock;
-
-    DECLSPEC_ALIGN(64)
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     SatoriLock m_largeAllocLock;
+    SatoriRegion* m_largeRegion;
 
-    DECLSPEC_ALIGN(64)
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     SatoriLock m_pinnedAllocLock;
+    SatoriRegion* m_pinnedRegion;
 
     // for event trace
-    DECLSPEC_ALIGN(64)
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     size_t m_largeAllocTickAmount;
 
-    DECLSPEC_ALIGN(64)
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     size_t m_pinnedAllocTickAmount;
 
-    DECLSPEC_ALIGN(64)
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     size_t m_smallAllocTickAmount;
 
 private:
-    DECLSPEC_ALIGN(64)
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     volatile int32_t m_singePageAdders;
+
+    // set when TryGetWorkChunk could not get a region, until the next GC starts or ends
+    bool m_workChunkRegionFailed;
+
+    SatoriRegion* GetRegionCore(size_t regionSize);
 
     void UpdateAllocStatsAndHelpIfNeeded(SatoriAllocationContext * context);
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);

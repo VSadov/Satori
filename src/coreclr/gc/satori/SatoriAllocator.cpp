@@ -79,9 +79,21 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     m_regularAllocLock.Initialize();
 
     m_singePageAdders = 0;
+    m_workChunkRegionFailed = false;
 }
 
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
+{
+    SatoriRegion* region = GetRegionCore(regionSize);
+    if (region)
+    {
+        m_heap->AccountRegionAllocation(region->Size());
+    }
+
+    return region;
+}
+
+SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize)
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
     int64_t newPageDeadline = 0;
@@ -810,6 +822,10 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region)
 
         region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
         _ASSERTE(region == nullptr || region->NothingMarked());
+        if (region == nullptr)
+        {
+            region = m_heap->Recycler()->TryGetReusable(/*wait*/ true);
+        }
     }
 }
 
@@ -1038,6 +1054,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
 
     size_t regionSize = SatoriRegion::RegionSizeForAlloc(size);
     _ASSERTE(regionSize > Satori::REGION_SIZE_GRANULARITY);
+    m_heap->Recycler()->CheckMemoryBeforeAlloc(regionSize);
     SatoriRegion* hugeRegion = GetRegion(regionSize);
     if (!hugeRegion)
     {
@@ -1318,8 +1335,16 @@ SatoriWorkChunk* SatoriAllocator::TryGetWorkChunk()
 #endif
     SatoriWorkChunk* chunk = m_workChunks->TryPop();
 
-    while (!chunk && AddMoreWorkChunks())
+    // When no region can be had, for example at the heap hard limit, do not try again for every object.
+    // Each try goes through the region queues, and the callers handle a missing chunk.
+    while (!chunk && !m_workChunkRegionFailed)
     {
+        if (!AddMoreWorkChunks())
+        {
+            m_workChunkRegionFailed = true;
+            break;
+        }
+
         chunk = m_workChunks->TryPop();
     }
 

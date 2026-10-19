@@ -157,6 +157,9 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_nextGcIsFullGc = true;
     m_prevCondemnedGeneration = 2;
     m_gcNextTimeTarget = 0;
+    m_releaseTarget = 0;
+    m_isMemoryLow = false;
+    m_committedAfterTrim = 0;
 
     m_activeWorkerFn = nullptr;
     m_rootScanTicket = 0;
@@ -236,6 +239,7 @@ void SatoriRecycler::WorkerThreadMainLoop(void* param)
                 // we timed out (very rare case)
                 // we did not consume the wake, but there could be no more workers sleeping.
                 Interlocked::Decrement(&recycler->m_totalWorkers);
+                recycler->m_heap->ReleaseThreadBudget();
                 return;
             }
 
@@ -312,14 +316,14 @@ size_t SatoriRecycler::RegionCount()
     return Gen1RegionCount() + Gen2RegionCount();
 }
 
-SatoriRegion* SatoriRecycler::TryGetReusable()
+SatoriRegion* SatoriRecycler::TryGetReusable(bool wait)
 {
-    SatoriRegion* reusable = m_reusableRegions->TryPopWithTryEnter();
+    SatoriRegion* reusable = wait ? m_reusableRegions->TryPop() : m_reusableRegions->TryPopWithTryEnter();
     if (reusable == nullptr)
     {
         // concurrent filtering parks already filtered regions here until prep.
         // they are usable as-is, no reason to make the app wait for prep to hand them back.
-        reusable = m_reusableRegionsAlternate->TryPopWithTryEnter();
+        reusable = wait ? m_reusableRegionsAlternate->TryPop() : m_reusableRegionsAlternate->TryPopWithTryEnter();
     }
 
     if (reusable)
@@ -540,6 +544,7 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
     if (Interlocked::CompareExchange(&m_gcState, newState, GC_STATE_NONE) == GC_STATE_NONE)
     {
         VolatileStore(&m_gcStartSequence, m_gcStartSequence + 1);
+        m_heap->Allocator()->ResetWorkChunkFailure();
 
         CollectionRequest& gen1Request = m_compactionRequests[0];
         CollectionRequest& gen2Request = m_compactionRequests[1];
@@ -1271,6 +1276,8 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 {
     int generation = 0;
 
+    CheckMemoryBeforeAlloc(0);
+
     if (GetNowMillis() < m_gcNextTimeTarget)
     {
         // too early
@@ -1289,6 +1296,12 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
         generation = 2;
     }
 
+    // a GC that AdjustHeuristics asked for because memory is low
+    if (VolatileLoad(&m_trimRequest.m_requested) > VolatileLoad(&m_trimRequest.m_completed))
+    {
+        generation = 2;
+    }
+
     if (generation != 0)
     {
         TryStartGC(generation, reason);
@@ -1297,10 +1310,32 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
     HelpOnce();
 }
 
-size_t GetAvailableMemory()
+// Allocations can take a lot of memory between GCs, so check the memory again when regions of half of
+// what was available at the last check are taken, or when this allocation can be larger than what is left.
+// If the allocation does not fit below the memory limit, collect now. If it only goes past the high memory
+// threshold, collect only after committed memory has grown by the margin since the last such GC, so that
+// a process that stays above the threshold does not collect after every few regions.
+void SatoriRecycler::CheckMemoryBeforeAlloc(size_t allocSize)
+{
+    if (m_heap->TryClaimMemoryCheck(allocSize))
+    {
+        size_t margin, toLimit;
+        size_t available = CheckAvailableMemory(&margin, &toLimit);
+        if (toLimit <= allocSize ||
+            (available <= allocSize && m_heap->GetBytesCommitted() > m_committedAfterTrim + margin))
+        {
+            Collect(2, /* force */ true, /* blocking */ true, /* compact */ true, /* aggressive */ true);
+        }
+    }
+}
+
+// Returns the memory that is available above the reserve, the memory that is available up to the memory limit
+// in *toLimit, and the memory limit in *total. With a hard limit, the heap must also stay below the hard limit.
+size_t GetAvailableMemory(SatoriHeap* heap, size_t* total, size_t* toLimit)
 {
     bool isRestricted;
-    uint64_t total = GCToOSInterface::GetPhysicalMemoryLimit(&isRestricted);
+    uint64_t limit = GCToOSInterface::GetPhysicalMemoryLimit(&isRestricted);
+    *total = (size_t)limit;
     uint64_t available;
 #ifdef TARGET_WINDOWS
     uint64_t availableCommit;
@@ -1312,12 +1347,19 @@ size_t GetAvailableMemory()
     if (isRestricted)
     {
         uint64_t restrictedAvailable;
-        GCToOSInterface::GetMemoryStatus(total, nullptr, &restrictedAvailable, nullptr);
+        GCToOSInterface::GetMemoryStatus(limit, nullptr, &restrictedAvailable, nullptr);
         available = min(available, restrictedAvailable);
     }
 
+#ifdef TARGET_WINDOWS
+    *toLimit = (size_t)min(available, availableCommit);
+#else
+    *toLimit = (size_t)available;
+#endif
+
     // Keep at least 5% free, or more when the configured threshold is lower.
-    uint64_t reserve = total * max(5u, 100u - SatoriUtil::HighMemoryPercent()) / 100;
+    uint32_t reservePercent = max(5u, 100u - SatoriUtil::HighMemoryPercent());
+    uint64_t reserve = limit * reservePercent / 100;
     available = available > reserve ? available - reserve : 0;
 
 #ifdef TARGET_WINDOWS
@@ -1325,10 +1367,33 @@ size_t GetAvailableMemory()
     available = min(available, availableCommit);
 #endif
 
+    // Below the hard limit, keep the same reserve.
+    size_t hardLimit = heap->HardLimit();
+    if (hardLimit != 0)
+    {
+        size_t committed = heap->GetBytesCommitted();
+        size_t toHardLimit = hardLimit > committed ? hardLimit - committed : 0;
+        size_t hardReserve = hardLimit / 100 * reservePercent;
+        *total = min(*total, hardLimit);
+        *toLimit = min(*toLimit, toHardLimit);
+        available = min(available, (uint64_t)(toHardLimit > hardReserve ? toHardLimit - hardReserve : 0));
+    }
+
     return (size_t)available;
 }
 
-void SatoriRecycler::AdjustHeuristics()
+// Reads the memory status and sets when CheckMemoryBeforeAlloc reads it again. Returns the memory that is
+// available above the reserve, 1/20 of the memory limit in *margin, and the memory up to the limit in *toLimit.
+size_t SatoriRecycler::CheckAvailableMemory(size_t* margin, size_t* toLimit)
+{
+    size_t total;
+    size_t available = GetAvailableMemory(m_heap, &total, toLimit);
+    *margin = total / 20;
+    m_heap->SetMemoryCheckBudget(max(available / 2, (size_t)Satori::REGION_SIZE_GRANULARITY));
+    return available;
+}
+
+void SatoriRecycler::AdjustHeuristics(size_t reusableBytes)
 {
     // All sweeping should be done by now and occupancies should reflect live set as of last GC.
     // m_gen1AddedSinceLastCollection collects direct allocs into gen1 and is not reflected in that.
@@ -1393,15 +1458,41 @@ void SatoriRecycler::AdjustHeuristics()
         m_nextGcIsFullGc = false;
     }
 
-    // limit budget to available memory
-    size_t available = GetAvailableMemory();
+    // Reusing committed free space does not need additional memory.
+    size_t margin, toLimit;
+    size_t available = CheckAvailableMemory(&margin, &toLimit);
     if (available < m_gen1Budget)
     {
-        m_gen1Budget = available;
+        m_gen1Budget = available + min(reusableBytes, m_gen1Budget - available);
+    }
+
+    // Closer than the margin to the high memory threshold, the trimmer releases free memory
+    // without its usual delays until we are the margin away from the threshold again.
+    m_releaseTarget = available < margin ? margin - available : 0;
+
+    // At the threshold, the next GC is blocking and compacting, and releases all free memory.
+    // Do that again only after committed memory has grown by the margin.
+    if (available == 0 && !m_forceTrim &&
+        m_heap->GetBytesCommitted() > m_committedAfterTrim + margin)
+    {
+        size_t requestNumber = m_gcStartSequence + 1;
+        RequestCollection(&m_trimRequest, requestNumber);
+        RequestCollection(&m_blockingRequests[1], requestNumber);
     }
 
     // the budget is final, allow parking reusables against it again
     m_reusableLimit = (int64_t)(m_gen1Budget / 100 * m_reusableTargetPercent);
+
+    // Closer than the margin to the threshold, allocations must use the free space in the heap instead of
+    // new memory, also in regions that do not relocate (pinned or more than half full). Offer every region
+    // that has free-list space for reuse, also the free spans too small for the free lists (see StartAllocating).
+    // The next GC is then a full GC, so that gen2 regions demote without tracking their objects (see TryDemote).
+    m_isMemoryLow = available < margin;
+    if (m_isMemoryLow)
+    {
+        m_reusableLimit = INT64_MAX;
+        m_nextGcIsFullGc = true;
+    }
 
     // now figure if we will promote
     m_promoteAllRegions = false;
@@ -1559,7 +1650,7 @@ void SatoriRecycler::BlockingCollectImpl()
 
     // Deliberately not RunWithHelp - the queue is a pointer chase, so discovery is serial
     // no matter how many threads we throw at it, and helpers only add contention on the head.
-    DrainReusableQueue();
+    size_t reusableBytes = DrainReusableQueue();
     m_reusableRegions->ResetAfterUnsafeDrain();
 
     // all sweeping should be done by now
@@ -1577,7 +1668,7 @@ void SatoriRecycler::BlockingCollectImpl()
     //       That is intentional. We could glance into current state (i.e. m_gen1AddedSinceLastCollection + Nursery regions),
     //       but we have only vague idea of how much of that is alive until we mark. And if we
     //       need to guess, we'd guess "same as before" - thus counts at last GC are close enough.
-    AdjustHeuristics();
+    AdjustHeuristics(reusableBytes);
     
     // Here we know if the next GC will surely be a full GC.
     int newBarrierState = m_nextGcIsFullGc ? BARRIER_STATE_SKIPPING_CARDS : BARRIER_STATE_NOT_CONCURRENT;
@@ -1605,6 +1696,7 @@ void SatoriRecycler::BlockingCollectImpl()
     if (m_forceTrim)
     {
         m_trimmer->TrimNow();
+        m_committedAfterTrim = m_heap->GetBytesCommitted();
     }
 
     bool walkHeapForDiagnostics = m_forceBlocking && m_condemnedGeneration == max_generation &&
@@ -1705,6 +1797,7 @@ void SatoriRecycler::BlockingCollectImpl()
 
     m_prevCondemnedGeneration = m_condemnedGeneration;
     m_condemnedGeneration = 0;
+    m_heap->Allocator()->ResetWorkChunkFailure();
     m_gcState = GC_STATE_NONE;
 
     if (SatoriUtil::IsConcurrentEnabled() && !m_deferredSweepRegions->IsEmpty())
@@ -1720,6 +1813,10 @@ void SatoriRecycler::BlockingCollectImpl()
     }
 
     m_trimmer->SetOkToRun();
+    if (m_releaseTarget != 0)
+    {
+        m_trimmer->SetReleaseTarget(m_releaseTarget);
+    }
 
     m_gcNextTimeTarget = GetNowMillis() + SatoriUtil::GcRate();
 }
@@ -4299,6 +4396,7 @@ void SatoriRecycler::PlanWorker()
 void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
 {
     _ASSERTE(m_isRelocating);
+    size_t estimatedReclaim = 0;
 
     SatoriRegion* curRegion = regions->TryPopDrainOnly();
     if (curRegion)
@@ -4326,7 +4424,7 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
                 {
                     // we use m_estimatedEphemeralReclaim to accumulate current estimate
                     // which is likely to come up with a better estimate if we did any presweeping.
-                    Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, reclaim);
+                    estimatedReclaim += reclaim;
 
                     // When relocating, we want to start with larger regions
                     // They are harder to fit and if cannot fit, we get extra targets.
@@ -4349,6 +4447,11 @@ void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
                 }
             }
         } while ((curRegion = regions->TryPopDrainOnly()));
+    }
+
+    if (estimatedReclaim != 0)
+    {
+        Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, estimatedReclaim);
     }
 }
 
@@ -4975,6 +5078,12 @@ void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::
 // so parking more than the mutator can consume before then only adds to that drain.
 bool SatoriRecycler::ShouldReuse(SatoriRegion* curRegion)
 {
+    int64_t limit = VolatileLoad(&m_reusableLimit);
+    if (limit == INT64_MAX || limit <= 0)
+    {
+        return limit == INT64_MAX;
+    }
+
     size_t freeSpace = curRegion->FreeSpaceInTopNBuckets(Satori::FREELIST_COUNT);
     return Interlocked::ExchangeAdd64(&m_reusableLimit, -(int64_t)freeSpace) > 0;
 }
@@ -5076,7 +5185,7 @@ void SatoriRecycler::DrainDeferredSweepQueue()
 // and these are just regular gen1 regions now. Runs on one thread - see the call site.
 // NOTE: the routing below is a batched PushToEphemeralQueues.
 //       Changes here likely need to be mirrored there.
-void SatoriRecycler::DrainReusableQueue()
+size_t SatoriRecycler::DrainReusableQueue()
 {
     _ASSERTE(IsBlockingPhase());
 
@@ -5085,12 +5194,17 @@ void SatoriRecycler::DrainReusableQueue()
     SatoriRegionQueue::Batch demotedLocal(m_ephemeralWithUnmarkedDemoted);
     SatoriRegionQueue::Batch finalizationTrackingLocal(m_ephemeralFinalizationTrackingRegions);
     SatoriRegionQueue::Batch ephemeralLocal(m_ephemeralRegions);
+    size_t reusableBytes = 0;
     size_t estimatedReclaim = 0;
     size_t promotionEstimate = 0;
 
     SatoriRegion* curReusableRegion = m_reusableRegions->TryPopUnsafe();
     while (curReusableRegion)
     {
+        if (m_isMemoryLow)
+        {
+            reusableBytes += curReusableRegion->FreeSpaceForReuse(/*committedOnly*/ true);
+        }
         curReusableRegion->ReusableFor() = SatoriRegion::ReuseLevel::None;
         if (curReusableRegion->HasUnmarkedDemotedObjects())
         {
@@ -5132,6 +5246,8 @@ void SatoriRecycler::DrainReusableQueue()
     {
         Interlocked::ExchangeAdd64(&m_promotionEstimate, promotionEstimate);
     }
+
+    return reusableBytes;
 }
 
 bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)

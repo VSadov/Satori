@@ -38,6 +38,7 @@
 #include "SatoriPage.inl"
 
 int8_t* SatoriHeap::s_pageByteMap;
+thread_local SatoriHeap::AllocationBudget* SatoriHeap::t_allocationBudget;
 
 static void InitWriteBarrier(void* pageMap, void* pageByteMap, size_t highest_address)
 {
@@ -73,7 +74,7 @@ static void UpdateWriteBarrier(void* pageMap, void* pageByteMap, size_t highest_
     GCToEEInterface::StompWriteBarrier(&args);
 }
 
-SatoriHeap* SatoriHeap::Create()
+SatoriHeap* SatoriHeap::Create(size_t hardLimit)
 {
     const int mapSize = (1 << pageCountBits) * sizeof(SatoriPage*);
     size_t reserveSize = mapSize + offsetof(SatoriHeap, m_pageMap);
@@ -87,7 +88,7 @@ SatoriHeap* SatoriHeap::Create()
     size_t commitSize = offsetof(SatoriHeap, m_pageMap) + sizeof(SatoriPage*);
     commitSize = ALIGN_UP(commitSize, SatoriUtil::CommitGranularity());
     _ASSERTE(commitSize <= reserveSize);
-    if (!GCToOSInterface::VirtualCommit(reserved, commitSize))
+    if ((hardLimit != 0 && commitSize > hardLimit) || !GCToOSInterface::VirtualCommit(reserved, commitSize))
     {
         // failure
         GCToOSInterface::VirtualRelease(reserved, reserveSize);
@@ -98,9 +99,12 @@ SatoriHeap* SatoriHeap::Create()
     SatoriHeap::s_pageByteMap = heap->m_pageByteMap;
     heap->m_reservedMapSize = mapSize;
     heap->m_committedMapSize = commitSize - offsetof(SatoriHeap, m_pageMap);
-    heap->m_committedBytes = commitSize;
+    heap->m_commitCharge = commitSize;
+    heap->m_hardLimit = hardLimit;
+    heap->m_memoryCheckState = 1;
     InitWriteBarrier(heap->m_pageMap, s_pageByteMap, heap->CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
     heap->m_mapLock.Initialize();
+    heap->m_budgetLock.Initialize();
     heap->m_nextPageIndex = 1;
     heap->m_usedMapLength = 1;
 
@@ -121,11 +125,10 @@ bool SatoriHeap::CommitMoreMap(size_t currentCommittedMapSize)
         void* commitFrom = (void*)((size_t)&m_pageMap + currentCommittedMapSize);
         size_t commitSize = SatoriUtil::CommitGranularity();
         _ASSERTE(m_committedMapSize + commitSize <= m_reservedMapSize);
-        if (GCToOSInterface::VirtualCommit(commitFrom, commitSize))
+        if (Commit(commitFrom, commitSize))
         {
             // we did the commit
             m_committedMapSize += commitSize;
-            IncBytesCommitted(commitSize);
             UpdateWriteBarrier(m_pageMap, s_pageByteMap, CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
         }
     }
@@ -136,6 +139,268 @@ bool SatoriHeap::CommitMoreMap(size_t currentCommittedMapSize)
 
     // either we did commit or someone else did, otherwise this is a failure.
     return m_committedMapSize > currentCommittedMapSize;
+}
+
+SatoriHeap::AllocationBudget* SatoriHeap::GetAllocationBudget()
+{
+    AllocationBudget* budget = t_allocationBudget;
+    if (budget == nullptr)
+    {
+        void* buffer = malloc(sizeof(AllocationBudget) + alignof(AllocationBudget) - 1);
+        if (buffer == nullptr)
+        {
+            return nullptr;
+        }
+
+        budget = new ((void*)ALIGN_UP((size_t)buffer, alignof(AllocationBudget))) AllocationBudget{};
+        budget->m_storage = buffer;
+        SatoriLockHolder holder(&m_budgetLock);
+        budget->m_next = m_allocationBudgets;
+        if (budget->m_next != nullptr)
+        {
+            budget->m_next->m_previous = budget;
+        }
+        m_allocationBudgets = budget;
+        t_allocationBudget = budget;
+    }
+
+    return budget;
+}
+
+void SatoriHeap::ReleaseThreadBudget()
+{
+    AllocationBudget* budget = t_allocationBudget;
+    if (budget != nullptr)
+    {
+        {
+            SatoriLockHolder holder(&m_budgetLock);
+            size_t unused = Interlocked::Exchange(&budget->m_commitBytes, (size_t)0);
+            if (unused != 0)
+            {
+                DecBytesCommitted(unused);
+                m_unusedCommitBudget -= unused;
+            }
+
+            m_memoryCheckBudget += Interlocked::Exchange(&budget->m_regionBytes, (size_t)0);
+            if (budget->m_previous != nullptr)
+            {
+                budget->m_previous->m_next = budget->m_next;
+            }
+            else
+            {
+                m_allocationBudgets = budget->m_next;
+            }
+            if (budget->m_next != nullptr)
+            {
+                budget->m_next->m_previous = budget->m_previous;
+            }
+        }
+        t_allocationBudget = nullptr;
+        free(budget->m_storage);
+    }
+}
+
+// Called under m_budgetLock. A concurrent claim either precedes the exchange or fails its CAS.
+void SatoriHeap::ReclaimCommitBudget()
+{
+    for (AllocationBudget* budget = m_allocationBudgets; budget != nullptr; budget = budget->m_next)
+    {
+        size_t unused = Interlocked::Exchange(&budget->m_commitBytes, (size_t)0);
+        if (unused != 0)
+        {
+            DecBytesCommitted(unused);
+        }
+    }
+
+    m_unusedCommitBudget = 0;
+}
+
+bool SatoriHeap::ReserveCommit(AllocationBudget* budget, size_t size)
+{
+    SatoriLockHolder holder(&m_budgetLock);
+    size_t limit = m_hardLimit != 0 ? m_hardLimit : SIZE_MAX;
+    size_t charged = VolatileLoad(&m_commitCharge);
+    if (size > limit - charged)
+    {
+        ReclaimCommitBudget();
+        charged = VolatileLoad(&m_commitCharge);
+        if (size > limit - charged)
+        {
+            return false;
+        }
+    }
+
+    size_t extra = 0;
+    if (budget != nullptr)
+    {
+        const size_t maxBatch = 8 * 1024 * 1024;
+        size_t maxUnused = min(limit / 64, (size_t)64 * 1024 * 1024);
+        if (m_unusedCommitBudget >= maxUnused)
+        {
+            size_t unused = 0;
+            for (AllocationBudget* cur = m_allocationBudgets; cur != nullptr; cur = cur->m_next)
+            {
+                unused += VolatileLoad(&cur->m_commitBytes);
+            }
+            m_unusedCommitBudget = unused;
+        }
+
+        extra = min(maxBatch - min(size, maxBatch), maxUnused - min(m_unusedCommitBudget, maxUnused));
+        extra = min(extra, limit - charged - size);
+    }
+
+    Interlocked::ExchangeAdd64(&m_commitCharge, size + extra);
+    if (extra != 0)
+    {
+        // The owner is in this call; only reclamation can otherwise change the allowance.
+        budget->m_commitBytes += extra;
+        m_unusedCommitBudget += extra;
+    }
+
+    return true;
+}
+
+bool SatoriHeap::Commit(void* address, size_t size)
+{
+    AllocationBudget* budget = GetAllocationBudget();
+    size_t remaining = budget != nullptr ? VolatileLoad(&budget->m_commitBytes) : 0;
+    if (remaining < size ||
+        Interlocked::CompareExchange(&budget->m_commitBytes, remaining - size, remaining) != remaining)
+    {
+        if (!ReserveCommit(budget, size))
+        {
+            return false;
+        }
+    }
+
+    if (!GCToOSInterface::VirtualCommit(address, size))
+    {
+        DecBytesCommitted(size);
+        return false;
+    }
+
+    return true;
+}
+
+size_t SatoriHeap::GetBytesCommitted()
+{
+    SatoriLockHolder holder(&m_budgetLock);
+    size_t committed = VolatileLoad(&m_commitCharge);
+    for (AllocationBudget* budget = m_allocationBudgets; budget != nullptr; budget = budget->m_next)
+    {
+        committed -= VolatileLoad(&budget->m_commitBytes);
+    }
+
+    return committed;
+}
+
+bool SatoriHeap::TrySetHardLimit(size_t hardLimit)
+{
+    SatoriLockHolder holder(&m_budgetLock);
+    ReclaimCommitBudget();
+    if (hardLimit != 0 && hardLimit < VolatileLoad(&m_commitCharge))
+    {
+        return false;
+    }
+
+    VolatileStore(&m_hardLimit, hardLimit);
+    return true;
+}
+
+void SatoriHeap::ReclaimRegionBudget()
+{
+    for (AllocationBudget* budget = m_allocationBudgets; budget != nullptr; budget = budget->m_next)
+    {
+        m_memoryCheckBudget += Interlocked::Exchange(&budget->m_regionBytes, (size_t)0);
+    }
+}
+
+bool SatoriHeap::RefillRegionBudget(AllocationBudget* budget, size_t size, bool consume)
+{
+    size_t remaining = budget != nullptr ? VolatileLoad(&budget->m_regionBytes) : 0;
+    size_t needed = size - min(remaining, size);
+    if (m_memoryCheckBudget < needed)
+    {
+        ReclaimRegionBudget();
+        remaining = 0;
+        needed = size;
+        if (m_memoryCheckBudget < needed)
+        {
+            return false;
+        }
+    }
+
+    if (budget != nullptr)
+    {
+        size_t grant = min(m_memoryCheckBudget, max(needed, (size_t)8 * 1024 * 1024));
+        m_memoryCheckBudget -= grant;
+        VolatileStore(&budget->m_regionBytes, remaining + grant - (consume ? size : 0));
+    }
+    else if (consume)
+    {
+        m_memoryCheckBudget -= size;
+    }
+
+    return true;
+}
+
+void SatoriHeap::AccountRegionAllocation(size_t size)
+{
+    if (VolatileLoad(&m_memoryCheckState) != 0)
+    {
+        return;
+    }
+
+    AllocationBudget* budget = GetAllocationBudget();
+    size_t remaining = budget != nullptr ? VolatileLoad(&budget->m_regionBytes) : 0;
+    if (remaining >= size &&
+        Interlocked::CompareExchange(&budget->m_regionBytes, remaining - size, remaining) == remaining)
+    {
+        return;
+    }
+
+    SatoriLockHolder holder(&m_budgetLock);
+    if (m_memoryCheckState == 0 && !RefillRegionBudget(budget, size, /*consume*/ true))
+    {
+        VolatileStore(&m_memoryCheckState, 1);
+    }
+}
+
+bool SatoriHeap::TryClaimMemoryCheck(size_t size)
+{
+    int state = VolatileLoad(&m_memoryCheckState);
+    if (state == 2)
+    {
+        return false;
+    }
+
+    AllocationBudget* budget = GetAllocationBudget();
+    if (state == 0 && (size == 0 || (budget != nullptr && VolatileLoad(&budget->m_regionBytes) >= size)))
+    {
+        return false;
+    }
+
+    SatoriLockHolder holder(&m_budgetLock);
+    if (m_memoryCheckState == 2 ||
+        (m_memoryCheckState == 0 && RefillRegionBudget(budget, size, /*consume*/ false)))
+    {
+        return false;
+    }
+
+    VolatileStore(&m_memoryCheckState, 2);
+    return true;
+}
+
+void SatoriHeap::SetMemoryCheckBudget(size_t bytes)
+{
+    SatoriLockHolder holder(&m_budgetLock);
+    for (AllocationBudget* budget = m_allocationBudgets; budget != nullptr; budget = budget->m_next)
+    {
+        Interlocked::Exchange(&budget->m_regionBytes, (size_t)0);
+    }
+
+    m_memoryCheckBudget = bytes;
+    VolatileStore(&m_memoryCheckState, 0);
 }
 
 bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)

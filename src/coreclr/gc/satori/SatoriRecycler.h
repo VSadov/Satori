@@ -78,6 +78,12 @@ public:
 
     bool& IsLowLatencyMode();
 
+    // less than the margin is left above the high memory threshold, see AdjustHeuristics
+    bool IsMemoryLow()
+    {
+        return m_isMemoryLow;
+    }
+
     void Collect(int generation, bool force, bool blocking, bool compact = false, bool aggressive = false);
     int GetCondemnedGeneration();
     int GetRootScanTicket();
@@ -87,6 +93,7 @@ public:
     void TryStartGC(int generation, gc_reason reason);
     bool HelpOnce(bool waitForGC = false);
     void MaybeTriggerGC(gc_reason reason);
+    void CheckMemoryBeforeAlloc(size_t allocSize);
     bool IsBlockingPhase();
     void WaitForTrimmerToStop();
 
@@ -98,7 +105,7 @@ public:
     void BlockingMarkForConcurrent();
     void MaybeAskForHelp();
 
-    SatoriRegion* TryGetReusable();
+    SatoriRegion* TryGetReusable(bool wait = false);
     SatoriRegion* TryGetReusableForLarge();
 
     void ReportThreadAllocBytes(int64_t bytes, bool isLive);
@@ -284,17 +291,28 @@ private:
     // how much more free space may be parked in reusable regions. set from the gen1 budget
     // once it is known, and spent as regions are parked. 0 stops parking any more.
     int m_reusableTargetPercent;
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     int64_t m_reusableLimit;
-    bool m_nextGcIsFullGc;
 
     size_t m_condemnedRegionsCount;
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     size_t m_deferredSweepCount;
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     size_t m_gen1AddedSinceLastCollection;
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     size_t m_gen2AddedSinceLastCollection;
     size_t m_gen1CountAtLastGen2;
     size_t m_gcNextTimeTarget;
 
+    // set when memory is low, see AdjustHeuristics
+    size_t m_releaseTarget;
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
+    bool m_isMemoryLow;
+    bool m_nextGcIsFullGc;
+    size_t m_committedAfterTrim;
+
     size_t m_occupancy[3];
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     size_t m_occupancyAcc[3];
     size_t m_demotedOccupancyAcc;
     bool m_occupancyReportingEnabled;
@@ -307,17 +325,20 @@ private:
     int64_t m_currentAllocBytesDeadThreads;
     int64_t m_totalAllocBytes;
 
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     int64_t m_osTicksPerMilli;
     int64_t m_osTicksPerMicro;
     int64_t m_timeStampTicksPerMilli;
 
     SatoriGate* m_workerGate;
 
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     volatile int m_gateSignaled;
     volatile int m_workerWoken;
     volatile int m_activeWorkers;
     volatile int m_totalWorkers;
 
+    DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY)
     void(SatoriRecycler::* volatile m_activeWorkerFn)();
 
     int64_t m_noWorkSince;
@@ -357,7 +378,8 @@ private:
     void PushToEphemeralQueues(SatoriRegion* region);
     void PushToTenuredQueues(SatoriRegion* region);
 
-    void AdjustHeuristics();
+    void AdjustHeuristics(size_t reusableBytes);
+    size_t CheckAvailableMemory(size_t* margin, size_t* toLimit);
     void DeactivateAllocatingRegions();
     void RequestCollection(CollectionRequest* request, size_t requestNumber);
 
@@ -446,7 +468,7 @@ private:
     void KeepRegion(SatoriRegion* curRegion);
     bool ShouldReuse(SatoriRegion* curRegion);
     void DrainDeferredSweepQueue();
-    void DrainReusableQueue();
+    size_t DrainReusableQueue();
     bool DrainDeferredSweepQueueConcurrent(int64_t deadline = 0);
     void DrainDeferredSweepQueueWorkerFn();
     void SweepAndReturnRegion(SatoriRegion* curRegion);

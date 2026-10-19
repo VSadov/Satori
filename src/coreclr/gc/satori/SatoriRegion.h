@@ -89,10 +89,12 @@ public:
 
     void AddFreeSpace(SatoriObject* freeObj, size_t size);
     void ReturnFreeSpace(SatoriObject * freeObj, size_t size);
+    void AddSmallFreeSpace(SatoriFreeListObject* freeListObj, size_t capacity, bool atHead);
 
     int GetMaxFreeBucket();
     bool HasFreeSpaceInTopBucket();
     size_t FreeSpaceInTopNBuckets(int n);
+    size_t FreeSpaceForReuse(bool committedOnly);
 
     void StartEscapeTrackingRelease(size_t threadTag, size_t allocBytes = 0, size_t minAllocSize = 0);
     void StopEscapeTracking();
@@ -319,7 +321,9 @@ private:
             SatoriRegion** m_allocatingOwnerAttachmentPoint;
             SatoriWorkChunk* m_gen2Objects;
 
-            // ===== 64 bytes boundary
+#if !defined(TARGET_AMD64) && !defined(TARGET_X86)
+            uint8_t m_allocationPadding[Satori::CACHE_LINE_GRANULARITY - 64];
+#endif
 
             // Active allocation may happen in the following range.
             // The range may not be parseable as sequence of objects
@@ -384,9 +388,16 @@ private:
             // TODO: VS can fold with m_doNotSweep?
             bool m_hasMarksSet;
 
+            // Smallest request that did not fit; adding a fitting span resets it.
+            uint16_t m_smallFreeListMiss;
+
             size_t m_freeListCapacities[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeListTails[Satori::FREELIST_COUNT];
+
+            // free spans smaller than the free lists take, see AddFreeSpace
+            SatoriFreeListObject* m_smallFreeListTails[Satori::SMALL_FREELIST_COUNT];
+            size_t m_smallFreeListCapacity;
         };
     };
 
