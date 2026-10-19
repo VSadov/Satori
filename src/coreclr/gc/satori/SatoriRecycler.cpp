@@ -208,14 +208,18 @@ void SatoriRecycler::WorkerThreadMainLoop(void* param)
 
             // spin for ~10 microseconds (GcSpin)
             // the OS timer here - only the clock ends this wait, so it must not be the inline one
-            int64_t limit = minipal_hires_ticks() +
-                recycler->m_osTicksPerMicro * SatoriUtil::GcSpin();
+            const int64_t ticksPerMicro = recycler->m_osTicksPerMicro;
+            int64_t lastTick = minipal_hires_ticks();
+            int64_t limit = lastTick + ticksPerMicro * SatoriUtil::GcSpin();
 
-            int i = 0;
+            // We do not know how long YieldProcessor takes, it varies a lot between hardware.
+            // Start with a short batch and keep doubling it, but only while batches take less than a microsecond.
+            // After that the batch stays the same, so the clock is read about once per microsecond
+            // and we overshoot the limit by no more than one batch.
+            int i = 1;
+            int64_t now;
             do
             {
-                i++;
-                i = min(30, i);
                 int j = (1 << i);
                 while (--j > 0)
                 {
@@ -227,8 +231,16 @@ void SatoriRecycler::WorkerThreadMainLoop(void* param)
                         goto released;
                     }
                 }
+
+                now = minipal_hires_ticks();
+                if (now - lastTick < ticksPerMicro)
+                {
+                    i = min(30, i + 1);
+                }
+
+                lastTick = now;
             }
-            while(minipal_hires_ticks() < limit);
+            while (now < limit);
 
             // Wait returns true if was woken up.
             if (!recycler->m_workerGate->TimedWait(10000))
@@ -490,8 +502,9 @@ size_t SatoriRecycler::IncrementGen0Count()
 #if _DEBUG
 static const int concMarkThreshold = 0;
 #else
-// Assuming very roughly 100ns per live object, 10K object graph marks in 1ms by a single thread.
-static const int concMarkThreshold = 1024  * 10 * MIN_OBJECT_SIZE;
+// Empirical cutoff: on small heaps, concurrent-marking overhead may outweigh its benefit.
+// Last-reported occupancy is only a proxy for collection cost, not a pause-time bound.
+static const int concMarkThreshold = 1024  * 1024 * 1;
 #endif
 
 bool SatoriRecycler::ShouldDoConcurrent(int generation)
@@ -1845,24 +1858,6 @@ void SatoriRecycler::ASSERT_NO_WORK()
     );
 }
 
-void SatoriRecycler::ReportThreadAllocBytes(int64_t bytes, bool isLive)
-{
-    if (isLive)
-    {
-        _ASSERTE(IsBlockingPhase());
-        m_currentAllocBytesLiveThreads += bytes;
-    }
-    else
-    {
-        Interlocked::ExchangeAdd64(&m_currentAllocBytesDeadThreads, bytes);
-    }
-}
-
-int64_t SatoriRecycler::GetTotalAllocatedBytes()
-{
-    return m_totalAllocBytes;
-}
-
 /* static */
 void SatoriRecycler::DeactivateFn(gc_alloc_context* gcContext, void* param)
 {
@@ -1870,14 +1865,11 @@ void SatoriRecycler::DeactivateFn(gc_alloc_context* gcContext, void* param)
     SatoriRecycler* recycler = (SatoriRecycler*)param;
 
     context->Deactivate(recycler, /*detach*/ recycler->m_promoteAllRegions);
-    recycler->ReportThreadAllocBytes(context->alloc_bytes + context->alloc_bytes_uoh, /*islive*/ true);
 }
 
 void SatoriRecycler::DeactivateAllocatingRegions()
 {
-    m_currentAllocBytesLiveThreads = 0;
     GCToEEInterface::GcEnumAllocContexts(DeactivateFn, m_heap->Recycler());
-    m_totalAllocBytes = m_currentAllocBytesLiveThreads + m_currentAllocBytesDeadThreads;
 
     // make shared regions parseable, in case we have byrefs pointing to them.
     m_heap->Allocator()->DeactivateSharedRegions(m_promoteAllRegions);
@@ -2674,22 +2666,20 @@ void SatoriRecycler::ScheduleMarkAsChildRanges(SatoriObject* o)
 
 bool SatoriRecycler::ScheduleUpdateAsChildRanges(SatoriObject* o)
 {
-    if (o->RawGetMethodTable()->ContainsGCPointers())
-    {
-        SatoriWorkChunk* chunk = m_heap->Allocator()->TryGetWorkChunk();
-        if (chunk == nullptr)
-        {
-            return false;
-        }
+    _ASSERTE(o->RawGetMethodTable()->ContainsGCPointers());
 
-        // Skip the method table, it is not a reference.
-        // TakeObjectRange splits the range into pieces that do not overlap, so every reference is updated once.
-        // NB: that is not needed for correctness. Updating a reference again would find it already updated,
-        //     since the new location is not in a relocated region. It would just be wasted work.
-        chunk->SetRange(o, o->Start() + sizeof(size_t), o->Start() + o->Size());
-        m_workList->Push(chunk);
+    SatoriWorkChunk* chunk = m_heap->Allocator()->TryGetWorkChunk();
+    if (chunk == nullptr)
+    {
+        return false;
     }
 
+    // Skip the method table, it is not a reference.
+    // TakeObjectRange splits the range into pieces that do not overlap, so every reference is updated once.
+    // NB: that is not needed for correctness. Updating a reference again would find it already updated,
+    //     since the new location is not in a relocated region. It would just be wasted work.
+    chunk->SetRange(o, o->Start() + sizeof(size_t), o->Start() + o->Size());
+    m_workList->Push(chunk);
     return true;
 }
 
@@ -3700,6 +3690,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                         int8_t* cards = page->CardsForGroup(i);
                         // where the previous walk in this group stopped, see FindObject
                         SatoriObject* hint = nullptr;
+                        SatoriRelocatedRefQueue<8> updateQueue;
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
                         {
                             // cards are often sparsely set, if j is aligned, check the entire size_t for 0
@@ -3747,10 +3738,9 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                             (((size_t)ppObject ^ (size_t)child) >= Satori::REGION_SIZE_GRANULARITY) &&
                                             !child->IsExternal())
                                         {
-                                            SatoriObject* newLocation;
-                                            if (child->IsRelocatedTo</*notExternal*/true>(&newLocation))
+                                            if (child->IsRelocated</*notExternal*/true>())
                                             {
-                                                VolatileStoreWithoutBarrier(ppObject, newLocation);
+                                                updateQueue.Push(ppObject, child);
                                             }
 
                                             if (child->ContainingRegion()->Generation() < 2)
@@ -3782,6 +3772,8 @@ void SatoriRecycler::UpdatePointersThroughCards()
                                 hint = o;
                             } while (o->Start() < objLimit);
                         }
+
+                        updateQueue.Flush();
                     }
                 }
 
@@ -4567,6 +4559,8 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     _ASSERTE(relocationTarget->HasMarksSet() == needToCopyMarks);
 
     int32_t objectsRelocated = 0;
+    SatoriRegion::SweepPrefetcher prefetcher;
+    relocationSource->SweepPrefetchStart(prefetcher, o);
     do
     {
         o = relocationSource->SkipUnmarked(o);
@@ -4579,6 +4573,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         _ASSERTE(o->IsMarked());
         _ASSERTE(!o->IsFree());
         _ASSERTE(!o->IsUnmovable());
+        relocationSource->SweepPrefetchAdvance(prefetcher, o);
 
         size_t size = o->Size();
         memcpy((void*)(dst - sizeof(size_t)), (void*)(o->Start() - sizeof(size_t)), size);
@@ -4804,6 +4799,7 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
     if (srcChunk)
     {
         MaybeAskForHelp();
+        SatoriRelocatedRefQueue<8> updateQueue;
         do
         {
             _ASSERTE(srcChunk->IsRange());
@@ -4817,18 +4813,15 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
 
             // update children in the range
             o->ForEachObjectRef(
-                [](SatoriObject** ppObject)
+                [&updateQueue](SatoriObject** ppObject)
                 {
                     SatoriObject* child = *ppObject;
                     // ignore common cases - child is null or in the same region
                     if (child &&
-                        (((size_t)ppObject ^ (size_t)child) >= Satori::REGION_SIZE_GRANULARITY))
+                        (((size_t)ppObject ^ (size_t)child) >= Satori::REGION_SIZE_GRANULARITY) &&
+                        child->IsRelocated())
                     {
-                        SatoriObject* newLocation;
-                        if (child->IsRelocatedTo(&newLocation))
-                        {
-                            *ppObject = newLocation;
-                        }
+                        updateQueue.Push(ppObject, child);
                     }
                 },
                 o->Size(),
@@ -4836,6 +4829,8 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
                 end,
                 /* includeCollectibleAllocator */ false);
         } while ((srcChunk = m_workList->TryPop()));
+
+        updateQueue.Flush();
     }
 }
 

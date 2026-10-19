@@ -2035,6 +2035,15 @@ uint64_t GCHeap::GetTotalAllocatedBytes()
 #endif //MULTIPLE_HEAPS
 }
 
+// Get the total allocated bytes, precisely
+uint64_t GCHeap::GetTotalAllocatedBytesPrecise()
+{
+    // Not used yet. With this GC the runtime computes the precise count itself.
+    // (see GCInterface_GetTotalAllocatedBytesPrecise and RhGetTotalAllocatedBytesPrecise)
+    assert (!"GetTotalAllocatedBytesPrecise is not implemented");
+    return GetTotalAllocatedBytes();
+}
+
 int GCHeap::CollectionCount (int generation, int get_bgc_fgc_count)
 {
     if (get_bgc_fgc_count != 0)

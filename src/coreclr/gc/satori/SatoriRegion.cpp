@@ -2725,26 +2725,28 @@ void SatoriRegion::UpdateFinalizableTrackers()
     }
 }
 
-void SatoriRegion::UpdatePointersInObject(SatoriObject* o, size_t size)
+void SatoriRegion::UpdatePointersInObject(SatoriObject* o, size_t size, SatoriRelocatedRefQueue<8>& updateQueue)
 {
+    if (!o->RawGetMethodTable()->ContainsGCPointers())
+    {
+        return;
+    }
+
     // if the containing region is large, do not engage with the entire object,
     // schedule update of separate ranges.
     if (this->Size() == Satori::REGION_SIZE_GRANULARITY ||
         !Recycler()->ScheduleUpdateAsChildRanges(o))
     {
         o->ForEachObjectRef(
-            [](SatoriObject** ppObject)
+            [&updateQueue](SatoriObject** ppObject)
             {
                 SatoriObject* child = *ppObject;
                 // ignore common cases - child is null or in the same region
                 if (child &&
-                    (((size_t)ppObject ^ (size_t)child) >= Satori::REGION_SIZE_GRANULARITY))
+                    (((size_t)ppObject ^ (size_t)child) >= Satori::REGION_SIZE_GRANULARITY) &&
+                    child->IsRelocated())
                 {
-                    SatoriObject* newLocation;
-                    if (child->IsRelocatedTo(&newLocation))
-                    {
-                        *ppObject = newLocation;
-                    }
+                    updateQueue.Push(ppObject, child);
                 }
             },
             size
@@ -2756,14 +2758,17 @@ void SatoriRegion::UpdatePointers()
 {
     _ASSERTE(!HasMarksSet());
 
+    SatoriRelocatedRefQueue<8> updateQueue;
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     SatoriObject* o = FirstObject();
     do
     {
         size_t size = o->Size();
-        UpdatePointersInObject(o, size);
+        UpdatePointersInObject(o, size, updateQueue);
         o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);
+
+    updateQueue.Flush();
 }
 
 void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)

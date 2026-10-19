@@ -715,6 +715,7 @@ bool SatoriRegion::Sweep()
     SatoriObject* o = FirstObject();
     SweepPrefetcher prefetcher;
     SweepPrefetchStart(prefetcher, o);
+    SatoriRelocatedRefQueue<8> updateQueue;
     do
     {
         if (!CheckAndClearMarked(o))
@@ -744,7 +745,7 @@ bool SatoriRegion::Sweep()
 
         if (updatePointers)
         {
-            UpdatePointersInObject(o, size);
+            UpdatePointersInObject(o, size, updateQueue);
         }
 
         if (individuallyPromoted)
@@ -761,6 +762,11 @@ bool SatoriRegion::Sweep()
         occupancy += size;
         o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);
+
+    if (updatePointers)
+    {
+        updateQueue.Flush();
+    }
 
     _ASSERTE(o->Start() == objLimit || End() > objLimit);
     _ASSERTE(hasFinalizables || !m_finalizableTrackers);
@@ -1209,6 +1215,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
 
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     SatoriObject* o = FirstObject();
+    SatoriRelocatedRefQueue<8> updateQueue;
     do
     {
         o = SkipUnmarked(o);
@@ -1233,10 +1240,9 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
                 if (child &&
                     !child->IsExternal())
                 {
-                    SatoriObject* newLocation;
-                    if (child->IsRelocatedTo</*notExternal*/true>(&newLocation))
+                    if (child->IsRelocated</*notExternal*/true>())
                     {
-                        VolatileStoreWithoutBarrier(ppObject, newLocation);
+                        updateQueue.Push(ppObject, child);
                     }
 
                     // update the card as if the relocated object got a child assigned
@@ -1254,6 +1260,8 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
 
         o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);
+
+    updateQueue.Flush();
 }
 
 inline int SatoriRegion::IncrementUnfinishedAlloc()
