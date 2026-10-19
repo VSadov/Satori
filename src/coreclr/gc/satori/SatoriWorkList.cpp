@@ -61,8 +61,11 @@ SatoriWorkChunk* SatoriWorkList::TryPopSlow()
     SatoriWorkChunk* head;
     while (true)
     {
+        // The version must be read with acquire, before the head. Otherwise head->m_next may be read
+        // ahead of the version and be older than it. A chunk that is popped and pushed again while we
+        // are here would then pass the CAS with a stale next and the chunks after it would be lost.
+        size_t aba = VolatileLoad(&this->m_aba);
         head = this->m_head;
-        size_t aba = this->m_aba;
 
         if (head == nullptr)
         {
