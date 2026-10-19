@@ -1001,10 +1001,7 @@ extern "C" INT64 QCALLTYPE GCInterface_GetTotalAllocatedBytesPrecise()
     GCX_COOP();
 
 #if FEATURE_SATORI_GC
-
-    GCHeapUtilities::GetGCHeap()->GarbageCollect(1);
-
-    allocated = GCHeapUtilities::GetGCHeap()->GetTotalAllocatedBytes();
+    allocated = GCHeapUtilities::GetGCHeap()->GetTotalAllocatedBytesPrecise();
 #else
     // We need to suspend/restart the EE to get each thread's
     // non-allocated memory from their allocation contexts

@@ -18,6 +18,15 @@ target_precompile_headers(cee_wks_mergeable PRIVATE [["common.h"]])
 if (MSVC)
     # corelib.cpp does not compile with precompiled header file
     set_source_files_properties(../corelib.cpp PROPERTIES COMPILE_FLAGS "/Y-")
+
+    # coreclr.pgd does not have profile data for Satori GC, which causes LTCG/USEPROFILE
+    # to treat all Satori functions as cold and optimize them for size (/Os).
+    # Disable /GL on Satori sources so they are compiled with full speed optimizations (/Ox).
+    set(SATORI_SOURCES_WKS ${VM_SOURCES_WKS})
+    list(FILTER SATORI_SOURCES_WKS INCLUDE REGEX "satori/")
+    set_source_files_properties(${SATORI_SOURCES_WKS} PROPERTIES
+        SKIP_PRECOMPILE_HEADERS ON
+        COMPILE_OPTIONS "$<$<CONFIG:Release>:/GL->")
 endif()
 
 add_dependencies(cee_wks_core eventing_headers)

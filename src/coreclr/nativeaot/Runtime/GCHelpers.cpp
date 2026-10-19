@@ -478,10 +478,10 @@ EXTERN_C int64_t QCALLTYPE RhGetTotalAllocatedBytesPrecise()
     pThread->DeferTransitionFrame();
     pThread->DisablePreemptiveMode();
 
-    GCHeapUtilities::GetGCHeap()->GarbageCollect(1);
+    int64_t allocated = GCHeapUtilities::GetGCHeap()->GetTotalAllocatedBytesPrecise();
 
     pThread->EnablePreemptiveMode();
-    return GCHeapUtilities::GetGCHeap()->GetTotalAllocatedBytes();
+    return allocated;
 #else
     int64_t allocated;
 
