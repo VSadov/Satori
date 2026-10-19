@@ -14,11 +14,11 @@ public static class MemoryBudget
     private static Exception? s_failure;
 
     [Fact]
-    public static int TestEntryPoint()
+    public static void TestEntryPoint()
     {
         if (!GC.GetConfigurationVariables().TryGetValue("SatoriGC", out object? satori) || satori is not true)
         {
-            return 100;
+            return;
         }
 
         SetLimit(256 * MiB);
@@ -78,7 +78,6 @@ public static class MemoryBudget
         byte[] afterExit = new byte[4 * 1024 * 1024];
         afterExit[^1] = 42;
         GC.KeepAlive(afterExit);
-        return 100;
     }
 
     private static void Allocate(int worker)
