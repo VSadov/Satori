@@ -142,8 +142,9 @@ public:
     FORCEINLINE
     SatoriWorkChunk* TryPop()
     {
+        // read the version first and with acquire, see TryPopSlow.
+        size_t aba = VolatileLoad(&this->m_aba);
         SatoriWorkChunk* head  = this->m_head;
-        size_t aba = this->m_aba;
 
         if (head == nullptr)
         {

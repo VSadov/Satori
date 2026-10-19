@@ -51,6 +51,7 @@
 ;   x13  : incremented by 8
 ;   x14  : incremented by 8
 ;   x15  : trashed
+;   x16  : trashed (ip0)
 ;   x17  : trashed (ip1)
 ;
 ;   NOTE: Keep in sync with RBM_CALLEE_TRASH_WRITEBARRIER_BYREF and RBM_CALLEE_GCTRASH_WRITEBARRIER_BYREF
