@@ -35,15 +35,19 @@
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
 
-SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap, bool& commitFailed)
+SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap, InitStatus& status)
 {
     _ASSERTE(pageSize % Satori::PAGE_SIZE_GRANULARITY == 0);
-    commitFailed = false;
 
-    SatoriPage* result = (SatoriPage*)GCToOSInterface::VirtualReserve((void*)address, pageSize, SatoriUtil::UseTHP());
+    VirtualReserveStatus reserveStatus = VirtualReserveStatus::Refused;
+    SatoriPage* result = (SatoriPage*)GCToOSInterface::VirtualReserve((void*)address, pageSize, SatoriUtil::UseTHP(), &reserveStatus);
     if (result == nullptr)
     {
-        return result;
+        status = reserveStatus == VirtualReserveStatus::Occupied ?
+            InitStatus::Occupied :
+            InitStatus::ReserveRefused;
+
+        return nullptr;
     }
 
     size_t cardTableSize = pageSize / Satori::BYTES_PER_CARD_BYTE;
@@ -60,7 +64,7 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     if (!GCToOSInterface::VirtualCommit((void*)address, commitSize))
     {
         GCToOSInterface::VirtualRelease(result, pageSize);
-        commitFailed = true;
+        status = InitStatus::CommitFailed;
         return nullptr;
     }
 
@@ -110,10 +114,11 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     {
         heap->DecBytesCommitted(commitSize);
         GCToOSInterface::VirtualRelease(result, pageSize);
-        commitFailed = true;
+        status = InitStatus::CommitFailed;
         return nullptr;
     }
 
+    status = InitStatus::Success;
     return result;
 }
 
