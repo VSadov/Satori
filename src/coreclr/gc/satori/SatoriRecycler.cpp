@@ -151,6 +151,9 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_gen1CountAtLastGen2 = 0;
     m_gen1Budget = MIN_GEN1_BUDGET;
+    m_prevGen1Budget = MIN_GEN1_BUDGET;
+    m_gen1OverrunPerCycle = 0;
+    m_availableMemory = 0;
     m_reusableTargetPercent = SatoriUtil::ReusableTarget();
     m_reusableLimit = 0;
     m_totalLimit = MIN_GEN1_BUDGET;
@@ -1379,6 +1382,8 @@ void SatoriRecycler::AdjustHeuristics()
     // take max of both budgets
     newGen1Budget = max(newGen1Budget, altNewGen1Budget);
 
+    m_prevGen1Budget = m_gen1Budget;
+
     // smooth the budget a bit
     // TUNING: using exponential smoothing with alpha == 1/2. is it a good smooth/lag balance?
     m_gen1Budget = (m_gen1Budget + newGen1Budget) / 2;
@@ -1408,13 +1413,11 @@ void SatoriRecycler::AdjustHeuristics()
 
     // limit budget to available memory
     size_t available = GetAvailableMemory();
+    m_availableMemory = available;
     if (available < m_gen1Budget)
     {
         m_gen1Budget = available;
     }
-
-    // the budget is final, allow parking reusables against it again
-    m_reusableLimit = (int64_t)(m_gen1Budget / 100 * m_reusableTargetPercent);
 
     // now figure if we will promote
     m_promoteAllRegions = false;
@@ -1565,7 +1568,7 @@ void SatoriRecycler::BlockingCollectImpl()
     }
 
     // regions swept below are drained a moment later and no allocation can use them.
-    // AdjustHeuristics reopens this once the new budget is known.
+    // Plan reopens this once the cycle's allocations and budget are known.
     m_reusableLimit = 0;
     RunWithHelp(&SatoriRecycler::DrainDeferredSweepQueue);
     m_deferredSweepRegions->ResetAfterUnsafeDrain();
@@ -4173,7 +4176,15 @@ void SatoriRecycler::Plan()
 #endif
 
     // Gen1 allocations are accounted for by every blocking collection.
+    size_t allocatedInCycle = m_gen1AddedSinceLastCollection;
     m_gen1AddedSinceLastCollection = 0;
+
+    // The budget says when a GC is requested, not how much is allocated before it completes.
+    // Include what mutators allocated past the previous budget while waiting for GcRate and concurrent marking.
+    size_t overrun = allocatedInCycle > m_prevGen1Budget ? allocatedInCycle - m_prevGen1Budget : 0;
+    m_gen1OverrunPerCycle = max(overrun, (m_gen1OverrunPerCycle * 7 + overrun) / 8);
+    size_t expectedGen1 = min(m_availableMemory, m_gen1Budget + m_gen1OverrunPerCycle);
+    m_reusableLimit = (int64_t)(expectedGen1 / 100 * m_reusableTargetPercent);
 
     size_t estimatedReclaim = m_estimatedEphemeralReclaim;
     if (m_condemnedGeneration == 2)
