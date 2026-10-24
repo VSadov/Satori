@@ -57,8 +57,9 @@ public:
     void AddRegion(SatoriRegion* region);
     void ReturnRegion(SatoriRegion* region);
 
-    void AllocationTickIncrement(AllocationTickKind isSmall, size_t totalAdded, SatoriObject* obj, size_t obj_size);
-    void AllocationTickDecrement(size_t totalUnused);
+    size_t GetTotalAllocatedBytes();
+    size_t GetTotalAllocatedBytesPrecise();
+    void PublishAllocatedBytesOnThreadExit(SatoriAllocationContext* context);
 
     SatoriWorkChunk* TryGetWorkChunk();
     SatoriWorkChunk* GetWorkChunk();
@@ -70,6 +71,15 @@ public:
     void DeactivateSharedRegions(bool promoteAllRegions);
 
 private:
+    // Bytes allocated by threads, as published by the threads. (see PublishAllocatedBytes)
+    // Each counter is on its own cache line.
+    struct DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY) AllocatedBytesCounter
+    {
+        size_t bytes;
+        // the value of "bytes" at the last allocation tick. (see MaybeFireAllocationTick)
+        size_t bytesAtLastTick;
+    };
+
     SatoriHeap* m_heap;
     SatoriRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
     SatoriWorkList* m_workChunks;
@@ -78,6 +88,11 @@ private:
     SatoriRegion* m_largeRegion;
     SatoriRegion* m_pinnedRegion;
     SatoriRegion* m_immortalRegion;
+
+    int m_smallAllocatedBytesCounterCount;
+
+    // the allocation tick event was enabled when last checked. (see IsAllocationTickEnabled)
+    volatile bool m_allocationTickWasEnabled;
 
     DECLSPEC_ALIGN(64)
     SatoriLock m_regularAllocLock;
@@ -91,19 +106,32 @@ private:
     DECLSPEC_ALIGN(64)
     SatoriLock m_pinnedAllocLock;
 
-    // for event trace
-    DECLSPEC_ALIGN(64)
-    size_t m_largeAllocTickAmount;
+    // Small objects are allocated most often, thus their counter is sharded,
+    // one counter per ALLOCATED_BYTES_COUNTER_PROCESSORS processors.
+    // Large and pinned objects are allocated less often and have a single counter each.
+    // TODO: Ideally the sharding would consider NUMA nodes. We may also want to shard
+    //       the large and pinned counters per NUMA node. Not yet.
+    AllocatedBytesCounter m_smallAllocatedBytes[Satori::MAX_ALLOCATED_BYTES_COUNTERS];
+    AllocatedBytesCounter m_largeAllocatedBytes;
+    AllocatedBytesCounter m_pinnedAllocatedBytes;
 
-    DECLSPEC_ALIGN(64)
-    size_t m_pinnedAllocTickAmount;
+    // What terminated threads have allocated, precisely. (see GetTotalAllocatedBytesPrecise)
+    size_t m_deadThreadsAllocatedBytes;
 
-    DECLSPEC_ALIGN(64)
-    size_t m_smallAllocTickAmount;
+    // A floor for approximate reads after a precise total has been observed.
+    size_t m_lastPreciseAllocatedBytes;
 
 private:
     DECLSPEC_ALIGN(64)
     volatile int32_t m_singePageAdders;
+
+    int SmallAllocatedBytesCounterIndex();
+    void PublishAllocatedBytes(SatoriAllocationContext* context, AllocationTickKind kind, SatoriObject* obj, size_t size);
+    void PublishAllocatedBytesIfNeeded(SatoriAllocationContext* context, AllocationTickKind kind, SatoriObject* obj, size_t size);
+    void OnLargeOrPinnedAllocated(SatoriAllocationContext* context, uint32_t flags, SatoriObject* obj, size_t size);
+    bool IsAllocationTickEnabled();
+    static void CatchUpAllocationTick(AllocatedBytesCounter* counter);
+    static void MaybeFireAllocationTick(AllocatedBytesCounter* counter, size_t total, AllocationTickKind kind, SatoriObject* obj, size_t size);
 
     void UpdateAllocStatsAndHelpIfNeeded(SatoriAllocationContext * context);
     SatoriObject* AllocRegular(SatoriAllocationContext* context, size_t size, uint32_t flags);

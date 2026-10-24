@@ -75,6 +75,8 @@ public:
     bool IsUnmovable();
 
     template <bool notExternal = false>
+    bool IsRelocated();
+    template <bool notExternal = false>
     bool IsRelocatedTo(SatoriObject** newLocation);
     SatoriObject * RelocatedToUnchecked();
 

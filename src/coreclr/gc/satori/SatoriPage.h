@@ -41,7 +41,18 @@ public:
     SatoriPage() = delete;
     ~SatoriPage() = delete;
 
-    static SatoriPage* InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap, bool& commitFailed);
+    enum class InitStatus
+    {
+        Success,
+        // the address range is taken by another mapping, another location may work.
+        Occupied,
+        // the OS refused to reserve for other reasons (out of address space, limits, ...)
+        ReserveRefused,
+        // could not commit the initial part of the page.
+        CommitFailed,
+    };
+
+    static SatoriPage* InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap, InitStatus& status);
     SatoriRegion* InitialRegion();
 
     void OnRegionInitialized(SatoriRegion* region);
