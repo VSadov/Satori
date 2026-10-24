@@ -650,7 +650,11 @@ static Object* GcAllocInternal(MethodTable* pEEType, uint32_t uFlags, uintptr_t 
     // combined_limit=alloc_limit.
     pEEAllocContext->UpdateCombinedLimit(isRandomizedSamplingEnabled);
 
+#if FEATURE_SATORI_GC
+    if ((uFlags & GC_ALLOC_USER_OLD_HEAP) || cbSize >= 32 * 1024)
+#else
     if (uFlags & GC_ALLOC_USER_OLD_HEAP)
+#endif
         GCHeapUtilities::GetGCHeap()->PublishObject((uint8_t*)pObject);
 
 #ifdef _DEBUG
