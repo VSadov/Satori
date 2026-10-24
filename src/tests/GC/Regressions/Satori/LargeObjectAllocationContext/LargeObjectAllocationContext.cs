@@ -26,18 +26,24 @@ public static class LargeObjectAllocationContext
         }
 
         int result = 100;
+        bool hasConfiguredLohThreshold =
+            Environment.GetEnvironmentVariable("DOTNET_GCLOHThreshold") is not null ||
+            Environment.GetEnvironmentVariable("COMPlus_GCLOHThreshold") is not null ||
+            AppContext.GetData("System.GC.LOHThreshold") is not null;
+
         if (!GC.GetConfigurationVariables().TryGetValue("LOHThreshold", out object? lohThreshold) ||
             lohThreshold is not long threshold ||
-            threshold != DefaultLohThreshold)
+            (hasConfiguredLohThreshold ? threshold < DefaultLohThreshold : threshold != DefaultLohThreshold))
         {
             Console.WriteLine($"Unexpected LOHThreshold: {lohThreshold}");
             result = 1;
         }
 
         // The first array is small and refills the allocation context when the rest of the context is too small for it.
-        // After a 16 KB allocation, at most one 32 KB array can fit in the ~64 KB allocation context; the second must
-        // miss the context and go to a large region. An 80 KB array never fits in the context and must always go to a large region.
-        foreach ((int smallLength, int largeLength, int largeCount) in new[] { (16 * 1024, LargeObjectThreshold, 2), (1024, 80 * 1024, 1) })
+        // A refill adds up to PACE_BUDGET / 2 + INDEX_GRANULARITY (~66 KB), so at most two 32 KB arrays can fit in the
+        // remaining allocation context; the third must miss the context and go to a large region.
+        // An 80 KB array never fits in the context and must always go to a large region.
+        foreach ((int smallLength, int largeLength, int largeCount) in new[] { (16 * 1024, LargeObjectThreshold, 3), (1024, 80 * 1024, 1) })
         {
             foreach (bool uninitialized in new[] { false, true })
             {

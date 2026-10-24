@@ -766,6 +766,7 @@ tryAgain:
                     // In fresh memory that can be the rest of the region, so take at most PACE_BUDGET / 2 (64 KB):
                     // the fast-path array allocator assumes the allocation context never exceeds LARGE_OBJECT_SIZE,
                     // and allocation pacing runs when we come here.
+                    static_assert(Satori::PACE_BUDGET / 2 + Satori::INDEX_GRANULARITY < LARGE_OBJECT_SIZE);
                     size_t zeroedRemaining = min(region->GetAllocZeroedRemaining(), (size_t)(Satori::PACE_BUDGET / 2));
                     moreSpace = max(moreSpace, min(zeroedRemaining, allocRemaining));
 
@@ -793,6 +794,7 @@ tryAgain:
                     }
 
                     context->alloc_ptr += size;
+                    _ASSERTE((size_t)(context->alloc_limit - context->alloc_ptr) < LARGE_OBJECT_SIZE);
                     result->CleanSyncBlock();
                     region->SetIndicesForObject(result, result->Start() + size);
 

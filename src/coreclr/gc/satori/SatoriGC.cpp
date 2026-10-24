@@ -334,6 +334,7 @@ HRESULT SatoriGC::Initialize()
 {
     g_totalPhysicalMem = GCToOSInterface::GetPhysicalMemoryLimit(&g_isRestrictedPhysicalMem);
     GCConfig::SetGCHighMemPercent(SatoriUtil::HighMemoryPercent());
+    GCConfig::SetLOHThreshold(GetLOHThreshold());
 
     SatoriUtil::Initialize();
     SatoriObject::Initialize();
@@ -954,7 +955,7 @@ uint64_t SatoriGC::GetGenerationBudget(int generation)
 
 size_t SatoriGC::GetLOHThreshold()
 {
-    return (size_t)GCConfig::GetLOHThreshold();
+    return max((size_t)GCConfig::GetLOHThreshold(), LARGE_OBJECT_SIZE);
 }
 
 void SatoriGC::DiagWalkHeapWithACHandling(walk_fn fn, void *context, int gen_number, bool walk_large_object_heap_p)
