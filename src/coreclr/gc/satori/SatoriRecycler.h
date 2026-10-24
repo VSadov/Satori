@@ -276,10 +276,13 @@ private:
     int m_percentTimeInGcSinceLastGc;
 
     size_t m_gen1Budget;
+    size_t m_prevGen1Budget;
+    size_t m_gen1OverrunPerCycle;
+    size_t m_availableMemory;
     size_t m_totalLimit;
 
-    // how much more free space may be parked in reusable regions. set from the gen1 budget
-    // once it is known, and spent as regions are parked. 0 stops parking any more.
+    // how much more free space may be parked in reusable regions. set in Plan once the gen1
+    // budget and cycle allocations are known, and spent as regions are parked. 0 stops parking any more.
     int m_reusableTargetPercent;
     int64_t m_reusableLimit;
     bool m_nextGcIsFullGc;

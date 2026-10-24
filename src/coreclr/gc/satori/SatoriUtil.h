@@ -705,15 +705,15 @@ public:
     }
 
     // DOTNET_gcReusableTarget
-    // How much free space may be parked in reusable regions, as a percentage of the gen1
-    // budget. Reusables are drained into ephemeral queues when a blocking GC starts, so
-    // holding much more than the mutator consumes before then only adds to that drain.
+    // How much free space may be parked in reusable regions, as a percentage of expected
+    // gen1 allocation. Reusables are drained into ephemeral queues when a blocking GC starts,
+    // so holding much more than the mutator consumes before then only adds to that drain.
     static int ReusableTarget()
     {
         int target = (int)GCConfig::GetReusableTarget();
         if (target < 0)
         {
-            return 400;
+            return 200;
         }
 
         return target;

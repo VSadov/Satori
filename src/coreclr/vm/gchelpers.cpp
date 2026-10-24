@@ -1638,7 +1638,7 @@ HCIMPLEND_RAW
 
 #if FEATURE_SATORI_GC
 
-static const int PAGE_BITS = 30;
+static const int PAGE_BITS = SATORI_PAGE_BITS;
 static const size_t PAGE_SIZE_GRANULARITY = (size_t)1 << PAGE_BITS;
 
 // same as SatoriGC::PageForAddressChecked, just to avoid dependency on SatoriGC instance.
