@@ -80,19 +80,23 @@ public:
     bool IsRelocatedTo(SatoriObject** newLocation);
     SatoriObject * RelocatedToUnchecked();
 
+    // #define BIT_SBLK_UNUSED                     0x80000000
+    static const uint32_t BIT_SBLK_UNFINISHED = 0x80000000;
+
+    // used by shared and huge allocations
     void CleanSyncBlockAndSetUnfinished()
     {
-        *((size_t*)this - 1) = (size_t)0x80000000 << 32;
+        *((size_t*)this - 1) = (size_t)BIT_SBLK_UNFINISHED << 32;
     }
 
     bool IsUnfinished()
     {
-        return *((uint32_t*)this - 1) & 0x80000000;
+        return *((uint32_t*)this - 1) & BIT_SBLK_UNFINISHED;
     }
 
     void UnsetUnfinished()
     {
-        *((uint32_t*)this - 1) &= ~0x80000000;
+        *((uint32_t*)this - 1) &= ~BIT_SBLK_UNFINISHED;
     }
 
     bool HasEphemeralCollectibleAllocator();
