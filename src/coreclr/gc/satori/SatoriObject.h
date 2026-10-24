@@ -80,9 +80,20 @@ public:
     bool IsRelocatedTo(SatoriObject** newLocation);
     SatoriObject * RelocatedToUnchecked();
 
-    void CleanSyncBlockAndSetUnfinished();
-    bool IsUnfinished();
-    void UnsetUnfinished();
+    void CleanSyncBlockAndSetUnfinished()
+    {
+        *((size_t*)this - 1) = (size_t)0x80000000 << 32;
+    }
+
+    bool IsUnfinished()
+    {
+        return *((uint32_t*)this - 1) & 0x80000000;
+    }
+
+    void UnsetUnfinished()
+    {
+        *((uint32_t*)this - 1) &= ~0x80000000;
+    }
 
     bool HasEphemeralCollectibleAllocator();
     void DirtyCardsForContent();

@@ -28,6 +28,10 @@
 
 #include "gcdesc.h"
 
+#if FEATURE_SATORI_GC
+#include "../../gc/satori/SatoriObject.h"
+#endif
+
 #ifdef FEATURE_EVENT_TRACE
    #include "clretwallmain.h"
 #else // FEATURE_EVENT_TRACE
@@ -651,7 +655,7 @@ static Object* GcAllocInternal(MethodTable* pEEType, uint32_t uFlags, uintptr_t 
     pEEAllocContext->UpdateCombinedLimit(isRandomizedSamplingEnabled);
 
 #if FEATURE_SATORI_GC
-    if ((uFlags & GC_ALLOC_USER_OLD_HEAP) || cbSize >= 32 * 1024)
+    if (((SatoriObject*)pObject)->IsUnfinished())
 #else
     if (uFlags & GC_ALLOC_USER_OLD_HEAP)
 #endif

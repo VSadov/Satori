@@ -582,7 +582,7 @@ void PublishObjectAndNotify(TObj* &orObject, GC_ALLOC_FLAGS flags)
 {
 #if FEATURE_SATORI_GC
     _ASSERTE(orObject->HasEmptySyncBlockInfo() || ((SatoriObject*)orObject)->IsUnfinished() || (flags & GC_ALLOC_PINNED_OBJECT_HEAP));
-    if ((flags & GC_ALLOC_USER_OLD_HEAP) || ((SatoriObject*)orObject)->IsUnfinished())
+    if (((SatoriObject*)orObject)->IsUnfinished())
     {
         GCHeapUtilities::GetGCHeap()->PublishObject((BYTE*)orObject);
     }
