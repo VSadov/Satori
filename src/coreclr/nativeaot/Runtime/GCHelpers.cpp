@@ -650,8 +650,12 @@ static Object* GcAllocInternal(MethodTable* pEEType, uint32_t uFlags, uintptr_t 
     // combined_limit=alloc_limit.
     pEEAllocContext->UpdateCombinedLimit(isRandomizedSamplingEnabled);
 
+#if FEATURE_SATORI_GC
+    GCHeapUtilities::GetGCHeap()->PublishObject((uint8_t*)pObject);
+#else
     if (uFlags & GC_ALLOC_USER_OLD_HEAP)
         GCHeapUtilities::GetGCHeap()->PublishObject((uint8_t*)pObject);
+#endif
 
 #ifdef _DEBUG
     // We assume that the allocation quantum is never big enough for LARGE_OBJECT_SIZE.

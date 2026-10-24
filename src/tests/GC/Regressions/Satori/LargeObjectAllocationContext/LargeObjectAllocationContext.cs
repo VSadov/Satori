@@ -6,8 +6,11 @@ using Xunit;
 
 public static class LargeObjectAllocationContext
 {
-    // Satori allocates objects of LARGE_OBJECT_THRESHOLD (32 KB) and more in large regions.
+    // Satori allocates objects of LARGE_OBJECT_THRESHOLD (32 KB) and more in large regions when they do not fit
+    // in the thread allocation context, even when they are smaller than LARGE_OBJECT_SIZE (85,000 bytes).
+    // A regular allocation context can hold up to roughly PACE_BUDGET / 2 (64 KB) when extended into already-zeroed memory.
     private const int LargeObjectThreshold = 32 * 1024;
+    private const long DefaultLohThreshold = 85000;
     private const int RegionSize = 2 * 1024 * 1024;
     private const int Iterations = 10000;
 
@@ -23,30 +26,48 @@ public static class LargeObjectAllocationContext
         }
 
         int result = 100;
-        // The first array is small and refills the allocation context when the rest of the context is too small for it.
-        foreach ((int smallLength, int largeLength) in new[] { (16 * 1024, LargeObjectThreshold), (1024, 60 * 1024) })
+        if (!GC.GetConfigurationVariables().TryGetValue("LOHThreshold", out object? lohThreshold) ||
+            lohThreshold is not long threshold ||
+            threshold != DefaultLohThreshold)
         {
-            int inRegularRegion = CountInRegularRegion(smallLength, largeLength);
-            if (inRegularRegion != 0)
+            Console.WriteLine($"Unexpected LOHThreshold: {lohThreshold}");
+            result = 1;
+        }
+
+        // The first array is small and refills the allocation context when the rest of the context is too small for it.
+        // After a 16 KB allocation, at most one 32 KB array can fit in the ~64 KB allocation context; the second must
+        // miss the context and go to a large region. An 80 KB array never fits in the context and must always go to a large region.
+        foreach ((int smallLength, int largeLength, int largeCount) in new[] { (16 * 1024, LargeObjectThreshold, 2), (1024, 80 * 1024, 1) })
+        {
+            foreach (bool uninitialized in new[] { false, true })
             {
-                Console.WriteLine($"{inRegularRegion} of {Iterations} arrays of {largeLength} bytes were allocated in the regular region.");
-                result = 1;
+                int inRegularRegion = CountInRegularRegion(smallLength, largeLength, largeCount, uninitialized);
+                if (inRegularRegion != 0)
+                {
+                    Console.WriteLine($"{inRegularRegion} of {Iterations} arrays of {largeLength} bytes (uninitialized={uninitialized}) were allocated in the regular region.");
+                    result = 1;
+                }
             }
         }
 
         return result;
     }
 
-    // Allocates a small array, then a large one, and counts how often the large one is in the region of the
-    // small one, that is, in the regular region of the allocation context instead of a large region.
-    private static int CountInRegularRegion(int smallLength, int largeLength)
+    // Allocates a small array, then largeCount arrays of largeLength, and counts how often the last large one
+    // is in the region of the small one, that is, in the regular region of the allocation context instead of a large region.
+    private static int CountInRegularRegion(int smallLength, int largeLength, int largeCount, bool uninitialized)
     {
         int count = 0;
         for (int i = 0; i < Iterations; i++)
         {
             int gcCount = GC.CollectionCount(0);
             byte[] small = new byte[smallLength];
-            byte[] large = new byte[largeLength];
+            byte[] large = null!;
+            for (int j = 0; j < largeCount; j++)
+            {
+                large = uninitialized ? GC.AllocateUninitializedArray<byte>(largeLength) : new byte[largeLength];
+            }
+
             if (GC.CollectionCount(0) == gcCount && RegionFor(small) == RegionFor(large))
             {
                 count++;

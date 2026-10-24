@@ -583,10 +583,13 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
             context->alloc_ptr += size;
             return result;
         }
-        else
+
+        if (size < Satori::LARGE_OBJECT_THRESHOLD)
         {
             return AllocRegular(context, size, flags);
         }
+
+        flags |= GC_ALLOC_LARGE_OBJECT_HEAP;
     }
 
     if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
@@ -746,8 +749,6 @@ tryAgain:
                 bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
                 if (zeroInitialize)
                 {
-                    size_t neededSpace = moreSpace;
-
                     // Take more than needed, so that we come here less often, but zero ahead at most MinZeroInitSize,
                     // so that the zeroed memory is still in cache when we use it and not much is wasted if we stop
                     // allocating here before using it all. (the unused part goes back to the free list with a note
@@ -762,13 +763,11 @@ tryAgain:
                     }
 
                     // What is already known to be zeroed costs nothing to take.
-                    moreSpace = max(moreSpace, min(region->GetAllocZeroedRemaining(), allocRemaining));
-
-                    // The fast-path allocators take any object that fits in the allocation context, so what remains in
-                    // the context after this allocation must be less than the large object threshold. Otherwise an object
-                    // that must be allocated as large could be allocated from the context. The rounding below adds less
-                    // than INDEX_GRANULARITY. The limit also keeps allocation pacing, which runs when we come here, frequent.
-                    moreSpace = min(moreSpace, neededSpace + Satori::LARGE_OBJECT_THRESHOLD - Satori::INDEX_GRANULARITY);
+                    // In fresh memory that can be the rest of the region, so take at most PACE_BUDGET / 2 (64 KB):
+                    // the fast-path array allocator assumes the allocation context never exceeds LARGE_OBJECT_SIZE,
+                    // and allocation pacing runs when we come here.
+                    size_t zeroedRemaining = min(region->GetAllocZeroedRemaining(), (size_t)(Satori::PACE_BUDGET / 2));
+                    moreSpace = max(moreSpace, min(zeroedRemaining, allocRemaining));
 
                     // " +/- sizeof(size_t)" here is to intentionally misalign alloc_limit on the index granularity
                     // to improve chances that the object that is allocated here will be indexed
@@ -790,18 +789,10 @@ tryAgain:
                     if ((flags & GC_ALLOC_FINALIZE) &&
                         !region->RegisterForFinalization(result))
                     {
-                        // OOM. Close the context, otherwise it keeps the space for this object too, and that can
-                        // be more than the limit above. moreSpace is not counted for allocation ticks yet.
-                        size_t unused = context->alloc_limit - context->alloc_ptr;
-                        context->alloc_bytes -= unused;
-                        context->alloc_limit = context->alloc_ptr = nullptr;
-                        AllocationTickDecrement(unused - moreSpace);
-                        region->StopAllocating((size_t)result, (size_t)result);
                         return nullptr;
                     }
 
                     context->alloc_ptr += size;
-                    _ASSERTE((size_t)(context->alloc_limit - context->alloc_ptr) < Satori::LARGE_OBJECT_THRESHOLD);
                     result->CleanSyncBlock();
                     region->SetIndicesForObject(result, result->Start() + size);
 
@@ -1345,7 +1336,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
         return nullptr;
     }
 
-    result->CleanSyncBlock();
+    result->CleanSyncBlockAndSetUnfinished();
     hugeRegion->SetIndicesForObject(result, hugeRegion->Start() + Satori::REGION_SIZE_GRANULARITY);
 
     // huge regions are not attached to contexts and in gen0+ would appear parseable,
@@ -1358,6 +1349,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
         hugeRegion->SetHasFinalizables();
         if (!hugeRegion->RegisterForFinalization(result))
         {
+            result->CleanSyncBlock();
             hugeRegion->MakeBlank();
             ReturnRegion(hugeRegion);
             return nullptr;

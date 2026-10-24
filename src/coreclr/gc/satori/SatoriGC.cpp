@@ -507,6 +507,7 @@ void SatoriGC::PublishObject(uint8_t* obj)
     if (region->Size() > Satori::REGION_SIZE_GRANULARITY)
     {
         _ASSERTE(!region->IsAttachedToAllocatingOwner() && region->Generation() == -1);
+        so->UnsetUnfinished();
 
         // promote to gen2 and take out of -1, since now the region is parseable
         region->SetGenerationRelease(2);
@@ -953,7 +954,7 @@ uint64_t SatoriGC::GetGenerationBudget(int generation)
 
 size_t SatoriGC::GetLOHThreshold()
 {
-    return Satori::LARGE_OBJECT_THRESHOLD;
+    return (size_t)GCConfig::GetLOHThreshold();
 }
 
 void SatoriGC::DiagWalkHeapWithACHandling(walk_fn fn, void *context, int gen_number, bool walk_large_object_heap_p)
