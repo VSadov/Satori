@@ -81,7 +81,7 @@ private:
     };
 
     SatoriHeap* m_heap;
-    SatoriRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
+    SatoriShardedRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
     SatoriWorkList* m_workChunks;
 
     SatoriRegion* m_regularRegion;

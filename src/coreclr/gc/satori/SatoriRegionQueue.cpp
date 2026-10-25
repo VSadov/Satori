@@ -36,6 +36,11 @@
 
 SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*& putBack)
 {
+    if (IsEmpty())
+    {
+        return nullptr;
+    }
+
     m_lock.Enter();
 
     SatoriRegion* result = m_head;
@@ -97,6 +102,11 @@ SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*
 
 SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegion*& putBack, size_t maxRegions, bool preferCommitted)
 {
+    if (IsEmpty())
+    {
+        return nullptr;
+    }
+
     m_lock.Enter();
 
     // Limit the search unless the allocator could not get memory elsewhere.
@@ -236,5 +246,20 @@ SatoriRegionQueue* SatoriRegionQueue::AllocAligned(QueueKind kind)
     buffer = (void*)ALIGN_UP((size_t)buffer, align);
 #endif
     return new(buffer)SatoriRegionQueue(kind);
+}
+
+SatoriShardedRegionQueue* SatoriShardedRegionQueue::AllocAligned(QueueKind kind, size_t shardCount)
+{
+    _ASSERTE(shardCount > 0 && (shardCount & (shardCount - 1)) == 0);
+    const size_t align = alignof(SatoriShardedRegionQueue);
+    const size_t size = offsetof(SatoriShardedRegionQueue, m_shards) + shardCount * sizeof(SatoriRegionQueue);
+
+#ifdef _MSC_VER
+    void* buffer = _aligned_malloc(size, align);
+#else
+    void* buffer = malloc(size + align);
+    buffer = (void*)ALIGN_UP((size_t)buffer, align);
+#endif
+    return new(buffer)SatoriShardedRegionQueue(kind, shardCount);
 }
 

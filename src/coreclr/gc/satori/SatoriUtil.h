@@ -103,6 +103,9 @@ namespace Satori
     // if we allocated this much, check if help is needed
     const static int PACE_BUDGET = REGION_SIZE_GRANULARITY / 16;
 
+    // allocator region queues have one shard per this many processors.
+    const static int ALLOCATOR_SHARD_PROCESSORS = 8;
+
     // allocated bytes of small objects are counted in a shared counter per this many processors.
     // (see SatoriAllocator::PublishAllocatedBytes)
     const static int ALLOCATED_BYTES_COUNTER_PROCESSORS = 16;
@@ -168,6 +171,19 @@ public:
         DWORD highestBit;
         BitScanReverse64(&highestBit, value);
         return (size_t)1 << highestBit;
+    }
+
+    static size_t RoundUpPwr2(size_t value)
+    {
+        _ASSERTE(value > 0);
+        if (value == 1)
+        {
+            return 1;
+        }
+
+        DWORD highestBit;
+        BitScanReverse64(&highestBit, value - 1);
+        return (size_t)2 << highestBit;
     }
 
     static int32_t BucketForAlloc(size_t allocSize)
