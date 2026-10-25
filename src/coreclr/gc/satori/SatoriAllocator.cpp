@@ -60,9 +60,12 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     m_heap = heap;
 
     int processorCount = (int)GCToOSInterface::GetTotalProcessorCount();
-    size_t shardCount = SatoriUtil::RoundUpPwr2((processorCount + Satori::ALLOCATOR_SHARD_PROCESSORS - 1) / Satori::ALLOCATOR_SHARD_PROCESSORS);
     for (int i = 0; i < Satori::ALLOCATOR_BUCKET_COUNT; i++)
     {
+        // Bucket 0 (regular 2MB regions) carries nearly all allocator traffic.
+        // Bucket 1 (4-6MB) sees moderate traffic; larger buckets are rarely accessed.
+        size_t shardCount = (i == 0) ? SatoriShardedRegionQueue::ShardCountForProcessors(4) :
+                            (i == 1) ? SatoriShardedRegionQueue::ShardCountForProcessors(16) : 1;
         m_queues[i] = SatoriShardedRegionQueue::AllocAligned(QueueKind::Allocator, shardCount);
     }
 

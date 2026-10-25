@@ -56,6 +56,54 @@ public:
 class DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY) SatoriShardedRegionQueue
 {
 public:
+    class Batch : public SatoriRegionQueue::Batch
+    {
+        static const size_t ROTATE_SHARD_COUNT = 4;
+
+    public:
+        Batch(SatoriShardedRegionQueue* eventualQueue, bool prepend = false) :
+            SatoriRegionQueue::Batch(eventualQueue->CurrentShard()),
+            m_shardedQueue(eventualQueue),
+            m_shardIndex(eventualQueue->CurrentShardIndex()),
+            m_prepend(prepend)
+        {}
+
+        void Push(SatoriRegion* item)
+        {
+            RotateIfNeeded();
+            SatoriRegionQueue::Batch::Push(item);
+        }
+
+        void Enqueue(SatoriRegion* item)
+        {
+            RotateIfNeeded();
+            SatoriRegionQueue::Batch::Enqueue(item);
+        }
+
+    private:
+        SatoriShardedRegionQueue* m_shardedQueue;
+        size_t m_shardIndex;
+        bool m_prepend;
+
+        void RotateIfNeeded()
+        {
+            if (m_count >= ROTATE_SHARD_COUNT && m_shardedQueue->m_shardMask != 0)
+            {
+                if (m_prepend)
+                {
+                    m_queue->Prepend(this);
+                }
+                else
+                {
+                    m_queue->Append(this);
+                }
+
+                m_shardIndex = (m_shardIndex + 1) & m_shardedQueue->m_shardMask;
+                m_queue = m_shardedQueue->Shard(m_shardIndex);
+            }
+        }
+    };
+
     SatoriShardedRegionQueue(QueueKind kind, size_t shardCount) :
         m_shardMask(shardCount - 1),
         m_shards{ kind }
@@ -69,6 +117,18 @@ public:
 
     static SatoriShardedRegionQueue* AllocAligned(QueueKind kind, size_t shardCount);
 
+    static size_t ShardCountForProcessors(int processorsPerShard)
+    {
+        _ASSERTE(processorsPerShard > 0);
+        int processorCount = (int)GCToOSInterface::GetTotalProcessorCount();
+        return SatoriUtil::RoundUpPwr2((processorCount + processorsPerShard - 1) / processorsPerShard);
+    }
+
+    static SatoriShardedRegionQueue* AllocAlignedForProcessors(QueueKind kind, int processorsPerShard)
+    {
+        return AllocAligned(kind, ShardCountForProcessors(processorsPerShard));
+    }
+
     void Push(SatoriRegion* item)
     {
         CurrentShard()->Push(item);
@@ -77,6 +137,25 @@ public:
     void Enqueue(SatoriRegion* item)
     {
         CurrentShard()->Enqueue(item);
+    }
+
+    void Append(SatoriRegionQueue::Batch* other)
+    {
+        other->Queue()->Append(other);
+    }
+
+    void Prepend(SatoriRegionQueue::Batch* other)
+    {
+        other->Queue()->Prepend(other);
+    }
+
+    void AppendUnsafe(SatoriShardedRegionQueue* other)
+    {
+        size_t otherShardCount = other->ShardCount();
+        for (size_t i = 0; i < otherShardCount; i++)
+        {
+            Shard(i & m_shardMask)->AppendUnsafe(other->Shard(i));
+        }
     }
 
     SatoriRegion* TryPop()
@@ -89,6 +168,17 @@ public:
         );
     }
 
+    SatoriRegion* PopOrPush(SatoriRegion* item)
+    {
+        SatoriRegion* result = TryPop();
+        if (result != nullptr)
+        {
+            return result;
+        }
+
+        return CurrentShard()->PopOrPush(item);
+    }
+
     SatoriRegion* TryPopWithTryEnter()
     {
         return TryOnShards(
@@ -97,6 +187,40 @@ public:
                 return shard->TryPopWithTryEnter();
             }
         );
+    }
+
+    SatoriRegion* TryPopDrainOnly()
+    {
+        return TryOnShards(
+            [](SatoriRegionQueue* shard)
+            {
+                return shard->TryPopDrainOnly();
+            }
+        );
+    }
+
+    SatoriRegion* TryPopUnsafe()
+    {
+        size_t shardCount = ShardCount();
+        for (size_t i = 0; i < shardCount; i++)
+        {
+            SatoriRegion* result = Shard(i)->TryPopUnsafe();
+            if (result != nullptr)
+            {
+                return result;
+            }
+        }
+
+        return nullptr;
+    }
+
+    void ResetAfterUnsafeDrain()
+    {
+        size_t shardCount = ShardCount();
+        for (size_t i = 0; i < shardCount; i++)
+        {
+            Shard(i)->ResetAfterUnsafeDrain();
+        }
     }
 
     SatoriRegion* TryPopWithSize(size_t regionSize, SatoriRegion*& putBack)
@@ -129,6 +253,16 @@ public:
                 return shard->TryDequeueIfHasFreeSpaceInTopBucket();
             }
         );
+    }
+
+    template <typename F>
+    void ForEachRegion(F lambda)
+    {
+        size_t shardCount = ShardCount();
+        for (size_t i = 0; i < shardCount; i++)
+        {
+            Shard(i)->ForEachRegion(lambda);
+        }
     }
 
     size_t Count()
@@ -190,6 +324,10 @@ private:
         if (GCToOSInterface::CanGetCurrentProcessorNumber())
         {
             value = GCToOSInterface::GetCurrentProcessorNumber();
+            // On SMT systems the OS schedules threads onto primary (even-numbered) logical
+            // processors first. Mixing with (value >> 1) keeps both consecutive logical
+            // processors and consecutive physical cores (2*c) bijective modulo any power of 2.
+            value ^= value >> 1;
         }
         else
         {

@@ -103,9 +103,6 @@ namespace Satori
     // if we allocated this much, check if help is needed
     const static int PACE_BUDGET = REGION_SIZE_GRANULARITY / 16;
 
-    // allocator region queues have one shard per this many processors.
-    const static int ALLOCATOR_SHARD_PROCESSORS = 8;
-
     // allocated bytes of small objects are counted in a shared counter per this many processors.
     // (see SatoriAllocator::PublishAllocatedBytes)
     const static int ALLOCATED_BYTES_COUNTER_PROCESSORS = 16;
