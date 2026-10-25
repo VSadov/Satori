@@ -184,6 +184,12 @@ public:
             return result;
         }
 
+        // Concurrent callers that all observe an empty queue in TryPop() may each push
+        // into their own shard instead of pairing with one another. This is deliberate:
+        // PopOrPush is used to seed relocation target queues when empty, where multiple
+        // worker threads need targets concurrently and subsequent relocations consume them
+        // from their local shards; at the tail of relocation at most one region per racing
+        // shard can remain unpaired.
         return CurrentShard()->PopOrPush(item);
     }
 
