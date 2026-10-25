@@ -191,10 +191,18 @@ public:
 
     SatoriRegion* TryPopDrainOnly()
     {
-        return TryOnShards(
+        size_t ownedShard = CurrentShardIndex();
+        SatoriRegion* result = Shard(ownedShard)->TryPopDrainOnly</* prefetch */ true>();
+        if (result != nullptr || m_shardMask == 0)
+        {
+            return result;
+        }
+
+        return StealFromOtherShards(
+            ownedShard,
             [](SatoriRegionQueue* shard)
             {
-                return shard->TryPopDrainOnly();
+                return shard->TryPopDrainOnly</* prefetch */ false>();
             }
         );
     }
@@ -344,15 +352,8 @@ private:
     }
 
     template <typename F>
-    SatoriRegion* TryOnShards(F fn)
+    SatoriRegion* StealFromOtherShards(size_t ownedShard, F fn)
     {
-        size_t ownedShard = CurrentShardIndex();
-        SatoriRegion* result = fn(Shard(ownedShard));
-        if (result != nullptr || m_shardMask == 0)
-        {
-            return result;
-        }
-
         // Visit all other shards in random order and odd stride (coprime to power-of-2 shard count).
         size_t rnd = (((size_t)&rnd ^ (size_t)SatoriUtil::GetTimeStamp()) * 11400714819323198485llu) >> 32;
         size_t index = rnd & m_shardMask;
@@ -363,7 +364,7 @@ private:
         {
             if (index != ownedShard)
             {
-                result = fn(Shard(index));
+                SatoriRegion* result = fn(Shard(index));
                 if (result != nullptr)
                 {
                     return result;
@@ -372,6 +373,19 @@ private:
         }
 
         return nullptr;
+    }
+
+    template <typename F>
+    SatoriRegion* TryOnShards(F fn)
+    {
+        size_t ownedShard = CurrentShardIndex();
+        SatoriRegion* result = fn(Shard(ownedShard));
+        if (result != nullptr || m_shardMask == 0)
+        {
+            return result;
+        }
+
+        return StealFromOtherShards(ownedShard, fn);
     }
 };
 

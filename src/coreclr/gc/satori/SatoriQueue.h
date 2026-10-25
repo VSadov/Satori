@@ -340,6 +340,7 @@ public:
     //     does require the item to stay mapped for the duration of the drain.
     //     This is why the drain may only run in the blocking phase: outside of it the
     //     trimmer could coalesce an already claimed region and decommit its header.
+    template <bool prefetch = true>
     T* TryPopDrainOnly()
     {
         T* result = VolatileLoadWithoutBarrier(&m_head);
@@ -352,7 +353,7 @@ public:
             {
                 // items are far apart, so walking the list is a chain of cache misses.
                 // start fetching the link the next popper will need.
-                if (next != nullptr)
+                if (prefetch && next != nullptr)
                 {
                     SatoriUtil::Prefetch(&next->m_next);
                 }
