@@ -179,29 +179,29 @@ private:
     SatoriTrimmer* m_trimmer;
 
     // regions owned by recycler
-    SatoriRegionQueue* m_ephemeralRegions;
-    SatoriRegionQueue* m_ephemeralFinalizationTrackingRegions;
-    SatoriRegionQueue* m_ephemeralWithUnmarkedDemoted;
+    SatoriShardedRegionQueue* m_ephemeralRegions;
+    SatoriShardedRegionQueue* m_ephemeralFinalizationTrackingRegions;
+    SatoriShardedRegionQueue* m_ephemeralWithUnmarkedDemoted;
 
-    SatoriRegionQueue* m_tenuredRegions;
-    SatoriRegionQueue* m_tenuredFinalizationTrackingRegions;
+    SatoriShardedRegionQueue* m_tenuredRegions;
+    SatoriShardedRegionQueue* m_tenuredFinalizationTrackingRegions;
 
     // temporary store while processing finalizables
-    SatoriRegionQueue* m_finalizationPendingRegions;
+    SatoriShardedRegionQueue* m_finalizationPendingRegions;
 
     // temporary store for planning and relocating
-    SatoriRegionQueue* m_stayingRegions;
-    SatoriRegionQueue* m_relocatingRegions;
-    SatoriRegionQueue* m_relocationTargets[Satori::FREELIST_COUNT];
-    SatoriRegionQueue* m_relocatedRegions;
+    SatoriShardedRegionQueue* m_stayingRegions;
+    SatoriShardedRegionQueue* m_relocatingRegions;
+    SatoriShardedRegionQueue* m_relocationTargets[Satori::FREELIST_COUNT];
+    SatoriShardedRegionQueue* m_relocatedRegions;
     SatoriRegionQueue* m_relocatedToHigherGenRegions;
 
     // store regions for concurrent sweep
-    SatoriRegionQueue* m_deferredSweepRegions;
+    SatoriShardedRegionQueue* m_deferredSweepRegions;
 
     // regions that could be reused for Gen1
-    SatoriRegionQueue* m_reusableRegions;
-    SatoriRegionQueue* m_reusableRegionsAlternate;
+    SatoriShardedRegionQueue* m_reusableRegions;
+    SatoriShardedRegionQueue* m_reusableRegionsAlternate;
 
     static const int GC_STATE_NONE = 0;
     static const int GC_STATE_CONCURRENT = 1;
@@ -392,7 +392,7 @@ private:
     void LongWeakPtrScanWorker();
 
     void ScanFinalizables();
-    void ScanFinalizableRegions(SatoriRegionQueue* regions, MarkContext* markContext, SatoriRegionQueue::Batch* pending, SatoriRegionQueue::Batch* eph, SatoriRegionQueue::Batch* ten);
+    void ScanFinalizableRegions(SatoriShardedRegionQueue* regions, MarkContext* markContext, SatoriShardedRegionQueue::Batch* pending, SatoriShardedRegionQueue::Batch* eph, SatoriShardedRegionQueue::Batch* ten);
     void ScanAllFinalizableRegionsWorker();
     void QueueCriticalFinalizablesWorker();
 
@@ -419,10 +419,10 @@ private:
 
     void Plan();
     void PlanWorker();
-    void PlanRegions(SatoriRegionQueue* regions);
+    void PlanRegions(SatoriShardedRegionQueue* regions);
     void DenyRelocation();
 
-    void AddTenuredRegionsToPlan(SatoriRegionQueue* regions);
+    void AddTenuredRegionsToPlan(SatoriShardedRegionQueue* regions);
     void AddRelocationTarget(SatoriRegion* region);
     SatoriRegion* TryGetRelocationTarget(size_t size, bool existingRegionOnly);
     SatoriRegion* GetOrAddRelocationTarget(SatoriRegion * region, size_t allocSize);
@@ -442,7 +442,7 @@ private:
     void UpdatePointersThroughCards();
     void UpdatePointersInObjectRanges();
     void UpdatePointersInPromotedObjects();
-    void UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::Batch* deferredFirst, SatoriRegionQueue::Batch* deferredRest);
+    void UpdateRegions(SatoriShardedRegionQueue* queue, SatoriShardedRegionQueue::Batch* deferredFirst, SatoriShardedRegionQueue::Batch* deferredRest);
 
     void KeepRegion(SatoriRegion* curRegion);
     bool ShouldReuse(SatoriRegion* curRegion);

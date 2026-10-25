@@ -127,7 +127,12 @@ public:
             item->m_containingQueue = m_queue;
         }
 
-    private:
+        SatoriQueue<T>* Queue()
+        {
+            return m_queue;
+        }
+
+    protected:
         SatoriQueue<T>* m_queue;
         T* m_head;
         T* m_tail;
