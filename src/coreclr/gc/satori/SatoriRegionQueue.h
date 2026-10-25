@@ -43,7 +43,15 @@ public:
         SatoriQueue<SatoriRegion>(kind) {}
 
     SatoriRegion* TryPopWithSize(size_t regionSize, SatoriRegion* &putBack);
-    SatoriRegion* TryRemoveWithSize(size_t regionSize, SatoriRegion*& putBack, size_t maxRegions = 64, bool preferCommitted = false);
+    SatoriRegion* TryRemoveWithSize(
+        size_t regionSize,
+        SatoriRegion*& putBack,
+        size_t maxRegions = 64,
+        bool preferCommitted = false,
+        size_t maxRegionSize = SIZE_MAX,
+        bool requireCommitted = false,
+        size_t* outBestCandidateSize = nullptr,
+        bool* outBestCandidateNeedsCommit = nullptr);
     SatoriRegion* TryDequeueIfHasFreeSpaceInTopBucket();
 
     static SatoriRegionQueue* AllocAligned(QueueKind kind);
@@ -237,18 +245,109 @@ public:
         return TryOnShards(
             [&](SatoriRegionQueue* shard)
             {
-                return putBack == nullptr ? shard->TryPopWithSize(regionSize, putBack) : nullptr;
+                return shard->TryPopWithSize(regionSize, putBack);
             }
         );
     }
 
-    SatoriRegion* TryRemoveWithSize(size_t regionSize, SatoriRegion*& putBack, size_t maxRegions = 64, bool preferCommitted = false)
+    SatoriRegion* TryRemoveWithSize(
+        size_t regionSize,
+        SatoriRegion*& putBack,
+        size_t maxRegions = 64,
+        bool preferCommitted = false,
+        bool requireCommitted = false)
     {
         _ASSERTE(putBack == nullptr);
+        size_t shardCount = ShardCount();
+        if (shardCount == 1)
+        {
+            return Shard(0)->TryRemoveWithSize(
+                regionSize,
+                putBack,
+                maxRegions,
+                preferCommitted,
+                /* maxRegionSize */ SIZE_MAX,
+                requireCommitted);
+        }
+
+        SatoriRegionQueue* bestShard = nullptr;
+        size_t bestSize = SIZE_MAX;
+        bool bestNeedsCommit = true;
+
+        SatoriRegion* result = TryOnShards(
+            [&](SatoriRegionQueue* shard) -> SatoriRegion*
+            {
+                size_t shardBestSize = SIZE_MAX;
+                bool shardBestNeedsCommit = true;
+                SatoriRegion* exact = shard->TryRemoveWithSize(
+                    regionSize,
+                    putBack,
+                    maxRegions,
+                    preferCommitted,
+                    /* maxRegionSize */ regionSize,
+                    requireCommitted,
+                    &shardBestSize,
+                    &shardBestNeedsCommit);
+                if (exact != nullptr)
+                {
+                    return exact;
+                }
+
+                if (shardBestSize < SIZE_MAX)
+                {
+                    if ((bestNeedsCommit && !shardBestNeedsCommit) ||
+                        (bestNeedsCommit == shardBestNeedsCommit && shardBestSize < bestSize))
+                    {
+                        bestShard = shard;
+                        bestSize = shardBestSize;
+                        bestNeedsCommit = shardBestNeedsCommit;
+                    }
+                }
+
+                return nullptr;
+            }
+        );
+        if (result != nullptr || bestShard == nullptr)
+        {
+            return result;
+        }
+
+        result = bestShard->TryRemoveWithSize(
+            regionSize,
+            putBack,
+            maxRegions,
+            preferCommitted,
+            /* maxRegionSize */ bestSize,
+            /* requireCommitted */ requireCommitted || (preferCommitted && !bestNeedsCommit));
+        if (result != nullptr)
+        {
+            return result;
+        }
+
+        if (!requireCommitted)
+        {
+            result = TryRemoveWithSize(
+                regionSize,
+                putBack,
+                maxRegions,
+                /* preferCommitted */ true,
+                /* requireCommitted */ true);
+            if (result != nullptr)
+            {
+                return result;
+            }
+        }
+
         return TryOnShards(
             [&](SatoriRegionQueue* shard)
             {
-                return putBack == nullptr ? shard->TryRemoveWithSize(regionSize, putBack, maxRegions, preferCommitted) : nullptr;
+                return shard->TryRemoveWithSize(
+                    regionSize,
+                    putBack,
+                    maxRegions,
+                    preferCommitted,
+                    /* maxRegionSize */ SIZE_MAX,
+                    requireCommitted);
             }
         );
     }

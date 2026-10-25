@@ -92,16 +92,49 @@ SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*
         if (result->Size() > regionSize)
         {
             // if there is a diff, split what is needed and put the rest back to appropriate queue.
-            putBack = result;
-            result = putBack->TrySplit(regionSize);
+            SatoriRegion* remainder = result;
+            result = remainder->TrySplit(regionSize);
+            if (result != nullptr)
+            {
+                putBack = remainder;
+            }
+            else
+            {
+                result = TryRemoveWithSize(
+                    regionSize,
+                    putBack,
+                    /* maxRegions */ 64,
+                    /* preferCommitted */ true,
+                    /* maxRegionSize */ SIZE_MAX,
+                    /* requireCommitted */ true);
+                Push(remainder);
+            }
         }
     }
 
     return result;
 }
 
-SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegion*& putBack, size_t maxRegions, bool preferCommitted)
+SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(
+    size_t regionSize,
+    SatoriRegion*& putBack,
+    size_t maxRegions,
+    bool preferCommitted,
+    size_t maxRegionSize,
+    bool requireCommitted,
+    size_t* outBestCandidateSize,
+    bool* outBestCandidateNeedsCommit)
 {
+    if (outBestCandidateSize != nullptr)
+    {
+        *outBestCandidateSize = SIZE_MAX;
+    }
+
+    if (outBestCandidateNeedsCommit != nullptr)
+    {
+        *outBestCandidateNeedsCommit = true;
+    }
+
     if (IsEmpty())
     {
         return nullptr;
@@ -114,7 +147,8 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
     SatoriRegion* result = nullptr;
     size_t resultSize = SIZE_MAX;
     bool resultNeedsCommit = true;
-    for (SatoriRegion* cur = m_head; cur != nullptr && maxRegions > 0; cur = cur->m_next, maxRegions--)
+    size_t remaining = maxRegions;
+    for (SatoriRegion* cur = m_head; cur != nullptr && remaining > 0; cur = cur->m_next, remaining--)
     {
         size_t curSize = cur->Size();
         if (curSize < regionSize)
@@ -122,7 +156,12 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
             continue;
         }
 
-        bool needsCommit = preferCommitted && curSize != regionSize && !cur->CanSplitWithoutCommit(regionSize);
+        bool needsCommit = (preferCommitted || requireCommitted) && curSize != regionSize && !cur->CanSplitWithoutCommit(regionSize);
+        if (requireCommitted && needsCommit)
+        {
+            continue;
+        }
+
         if ((resultNeedsCommit && !needsCommit) ||
             (resultNeedsCommit == needsCommit && curSize < resultSize))
         {
@@ -136,7 +175,17 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
         }
     }
 
-    if (result == nullptr)
+    if (outBestCandidateSize != nullptr)
+    {
+        *outBestCandidateSize = resultSize;
+    }
+
+    if (outBestCandidateNeedsCommit != nullptr)
+    {
+        *outBestCandidateNeedsCommit = resultNeedsCommit;
+    }
+
+    if (result == nullptr || resultSize > maxRegionSize)
     {
         m_lock.Leave();
         return nullptr;
@@ -190,9 +239,29 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(size_t regionSize, SatoriRegi
 
         if (result->Size() > regionSize)
         {
-             // if there is a diff, split what is needed and put the rest back to appropriate queue.
-            putBack = result;
-            result = putBack->TrySplit(regionSize);
+            // if there is a diff, split what is needed and put the rest back to appropriate queue.
+            SatoriRegion* remainder = result;
+            result = remainder->TrySplit(regionSize);
+            if (result != nullptr)
+            {
+                putBack = remainder;
+            }
+            else
+            {
+                _ASSERTE(!requireCommitted);
+                if (!preferCommitted)
+                {
+                    result = TryRemoveWithSize(
+                        regionSize,
+                        putBack,
+                        maxRegions,
+                        /* preferCommitted */ true,
+                        maxRegionSize,
+                        /* requireCommitted */ true);
+                }
+
+                Push(remainder);
+            }
         }
     }
 
