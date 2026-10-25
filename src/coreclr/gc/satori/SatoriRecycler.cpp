@@ -95,14 +95,14 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_heap = heap;
     m_trimmer = new (nothrow) SatoriTrimmer(heap);
 
-    m_ephemeralRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerEphemeral, 4);
+    m_ephemeralRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerEphemeral, 2);
     m_ephemeralFinalizationTrackingRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerEphemeralFinalizationTracking, 4);
     m_tenuredRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerTenured, 4);
     m_tenuredFinalizationTrackingRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerTenuredFinalizationTracking, 8);
 
     m_finalizationPendingRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerFinalizationPending, 8);
 
-    m_stayingRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerStaying, 4);
+    m_stayingRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerStaying, 2);
     m_relocatingRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerRelocating, 2);
     m_relocatedRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerRelocated, 4);
     m_relocatedToHigherGenRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerRelocatedToHigherGen);
