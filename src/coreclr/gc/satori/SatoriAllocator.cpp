@@ -69,7 +69,7 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
         m_queues[i] = SatoriShardedRegionQueue::AllocAligned(QueueKind::Allocator, shardCount);
     }
 
-    m_workChunks = SatoriWorkList::AllocAligned();
+    m_workChunks = SatoriShardedWorkList::AllocAlignedForProcessors(4);
 
     m_immortalRegion = nullptr;
     m_immortalAllocLock.Initialize();

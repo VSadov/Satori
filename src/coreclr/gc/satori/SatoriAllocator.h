@@ -38,7 +38,7 @@ class SatoriRegion;
 class SatoriObject;
 class SatoriAllocationContext;
 class SatoriWorkChunk;
-class SatoriWorkList;
+class SatoriShardedWorkList;
 
 enum AllocationTickKind
 {
@@ -82,7 +82,7 @@ private:
 
     SatoriHeap* m_heap;
     SatoriShardedRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
-    SatoriWorkList* m_workChunks;
+    SatoriShardedWorkList* m_workChunks;
 
     SatoriRegion* m_regularRegion;
     SatoriRegion* m_largeRegion;

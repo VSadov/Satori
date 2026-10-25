@@ -122,7 +122,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_ephemeralWithUnmarkedDemoted = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerDemoted, 8);
     m_reusableRegionsAlternate = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerReusable, 4);
 
-    m_workList = SatoriWorkList::AllocAligned();
+    m_workList = SatoriShardedWorkList::AllocAlignedForProcessors(4);
     m_gcState = GC_STATE_NONE;
     m_barrierState = BARRIER_STATE_NOT_CONCURRENT;
 
@@ -2522,9 +2522,9 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         }
         else
         {
-            // share half of work if work list is empty
+            // share half of work if current work list shard has nothing to share
             if (srcChunk->Count() > Satori::SHARE_WORK_THRESHOLD &&
-                m_workList->IsEmpty())
+                m_workList->IsCurrentShardEmpty())
             {
                 size_t half = srcChunk->Count() / 2;
                 SatoriWorkChunk* halfChunk = m_heap->Allocator()->TryGetWorkChunk();
@@ -2767,9 +2767,9 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         }
         else
         {
-            // share half of work if work list is empty
+            // share half of work if current work list shard has nothing to share
             if (srcChunk->Count() > Satori::SHARE_WORK_THRESHOLD &&
-                m_workList->IsEmpty())
+                m_workList->IsCurrentShardEmpty())
             {
                 size_t half = srcChunk->Count() / 2;
                 SatoriWorkChunk* halfChunk = m_heap->Allocator()->TryGetWorkChunk();
