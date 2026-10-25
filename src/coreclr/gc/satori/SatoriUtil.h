@@ -193,7 +193,7 @@ public:
         {
             // skip buckets that could not possibly fit allocSize
             DWORD bucket;
-            BitScanReverse64(&bucket, allocSize);
+            BitScanReverse64(&bucket, allocSize - 1);
             bucket = bucket - Satori::MIN_FREELIST_CAPACITY_BITS;
 
             // this bucket may be able to fit allocSize or may be not,
