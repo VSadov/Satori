@@ -175,7 +175,7 @@ private:
     int m_rootScanTicket;
     uint8_t m_cardScanTicket;
 
-    SatoriWorkList* m_workList;
+    SatoriShardedWorkList* m_workList;
     SatoriTrimmer* m_trimmer;
 
     // regions owned by recycler
