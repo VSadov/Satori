@@ -74,7 +74,7 @@ public static class LargeObjectAllocationContext
                 large = uninitialized ? GC.AllocateUninitializedArray<byte>(largeLength) : new byte[largeLength];
             }
 
-            if (GC.CollectionCount(0) == gcCount && RegionFor(small) == RegionFor(large))
+            if (RegionFor(small) == RegionFor(large) && GC.CollectionCount(0) == gcCount)
             {
                 count++;
             }
