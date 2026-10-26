@@ -570,15 +570,19 @@ template <class TObj>
 void PublishObjectAndNotify(TObj* &orObject, GC_ALLOC_FLAGS flags)
 {
 #if FEATURE_SATORI_GC
-    _ASSERTE(orObject->HasEmptySyncBlockInfo() || (flags & (GC_ALLOC_LARGE_OBJECT_HEAP | GC_ALLOC_PINNED_OBJECT_HEAP)));
+    _ASSERTE(orObject->HasEmptySyncBlockInfo() || ((SatoriObject*)orObject)->IsUnfinished() || (flags & GC_ALLOC_PINNED_OBJECT_HEAP));
+    if (((SatoriObject*)orObject)->IsUnfinished())
+    {
+        GCHeapUtilities::GetGCHeap()->PublishObject((BYTE*)orObject);
+    }
 #else
     _ASSERTE(orObject->HasEmptySyncBlockInfo());
-#endif
 
     if (flags & GC_ALLOC_USER_OLD_HEAP)
     {
         GCHeapUtilities::GetGCHeap()->PublishObject((BYTE*)orObject);
     }
+#endif
 
 #ifdef  _LOGALLOC
     LogAlloc(orObject);
