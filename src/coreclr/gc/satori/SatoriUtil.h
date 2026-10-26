@@ -170,6 +170,19 @@ public:
         return (size_t)1 << highestBit;
     }
 
+    static size_t RoundUpPwr2(size_t value)
+    {
+        _ASSERTE(value > 0);
+        if (value == 1)
+        {
+            return 1;
+        }
+
+        DWORD highestBit;
+        BitScanReverse64(&highestBit, value - 1);
+        return (size_t)2 << highestBit;
+    }
+
     static int32_t BucketForAlloc(size_t allocSize)
     {
         if (allocSize <= Satori::MIN_FREELIST_CAPACITY)
@@ -180,7 +193,7 @@ public:
         {
             // skip buckets that could not possibly fit allocSize
             DWORD bucket;
-            BitScanReverse64(&bucket, allocSize);
+            BitScanReverse64(&bucket, allocSize - 1);
             bucket = bucket - Satori::MIN_FREELIST_CAPACITY_BITS;
 
             // this bucket may be able to fit allocSize or may be not,

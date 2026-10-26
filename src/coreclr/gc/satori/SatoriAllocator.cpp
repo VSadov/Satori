@@ -59,12 +59,17 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
     m_heap = heap;
 
+    int processorCount = (int)GCToOSInterface::GetTotalProcessorCount();
     for (int i = 0; i < Satori::ALLOCATOR_BUCKET_COUNT; i++)
     {
-        m_queues[i] = SatoriRegionQueue::AllocAligned(QueueKind::Allocator);
+        // Bucket 0 (regular 2MB regions) carries nearly all allocator traffic.
+        // Bucket 1 (4-6MB) sees moderate traffic; larger buckets are rarely accessed.
+        size_t shardCount = (i == 0) ? SatoriShardedRegionQueue::ShardCountForProcessors(4) :
+                            (i == 1) ? SatoriShardedRegionQueue::ShardCountForProcessors(16) : 1;
+        m_queues[i] = SatoriShardedRegionQueue::AllocAligned(QueueKind::Allocator, shardCount);
     }
 
-    m_workChunks = SatoriWorkList::AllocAligned();
+    m_workChunks = SatoriShardedWorkList::AllocAlignedForProcessors(4);
 
     m_immortalRegion = nullptr;
     m_immortalAllocLock.Initialize();
@@ -84,7 +89,6 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     // If it is off, the first check will notice that.
     m_allocationTickWasEnabled = true;
 
-    int processorCount = (int)GCToOSInterface::GetTotalProcessorCount();
     int counterCount = (processorCount + Satori::ALLOCATED_BYTES_COUNTER_PROCESSORS - 1) / Satori::ALLOCATED_BYTES_COUNTER_PROCESSORS;
     m_smallAllocatedBytesCounterCount = max(1, min(counterCount, Satori::MAX_ALLOCATED_BYTES_COUNTERS));
 
