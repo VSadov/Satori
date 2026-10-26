@@ -587,10 +587,13 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
             context->alloc_ptr += size;
             return result;
         }
-        else
+
+        if (size < Satori::LARGE_OBJECT_THRESHOLD)
         {
             return AllocRegular(context, size, flags);
         }
+
+        flags |= GC_ALLOC_LARGE_OBJECT_HEAP;
     }
 
     if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
@@ -767,6 +770,7 @@ tryAgain:
                     // In fresh memory that can be the rest of the region, so take at most PACE_BUDGET / 2 (64 KB):
                     // the fast-path array allocator assumes the allocation context never exceeds LARGE_OBJECT_SIZE,
                     // and allocation pacing runs when we come here.
+                    static_assert(Satori::PACE_BUDGET / 2 + Satori::INDEX_GRANULARITY < LARGE_OBJECT_SIZE);
                     size_t zeroedRemaining = min(region->GetAllocZeroedRemaining(), (size_t)(Satori::PACE_BUDGET / 2));
                     moreSpace = max(moreSpace, min(zeroedRemaining, allocRemaining));
 
@@ -794,6 +798,7 @@ tryAgain:
                     }
 
                     context->alloc_ptr += size;
+                    _ASSERTE((size_t)(context->alloc_limit - context->alloc_ptr) < LARGE_OBJECT_SIZE);
                     result->CleanSyncBlock();
                     region->SetIndicesForObject(result, result->Start() + size);
 
@@ -1337,7 +1342,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
         return nullptr;
     }
 
-    result->CleanSyncBlock();
+    result->CleanSyncBlockAndSetUnfinished();
     hugeRegion->SetIndicesForObject(result, hugeRegion->Start() + Satori::REGION_SIZE_GRANULARITY);
 
     // huge regions are not attached to contexts and in gen0+ would appear parseable,
@@ -1350,6 +1355,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
         hugeRegion->SetHasFinalizables();
         if (!hugeRegion->RegisterForFinalization(result))
         {
+            result->CleanSyncBlock();
             hugeRegion->MakeBlank();
             ReturnRegion(hugeRegion);
             return nullptr;
