@@ -185,9 +185,158 @@ private:
 
     NOINLINE
     void PushSlow(SatoriWorkChunk* item);
-
     NOINLINE
     SatoriWorkChunk* TryPopSlow();
+};
+
+class DECLSPEC_ALIGN(128) SatoriShardedWorkList
+{
+public:
+    SatoriShardedWorkList(size_t shardCount) :
+        m_shardMask(shardCount - 1)
+    {
+        _ASSERTE(shardCount > 0);
+        _ASSERTE((shardCount & (shardCount - 1)) == 0);
+        for (size_t i = 0; i < shardCount; i++)
+        {
+            new (Shard(i)) SatoriWorkList();
+        }
+    }
+
+    static size_t ShardCountForProcessors(int processorsPerShard)
+    {
+        _ASSERTE(processorsPerShard > 0);
+        int processorCount = (int)GCToOSInterface::GetTotalProcessorCount();
+        int desiredShards = (processorCount + processorsPerShard - 1) / processorsPerShard;
+        return SatoriUtil::RoundUpPwr2((size_t)max(1, desiredShards));
+    }
+
+    static SatoriShardedWorkList* AllocAligned(size_t shardCount);
+
+    static SatoriShardedWorkList* AllocAlignedForProcessors(int processorsPerShard)
+    {
+        return AllocAligned(ShardCountForProcessors(processorsPerShard));
+    }
+
+    void Push(SatoriWorkChunk* item)
+    {
+        CurrentShard()->Push(item);
+    }
+
+    void PushChain(SatoriWorkChunk* first, SatoriWorkChunk* last)
+    {
+        CurrentShard()->PushChain(first, last);
+    }
+
+    SatoriWorkChunk* TryPop()
+    {
+        size_t ownedShard = CurrentShardIndex();
+        SatoriWorkChunk* result = Shard(ownedShard)->TryPop();
+        if (result != nullptr || m_shardMask == 0)
+        {
+            return result;
+        }
+
+        // Visit all other shards in random order and odd stride (coprime to power-of-2 shard count).
+        size_t rnd = (((size_t)&rnd ^ (size_t)SatoriUtil::GetTimeStamp()) * 11400714819323198485llu) >> 32;
+        size_t index = rnd & m_shardMask;
+        size_t stride = (rnd >> 16) | 1;
+        size_t shardCount = ShardCount();
+
+        for (size_t i = 0; i < shardCount; i++, index = (index + stride) & m_shardMask)
+        {
+            if (index != ownedShard)
+            {
+                result = Shard(index)->TryPop();
+                if (result != nullptr)
+                {
+                    return result;
+                }
+            }
+        }
+
+        return nullptr;
+    }
+
+    bool IsCurrentShardEmpty()
+    {
+        return CurrentShard()->IsEmpty();
+    }
+
+    bool IsEmpty()
+    {
+        size_t shardCount = ShardCount();
+        for (size_t i = 0; i < shardCount; i++)
+        {
+            if (!Shard(i)->IsEmpty())
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+#ifdef COUNT_CHUNKS
+    size_t Count()
+    {
+        size_t count = 0;
+        size_t shardCount = ShardCount();
+        for (size_t i = 0; i < shardCount; i++)
+        {
+            count += Shard(i)->Count();
+        }
+
+        return count;
+    }
+#endif
+
+    size_t ShardCount()
+    {
+        return m_shardMask + 1;
+    }
+
+private:
+    size_t m_shardMask;
+
+    DECLSPEC_ALIGN(128)
+    SatoriWorkList m_shards[1];
+
+    SatoriWorkList* Shard(size_t index)
+    {
+        _ASSERTE(index <= m_shardMask);
+        return (SatoriWorkList*)((size_t)m_shards + index * sizeof(SatoriWorkList));
+    }
+
+    size_t CurrentShardIndex()
+    {
+        if (m_shardMask == 0)
+        {
+            return 0;
+        }
+
+        uint32_t value;
+        if (GCToOSInterface::CanGetCurrentProcessorNumber())
+        {
+            value = GCToOSInterface::GetCurrentProcessorNumber();
+            // On SMT systems the OS schedules threads onto primary (even-numbered) logical
+            // processors first. Mixing with (value >> 1) keeps both consecutive logical
+            // processors and consecutive physical cores (2*c) bijective modulo any power of 2.
+            value ^= value >> 1;
+        }
+        else
+        {
+            size_t thread = SatoriUtil::GetCurrentThreadTag();
+            value = (uint32_t)((thread * 11400714819323198485llu) >> 32);
+        }
+
+        return value & m_shardMask;
+    }
+
+    SatoriWorkList* CurrentShard()
+    {
+        return Shard(CurrentShardIndex());
+    }
 };
 
 #endif

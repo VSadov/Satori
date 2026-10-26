@@ -95,33 +95,34 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_heap = heap;
     m_trimmer = new (nothrow) SatoriTrimmer(heap);
 
-    m_ephemeralRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerEphemeral);
-    m_ephemeralFinalizationTrackingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerEphemeralFinalizationTracking);
-    m_tenuredRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerTenured);
-    m_tenuredFinalizationTrackingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerTenuredFinalizationTracking);
+    m_ephemeralRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerEphemeral, 2);
+    m_ephemeralFinalizationTrackingRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerEphemeralFinalizationTracking, 4);
+    m_tenuredRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerTenured, 4);
+    m_tenuredFinalizationTrackingRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerTenuredFinalizationTracking, 8);
 
-    m_finalizationPendingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerFinalizationPending);
+    m_finalizationPendingRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerFinalizationPending, 8);
 
-    m_stayingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerStaying);
-    m_relocatingRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerRelocating);
-    m_relocatedRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerRelocated);
+    m_stayingRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerStaying, 2);
+    m_relocatingRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerRelocating, 2);
+    m_relocatedRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerRelocated, 4);
     m_relocatedToHigherGenRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerRelocatedToHigherGen);
 
     for (int i = 0; i < Satori::FREELIST_COUNT; i++)
     {
-        m_relocationTargets[i] = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerRelocationTarget);
+        int processorsPerShard = (i < 4) ? 8 : 4;
+        m_relocationTargets[i] = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerRelocationTarget, processorsPerShard);
     }
 
-    m_deferredSweepRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerDeferredSweep);
+    m_deferredSweepRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerDeferredSweep, 4);
     m_deferredSweepCount = 0;
     m_gen1AddedSinceLastCollection = 0;
     m_gen2AddedSinceLastCollection = 0;
 
-    m_reusableRegions = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerReusable);
-    m_ephemeralWithUnmarkedDemoted = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerDemoted);
-    m_reusableRegionsAlternate = SatoriRegionQueue::AllocAligned(QueueKind::RecyclerReusable);
+    m_reusableRegions = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerReusable, 4);
+    m_ephemeralWithUnmarkedDemoted = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerDemoted, 8);
+    m_reusableRegionsAlternate = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerReusable, 4);
 
-    m_workList = SatoriWorkList::AllocAligned();
+    m_workList = SatoriShardedWorkList::AllocAlignedForProcessors(4);
     m_gcState = GC_STATE_NONE;
     m_barrierState = BARRIER_STATE_NOT_CONCURRENT;
 
@@ -1082,7 +1083,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
 
         // the concurrent pass has already filtered what is in the alternate, make it usable again.
         // whatever is left in m_reusableRegions it did not reach - the loop below will filter that.
-        SatoriRegionQueue* leftovers = m_reusableRegions;
+        SatoriShardedRegionQueue* leftovers = m_reusableRegions;
         m_reusableRegions = m_reusableRegionsAlternate;
         m_reusableRegionsAlternate = leftovers;
 
@@ -2521,9 +2522,9 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         }
         else
         {
-            // share half of work if work list is empty
+            // share half of work if current work list shard has nothing to share
             if (srcChunk->Count() > Satori::SHARE_WORK_THRESHOLD &&
-                m_workList->IsEmpty())
+                m_workList->IsCurrentShardEmpty())
             {
                 size_t half = srcChunk->Count() / 2;
                 SatoriWorkChunk* halfChunk = m_heap->Allocator()->TryGetWorkChunk();
@@ -2766,9 +2767,9 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         }
         else
         {
-            // share half of work if work list is empty
+            // share half of work if current work list shard has nothing to share
             if (srcChunk->Count() > Satori::SHARE_WORK_THRESHOLD &&
-                m_workList->IsEmpty())
+                m_workList->IsCurrentShardEmpty())
             {
                 size_t half = srcChunk->Count() / 2;
                 SatoriWorkChunk* halfChunk = m_heap->Allocator()->TryGetWorkChunk();
@@ -3928,9 +3929,9 @@ void SatoriRecycler::ScanAllFinalizableRegionsWorker()
     MarkContext c = MarkContext(this);
 
     // every scanned region gets rerouted, so stage the pushes and splice once per destination
-    SatoriRegionQueue::Batch pending(m_finalizationPendingRegions);
-    SatoriRegionQueue::Batch eph(m_ephemeralRegions);
-    SatoriRegionQueue::Batch ten(m_tenuredRegions);
+    SatoriShardedRegionQueue::Batch pending(m_finalizationPendingRegions);
+    SatoriShardedRegionQueue::Batch eph(m_ephemeralRegions);
+    SatoriShardedRegionQueue::Batch ten(m_tenuredRegions);
 
     ScanFinalizableRegions(m_ephemeralFinalizationTrackingRegions, &c, &pending, &eph, &ten);
     _ASSERTE(m_reusableRegions->IsEmpty());
@@ -3950,7 +3951,7 @@ void SatoriRecycler::ScanAllFinalizableRegionsWorker()
     }
 }
 
-void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContext* markContext, SatoriRegionQueue::Batch* pending, SatoriRegionQueue::Batch* eph, SatoriRegionQueue::Batch* ten)
+void SatoriRecycler::ScanFinalizableRegions(SatoriShardedRegionQueue* queue, MarkContext* markContext, SatoriShardedRegionQueue::Batch* pending, SatoriShardedRegionQueue::Batch* eph, SatoriShardedRegionQueue::Batch* ten)
 {
     SatoriRegion* region = queue->TryPopDrainOnly();
     if (region)
@@ -3992,8 +3993,8 @@ void SatoriRecycler::ScanFinalizableRegions(SatoriRegionQueue* queue, MarkContex
 
 void SatoriRecycler::QueueCriticalFinalizablesWorker()
 {
-    SatoriRegionQueue::Batch eph(m_ephemeralRegions);
-    SatoriRegionQueue::Batch ten(m_tenuredRegions);
+    SatoriShardedRegionQueue::Batch eph(m_ephemeralRegions);
+    SatoriShardedRegionQueue::Batch ten(m_tenuredRegions);
 
     SatoriRegion* region = m_finalizationPendingRegions->TryPopDrainOnly();
     if (region)
@@ -4299,7 +4300,7 @@ void SatoriRecycler::PlanWorker()
     }
 }
 
-void SatoriRecycler::PlanRegions(SatoriRegionQueue* regions)
+void SatoriRecycler::PlanRegions(SatoriShardedRegionQueue* regions)
 {
     _ASSERTE(m_isRelocating);
 
@@ -4412,7 +4413,7 @@ SatoriRegion* SatoriRecycler::TryGetRelocationTarget(size_t allocSize, bool exis
     // That is ok, it will have to be to a fresh region, which will always fit.
     for (; bucket < Satori::FREELIST_COUNT; bucket++)
     {
-        SatoriRegionQueue* queue = m_relocationTargets[bucket];
+        SatoriShardedRegionQueue* queue = m_relocationTargets[bucket];
         if (queue)
         {
             SatoriRegion* region = queue->TryPop();
@@ -4461,7 +4462,7 @@ void SatoriRecycler::Relocate()
     }
 }
 
-void SatoriRecycler::AddTenuredRegionsToPlan(SatoriRegionQueue* regions)
+void SatoriRecycler::AddTenuredRegionsToPlan(SatoriShardedRegionQueue* regions)
 {
     _ASSERTE(m_isRelocating);
 
@@ -4781,8 +4782,8 @@ void SatoriRecycler::UpdateRegionsWorker()
 {
     // nearly every region here ends up in the deferred sweep queue, so stage the pushes
     // off to the side and splice them in once rather than taking its lock per region.
-    SatoriRegionQueue::Batch deferredFirst(m_deferredSweepRegions);
-    SatoriRegionQueue::Batch deferredRest(m_deferredSweepRegions);
+    SatoriShardedRegionQueue::Batch deferredFirst(m_deferredSweepRegions, /* prepend */ true);
+    SatoriShardedRegionQueue::Batch deferredRest(m_deferredSweepRegions);
 
     // update and return target regions
     for (int i = 0; i < Satori::FREELIST_COUNT; i++)
@@ -4858,7 +4859,7 @@ void SatoriRecycler::UpdatePointersInPromotedObjects()
     }
 }
 
-void SatoriRecycler::UpdateRegions(SatoriRegionQueue* queue, SatoriRegionQueue::Batch* deferredFirst, SatoriRegionQueue::Batch* deferredRest)
+void SatoriRecycler::UpdateRegions(SatoriShardedRegionQueue* queue, SatoriShardedRegionQueue::Batch* deferredFirst, SatoriShardedRegionQueue::Batch* deferredRest)
 {
     // These queues are filled in Plan and Relocate and only drained here, so the pop needs
     // no lock. ResetAfterUnsafeDrain below puts them back into a usable state.
@@ -5088,9 +5089,9 @@ void SatoriRecycler::DrainReusableQueue()
 
     // sort into local batches and counters and publish each destination in one splice,
     // rather than taking a queue lock per region.
-    SatoriRegionQueue::Batch demotedLocal(m_ephemeralWithUnmarkedDemoted);
-    SatoriRegionQueue::Batch finalizationTrackingLocal(m_ephemeralFinalizationTrackingRegions);
-    SatoriRegionQueue::Batch ephemeralLocal(m_ephemeralRegions);
+    SatoriShardedRegionQueue::Batch demotedLocal(m_ephemeralWithUnmarkedDemoted);
+    SatoriShardedRegionQueue::Batch finalizationTrackingLocal(m_ephemeralFinalizationTrackingRegions);
+    SatoriShardedRegionQueue::Batch ephemeralLocal(m_ephemeralRegions);
     size_t estimatedReclaim = 0;
     size_t promotionEstimate = 0;
 
