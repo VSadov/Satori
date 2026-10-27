@@ -771,6 +771,14 @@ tryAgain:
                         size_t quantum = min(SatoriUtil::MinZeroInitSize(), SatoriUtil::RoundDownPwr2(allocRemaining));
                         moreSpace = max(moreSpace, quantum);
                     }
+                    else
+                    {
+                        // The tail of the span is smaller than that, take all of it. Taking just what is needed would
+                        // send every allocation here again, and refills of a few dozen bytes dominate otherwise.
+                        // It is less than INDEX_GRANULARITY to zero, and whatever is not used goes back
+                        // as a free span noted as zeroed.
+                        moreSpace = allocRemaining;
+                    }
 
                     // What is already known to be zeroed costs nothing to take.
                     // In fresh memory that can be the rest of the region, so take at most PACE_BUDGET / 2 (64 KB):
