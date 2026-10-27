@@ -117,8 +117,7 @@ public:
     // Per-thread history of escape tracking outcomes. A thread whose tracked regions keep
     // ending without a productive thread-local GC backs off and allocates some regions untracked.
     // Called by the owning thread when attaching an eligible region.
-    // When allowBackoff is false, the region is tracked regardless of the history.
-    static bool ShouldStartEscapeTracking(bool allowBackoff);
+    static bool ShouldStartEscapeTracking();
     // Called by the owning thread when detaching a region that ran out of space while it was
     // tracked, or when it finds that the barrier stopped tracking because of too many escapes.
     // NB: not from the write barrier - uses TLS.

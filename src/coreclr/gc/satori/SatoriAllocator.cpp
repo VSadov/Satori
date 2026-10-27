@@ -903,13 +903,10 @@ tryAgain:
         region->AttachToAllocatingOwner(&context->RegularRegion());
         if (SatoriUtil::IsGen0Enabled())
         {
-            // No backoff in low latency mode. There backoff was measured to trade allocation throughput
-            // for longer GC pauses (likely more work for the concurrent GC in untracked regions).
-            bool allowBackoff = !m_heap->Recycler()->IsLowLatencyMode();
             switch (region->ReusableFor())
             {
             case SatoriRegion::ReuseLevel::Gen0:
-                if (!SatoriRegion::ShouldStartEscapeTracking(allowBackoff))
+                if (!SatoriRegion::ShouldStartEscapeTracking())
                 {
                     region->SetGenerationRelease(1);
                     break;
@@ -918,7 +915,7 @@ tryAgain:
                 region->EscapeAll();
                 goto fallthrough;
             case SatoriRegion::ReuseLevel::None:
-                if (!SatoriRegion::ShouldStartEscapeTracking(allowBackoff))
+                if (!SatoriRegion::ShouldStartEscapeTracking())
                 {
                     region->SetGenerationRelease(1);
                     break;

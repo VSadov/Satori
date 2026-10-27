@@ -1602,7 +1602,7 @@ size_t SatoriRegion::CurrentStackDepth()
     return h.stackBase - sp;
 }
 
-bool SatoriRegion::ShouldStartEscapeTracking(bool allowBackoff)
+bool SatoriRegion::ShouldStartEscapeTracking()
 {
     EscapeTrackingHistory& h = t_trackingHistory;
     if (h.tracking)
@@ -1617,7 +1617,7 @@ bool SatoriRegion::ShouldStartEscapeTracking(bool allowBackoff)
         }
     }
 
-    if (allowBackoff && h.skip > 0 && SatoriUtil::TrackBackoffCap() > 0)
+    if (h.skip > 0 && SatoriUtil::TrackBackoffCap() > 0)
     {
         h.skip--;
         return false;
