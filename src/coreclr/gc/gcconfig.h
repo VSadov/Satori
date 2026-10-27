@@ -164,6 +164,7 @@ public:
     INT_CONFIG   (Gen1Target,                "gcGen1Target",              NULL,                                -1,                 "Specifies target for Gen1 GC (in terms of % of the last known size)")                    \
     INT_CONFIG   (ReusableTarget,            "gcReusableTarget",          NULL,                                -1,                 "Specifies how much free space may be held in reusable regions (in terms of % of expected gen1 allocation)") \
     INT_CONFIG   (TrackBackoff,              "gcTrackBackoff",            NULL,                                -1,                 "Specifies max number of regions a thread allocates untracked after unproductive escape tracking (hex). 0 - disabled, -1 - default") \
+    INT_CONFIG   (TailTakeDivisor,           "gcTailTakeDivisor",         NULL,                                -1,                 "With less than 2 KB left in an allocation span, take the rest of it when the request is at most 1/N of it (hex). 0 - take only the request, 1 - always take the rest, -1 - default (4)") \
 
 // This class is responsible for retreiving configuration information
 // for how the GC should operate.

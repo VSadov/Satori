@@ -773,11 +773,16 @@ tryAgain:
                     }
                     else
                     {
-                        // The tail of the span is smaller than that, take all of it. Taking just what is needed would
-                        // send every allocation here again, and refills of a few dozen bytes dominate otherwise.
-                        // It is less than INDEX_GRANULARITY to zero, and whatever is not used goes back
-                        // as a free span noted as zeroed.
-                        moreSpace = allocRemaining;
+                        // The tail of the span is smaller than that. Taking just what is needed sends every allocation
+                        // in the tail here again, but taking the rest zeroes memory that is wasted if the next allocation
+                        // does not fit (the rest is too small for a free list). Take the rest when the request is small
+                        // relative to it, so that it is likely to be used by the following allocations.
+                        // (see SatoriUtil::TailTakeDivisor)
+                        size_t divisor = SatoriUtil::TailTakeDivisor();
+                        if (divisor != 0 && size * divisor <= allocRemaining)
+                        {
+                            moreSpace = allocRemaining;
+                        }
                     }
 
                     // What is already known to be zeroed costs nothing to take.
