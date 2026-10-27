@@ -865,6 +865,19 @@ tryAgain:
                 }
             }
 
+            // A pointer-free medium object that does not fit, while the region still has a lot of space in smaller
+            // holes. Retiring the region would waste that space (and charge for it), so serve this object from the
+            // large allocator instead and keep the region for the smaller allocations.
+            // Pointer-free, so the object does not care about the region and its escape tracking. Finalizable
+            // objects are registered with their region, so they stay out of this.
+            if (!(flags & (GC_ALLOC_CONTAINS_REF | GC_ALLOC_FINALIZE)) &&
+                region->UsableCapacity() > Satori::REGION_SIZE_GRANULARITY / 32)
+            {
+                // the region stays attached, but not allocating.
+                context->alloc_ptr = context->alloc_limit = nullptr;
+                return AllocLarge(context, size, flags | GC_ALLOC_LARGE_OBJECT_HEAP);
+            }
+
             context->alloc_ptr = context->alloc_limit = nullptr;
             if (region->IsEscapeTracking())
             {
