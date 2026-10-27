@@ -95,6 +95,10 @@ public:
     bool HasFreeSpaceInTopBucket();
     size_t FreeSpaceInTopNBuckets(int n);
 
+    // Free space that allocations can use: the rest of the current allocation span and the free lists.
+    // (fragments that are too small for the free lists are not usable)
+    size_t UsableCapacity();
+
     void StartEscapeTrackingRelease(size_t threadTag, size_t allocBytes = 0, size_t minAllocSize = 0);
     void StopEscapeTracking();
     // NB: called from the write barrier - must not touch vector registers or TLS.
@@ -116,8 +120,19 @@ public:
     // NB: not from the write barrier - uses TLS.
     static void OnEscapeTrackingEnded();
 
+    // Thread-local GC paid off in this region: in the current accounting period it returned at least
+    // REGION_SIZE_GRANULARITY / 4 of usable space to the free lists. (reclaimed fragments too small to reuse do not count)
+    bool IsTlgcProductive(size_t allocBytes);
+
+    // Attaching starts an accounting period for the gen1 budget. (see TakeBudgetCharge)
     void AttachToAllocatingOwner(SatoriRegion** attachementPoint);
     void DetachFromAlocatingOwnerRelease();
+    // Returns how much of the gen1 budget the region spent in the current accounting period.
+    // Called when the region is handed to the recycler. (see SatoriRecycler::AddEphemeralRegion)
+    size_t TakeBudgetCharge(bool gcIsStarting);
+    // Called by the allocating owner before it resumes allocating from the region.
+    // If a GC took the region while it stayed attached, starts a new accounting period.
+    void RebaselineUsableIfStale(size_t allocBytes);
     bool IsAttachedToAllocatingOwner();
     bool MaybeAllocatingAcquire();
     void SetHasFinalizables();
@@ -222,7 +237,6 @@ public:
     void SetOccupancy(size_t occupancy, int32_t objCount);
     void SetOccupancy(size_t occupancy);
     size_t Occupancy();
-    int32_t& OccupancyAtReuse();
     int32_t ObjCount();
     size_t DemotedOccupancy();
 
@@ -316,7 +330,6 @@ private:
             //     concurrent marking looks at. Keep them in the same cache line. (this one fits in the padding)
             //     It changes when escape tracking stops, together with m_ownerThreadTag.
             bool m_staleEscapeMarks;
-            int32_t m_occupancyAtReuse;
 
             SatoriRegion** m_allocatingOwnerAttachmentPoint;
             SatoriWorkChunk* m_gen2Objects;
@@ -366,8 +379,13 @@ private:
             size_t m_maxParseableEnd;
             // Bytes in [FirstObject(), m_maxParseableEnd) not in >= MinZeroInitSize() free spans after the last collect.
             size_t m_unusableInPrefix;
+            // Usable capacity at the start of the current accounting period for the gen1 budget - when the region
+            // was attached to an allocating owner, or when the owner resumed allocating after a GC.
+            // (see TakeBudgetCharge)
+            size_t m_usableAtAttach;
+            // The owner's alloc bytes at the start of the current accounting period. (see IsTlgcProductive)
+            size_t m_allocBytesAtAttach;
             uint32_t m_escapedSizeAtCollect;
-            uint32_t m_reclaimedInRegion;
             uint32_t m_lastStackSlots;
             int32_t m_objCount;
 
@@ -383,6 +401,9 @@ private:
             bool m_acceptedPromotedObjects;
             bool m_individuallyPromoted;
             bool m_hasUnmarkedDemotedObjects;
+            // A GC took the region while it stayed attached to an allocating owner.
+            // The owner starts a new accounting period when it resumes allocating. (see RebaselineUsableIfStale)
+            bool m_usableBaselineStale;
             // TODO: VS can fold with m_doNotSweep?
             bool m_hasMarksSet;
 

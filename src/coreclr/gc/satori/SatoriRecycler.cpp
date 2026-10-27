@@ -338,12 +338,7 @@ SatoriRegion* SatoriRecycler::TryGetReusable()
         reusable = m_reusableRegionsAlternate->TryPopWithTryEnter();
     }
 
-    if (reusable)
-    {
-        size_t occupancy = reusable->Occupancy();
-        _ASSERTE(occupancy < Satori::REGION_SIZE_GRANULARITY);
-        reusable->OccupancyAtReuse() = (int32_t)occupancy;
-    }
+    _ASSERTE(reusable == nullptr || reusable->Occupancy() < Satori::REGION_SIZE_GRANULARITY);
 
     return reusable;
 }
@@ -356,12 +351,7 @@ SatoriRegion* SatoriRecycler::TryGetReusableForLarge()
         reusable = m_reusableRegionsAlternate->TryDequeueIfHasFreeSpaceInTopBucket();
     }
 
-    if (reusable)
-    {
-        size_t occupancy = reusable->Occupancy();
-        _ASSERTE(occupancy < Satori::REGION_SIZE_GRANULARITY);
-        reusable->OccupancyAtReuse() = (int32_t)occupancy;
-    }
+    _ASSERTE(reusable == nullptr || reusable->Occupancy() < Satori::REGION_SIZE_GRANULARITY);
 
     return  reusable;
 }
@@ -430,11 +420,17 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
     _ASSERTE(!region->DoNotSweep());
     _ASSERTE(!region->IsAttachedToAllocatingOwner() || IsBlockingPhase());
 
+    // Charge the gen1 budget for the usable capacity that the region took out of circulation.
+    // The budget bounds the footprint, so allocated or surviving bytes are not the right measure.
+    // Thread-local GC may reclaim most of a region, but leave it too fragmented to reuse, and the region
+    // still takes all of its space until the next GC.
+    //  - When the allocating owner retires the region, nothing can allocate from it until a GC sweeps it,
+    //    so it is charged for all the usable capacity it had when attached, used or not.
+    //  - When a GC is starting, the GC will reclaim what is left, so only what was used is charged.
+    // Fragments too small to be usable are never charged, they were not usable to begin with.
+    size_t charge = region->TakeBudgetCharge(/* gcIsStarting */ IsBlockingPhase());
     PushToEphemeralQueues(region);
-    size_t allocatedBytes = region->Occupancy() - region->OccupancyAtReuse();
-    _ASSERTE(allocatedBytes <= region->Occupancy());
-    region->OccupancyAtReuse() = 0;
-    Interlocked::ExchangeAdd64(&m_gen1AddedSinceLastCollection, allocatedBytes);
+    Interlocked::ExchangeAdd64(&m_gen1AddedSinceLastCollection, charge);
     if (region->IsEscapeTracking())
     {
         _ASSERTE(IsBlockingPhase());
@@ -477,7 +473,8 @@ void SatoriRecycler::AddTenuredRegion(SatoriRegion* region)
     region->Verify(/* allowMarked */ SatoriUtil::IsConcurrentEnabled() && SatoriUtil::IsConservativeMode());
     PushToTenuredQueues(region);
     _ASSERTE(region->Generation() == 2);
-    Interlocked::ExchangeAdd64(&m_gen2AddedSinceLastCollection, region->Occupancy());
+    // only huge regions come here. Nothing else can use the space after the object, so charge the whole region.
+    Interlocked::ExchangeAdd64(&m_gen2AddedSinceLastCollection, region->Size());
     region->RearmCardsForTenured();
 }
 
@@ -1348,18 +1345,21 @@ size_t GetAvailableMemory()
 void SatoriRecycler::AdjustHeuristics()
 {
     // All sweeping should be done by now and occupancies should reflect live set as of last GC.
-    // m_gen1AddedSinceLastCollection collects direct allocs into gen1 and is not reflected in that.
-    // m_gen2AddedSinceLastCollection collects direct allocs into gen2 and is not included in m_occupancy[2]
-    // m_gen2AddedSinceLastCollection may accumulate across several collections, name is a bit misleading.
-    // These counts are not included in occupancy since these are new allocs and the objects may not be alive.
-    // The purpose of these counters is just to track new allocs and trigger GC.
-    // 
-    // Sum of all occupancies and allocs added should be the total occupancy in tenured and ephemeral lists.
-    // TODO: VS worth asserting?
+    // The counters below track how much of the heap footprint was consumed since the last GC. They are not occupancy,
+    // the objects allocated since may not be alive and the counts include space that is not occupied by anything.
+    //  - m_gen1AddedSinceLastCollection is the usable capacity that regions passed to the recycler took out of
+    //    circulation, including free space left in retired regions and fragments too small to reuse.
+    //    (see AddEphemeralRegion)
+    //  - m_gen2AddedSinceLastCollection is the size of huge regions allocated directly into gen2. It is not included
+    //    in m_occupancy[2] and may accumulate across several collections, name is a bit misleading.
+    // The purpose of these counters is to trigger GC. Budgets are computed from occupancy, since the cost of a GC
+    // is mostly proportional to what is live, and spent in footprint, since the footprint is what they bound.
+    // (thus occupancies and the counters do not add up to the occupancy of tenured and ephemeral lists)
     //
-    // Nursery regions are not included in the numbers as we collect these stats when region is passed to recycler,
-    // but Nursery regions are still owned by threads/allocator - we do not detach them until we are sure we will
-    // promote en-masse.  (thus the alloc counts may have a lag up to 2Mb per thread, which seems ok).
+    // Regions attached to allocating owners are not counted until they are passed to the recycler. We do not detach
+    // them until we are sure we will promote en-masse, but a GC deactivates them and charges what they used so far.
+    // (thus the counts may lag by up to a region per attached region - a thread may have a regular and a large one,
+    //  which seems ok)
 
     size_t ephemeralOccupancy = m_occupancy[1] + m_occupancy[0];
     size_t tenuredOccupancy = m_occupancy[2];
@@ -1370,8 +1370,8 @@ void SatoriRecycler::AdjustHeuristics()
         m_totalLimit = occupancy * SatoriUtil::Gen2Target() / 100;
     }
 
-    // we trigger GC when estimated ephemeral size grows to SatoriUtil::Gen1Target(),
-    // the budget is the diff to reach that
+    // we trigger GC when the footprint consumed since the last GC reaches (SatoriUtil::Gen1Target() - 100)%
+    // of the ephemeral occupancy, i.e. when the estimated ephemeral footprint grows to SatoriUtil::Gen1Target().
     // NOTE: after gen2 ephemeralOccupancy is 0. GC.Collect can also see small gen1 size.
     //       that is ok to happen occasionally as we have min limits and smoothing.
     size_t newGen1Budget = max((size_t)MIN_GEN1_BUDGET, ephemeralOccupancy * (SatoriUtil::Gen1Target() - 100) / 100);

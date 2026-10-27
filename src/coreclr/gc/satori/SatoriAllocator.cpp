@@ -733,10 +733,16 @@ tryAgain:
     SatoriRegion* region = context->RegularRegion();
     _ASSERTE(region == nullptr || region->IsAttachedToAllocatingOwner());
 
-    if (region != nullptr && region->ClearStaleEscapeMarks())
+    if (region != nullptr)
     {
-        // the barrier stopped tracking because of too many escapes.
-        SatoriRegion::OnEscapeTrackingEnded();
+        // if a GC took the region while it stayed attached, start a new accounting period.
+        region->RebaselineUsableIfStale(context->alloc_bytes);
+
+        if (region->ClearStaleEscapeMarks())
+        {
+            // the barrier stopped tracking because of too many escapes.
+            SatoriRegion::OnEscapeTrackingEnded();
+        }
     }
 
     while (true)
@@ -1032,6 +1038,9 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
                 region->StopAllocating();
             }
 
+            // if a GC took the region while it stayed attached, start a new accounting period.
+            region->RebaselineUsableIfStale(0);
+
             // try get from the free list
             size_t desiredFreeSpace = size + Satori::MIN_FREE_SIZE;
             if (region->StartAllocating(desiredFreeSpace))
@@ -1077,9 +1086,7 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region)
                 nextContainingQueue->TryRemove(next))
             {
                 region = next;
-                size_t occupancy = region->Occupancy();
-                _ASSERTE(occupancy < Satori::REGION_SIZE_GRANULARITY);
-                region->OccupancyAtReuse() = (int32_t)occupancy;
+                _ASSERTE(region->Occupancy() < Satori::REGION_SIZE_GRANULARITY);
                 return;
             }
         }
@@ -1178,6 +1185,9 @@ tryAgain:
                 region->StopAllocating();
             }
 
+            // if a GC took the region while it stayed attached, start a new accounting period.
+            region->RebaselineUsableIfStale(0);
+
             // try get from the free list
             if (region->StartAllocating(size))
             {
@@ -1275,6 +1285,9 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
             {
                 region->StopAllocating();
             }
+
+            // if a GC took the region while it stayed attached, start a new accounting period.
+            region->RebaselineUsableIfStale(0);
 
             // try get from the free list
             if (region->StartAllocating(size))
@@ -1436,6 +1449,9 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
             {
                 region->StopAllocating();
             }
+
+            // if a GC took the region while it stayed attached, start a new accounting period.
+            region->RebaselineUsableIfStale(0);
 
             // try get from the free list
             if (region->StartAllocating(size))
