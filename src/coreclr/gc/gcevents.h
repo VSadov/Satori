@@ -27,7 +27,6 @@ KNOWN_EVENT(GCPerHeapHistory_V3, GCEventProvider_Default, GCEventLevel_Informati
 KNOWN_EVENT(GCLOHCompact, GCEventProvider_Default, GCEventLevel_Information, GCEventKeyword_GC)
 KNOWN_EVENT(GCFitBucketInfo, GCEventProvider_Default, GCEventLevel_Verbose, GCEventKeyword_GC)
 KNOWN_EVENT(GCThreadLocalCollection, GCEventProvider_Default, GCEventLevel_Verbose, GCEventKeyword_GC)
-KNOWN_EVENT(GCThreadLocalCollection_V1, GCEventProvider_Default, GCEventLevel_Verbose, GCEventKeyword_GC)
 
 KNOWN_EVENT(SetGCHandle, GCEventProvider_Default, GCEventLevel_Information, GCEventKeyword_GCHandle)
 KNOWN_EVENT(DestroyGCHandle, GCEventProvider_Default, GCEventLevel_Information, GCEventKeyword_GCHandle)

@@ -1627,14 +1627,9 @@ static bool ThreadLocalCollectionEventEnabled()
     {
         return false;
     }
-
-    if (g_runtimeSupportedVersion.MajorVersion < 7)
-    {
-        return EVENT_ENABLED(GCThreadLocalCollection);
-    }
 #endif
 
-    return EVENT_ENABLED(GCThreadLocalCollection_V1);
+    return EVENT_ENABLED(GCThreadLocalCollection);
 }
 
 bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
@@ -1694,16 +1689,7 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
     {
         double durationNs = (double)(minipal_hires_ticks() - eventStartTicks) * 1e9 / (double)minipal_hires_tick_frequency();
         size_t escapedBytesAfter = m_escapedSize;
-#ifdef BUILD_AS_STANDALONE
-        if (g_runtimeSupportedVersion.MajorVersion < 7)
-        {
-            FIRE_EVENT(GCThreadLocalCollection, (uint32_t)count, shouldCollect, (uint64_t)occupancyBefore, (uint64_t)m_occupancy, durationNs);
-        }
-        else
-#endif
-        {
-            FIRE_EVENT(GCThreadLocalCollection_V1, (uint32_t)count, shouldCollect, (uint64_t)occupancyBefore, (uint64_t)m_occupancy, durationNs, (uint64_t)escapedBytesBefore, (uint64_t)escapedBytesAfter);
-        }
+        FIRE_EVENT(GCThreadLocalCollection, (uint32_t)count, shouldCollect, (uint64_t)occupancyBefore, (uint64_t)m_occupancy, durationNs, (uint64_t)escapedBytesBefore, (uint64_t)escapedBytesAfter);
     }
 
     return shouldCollect;

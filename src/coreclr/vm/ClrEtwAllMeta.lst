@@ -128,7 +128,6 @@ nomac:GarbageCollection:::GCGlobalHeap_V2
 nostack:GarbageCollection:::GCGlobalHeap_V2
 nomac:GarbageCollection:::GCJoin_V2
 nostack:GarbageCollection:::GCThreadLocalCollection
-nostack:GarbageCollection:::GCThreadLocalCollection_V1
 
 #############
 # Type events

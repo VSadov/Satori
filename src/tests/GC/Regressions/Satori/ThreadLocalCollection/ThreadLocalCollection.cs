@@ -312,7 +312,7 @@ public static class ThreadLocalCollection
                 return;
             }
 
-            Assert.Equal(1, (int)data.Version);
+            Assert.Equal(0, (int)data.Version);
             Assert.Equal(new Guid("e13c0d23-ccbc-4e12-931b-d9cc2eee27e4"), data.ProviderGuid);
             Assert.Equal(5, (int)data.Level);
             Assert.Equal(1UL, (ulong)data.Keywords);
@@ -345,7 +345,7 @@ public static class ThreadLocalCollection
             if (!schemaReported)
             {
                 schemaReported = true;
-                Console.WriteLine($"239v1 schema: source manifest verified; wire field names/types " +
+                Console.WriteLine($"239v0 schema: source manifest verified; wire field names/types " +
                     $"{(data.PayloadNames.Length == 0 ? "unavailable" : "verified")}; " +
                     $"rawBytes={bytes.Length}; firstRaw={Convert.ToHexString(bytes)}");
             }
@@ -382,19 +382,16 @@ public static class ThreadLocalCollection
             "OccupancyBefore:win:UInt64", "OccupancyAfter:win:UInt64", "DurationNs:win:Double",
             "EscapedBytesBefore:win:UInt64", "EscapedBytesAfter:win:UInt64"
         };
-        for (int version = 0; version <= 1; version++)
-        {
-            XElement definition = provider.Element(ns + "events")!.Elements(ns + "event")
-                .Single(e => (string?)e.Attribute("value") == "239" &&
-                    (string?)e.Attribute("version") == version.ToString());
-            Assert.Equal("win:Verbose", (string?)definition.Attribute("level"));
-            Assert.Equal("GCKeyword", (string?)definition.Attribute("keywords"));
-            XElement template = provider.Element(ns + "templates")!.Elements(ns + "template")
-                .Single(t => (string?)t.Attribute("tid") == (string?)definition.Attribute("template"));
-            string[] fields = template.Elements(ns + "data")
-                .Select(f => $"{f.Attribute("name")!.Value}:{f.Attribute("inType")!.Value}").ToArray();
-            Assert.Equal(version == 0 ? expected.Take(6).ToArray() : expected, fields);
-        }
+        XElement definition = provider.Element(ns + "events")!.Elements(ns + "event")
+            .Single(e => (string?)e.Attribute("value") == "239");
+        Assert.Equal("0", (string?)definition.Attribute("version"));
+        Assert.Equal("win:Verbose", (string?)definition.Attribute("level"));
+        Assert.Equal("GCKeyword", (string?)definition.Attribute("keywords"));
+        XElement template = provider.Element(ns + "templates")!.Elements(ns + "template")
+            .Single(t => (string?)t.Attribute("tid") == (string?)definition.Attribute("template"));
+        string[] fields = template.Elements(ns + "data")
+            .Select(f => $"{f.Attribute("name")!.Value}:{f.Attribute("inType")!.Value}").ToArray();
+        Assert.Equal(expected, fields);
     }
 
     private static ulong ArrayBytes(int length, int elementSize)
