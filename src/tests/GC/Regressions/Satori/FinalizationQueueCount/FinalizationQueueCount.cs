@@ -164,7 +164,7 @@ public static class FinalizationQueueCount
 
         for (int allocated = 0; allocated < AllocationLimit; allocated += AllocationSize)
         {
-            byte[] buffer = new byte[AllocationSize];
+            object?[] buffer = new object?[AllocationSize / IntPtr.Size];
             if (GC.GetGeneration(buffer) == 0)
             {
                 return;
@@ -183,7 +183,7 @@ public static class FinalizationQueueCount
 
         for (int allocated = 0; allocated < AllocationLimit; allocated += AllocationSize)
         {
-            GC.KeepAlive(new byte[AllocationSize]);
+            GC.KeepAlive(new object?[AllocationSize / IntPtr.Size]);
             if (GC.CollectionCount(0) != collections)
             {
                 return;

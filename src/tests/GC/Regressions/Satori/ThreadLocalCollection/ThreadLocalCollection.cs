@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Xunit;
 
@@ -31,9 +32,9 @@ public static class ThreadLocalCollection
         RunOnFreshThread(() =>
         {
             GC.Collect(2, GCCollectionMode.Forced, blocking: true);
-            byte[] first = AcquireThreadLocalRegion();
-            byte[] large = new byte[length];
-            byte[] next = new byte[1024];
+            object?[] first = AcquireThreadLocalRegion();
+            object?[] large = new object?[length / IntPtr.Size];
+            object?[] next = new object?[1024 / IntPtr.Size];
 
             Assert.Equal(0, GC.GetGeneration(first));
             Assert.Equal(0, GC.GetGeneration(next));
@@ -69,13 +70,13 @@ public static class ThreadLocalCollection
         GC.Collect(2, GCCollectionMode.Forced, blocking: true);
         int globalCollections = GC.CollectionCount(1);
 
-        byte[] first = AcquireThreadLocalRegion(survivors);
+        object?[] first = AcquireThreadLocalRegion(survivors);
         nuint region = RegionFor(first);
         int localCollections = GC.CollectionCount(0);
-        var live = new byte[128][];
+        var live = new object?[128][];
         for (int i = 0; i < live.Length; i++)
         {
-            live[i] = new byte[1024];
+            live[i] = new object?[1024 / IntPtr.Size];
             Assert.Equal(region, RegionFor(live[i]));
         }
 
@@ -86,7 +87,7 @@ public static class ThreadLocalCollection
         bool stoppedTracking = false;
         for (int i = 0; i < 256; i++)
         {
-            byte[] buffer = new byte[4096];
+            object?[] buffer = new object?[4096 / IntPtr.Size];
             Assert.Equal(region, RegionFor(buffer));
             s_published = buffer;
             if (GC.GetGeneration(buffer) != 0)
@@ -101,7 +102,7 @@ public static class ThreadLocalCollection
         bool foundNextRegion = false;
         for (int allocated = 0; allocated < 2 * RegionSize; allocated += 16 * 1024)
         {
-            byte[] buffer = new byte[16 * 1024];
+            object?[] buffer = new object?[16 * 1024 / IntPtr.Size];
             if (RegionFor(buffer) != region)
             {
                 Assert.Equal(1, GC.GetGeneration(buffer));
@@ -152,11 +153,11 @@ public static class ThreadLocalCollection
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static byte[] AcquireThreadLocalRegion(byte[][]? survivors = null)
+    private static object?[] AcquireThreadLocalRegion(byte[][]? survivors = null)
     {
         for (int allocated = 0; allocated < AllocationLimit; allocated += 16 * 1024)
         {
-            byte[] buffer = new byte[16 * 1024];
+            object?[] buffer = new object?[16 * 1024 / IntPtr.Size];
             if (GC.GetGeneration(buffer) == 0)
             {
                 if (survivors is null)
@@ -179,9 +180,9 @@ public static class ThreadLocalCollection
     }
 
     // Region alignment is part of Satori's object-address layout; no private header offsets are needed.
-    private static unsafe nuint RegionFor(byte[] buffer)
+    private static unsafe nuint RegionFor(Array buffer)
     {
-        fixed (byte* address = buffer)
+        fixed (byte* address = &MemoryMarshal.GetArrayDataReference(buffer))
         {
             return (nuint)address & ~(nuint)(RegionSize - 1);
         }

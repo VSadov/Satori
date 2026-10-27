@@ -888,7 +888,9 @@ tryAgain:
             // large allocator instead and keep the region for the smaller allocations.
             // Pointer-free, so the object does not care about the region and its escape tracking. Finalizable
             // objects are registered with their region, so they stay out of this.
-            if (!(flags & (GC_ALLOC_CONTAINS_REF | GC_ALLOC_FINALIZE)) &&
+            if (size >= 4 * 1024 &&
+                !(flags & (GC_ALLOC_CONTAINS_REF | GC_ALLOC_FINALIZE)) &&
+                SatoriUtil::IsMediumOverflowEnabled() &&
                 region->UsableCapacity() > Satori::REGION_SIZE_GRANULARITY / 32)
             {
                 // the region stays attached, but not allocating.
