@@ -876,6 +876,11 @@ tryAgain:
                         continue;
                     }
                 }
+                else
+                {
+                    SatoriRegion::OnEscapeTrackingEnded(/* outOfSpace */ true);
+                    region->StopEscapeTracking();
+                }
             }
 
             // A pointer-free medium object that does not fit, while the region still has a lot of space in smaller
