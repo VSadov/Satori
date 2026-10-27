@@ -328,33 +328,22 @@ size_t SatoriRecycler::RegionCount()
     return Gen1RegionCount() + Gen2RegionCount();
 }
 
-SatoriRegion* SatoriRecycler::TryGetReusable()
+// Takes a reusable region that can serve an allocation of minFree bytes. Only the first few regions
+// in each shard are considered, the rest stays where it is.
+SatoriRegion* SatoriRecycler::TryGetReusable(size_t minFree)
 {
-    SatoriRegion* reusable = m_reusableRegions->TryPopWithTryEnter();
+    const size_t MAX_SCAN = 2;
+    SatoriRegion* reusable = m_reusableRegions->TryPopFitting(minFree, MAX_SCAN);
     if (reusable == nullptr)
     {
         // concurrent filtering parks already filtered regions here until prep.
         // they are usable as-is, no reason to make the app wait for prep to hand them back.
-        reusable = m_reusableRegionsAlternate->TryPopWithTryEnter();
+        reusable = m_reusableRegionsAlternate->TryPopFitting(minFree, MAX_SCAN);
     }
 
     _ASSERTE(reusable == nullptr || reusable->Occupancy() < Satori::REGION_SIZE_GRANULARITY);
 
     return reusable;
-}
-
-// Puts back a region that was taken from the reusable queue but was not used.
-// Same routing as in KeepRegion: the ones with space in the top bucket are kept at the tail.
-void SatoriRecycler::ReturnReusable(SatoriRegion* region)
-{
-    if (region->HasFreeSpaceInTopBucket())
-    {
-        m_reusableRegions->Enqueue(region);
-    }
-    else
-    {
-        m_reusableRegions->Push(region);
-    }
 }
 
 SatoriRegion* SatoriRecycler::TryGetReusableForLarge()

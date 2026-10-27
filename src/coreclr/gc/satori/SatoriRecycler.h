@@ -98,9 +98,8 @@ public:
     void BlockingMarkForConcurrent();
     void MaybeAskForHelp();
 
-    SatoriRegion* TryGetReusable();
+    SatoriRegion* TryGetReusable(size_t minFree);
     SatoriRegion* TryGetReusableForLarge();
-    void ReturnReusable(SatoriRegion* region);
 
     void RecordOccupancy(int generation, size_t size);
     void RecordDemotedOccupancy(ptrdiff_t demotedOccupancy);

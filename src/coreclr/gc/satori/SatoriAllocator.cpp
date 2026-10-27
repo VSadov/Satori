@@ -1071,7 +1071,7 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
 
 // Gets a region for a regular allocation of the given size. Prefers reusable regions, but a reusable region
 // that cannot serve the request from its free lists would just be retired on the spot while charging
-// the budget for its unused space. In such case it is left to be used for smaller requests.
+// the budget for its unused space. Such regions are skipped and left to be used for smaller requests.
 void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region, size_t size)
 {
     size_t minFree = size + Satori::MIN_FREE_SIZE;
@@ -1098,12 +1098,7 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region, size_t size)
         }
     }
 
-    region = m_heap->Recycler()->TryGetReusable();
-    if (region != nullptr && !region->CanFitAllocation(minFree))
-    {
-        m_heap->Recycler()->ReturnReusable(region);
-        region = nullptr;
-    }
+    region = m_heap->Recycler()->TryGetReusable(minFree);
 
     if (region == nullptr)
     {
