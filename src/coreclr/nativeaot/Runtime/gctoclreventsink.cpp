@@ -228,6 +228,11 @@ void GCToCLREventSink::FireGCThreadLocalCollection(uint32_t count, bool collecte
     FireEtwGCThreadLocalCollection(GetClrInstanceId(), count, collected, occupancyBefore, occupancyAfter, durationNs);
 }
 
+void GCToCLREventSink::FireGCThreadLocalCollection_V1(uint32_t count, bool collected, uint64_t occupancyBefore, uint64_t occupancyAfter, double durationNs, uint64_t escapedBytesBefore, uint64_t escapedBytesAfter)
+{
+    FireEtwGCThreadLocalCollection_V1(GetClrInstanceId(), count, collected, occupancyBefore, occupancyAfter, durationNs, escapedBytesBefore, escapedBytesAfter);
+}
+
 void GCToCLREventSink::FirePinPlugAtGCTime(uint8_t* plugStart, uint8_t* plugEnd, uint8_t* gapBeforeSize)
 {
     FireEtwPinPlugAtGCTime(plugStart, plugEnd, gapBeforeSize, GetClrInstanceId());

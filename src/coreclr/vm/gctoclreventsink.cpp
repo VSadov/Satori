@@ -298,6 +298,19 @@ void GCToCLREventSink::FireGCThreadLocalCollection(uint32_t count,
     FireEtwGCThreadLocalCollection(GetClrInstanceId(), count, collected, occupancyBefore, occupancyAfter, durationNs);
 }
 
+void GCToCLREventSink::FireGCThreadLocalCollection_V1(uint32_t count,
+                                                   bool collected,
+                                                   uint64_t occupancyBefore,
+                                                   uint64_t occupancyAfter,
+                                                   double durationNs,
+                                                   uint64_t escapedBytesBefore,
+                                                   uint64_t escapedBytesAfter)
+{
+    LIMITED_METHOD_CONTRACT;
+
+    FireEtwGCThreadLocalCollection_V1(GetClrInstanceId(), count, collected, occupancyBefore, occupancyAfter, durationNs, escapedBytesBefore, escapedBytesAfter);
+}
+
 void GCToCLREventSink::FireBGCBegin()
 {
     FireEtwBGCBegin(GetClrInstanceId());

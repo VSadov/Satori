@@ -94,9 +94,9 @@ public:
     void FireDestroyGCHandle(void *handleID);
     void FirePrvDestroyGCHandle(void *handleID);
     void FireGCThreadLocalCollection(uint32_t count, bool collected, uint64_t occupancyBefore, uint64_t occupancyAfter, double durationNs);
+    void FireGCThreadLocalCollection_V1(uint32_t count, bool collected, uint64_t occupancyBefore, uint64_t occupancyAfter, double durationNs, uint64_t escapedBytesBefore, uint64_t escapedBytesAfter);
 };
 
 extern GCToCLREventSink g_gcToClrEventSink;
 
 #endif // __GCTOCLREVENTSINK_H__
-
