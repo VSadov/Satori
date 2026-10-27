@@ -869,7 +869,7 @@ tryAgain:
             if (region->IsEscapeTracking())
             {
                 // the region ran out of space while tracking.
-                SatoriRegion::OnEscapeTrackingEnded();
+                SatoriRegion::OnEscapeTrackingEnded(/* outOfSpace */ true);
             }
 
             region->DetachFromAlocatingOwnerRelease();
@@ -885,7 +885,7 @@ tryAgain:
         // we only use it to look at its neighbor in the page.
         _ASSERTE(region == nullptr);
         region = prevRegion;
-        TryGetRegularRegion(region);
+        TryGetRegularRegion(region, size);
 
         if (region == nullptr)
         {
@@ -1053,7 +1053,7 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
             m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
-        TryGetRegularRegion(region);
+        TryGetRegularRegion(region, size);
         if (region == nullptr)
         {
             //OOM
@@ -1069,8 +1069,13 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
     }
 }
 
-void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region)
+// Gets a region for a regular allocation of the given size. Prefers reusable regions, but a reusable region
+// that cannot serve the request from its free lists would just be retired on the spot while charging
+// the budget for its unused space. In such case it is left to be used for smaller requests.
+void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region, size_t size)
 {
+    size_t minFree = size + Satori::MIN_FREE_SIZE;
+
     // opportunistically try get the next region, if available
     SatoriRegion* next = nullptr;
     SatoriQueue<SatoriRegion>* nextContainingQueue = nullptr;
@@ -1083,6 +1088,7 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region)
             nextContainingQueue = next->ContainingQueue();
             if (nextContainingQueue &&
                 nextContainingQueue->Kind() == QueueKind::RecyclerReusable &&
+                next->CanFitAllocation(minFree) &&
                 nextContainingQueue->TryRemove(next))
             {
                 region = next;
@@ -1093,6 +1099,11 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region)
     }
 
     region = m_heap->Recycler()->TryGetReusable();
+    if (region != nullptr && !region->CanFitAllocation(minFree))
+    {
+        m_heap->Recycler()->ReturnReusable(region);
+        region = nullptr;
+    }
 
     if (region == nullptr)
     {

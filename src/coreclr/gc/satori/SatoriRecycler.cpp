@@ -343,6 +343,20 @@ SatoriRegion* SatoriRecycler::TryGetReusable()
     return reusable;
 }
 
+// Puts back a region that was taken from the reusable queue but was not used.
+// Same routing as in KeepRegion: the ones with space in the top bucket are kept at the tail.
+void SatoriRecycler::ReturnReusable(SatoriRegion* region)
+{
+    if (region->HasFreeSpaceInTopBucket())
+    {
+        m_reusableRegions->Enqueue(region);
+    }
+    else
+    {
+        m_reusableRegions->Push(region);
+    }
+}
+
 SatoriRegion* SatoriRecycler::TryGetReusableForLarge()
 {
     SatoriRegion* reusable = m_reusableRegions->TryDequeueIfHasFreeSpaceInTopBucket();

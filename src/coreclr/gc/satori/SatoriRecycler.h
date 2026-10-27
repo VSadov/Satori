@@ -100,6 +100,7 @@ public:
 
     SatoriRegion* TryGetReusable();
     SatoriRegion* TryGetReusableForLarge();
+    void ReturnReusable(SatoriRegion* region);
 
     void RecordOccupancy(int generation, size_t size);
     void RecordDemotedOccupancy(ptrdiff_t demotedOccupancy);

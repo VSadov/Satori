@@ -630,6 +630,17 @@ bool SatoriRegion::HasFreeSpaceInTopBucket()
     return (m_nonEmptyFreeLists & (1u << (Satori::FREELIST_COUNT - 1))) != 0;
 }
 
+bool SatoriRegion::CanFitAllocation(size_t size)
+{
+    if (GetAllocRemaining() >= size)
+    {
+        return true;
+    }
+
+    int32_t bucket = SatoriUtil::BucketForAlloc(size);
+    return bucket < Satori::FREELIST_COUNT && ((size_t)m_nonEmptyFreeLists >> bucket) != 0;
+}
+
 size_t SatoriRegion::FreeSpaceInTopNBuckets(int n)
 {
     size_t result = 0;
@@ -1571,6 +1582,8 @@ namespace
         bool tracking;
         // thread-local GC paid off in the tracked region (see IsTlgcProductive)
         bool collected;
+        // thread-local GC went beyond the refusal checks in the tracked region
+        bool attempted;
     };
 
     thread_local EscapeTrackingHistory t_trackingHistory;
@@ -1613,10 +1626,11 @@ bool SatoriRegion::ShouldStartEscapeTracking(bool allowBackoff)
     h.skip = 0;
     h.tracking = true;
     h.collected = false;
+    h.attempted = false;
     return true;
 }
 
-void SatoriRegion::OnEscapeTrackingEnded()
+void SatoriRegion::OnEscapeTrackingEnded(bool outOfSpace)
 {
     EscapeTrackingHistory& h = t_trackingHistory;
     if (!h.tracking)
@@ -1628,6 +1642,11 @@ void SatoriRegion::OnEscapeTrackingEnded()
     if (h.collected)
     {
         h.backoff = 0;
+    }
+    else if (outOfSpace && !h.attempted)
+    {
+        // The region ran out of space and no thread-local GC was tried in it (the refill was too soon,
+        // or the region was retired by a request that did not fit). No evidence that tracking does not pay off.
     }
     else
     {
@@ -1701,6 +1720,7 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
     }
 
     m_allocBytesAtCollect = allocBytes;
+    t_trackingHistory.attempted = true;
 
     size_t count = Recycler()->IncrementGen0Count();
     int64_t eventStartTicks = ThreadLocalCollectionEventEnabled() ? minipal_hires_ticks() : 0;

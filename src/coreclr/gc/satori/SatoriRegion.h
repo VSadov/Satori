@@ -95,6 +95,10 @@ public:
     bool HasFreeSpaceInTopBucket();
     size_t FreeSpaceInTopNBuckets(int n);
 
+    // Whether an allocation of the given size can be served from the current allocation span
+    // or is guaranteed to fit a free list object (a hint, no side effects).
+    bool CanFitAllocation(size_t size);
+
     // Free space that allocations can use: the rest of the current allocation span and the free lists.
     // (fragments that are too small for the free lists are not usable)
     size_t UsableCapacity();
@@ -118,7 +122,9 @@ public:
     // Called by the owning thread when detaching a region that ran out of space while it was
     // tracked, or when it finds that the barrier stopped tracking because of too many escapes.
     // NB: not from the write barrier - uses TLS.
-    static void OnEscapeTrackingEnded();
+    // When outOfSpace is true, the region ran out of space. If no thread-local GC was even attempted in it,
+    // that tells nothing about whether tracking pays off, so the history is left as is.
+    static void OnEscapeTrackingEnded(bool outOfSpace = false);
 
     // Thread-local GC paid off in this region: in the current accounting period it returned at least
     // REGION_SIZE_GRANULARITY / 4 of usable space to the free lists. (reclaimed fragments too small to reuse do not count)
