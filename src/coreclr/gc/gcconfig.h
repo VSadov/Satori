@@ -164,7 +164,6 @@ public:
     INT_CONFIG   (Gen1Target,                "gcGen1Target",              NULL,                                -1,                 "Specifies target for Gen1 GC (in terms of % of the last known size)")                    \
     INT_CONFIG   (ReusableTarget,            "gcReusableTarget",          NULL,                                -1,                 "Specifies how much free space may be held in reusable regions (in terms of % of expected gen1 allocation)") \
     INT_CONFIG   (TrackBackoff,              "gcTrackBackoff",            NULL,                                -1,                 "Specifies max number of regions a thread allocates untracked after unproductive escape tracking (hex). 0 - disabled, -1 - default") \
-    BOOL_CONFIG  (MediumOverflow,            "gcMediumOverflow",          NULL,                                true,               "Specifies whether pointer-free medium objects that miss a roomy regular region overflow to the large allocator") \
 
 // This class is responsible for retreiving configuration information
 // for how the GC should operate.

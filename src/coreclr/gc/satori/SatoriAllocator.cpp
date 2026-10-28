@@ -892,7 +892,6 @@ tryAgain:
             // per byte for smaller ones. Those retire the region as before and continue in another one.
             if (size >= 8 * 1024 &&
                 !(flags & (GC_ALLOC_CONTAINS_REF | GC_ALLOC_FINALIZE)) &&
-                SatoriUtil::IsMediumOverflowEnabled() &&
                 region->UsableCapacity() > Satori::REGION_SIZE_GRANULARITY / 32)
             {
                 // the region stays attached, but not allocating.

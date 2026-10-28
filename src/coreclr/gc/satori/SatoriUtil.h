@@ -664,12 +664,6 @@ public:
         return (int)min(cap, (int64_t)64);
     }
 
-    // DOTNET_gcMediumOverflow
-    static bool IsMediumOverflowEnabled()
-    {
-        return GCConfig::GetMediumOverflow();
-    }
-
     // DOTNET_GCLatencyMode
     static bool IsLowLatencyMode()
     {
