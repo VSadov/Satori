@@ -664,21 +664,6 @@ public:
         return (int)min(cap, (int64_t)64);
     }
 
-    // DOTNET_gcTailTakeDivisor
-    // With less than INDEX_GRANULARITY left in an allocation span, a regular allocation takes the whole rest of the span
-    // when the request is at most 1/N of it, otherwise only the request.
-    // 0 - take only the request, 1 - always take the rest.
-    static size_t TailTakeDivisor()
-    {
-        int64_t divisor = GCConfig::GetTailTakeDivisor();
-        if (divisor < 0)
-        {
-            return 4;
-        }
-
-        return (size_t)min(divisor, (int64_t)64);
-    }
-
     // DOTNET_gcMediumOverflow
     static bool IsMediumOverflowEnabled()
     {

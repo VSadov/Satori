@@ -773,13 +773,12 @@ tryAgain:
                     }
                     else
                     {
-                        // The tail of the span is smaller than that. Taking just what is needed sends every allocation
-                        // in the tail here again, but taking the rest zeroes memory that is wasted if the next allocation
-                        // does not fit (the rest is too small for a free list). Take the rest when the request is small
-                        // relative to it, so that it is likely to be used by the following allocations.
-                        // (see SatoriUtil::TailTakeDivisor)
-                        size_t divisor = SatoriUtil::TailTakeDivisor();
-                        if (divisor != 0 && size * divisor <= allocRemaining)
+                        // The tail of the span is smaller than that. Taking just what is needed would send every
+                        // allocation in the tail here again, so take all of it, as long as the object would fit in it
+                        // by itself. When it would not (the object hangs over from the current allocation context),
+                        // what is left after it is unlikely to fit the next object of a similar size, and zeroing it
+                        // would likely be wasted. (it is also too small for a free list)
+                        if (size <= allocRemaining)
                         {
                             moreSpace = allocRemaining;
                         }
@@ -888,7 +887,10 @@ tryAgain:
             // large allocator instead and keep the region for the smaller allocations.
             // Pointer-free, so the object does not care about the region and its escape tracking. Finalizable
             // objects are registered with their region, so they stay out of this.
-            if (size >= 4 * 1024 &&
+            // Only 8 KB or more: the large allocator serves each object individually, without an allocation context,
+            // which is reasonable for objects that are a sizable fraction of LARGE_OBJECT_THRESHOLD, but too costly
+            // per byte for smaller ones. Those retire the region as before and continue in another one.
+            if (size >= 8 * 1024 &&
                 !(flags & (GC_ALLOC_CONTAINS_REF | GC_ALLOC_FINALIZE)) &&
                 SatoriUtil::IsMediumOverflowEnabled() &&
                 region->UsableCapacity() > Satori::REGION_SIZE_GRANULARITY / 32)
