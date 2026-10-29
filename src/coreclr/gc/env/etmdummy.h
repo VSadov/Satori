@@ -171,6 +171,7 @@
 #define FireEtwGCLOHCompact(ClrInstanceID, Count, Values_Len_, Values) 0
 #define FireEtwGCFitBucketInfo(ClrInstanceID, BucketKind, TotalSize, Count, Values_Len_, Values) 0
 #define FireEtwGCThreadLocalCollection(ClrInstanceID, Count, Collected, OccupancyBefore, OccupancyAfter, DurationNs) 0
+#define FireEtwGCThreadLocalCollectionOutcome(ClrInstanceID, ThreadTag, RegionID, HasCollectionIndex, CollectionIndex, RequestedBytes, Trigger, Outcome, Retry) 0
 #define FireEtwGCGlobalHeapHistory_V2(FinalYoungestDesired, NumHeaps, CondemnedGeneration, Gen0ReductionCount, Reason, GlobalMechanisms, ClrInstanceID, PauseMode, MemoryPressure) 0
 #define FireEtwGCGlobalHeapHistory_V3(FinalYoungestDesired, NumHeaps, CondemnedGeneration, Gen0ReductionCount, Reason, GlobalMechanisms, ClrInstanceID, PauseMode, MemoryPressure, CondemnReasons0, CondemnReasons1) 0
 #define FireEtwGCGlobalHeapHistory_V4(FinalYoungestDesired, NumHeaps, CondemnedGeneration, Gen0ReductionCount, Reason, GlobalMechanisms, ClrInstanceID, PauseMode, MemoryPressure, CondemnReasons0, CondemnReasons1, Count, Values_Len_, Values) 0

@@ -147,6 +147,7 @@
                             <opcode name="GCFitBucketInfo" message="$(string.RuntimePublisher.GCFitBucketInfoOpcodeMessage)" symbol="CLR_GC_GCFITBUCKETINFO_OPCODE" value="209"> </opcode>
                             <!-- Satori. Placed away from the upstream GC opcodes, which grow from 200. -->
                             <opcode name="GCThreadLocalCollection" message="$(string.RuntimePublisher.GCThreadLocalCollectionOpcodeMessage)" symbol="CLR_GC_THREADLOCALCOLLECTION_OPCODE" value="239"> </opcode>
+                            <opcode name="GCThreadLocalCollectionOutcome" message="$(string.RuntimePublisher.GCThreadLocalCollectionOutcomeOpcodeMessage)" symbol="CLR_GC_THREADLOCALCOLLECTIONOUTCOME_OPCODE" value="238"> </opcode>
                         </opcodes>
                     </task>
 
@@ -1485,6 +1486,32 @@
                                 <OccupancyAfter> %5 </OccupancyAfter>
                                 <DurationNs> %6 </DurationNs>
                             </GCThreadLocalCollection>
+                        </UserData>
+                    </template>
+
+                    <template tid="GCThreadLocalCollectionOutcome">
+                        <data name="ClrInstanceID" inType="win:UInt16" />
+                        <data name="ThreadTag" inType="win:UInt64" />
+                        <data name="RegionID" inType="win:UInt64" />
+                        <data name="HasCollectionIndex" inType="win:Boolean" />
+                        <data name="CollectionIndex" inType="win:UInt32" />
+                        <data name="RequestedBytes" inType="win:UInt64" />
+                        <data name="Trigger" inType="win:UInt32" />
+                        <data name="Outcome" inType="win:UInt32" />
+                        <data name="Retry" inType="win:UInt32" />
+
+                        <UserData>
+                            <GCThreadLocalCollectionOutcome xmlns="myNs">
+                                <ClrInstanceID> %1 </ClrInstanceID>
+                                <ThreadTag> %2 </ThreadTag>
+                                <RegionID> %3 </RegionID>
+                                <HasCollectionIndex> %4 </HasCollectionIndex>
+                                <CollectionIndex> %5 </CollectionIndex>
+                                <RequestedBytes> %6 </RequestedBytes>
+                                <Trigger> %7 </Trigger>
+                                <Outcome> %8 </Outcome>
+                                <Retry> %9 </Retry>
+                            </GCThreadLocalCollectionOutcome>
                         </UserData>
                     </template>
 
@@ -4244,6 +4271,11 @@
                            keywords ="GCKeyword"  opcode="GCThreadLocalCollection"
                            task="GarbageCollection"
                            symbol="GCThreadLocalCollection" message="$(string.RuntimePublisher.GCThreadLocalCollectionEventMessage)"/>
+
+                    <event value="238" version="0" level="win:Verbose" template="GCThreadLocalCollectionOutcome"
+                           keywords="GCKeyword" opcode="GCThreadLocalCollectionOutcome"
+                           task="GarbageCollection"
+                           symbol="GCThreadLocalCollectionOutcome" message="$(string.RuntimePublisher.GCThreadLocalCollectionOutcomeEventMessage)"/>
 
                     <!-- CLR Debugger events 240-249 -->
                     <event value="240" version="0" level="win:Informational"
@@ -8627,6 +8659,7 @@
                 <string id="RuntimePublisher.GCLOHCompactEventMessage" value="ClrInstanceID=%1;%nCount=%2" />
                 <string id="RuntimePublisher.GCFitBucketInfoEventMessage" value="ClrInstanceID=%1;%nBucketKind=%2;%nTotalSize=%3;%nCount=%4" />
                 <string id="RuntimePublisher.GCThreadLocalCollectionEventMessage" value="ClrInstanceID=%1;%nCount=%2;%nCollected=%3;%nOccupancyBefore=%4;%nOccupancyAfter=%5;%nDurationNs=%6" />
+                <string id="RuntimePublisher.GCThreadLocalCollectionOutcomeEventMessage" value="ClrInstanceID=%1;%nThreadTag=%2;%nRegionID=%3;%nHasCollectionIndex=%4;%nCollectionIndex=%5;%nRequestedBytes=%6;%nTrigger=%7;%nOutcome=%8;%nRetry=%9" />
                 <string id="RuntimePublisher.FinalizeObjectEventMessage" value="TypeID=%1;%nObjectID=%2;%nClrInstanceID=%3" />
                 <string id="RuntimePublisher.GCTriggeredEventMessage" value="Reason=%1" />
                 <string id="RuntimePublisher.PinObjectAtGCTimeEventMessage" value="HandleID=%1;%nObjectID=%2;%nObjectSize=%3;%nTypeName=%4;%n;%nClrInstanceID=%5" />
@@ -9359,6 +9392,7 @@
                 <string id="RuntimePublisher.GCLOHCompactOpcodeMessage" value="GCLOHCompact" />
                 <string id="RuntimePublisher.GCFitBucketInfoOpcodeMessage" value="GCFitBucketInfo" />
                 <string id="RuntimePublisher.GCThreadLocalCollectionOpcodeMessage" value="GCThreadLocalCollection" />
+                <string id="RuntimePublisher.GCThreadLocalCollectionOutcomeOpcodeMessage" value="GCThreadLocalCollectionOutcome" />
                 <string id="RuntimePublisher.GCGlobalHeapHistoryOpcodeMessage" value="GlobalHeapHistory" />
                 <string id="RuntimePublisher.GenAwareBeginOpcodeMessage" value="GenAwareBegin" />
                 <string id="RuntimePublisher.GenAwareEndOpcodeMessage" value="GenAwareEnd" />
