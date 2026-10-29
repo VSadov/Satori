@@ -245,8 +245,22 @@ size_t SatoriGC::GetCurrentObjSize()
 uint64_t SatoriGC::GetTotalAllocatedBytes()
 {
     // monotonically increasing number produced by allocator when allocating objects.
-    // threads know their number and we update the total when doing GCs
-    return m_heap->Recycler()->GetTotalAllocatedBytes();
+    // threads count their allocations and publish the counts to shared counters as they allocate.
+    // this is the sum of those counters, or the last precise total, whichever is greater.
+    // it can lag behind live allocations by up to PACE_BUDGET or so per thread and kind of allocations.
+    // (see SatoriAllocator::PublishAllocatedBytes)
+    return m_heap->Allocator()->GetTotalAllocatedBytes();
+}
+
+uint64_t SatoriGC::GetTotalAllocatedBytesPrecise()
+{
+    // allocation contexts have precise counts of what their threads have allocated,
+    // but the counts change as threads allocate. with EE suspended they cannot change.
+    // NB: this is not a GC, but like other suspensions that are not GCs, we suspend "for GC prep".
+    GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
+    uint64_t allocated = m_heap->Allocator()->GetTotalAllocatedBytesPrecise();
+    GCToEEInterface::RestartEE(false);
+    return allocated;
 }
 
 HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
@@ -320,6 +334,7 @@ HRESULT SatoriGC::Initialize()
 {
     g_totalPhysicalMem = GCToOSInterface::GetPhysicalMemoryLimit(&g_isRestrictedPhysicalMem);
     GCConfig::SetGCHighMemPercent(SatoriUtil::HighMemoryPercent());
+    GCConfig::SetLOHThreshold(GetLOHThreshold());
 
     SatoriUtil::Initialize();
     SatoriObject::Initialize();
@@ -424,8 +439,10 @@ uint32_t SatoriGC::WaitUntilGCComplete(bool bConsiderGCStart)
 void SatoriGC::FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
 {
     // this is only called when thread is terminating and about to clear its context.
-    ((SatoriAllocationContext*)acontext)->Deactivate(m_heap->Recycler(), /*detach*/ true);
-    m_heap->Recycler()->ReportThreadAllocBytes(acontext->alloc_bytes + acontext->alloc_bytes_uoh, /*isLive*/ false);
+    // NB: it is called on the terminating thread itself.
+    SatoriAllocationContext* context = (SatoriAllocationContext*)acontext;
+    context->Deactivate(m_heap->Recycler(), /*detach*/ true);
+    m_heap->Allocator()->PublishAllocatedBytesOnThreadExit(context);
 }
 
 void SatoriGC::SetGCInProgress(bool fInProgress)
@@ -491,6 +508,7 @@ void SatoriGC::PublishObject(uint8_t* obj)
     if (region->Size() > Satori::REGION_SIZE_GRANULARITY)
     {
         _ASSERTE(!region->IsAttachedToAllocatingOwner() && region->Generation() == -1);
+        so->UnsetUnfinished();
 
         // promote to gen2 and take out of -1, since now the region is parseable
         region->SetGenerationRelease(2);
@@ -937,7 +955,7 @@ uint64_t SatoriGC::GetGenerationBudget(int generation)
 
 size_t SatoriGC::GetLOHThreshold()
 {
-    return Satori::LARGE_OBJECT_THRESHOLD;
+    return max((size_t)GCConfig::GetLOHThreshold(), LARGE_OBJECT_SIZE);
 }
 
 void SatoriGC::DiagWalkHeapWithACHandling(walk_fn fn, void *context, int gen_number, bool walk_large_object_heap_p)

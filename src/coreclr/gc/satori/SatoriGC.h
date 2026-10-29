@@ -84,6 +84,7 @@ public:
     virtual int EndNoGCRegion() override;
     virtual size_t GetTotalBytesInUse() override;
     virtual uint64_t GetTotalAllocatedBytes() override;
+    virtual uint64_t GetTotalAllocatedBytesPrecise() override;
     virtual HRESULT GarbageCollect(int generation = -1, bool low_memory_p = false, int mode = collection_blocking) override;
     virtual unsigned GetMaxGeneration() override;
     virtual void SetFinalizationRun(Object* obj) override;

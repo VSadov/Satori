@@ -225,7 +225,7 @@ inline SatoriObject* SatoriObject::RelocatedToUnchecked()
 }
 
 template <bool notExternal>
-FORCEINLINE bool SatoriObject::IsRelocatedTo(SatoriObject** newLocation)
+FORCEINLINE bool SatoriObject::IsRelocated()
 {
     if (notExternal)
     {
@@ -236,7 +236,13 @@ FORCEINLINE bool SatoriObject::IsRelocatedTo(SatoriObject** newLocation)
         return false;
     }
 
-    if (this->ContainingRegion()->IsRelocated())
+    return this->ContainingRegion()->IsRelocated();
+}
+
+template <bool notExternal>
+FORCEINLINE bool SatoriObject::IsRelocatedTo(SatoriObject** newLocation)
+{
+    if (IsRelocated<notExternal>())
     {
         *newLocation = RelocatedToUnchecked();
         return true;
@@ -266,25 +272,6 @@ inline void SatoriObject::SetUnmovable()
 inline bool SatoriObject::IsUnmovable()
 {
     return *((DWORD*)this - 1) & BIT_SBLK_GC_RESERVE;
-}
-
-// #define BIT_SBLK_UNUSED                     0x80000000
-#define BIT_SBLK_UNFINISHED                     0x80000000
-
-// used by shared allocations
-inline void SatoriObject::CleanSyncBlockAndSetUnfinished()
-{
-    *((size_t*)this - 1) = (size_t)BIT_SBLK_UNFINISHED << 32;
-}
-
-inline bool SatoriObject::IsUnfinished()
-{
-    return *((DWORD*)this - 1) & BIT_SBLK_UNFINISHED;
-}
-
-inline void SatoriObject::UnsetUnfinished()
-{
-    *((DWORD*)this - 1) &= ~BIT_SBLK_UNFINISHED;
 }
 
 template <typename F>

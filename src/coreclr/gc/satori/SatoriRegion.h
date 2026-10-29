@@ -33,6 +33,7 @@
 #include "SatoriUtil.h"
 #include "SatoriObject.h"
 #include "SatoriLocalCollection.h"
+#include "SatoriPrefetchQueue.h"
 
 class SatoriAllocator;
 class SatoriRegionQueue;
@@ -164,11 +165,25 @@ public:
     SatoriObject* SkipUnmarkedAndClear(SatoriObject* from);
     SatoriObject* SkipUnmarked(SatoriObject* from, size_t upTo);
 
+    // Walks the mark bitmap ahead of a sweep and prefetches upcoming live objects.
+    // It moves by mark bytes - a mark byte covers one 64 byte cache line of the heap,
+    // thus it prefetches every line that has live objects once, and counts the distance in such lines.
+    struct SweepPrefetcher
+    {
+        size_t m_index;
+        size_t m_word;
+        // the heap cache line of the last live object the sweep has reached
+        size_t m_line;
+    };
+
+    void SweepPrefetchStart(SweepPrefetcher& prefetcher, SatoriObject* from);
+    void SweepPrefetchAdvance(SweepPrefetcher& prefetcher, SatoriObject* o);
+
     void TakeFinalizerInfoFrom(SatoriRegion* other);
     void IndividuallyPromote();
     void UpdateFinalizableTrackers();
     void UpdatePointers();
-    void UpdatePointersInObject(SatoriObject* o, size_t size);
+    void UpdatePointersInObject(SatoriObject* o, size_t size, SatoriRelocatedRefQueue<8>& updateQueue);
     void SetCardsForObject(SatoriObject* o, size_t size);
 
     template <bool promotingAllRegions>
@@ -260,21 +275,8 @@ public:
 private:
     static const int BITMAP_LENGTH = Satori::REGION_SIZE_GRANULARITY / sizeof(size_t) / sizeof(size_t) / 8;
 
-    // Walks the mark bitmap ahead of a sweep and prefetches upcoming live objects.
-    // It moves by mark bytes - a mark byte covers one 64 byte cache line of the heap,
-    // thus it prefetches every line that has live objects once, and counts the distance in such lines.
-    struct SweepPrefetcher
-    {
-        size_t m_index;
-        size_t m_word;
-        // the heap cache line of the last live object the sweep has reached
-        size_t m_line;
-    };
-
     static const int SWEEP_PREFETCH_LINES = 8;
 
-    void SweepPrefetchStart(SweepPrefetcher& prefetcher, SatoriObject* from);
-    void SweepPrefetchAdvance(SweepPrefetcher& prefetcher, SatoriObject* o);
     void SweepPrefetchNext(SweepPrefetcher& prefetcher);
 
     // The first actually useful index is offsetof(m_firstObject) / sizeof(size_t) / 8,

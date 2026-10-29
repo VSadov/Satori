@@ -29,6 +29,23 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 #include "SatoriWorkList.h"
+#include "SatoriUtil.h"
+
+SatoriShardedWorkList* SatoriShardedWorkList::AllocAligned(size_t shardCount)
+{
+    _ASSERTE(shardCount > 0);
+    _ASSERTE((shardCount & (shardCount - 1)) == 0);
+    const size_t align = 128;
+    size_t totalSize = offsetof(SatoriShardedWorkList, m_shards) + shardCount * sizeof(SatoriWorkList);
+
+#ifdef _MSC_VER
+    void* buffer = _aligned_malloc(totalSize, align);
+#else
+    void* buffer = malloc(totalSize + align);
+    buffer = (void*)ALIGN_UP((size_t)buffer, align);
+#endif
+    return new (buffer) SatoriShardedWorkList(shardCount);
+}
 
 NOINLINE
 void SatoriWorkList::PushSlow(SatoriWorkChunk* item)
@@ -61,8 +78,11 @@ SatoriWorkChunk* SatoriWorkList::TryPopSlow()
     SatoriWorkChunk* head;
     while (true)
     {
+        // The version must be read with acquire, before the head. Otherwise head->m_next may be read
+        // ahead of the version and be older than it. A chunk that is popped and pushed again while we
+        // are here would then pass the CAS with a stale next and the chunks after it would be lost.
+        size_t aba = VolatileLoad(&this->m_aba);
         head = this->m_head;
-        size_t aba = this->m_aba;
 
         if (head == nullptr)
         {

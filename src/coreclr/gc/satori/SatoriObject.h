@@ -75,12 +75,29 @@ public:
     bool IsUnmovable();
 
     template <bool notExternal = false>
+    bool IsRelocated();
+    template <bool notExternal = false>
     bool IsRelocatedTo(SatoriObject** newLocation);
     SatoriObject * RelocatedToUnchecked();
 
-    void CleanSyncBlockAndSetUnfinished();
-    bool IsUnfinished();
-    void UnsetUnfinished();
+    // #define BIT_SBLK_UNUSED                     0x80000000
+    static const uint32_t BIT_SBLK_UNFINISHED = 0x80000000;
+
+    // used by shared and huge allocations
+    void CleanSyncBlockAndSetUnfinished()
+    {
+        *((size_t*)this - 1) = (size_t)BIT_SBLK_UNFINISHED << 32;
+    }
+
+    bool IsUnfinished()
+    {
+        return *((uint32_t*)this - 1) & BIT_SBLK_UNFINISHED;
+    }
+
+    void UnsetUnfinished()
+    {
+        *((uint32_t*)this - 1) &= ~BIT_SBLK_UNFINISHED;
+    }
 
     bool HasEphemeralCollectibleAllocator();
     void DirtyCardsForContent();
