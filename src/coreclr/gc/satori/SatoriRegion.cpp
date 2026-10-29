@@ -1632,11 +1632,11 @@ static bool ThreadLocalCollectionEventEnabled()
     return EVENT_ENABLED(GCThreadLocalCollection);
 }
 
-bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
+SatoriLocalCollectionResult SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
 {
     if (m_escapedSize > Satori::MAX_ESCAPE_SIZE)
     {
-        return false;
+        return { SatoriLocalCollectionOutcome::EscapedLimit, 0 };
     }
 
     size_t minProgress = atTlgcLimit ? 2 * SatoriUtil::MinZeroInitSize() : Satori::REGION_SIZE_GRANULARITY / 4;
@@ -1645,7 +1645,7 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
         // this is too soon. last collection did not buy us as much as we wanted
         // either due to fragmentation or unfortunate allocation pattern in this thread.
         // we will not collect this region, lest it keeps coming back.
-        return false;
+        return { SatoriLocalCollectionOutcome::InsufficientProgress, 0 };
     }
 
     m_allocBytesAtCollect = allocBytes;
@@ -1689,7 +1689,26 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
         FIRE_EVENT(GCThreadLocalCollection, (uint32_t)count, shouldCollect, (uint64_t)occupancyBefore, (uint64_t)m_occupancy, durationNs);
     }
 
-    return shouldCollect;
+    return { shouldCollect ? SatoriLocalCollectionOutcome::Completed : SatoriLocalCollectionOutcome::SurvivalAbort, (uint32_t)count };
+}
+
+void SatoriRegion::ReportThreadLocalCollection(const SatoriLocalCollectionResult& result, size_t requestedBytes,
+    SatoriLocalCollectionTrigger trigger, SatoriLocalCollectionRetry retry)
+{
+#ifdef BUILD_AS_STANDALONE
+    if (g_runtimeSupportedVersion.MajorVersion < 6)
+    {
+        return;
+    }
+#endif
+
+    if (EVENT_ENABLED(GCThreadLocalCollectionOutcome))
+    {
+        FIRE_EVENT(GCThreadLocalCollectionOutcome,
+            (uint64_t)SatoriUtil::GetCurrentThreadTag(), (uint64_t)Start(),
+            result.HasCollectionIndex(), result.collectionIndex, (uint64_t)requestedBytes,
+            (uint32_t)trigger, (uint32_t)result.outcome, (uint32_t)retry);
+    }
 }
 
 // Transitively marks thread-local objects reachable from the mark stack.

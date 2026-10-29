@@ -32,6 +32,7 @@
 #include "SatoriHeap.h"
 #include "SatoriUtil.h"
 #include "SatoriObject.h"
+#include "SatoriLocalCollection.h"
 
 class SatoriAllocator;
 class SatoriRegionQueue;
@@ -243,8 +244,10 @@ public:
     void ClearFreeLists();
 
     // we tell where we are in terms of alloc bytes, so we do not collect too soon
-    // returns true if it actually did a collection.
-    bool ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit = false);
+    // Records the rejection or collection outcome without allocating an index for rejected calls.
+    SatoriLocalCollectionResult ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit);
+    void ReportThreadLocalCollection(const SatoriLocalCollectionResult& result, size_t requestedBytes,
+        SatoriLocalCollectionTrigger trigger, SatoriLocalCollectionRetry retry);
 
     SatoriPage* ContainingPage();
     SatoriRegion* NextInPage();

@@ -527,17 +527,10 @@ tryAgain:
                 _ASSERTE(context->alloc_ptr == nullptr);
             }
 
-            if (collectAtTlgcLimit)
-            {
-                if (!region->ThreadLocalCollect(context->alloc_bytes, /* atTlgcLimit */ true))
-                {
-                    SatoriRegion::OnEscapeTrackingEnded();
-                    region->StopEscapeTracking();
-                }
-            }
-
             // try get from the free list
-            if (region->StartAllocating(size, context->alloc_bytes))
+            if (collectAtTlgcLimit ?
+                SatoriCollectAndRetry(region, context->alloc_bytes, size, SatoriLocalCollectionTrigger::DyadicLimit) :
+                region->StartAllocating(size, context->alloc_bytes))
             {
                 // we have enough free space in the region to continue
                 context->alloc_ptr = context->alloc_limit = (uint8_t*)region->GetAllocStart();
@@ -547,14 +540,11 @@ tryAgain:
             if (region->IsEscapeTracking())
             {
                 // try performing thread local collection and see if we have enough space after that.
-                if (region->ThreadLocalCollect(context->alloc_bytes))
+                if (SatoriCollectAndRetry(region, context->alloc_bytes, size, SatoriLocalCollectionTrigger::ExhaustedSpan))
                 {
-                    if (region->StartAllocating(size, context->alloc_bytes))
-                    {
-                        // we have enough free space in the region to continue
-                        context->alloc_ptr = context->alloc_limit = (uint8_t*)region->GetAllocStart();
-                        continue;
-                    }
+                    // we have enough free space in the region to continue
+                    context->alloc_ptr = context->alloc_limit = (uint8_t*)region->GetAllocStart();
+                    continue;
                 }
             }
 
