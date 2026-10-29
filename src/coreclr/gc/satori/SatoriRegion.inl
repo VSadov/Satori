@@ -265,7 +265,7 @@ inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag, size_t al
     m_allocBytesAtCollect = allocBytes;
     m_tlgcCount = 0;
     m_escapedSizeAtCollect = (uint32_t)m_escapedSize;
-    m_reclaimedInRegion = 0;
+    m_allocBytesAtAttach = allocBytes;
     m_lastStackSlots = 0;
     VolatileStore(&m_generation, 0);
     if (IsAllocating())
@@ -823,12 +823,6 @@ inline size_t SatoriRegion::DemotedOccupancy()
     return m_demotedOccupancy;
 }
 
-inline int32_t &SatoriRegion::OccupancyAtReuse()
-{
-    _ASSERTE(!IsAllocating());
-    return m_occupancyAtReuse;
-}
-
 inline int32_t SatoriRegion::ObjCount()
 {
     return m_objCount;
@@ -908,6 +902,22 @@ inline void SatoriRegion::AttachToAllocatingOwner(SatoriRegion** attachementPoin
 
     *attachementPoint = this;
     m_allocatingOwnerAttachmentPoint = attachementPoint;
+
+    // start an accounting period for the gen1 budget. (see TakeBudgetCharge)
+    m_usableAtAttach = UsableCapacity();
+    m_usableBaselineStale = false;
+}
+
+inline void SatoriRegion::RebaselineUsableIfStale(size_t allocBytes)
+{
+    if (m_usableBaselineStale)
+    {
+        // the GC deactivated the region, the owner cannot be in the middle of allocating from it.
+        _ASSERTE(!IsAllocating());
+        m_usableAtAttach = UsableCapacity();
+        m_allocBytesAtAttach = allocBytes;
+        m_usableBaselineStale = false;
+    }
 }
 
 inline void SatoriRegion::DetachFromAlocatingOwnerRelease()

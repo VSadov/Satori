@@ -235,10 +235,10 @@ public static class BlockingCollect
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static long CreateGarbage()
     {
-        byte[][] garbage = new byte[2048][];
+        var garbage = new object?[2048][];
         for (int i = 0; i < garbage.Length; i++)
         {
-            garbage[i] = new byte[4000];
+            garbage[i] = new object?[4000 / IntPtr.Size];
         }
 
         GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);

@@ -142,7 +142,7 @@ private:
     SatoriObject* AllocPinned(SatoriAllocationContext* context, size_t size, uint32_t flags);
     SatoriObject* AllocImmortal(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
-    void TryGetRegularRegion(SatoriRegion*& region);
+    void TryGetRegularRegion(SatoriRegion*& region, size_t size);
     bool AddMoreWorkChunks();
 
     static int SizeToBucket(size_t size)
