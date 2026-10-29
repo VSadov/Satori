@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.Runtime.InteropServices;
 using Xunit;
 
 public static class LargeObjectAllocationContext
@@ -64,10 +65,11 @@ public static class LargeObjectAllocationContext
     private static int CountInRegularRegion(int smallLength, int largeLength, int largeCount, bool uninitialized)
     {
         int count = 0;
+        int smallElementCount = smallLength / IntPtr.Size;
         for (int i = 0; i < Iterations; i++)
         {
             int gcCount = GC.CollectionCount(0);
-            byte[] small = new byte[smallLength];
+            object?[] small = new object?[smallElementCount];
             byte[] large = null!;
             for (int j = 0; j < largeCount; j++)
             {
@@ -83,9 +85,9 @@ public static class LargeObjectAllocationContext
         return count;
     }
 
-    private static unsafe nuint RegionFor(byte[] array)
+    private static unsafe nuint RegionFor(Array array)
     {
-        fixed (byte* address = array)
+        fixed (byte* address = &MemoryMarshal.GetArrayDataReference(array))
         {
             return (nuint)address & ~(nuint)(RegionSize - 1);
         }
