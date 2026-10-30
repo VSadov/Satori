@@ -39,6 +39,7 @@
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
 #include "SatoriRegion.inl"
+#include "../gcbridge.h"
 #include "../gceventstatus.h"
 #include "../gcscan.h"
 
@@ -968,5 +969,16 @@ void SatoriGC::NullBridgeObjectsWeakRefs(size_t length, void* unreachableObjectH
     Ref_NullBridgeObjectsWeakRefs(length, unreachableObjectHandles);
 #else
     assert(false);
+#endif
+}
+
+uintptr_t* SatoriGC::GetPendingBridgeHandles(size_t* count)
+{
+#ifdef FEATURE_JAVAMARSHAL
+    return ::GetPendingBridgeHandles(count);
+#else
+    assert(false);
+    *count = 0;
+    return nullptr;
 #endif
 }
