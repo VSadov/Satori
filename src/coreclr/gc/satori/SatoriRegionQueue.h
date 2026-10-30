@@ -53,6 +53,8 @@ public:
         size_t* outBestCandidateSize = nullptr,
         bool* outBestCandidateNeedsCommit = nullptr);
     SatoriRegion* TryDequeueIfHasFreeSpaceInTopBucket();
+    // Takes the first of the first maxScan regions that can serve an allocation of minFree bytes, if any.
+    SatoriRegion* TryPopFitting(size_t minFree, size_t maxScan);
 
     static SatoriRegionQueue* AllocAligned(QueueKind kind);
 };
@@ -364,6 +366,16 @@ public:
             [](SatoriRegionQueue* shard)
             {
                 return shard->TryDequeueIfHasFreeSpaceInTopBucket();
+            }
+        );
+    }
+
+    SatoriRegion* TryPopFitting(size_t minFree, size_t maxScan)
+    {
+        return TryOnShards(
+            [=](SatoriRegionQueue* shard)
+            {
+                return shard->TryPopFitting(minFree, maxScan);
             }
         );
     }
