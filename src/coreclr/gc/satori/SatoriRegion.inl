@@ -265,7 +265,7 @@ inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag, size_t al
     m_allocBytesAtCollect = allocBytes;
     m_tlgcCount = 0;
     m_escapedSizeAtCollect = (uint32_t)m_escapedSize;
-    m_reclaimedInRegion = 0;
+    m_allocBytesAtAttach = allocBytes;
     m_lastStackSlots = 0;
     VolatileStore(&m_generation, 0);
     if (IsAllocating())
@@ -715,6 +715,7 @@ bool SatoriRegion::Sweep()
     SatoriObject* o = FirstObject();
     SweepPrefetcher prefetcher;
     SweepPrefetchStart(prefetcher, o);
+    SatoriRelocatedRefQueue<8> updateQueue;
     do
     {
         if (!CheckAndClearMarked(o))
@@ -744,7 +745,7 @@ bool SatoriRegion::Sweep()
 
         if (updatePointers)
         {
-            UpdatePointersInObject(o, size);
+            UpdatePointersInObject(o, size, updateQueue);
         }
 
         if (individuallyPromoted)
@@ -761,6 +762,11 @@ bool SatoriRegion::Sweep()
         occupancy += size;
         o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);
+
+    if (updatePointers)
+    {
+        updateQueue.Flush();
+    }
 
     _ASSERTE(o->Start() == objLimit || End() > objLimit);
     _ASSERTE(hasFinalizables || !m_finalizableTrackers);
@@ -815,12 +821,6 @@ inline size_t SatoriRegion::Occupancy()
 inline size_t SatoriRegion::DemotedOccupancy()
 {
     return m_demotedOccupancy;
-}
-
-inline int32_t &SatoriRegion::OccupancyAtReuse()
-{
-    _ASSERTE(!IsAllocating());
-    return m_occupancyAtReuse;
 }
 
 inline int32_t SatoriRegion::ObjCount()
@@ -902,6 +902,22 @@ inline void SatoriRegion::AttachToAllocatingOwner(SatoriRegion** attachementPoin
 
     *attachementPoint = this;
     m_allocatingOwnerAttachmentPoint = attachementPoint;
+
+    // start an accounting period for the gen1 budget. (see TakeBudgetCharge)
+    m_usableAtAttach = UsableCapacity();
+    m_usableBaselineStale = false;
+}
+
+inline void SatoriRegion::RebaselineUsableIfStale(size_t allocBytes)
+{
+    if (m_usableBaselineStale)
+    {
+        // the GC deactivated the region, the owner cannot be in the middle of allocating from it.
+        _ASSERTE(!IsAllocating());
+        m_usableAtAttach = UsableCapacity();
+        m_allocBytesAtAttach = allocBytes;
+        m_usableBaselineStale = false;
+    }
 }
 
 inline void SatoriRegion::DetachFromAlocatingOwnerRelease()
@@ -1209,6 +1225,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
 
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     SatoriObject* o = FirstObject();
+    SatoriRelocatedRefQueue<8> updateQueue;
     do
     {
         o = SkipUnmarked(o);
@@ -1233,10 +1250,9 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
                 if (child &&
                     !child->IsExternal())
                 {
-                    SatoriObject* newLocation;
-                    if (child->IsRelocatedTo</*notExternal*/true>(&newLocation))
+                    if (child->IsRelocated</*notExternal*/true>())
                     {
-                        VolatileStoreWithoutBarrier(ppObject, newLocation);
+                        updateQueue.Push(ppObject, child);
                     }
 
                     // update the card as if the relocated object got a child assigned
@@ -1254,6 +1270,8 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
 
         o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);
+
+    updateQueue.Flush();
 }
 
 inline int SatoriRegion::IncrementUnfinishedAlloc()

@@ -75,6 +75,7 @@ public:
     size_t  GetCurrentObjSize();
 
     uint64_t GetTotalAllocatedBytes();
+    uint64_t GetTotalAllocatedBytesPrecise();
 
     size_t  GetLastGCStartTime(int generation);
     size_t  GetLastGCDuration(int generation);

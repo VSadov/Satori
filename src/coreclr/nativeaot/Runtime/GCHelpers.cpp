@@ -28,6 +28,10 @@
 
 #include "gcdesc.h"
 
+#if FEATURE_SATORI_GC
+#include "../../gc/satori/SatoriObject.h"
+#endif
+
 #ifdef FEATURE_EVENT_TRACE
    #include "clretwallmain.h"
 #else // FEATURE_EVENT_TRACE
@@ -473,10 +477,10 @@ EXTERN_C int64_t QCALLTYPE RhGetTotalAllocatedBytesPrecise()
     pThread->DeferTransitionFrame();
     pThread->DisablePreemptiveMode();
 
-    GCHeapUtilities::GetGCHeap()->GarbageCollect(1);
+    int64_t allocated = GCHeapUtilities::GetGCHeap()->GetTotalAllocatedBytesPrecise();
 
     pThread->EnablePreemptiveMode();
-    return GCHeapUtilities::GetGCHeap()->GetTotalAllocatedBytes();
+    return allocated;
 #else
     int64_t allocated;
 
@@ -650,7 +654,11 @@ static Object* GcAllocInternal(MethodTable* pEEType, uint32_t uFlags, uintptr_t 
     // combined_limit=alloc_limit.
     pEEAllocContext->UpdateCombinedLimit(isRandomizedSamplingEnabled);
 
+#if FEATURE_SATORI_GC
+    if (((SatoriObject*)pObject)->IsUnfinished())
+#else
     if (uFlags & GC_ALLOC_USER_OLD_HEAP)
+#endif
         GCHeapUtilities::GetGCHeap()->PublishObject((uint8_t*)pObject);
 
 #ifdef _DEBUG

@@ -103,6 +103,18 @@ namespace Satori
     // if we allocated this much, check if help is needed
     const static int PACE_BUDGET = REGION_SIZE_GRANULARITY / 16;
 
+    // allocated bytes of small objects are counted in a shared counter per this many processors.
+    // (see SatoriAllocator::PublishAllocatedBytes)
+    const static int ALLOCATED_BYTES_COUNTER_PROCESSORS = 16;
+    const static int MAX_ALLOCATED_BYTES_COUNTERS = 64;
+
+    // allocation tick event is fired after at least this much is allocated since the last tick.
+    // (same as etw_allocation_tick in the regular GC)
+    // NB: this is typically silent. Allocated bytes are published in batches of PACE_BUDGET, which is larger,
+    //     so ticks are already further apart than this. The purpose of this is to be a floor on the distance
+    //     between ticks (i.e. to cap how often they happen), in case pacing is made more frequent.
+    const static size_t ALLOCATION_TICK_BYTES = 100 * 1024;
+
     // address bits set to track finalizable that needs to be scheduled to F-queue
     const static size_t FINALIZATION_PENDING = 1;
     const static size_t FINALIZATION_PENDING_CRITICAL = 2;
@@ -158,6 +170,19 @@ public:
         return (size_t)1 << highestBit;
     }
 
+    static size_t RoundUpPwr2(size_t value)
+    {
+        _ASSERTE(value > 0);
+        if (value == 1)
+        {
+            return 1;
+        }
+
+        DWORD highestBit;
+        BitScanReverse64(&highestBit, value - 1);
+        return (size_t)2 << highestBit;
+    }
+
     static int32_t BucketForAlloc(size_t allocSize)
     {
         if (allocSize <= Satori::MIN_FREELIST_CAPACITY)
@@ -168,7 +193,7 @@ public:
         {
             // skip buckets that could not possibly fit allocSize
             DWORD bucket;
-            BitScanReverse64(&bucket, allocSize);
+            BitScanReverse64(&bucket, allocSize - 1);
             bucket = bucket - Satori::MIN_FREELIST_CAPACITY_BITS;
 
             // this bucket may be able to fit allocSize or may be not,
@@ -672,7 +697,7 @@ public:
             // minimum rate-limiting in debug
             return 0;
 #else
-            return 3;
+            return 2;
 #endif
         }
 
@@ -692,15 +717,15 @@ public:
     }
 
     // DOTNET_gcReusableTarget
-    // How much free space may be parked in reusable regions, as a percentage of the gen1
-    // budget. Reusables are drained into ephemeral queues when a blocking GC starts, so
-    // holding much more than the mutator consumes before then only adds to that drain.
+    // How much free space may be parked in reusable regions, as a percentage of expected
+    // gen1 allocation. Reusables are drained into ephemeral queues when a blocking GC starts,
+    // so holding much more than the mutator consumes before then only adds to that drain.
     static int ReusableTarget()
     {
         int target = (int)GCConfig::GetReusableTarget();
         if (target < 0)
         {
-            return 400;
+            return 200;
         }
 
         return target;

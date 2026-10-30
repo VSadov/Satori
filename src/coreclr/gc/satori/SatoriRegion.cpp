@@ -163,7 +163,9 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     result->m_maxParseableEnd = result->m_allocStart;
     result->m_unusableInPrefix = 0;
     result->m_escapedSizeAtCollect = 0;
-    result->m_reclaimedInRegion = 0;
+    result->m_usableAtAttach = 0;
+    result->m_allocBytesAtAttach = 0;
+    result->m_usableBaselineStale = false;
     result->m_lastStackSlots = 0;
     result->m_tlgcCount = 0;
     result->m_allocZeroedEnd = 0;
@@ -255,7 +257,9 @@ void SatoriRegion::MakeBlank()
     m_ownerThreadTag = 0;
     m_escapeFunc = EscapeFn;
     m_generation = -1;
-    m_occupancyAtReuse = 0;
+    m_usableAtAttach = 0;
+    m_allocBytesAtAttach = 0;
+    m_usableBaselineStale = false;
 
     // m_end                    stays the same
     // m_containingPage         stays the same
@@ -270,7 +274,6 @@ void SatoriRegion::MakeBlank()
     m_maxParseableEnd = m_allocStart;
     m_unusableInPrefix = 0;
     m_escapedSizeAtCollect = 0;
-    m_reclaimedInRegion = 0;
     m_lastStackSlots = 0;
     m_tlgcCount = 0;
     m_allocZeroedEnd = 0;
@@ -627,6 +630,17 @@ bool SatoriRegion::HasFreeSpaceInTopBucket()
     return (m_nonEmptyFreeLists & (1u << (Satori::FREELIST_COUNT - 1))) != 0;
 }
 
+bool SatoriRegion::CanFitAllocation(size_t size)
+{
+    if (GetAllocRemaining() >= size)
+    {
+        return true;
+    }
+
+    int32_t bucket = SatoriUtil::BucketForAlloc(size);
+    return bucket < Satori::FREELIST_COUNT && ((size_t)m_nonEmptyFreeLists >> bucket) != 0;
+}
+
 size_t SatoriRegion::FreeSpaceInTopNBuckets(int n)
 {
     size_t result = 0;
@@ -636,6 +650,36 @@ size_t SatoriRegion::FreeSpaceInTopNBuckets(int n)
     }
 
     return result;
+}
+
+size_t SatoriRegion::UsableCapacity()
+{
+    return GetAllocRemaining() + FreeSpaceInTopNBuckets(Satori::FREELIST_COUNT);
+}
+
+size_t SatoriRegion::TakeBudgetCharge(bool gcIsStarting)
+{
+    // The usable capacity at the start of the current accounting period.
+    // If a GC took the region while it stayed attached and the owner has not allocated from it since,
+    // the period has not started yet. It would start with what the region has now.
+    size_t usableAtStart = m_usableBaselineStale ? UsableCapacity() : m_usableAtAttach;
+
+    if (!gcIsStarting)
+    {
+        // The allocating owner retired the region. Whatever is left in it cannot be allocated from until
+        // a GC sweeps the region, thus the region is charged for all the usable capacity it had, used or not.
+        _ASSERTE(!IsAttachedToAllocatingOwner());
+        return usableAtStart;
+    }
+
+    // A GC is starting and deactivates the region. The GC will reclaim what is left, so charge only what was used.
+    // If the region stays attached, the owner starts a new period when it resumes allocating.
+    size_t usableNow = UsableCapacity();
+    m_usableBaselineStale = true;
+
+    // NB: thread-local GC may turn fragments that were too small to be usable into usable space,
+    //     so the region may have more usable capacity than it started with.
+    return usableAtStart > usableNow ? usableAtStart - usableNow : 0;
 }
 
 int SatoriRegion::GetMaxFreeBucket()
@@ -1536,8 +1580,10 @@ namespace
         uint8_t skip;
         // a tracked region is attached and its outcome is not known yet
         bool tracking;
-        // the tracked region had at least one successful thread-local GC
+        // thread-local GC paid off in the tracked region (see IsTlgcProductive)
         bool collected;
+        // thread-local GC went beyond the refusal checks in the tracked region
+        bool attempted;
     };
 
     thread_local EscapeTrackingHistory t_trackingHistory;
@@ -1556,7 +1602,7 @@ size_t SatoriRegion::CurrentStackDepth()
     return h.stackBase - sp;
 }
 
-bool SatoriRegion::ShouldStartEscapeTracking(bool allowBackoff)
+bool SatoriRegion::ShouldStartEscapeTracking()
 {
     EscapeTrackingHistory& h = t_trackingHistory;
     if (h.tracking)
@@ -1571,7 +1617,7 @@ bool SatoriRegion::ShouldStartEscapeTracking(bool allowBackoff)
         }
     }
 
-    if (allowBackoff && h.skip > 0 && SatoriUtil::TrackBackoffCap() > 0)
+    if (h.skip > 0 && SatoriUtil::TrackBackoffCap() > 0)
     {
         h.skip--;
         return false;
@@ -1580,10 +1626,11 @@ bool SatoriRegion::ShouldStartEscapeTracking(bool allowBackoff)
     h.skip = 0;
     h.tracking = true;
     h.collected = false;
+    h.attempted = false;
     return true;
 }
 
-void SatoriRegion::OnEscapeTrackingEnded()
+void SatoriRegion::OnEscapeTrackingEnded(bool outOfSpace)
 {
     EscapeTrackingHistory& h = t_trackingHistory;
     if (!h.tracking)
@@ -1596,6 +1643,11 @@ void SatoriRegion::OnEscapeTrackingEnded()
     {
         h.backoff = 0;
     }
+    else if (outOfSpace && !h.attempted)
+    {
+        // The region ran out of space and no thread-local GC was tried in it (the refill was too soon,
+        // or the region was retired by a request that did not fit). No evidence that tracking does not pay off.
+    }
     else
     {
         // the region ended without a productive thread-local GC, back off.
@@ -1603,6 +1655,25 @@ void SatoriRegion::OnEscapeTrackingEnded()
         h.backoff = (uint8_t)min(backoff, SatoriUtil::TrackBackoffCap());
         h.skip = h.backoff;
     }
+}
+
+bool SatoriRegion::IsTlgcProductive(size_t allocBytes)
+{
+    // Reclaimed occupancy is not a measure of success - reclaimed space may be too fragmented to reuse,
+    // then thread-local GC does not help. What helps is reclaimed usable space.
+    //
+    // Allocating takes from the usable capacity as much as it adds to the alloc bytes, or more, if a remainder
+    // too small to reuse is dropped. (bytes claimed by an allocation context, but not used yet, count on both sides)
+    // Thus their sum can grow past the usable capacity at the start of the period only when thread-local GC returns
+    // usable space to the free lists. The sum includes such space whether it is reused yet or not, and it is cumulative,
+    // so holes that an earlier collection did not list count as soon as a later one lists them.
+    if (allocBytes < m_allocBytesAtAttach)
+    {
+        return false;
+    }
+
+    size_t allocatedInPeriod = allocBytes - m_allocBytesAtAttach;
+    return allocatedInPeriod + UsableCapacity() >= m_usableAtAttach + Satori::REGION_SIZE_GRANULARITY / 4;
 }
 
 // NB: dst is unused, it is just to avoid argument shuffle in x64 barriers
@@ -1651,6 +1722,7 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
     }
 
     m_allocBytesAtCollect = allocBytes;
+    t_trackingHistory.attempted = true;
 
     size_t count = Recycler()->IncrementGen0Count();
     int64_t eventStartTicks = ThreadLocalCollectionEventEnabled() ? minipal_hires_ticks() : 0;
@@ -1668,9 +1740,11 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
         ThreadLocalUpdatePointers(&rootCache);
         ThreadLocalCompact();
         _ASSERTE(m_occupancy <= occupancyBefore);
-        size_t reclaimed = occupancyBefore - m_occupancy;
-        m_reclaimedInRegion = (uint32_t)min((size_t)UINT32_MAX, (size_t)m_reclaimedInRegion + reclaimed);
-        if (m_reclaimedInRegion >= Satori::REGION_SIZE_GRANULARITY / 4)
+
+        // Within an accounting period, compacting is the only thing that returns reclaimed usable space,
+        // so this is the one place to notice that thread-local GC paid off. (see IsTlgcProductive)
+        // Once noted, it stays noted, however the tracking of this region ends.
+        if (IsTlgcProductive(allocBytes))
         {
             t_trackingHistory.collected = true;
         }
@@ -2728,26 +2802,28 @@ void SatoriRegion::UpdateFinalizableTrackers()
     }
 }
 
-void SatoriRegion::UpdatePointersInObject(SatoriObject* o, size_t size)
+void SatoriRegion::UpdatePointersInObject(SatoriObject* o, size_t size, SatoriRelocatedRefQueue<8>& updateQueue)
 {
+    if (!o->RawGetMethodTable()->ContainsGCPointers())
+    {
+        return;
+    }
+
     // if the containing region is large, do not engage with the entire object,
     // schedule update of separate ranges.
     if (this->Size() == Satori::REGION_SIZE_GRANULARITY ||
         !Recycler()->ScheduleUpdateAsChildRanges(o))
     {
         o->ForEachObjectRef(
-            [](SatoriObject** ppObject)
+            [&updateQueue](SatoriObject** ppObject)
             {
                 SatoriObject* child = *ppObject;
                 // ignore common cases - child is null or in the same region
                 if (child &&
-                    (((size_t)ppObject ^ (size_t)child) >= Satori::REGION_SIZE_GRANULARITY))
+                    (((size_t)ppObject ^ (size_t)child) >= Satori::REGION_SIZE_GRANULARITY) &&
+                    child->IsRelocated())
                 {
-                    SatoriObject* newLocation;
-                    if (child->IsRelocatedTo(&newLocation))
-                    {
-                        *ppObject = newLocation;
-                    }
+                    updateQueue.Push(ppObject, child);
                 }
             },
             size
@@ -2759,14 +2835,17 @@ void SatoriRegion::UpdatePointers()
 {
     _ASSERTE(!HasMarksSet());
 
+    SatoriRelocatedRefQueue<8> updateQueue;
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     SatoriObject* o = FirstObject();
     do
     {
         size_t size = o->Size();
-        UpdatePointersInObject(o, size);
+        UpdatePointersInObject(o, size, updateQueue);
         o = (SatoriObject*)(o->Start() + size);
     } while (o->Start() < objLimit);
+
+    updateQueue.Flush();
 }
 
 void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)

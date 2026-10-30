@@ -59,12 +59,17 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
     m_heap = heap;
 
+    int processorCount = (int)GCToOSInterface::GetTotalProcessorCount();
     for (int i = 0; i < Satori::ALLOCATOR_BUCKET_COUNT; i++)
     {
-        m_queues[i] = SatoriRegionQueue::AllocAligned(QueueKind::Allocator);
+        // Bucket 0 (regular 2MB regions) carries nearly all allocator traffic.
+        // Bucket 1 (4-6MB) sees moderate traffic; larger buckets are rarely accessed.
+        size_t shardCount = (i == 0) ? SatoriShardedRegionQueue::ShardCountForProcessors(4) :
+                            (i == 1) ? SatoriShardedRegionQueue::ShardCountForProcessors(16) : 1;
+        m_queues[i] = SatoriShardedRegionQueue::AllocAligned(QueueKind::Allocator, shardCount);
     }
 
-    m_workChunks = SatoriWorkList::AllocAligned();
+    m_workChunks = SatoriShardedWorkList::AllocAlignedForProcessors(4);
 
     m_immortalRegion = nullptr;
     m_immortalAllocLock.Initialize();
@@ -79,6 +84,23 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     m_regularAllocLock.Initialize();
 
     m_singePageAdders = 0;
+
+    // As if the event was on before. If it is on from the start, there is nothing to catch up.
+    // If it is off, the first check will notice that.
+    m_allocationTickWasEnabled = true;
+
+    int counterCount = (processorCount + Satori::ALLOCATED_BYTES_COUNTER_PROCESSORS - 1) / Satori::ALLOCATED_BYTES_COUNTER_PROCESSORS;
+    m_smallAllocatedBytesCounterCount = max(1, min(counterCount, Satori::MAX_ALLOCATED_BYTES_COUNTERS));
+
+    for (int i = 0; i < Satori::MAX_ALLOCATED_BYTES_COUNTERS; i++)
+    {
+        m_smallAllocatedBytes[i] = {};
+    }
+
+    m_largeAllocatedBytes = {};
+    m_pinnedAllocatedBytes = {};
+    m_deadThreadsAllocatedBytes = 0;
+    m_lastPreciseAllocatedBytes = 0;
 }
 
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
@@ -177,7 +199,12 @@ tryAgain:
                 region = putBack->TrySplit(regionSize);
                 AddRegion(putBack);
                 Interlocked::Decrement(&m_singePageAdders);
-                return region;
+                if (region)
+                {
+                    return region;
+                }
+
+                goto allocationFailed;
             }
 
             // Someone added a page, but not us. There could be more regions.
@@ -209,8 +236,26 @@ tryAgain:
                 }
             }
 
-            return region;
+            if (region)
+            {
+                return region;
+            }
         }
+    }
+
+allocationFailed:
+    // Prefer a region that can be split without another commit attempt.
+    bucket = SizeToBucket(regionSize);
+    if (bucket != 0)
+    {
+        putBack = nullptr;
+        region = m_queues[bucket]->TryRemoveWithSize(regionSize, putBack, SIZE_MAX, /*preferCommitted*/ true);
+        if (putBack)
+        {
+            AddRegion(putBack);
+        }
+
+        return region;
     }
 
     // most likely OOM
@@ -232,41 +277,297 @@ void SatoriAllocator::ReturnRegion(SatoriRegion* region)
     m_queues[SizeToBucket(region->Size())]->Push(region);
 }
 
-void SatoriAllocator::AllocationTickIncrement(AllocationTickKind allocationTickKind, size_t totalAdded, SatoriObject* obj, size_t objSize)
+// Allocated bytes accounting.
+//
+// Threads count their allocations in their allocation contexts and publish the counts to the shared
+// counters in batches, once per PACE_BUDGET or so - the same granularity as pacing.
+// That happens after allocations that are not satisfied from the allocation context, and when a thread
+// terminates. Thus the shared counters are kept current without relying on GCs, and the cost of
+// updating them is amortized over many allocations.
+//
+// Each kind of allocations (small, large, pinned) is published on its own, by allocations of that kind.
+// Allocation ticks are fired when publishing and must report an object of the published kind. If one kind
+// published for another, a kind that is always published along with another one would never tick.
+//
+// The approximate total is the sum of the shared counters, or the last precise total, whichever is greater.
+// It only grows, but can lag behind live allocations by up to PACE_BUDGET or so per thread and kind.
+// NB: the precise total does not use the shared counters. With EE suspended, it sums up the counts in allocation
+//     contexts of live threads and adds what terminated threads have allocated. (see GetTotalAllocatedBytesPrecise)
+//
+// Allocation tick events are driven by the same counters. (see MaybeFireAllocationTick)
+
+// What the current thread has allocated, but not yet published.
+thread_local
+struct UnpublishedAllocatedBytes
 {
-    size_t& tickAmout = allocationTickKind == AllocationTickKind::Small ?
-        m_smallAllocTickAmount :
-        allocationTickKind == AllocationTickKind::Large ?
-            m_largeAllocTickAmount :
-            m_pinnedAllocTickAmount;
+    // Small objects are counted in the allocation context. This is how much of that is already published.
+    int64_t smallPublished;
 
-    // Signed, so that the comparison below is signed. The amount can be negative if space claimed before
-    // the event was enabled is returned after, and that must not look like a large amount.
-    const int64_t etw_allocation_tick = 100 * 1024;
-    size_t current = Interlocked::ExchangeAdd64(&tickAmout, totalAdded) + totalAdded;
+    // Large and pinned objects that are not published yet.
+    // NB: the allocation context counts them together in alloc_bytes_uoh, but we want them apart.
+    size_t large;
+    size_t pinned;
+} t_unpublishedAllocatedBytes;
 
-    if ((int64_t)current > etw_allocation_tick &&
-        Interlocked::CompareExchange(&tickAmout, (size_t)0, current) == current)
+// Bytes taken by small objects allocated in the context.
+// NB: alloc_bytes also includes the unused remainder of the current allocation buffer, which is not counted here.
+static int64_t SmallAllocatedBytes(SatoriAllocationContext* context)
+{
+    return context->alloc_bytes - (context->alloc_limit - context->alloc_ptr);
+}
+
+// All bytes allocated in the context, precisely. (same as GC.GetAllocatedBytesForCurrentThread)
+static int64_t AllocatedBytes(SatoriAllocationContext* context)
+{
+    return SmallAllocatedBytes(context) + context->alloc_bytes_uoh;
+}
+
+// The counter for the small objects allocated on the current processor.
+int SatoriAllocator::SmallAllocatedBytesCounterIndex()
+{
+    int counterCount = m_smallAllocatedBytesCounterCount;
+    if (counterCount == 1)
     {
-        FIRE_EVENT(GCAllocationTick_V4,
-            current,
-            /*kind*/ (uint32_t)allocationTickKind,
-            /*heap_number*/ 0,
-            (void*)obj,
-            objSize);
+        return 0;
+    }
+
+    uint32_t processor;
+    if (GCToOSInterface::CanGetCurrentProcessorNumber())
+    {
+        processor = GCToOSInterface::GetCurrentProcessorNumber();
+    }
+    else
+    {
+        // no processor number, just spread the threads
+        size_t thread = SatoriUtil::GetCurrentThreadTag();
+        processor = (uint32_t)((thread * 11400714819323198485llu) >> 32);
+    }
+
+    return (int)((processor / Satori::ALLOCATED_BYTES_COUNTER_PROCESSORS) % (uint32_t)counterCount);
+}
+
+size_t SatoriAllocator::GetTotalAllocatedBytes()
+{
+    size_t total =
+        VolatileLoadWithoutBarrier(&m_largeAllocatedBytes.bytes) +
+        VolatileLoadWithoutBarrier(&m_pinnedAllocatedBytes.bytes);
+
+    for (int i = 0; i < m_smallAllocatedBytesCounterCount; i++)
+    {
+        total += VolatileLoadWithoutBarrier(&m_smallAllocatedBytes[i].bytes);
+    }
+
+    return max(total, VolatileLoadWithoutBarrier(&m_lastPreciseAllocatedBytes));
+}
+
+static void AddAllocatedBytesFn(gc_alloc_context* gcContext, void* param)
+{
+    *(size_t*)param += (size_t)AllocatedBytes((SatoriAllocationContext*)gcContext);
+}
+
+// The precise total. EE must be suspended, so that the counts in allocation contexts do not change.
+// What terminated threads have allocated is not in any context. (see PublishAllocatedBytesOnThreadExit)
+size_t SatoriAllocator::GetTotalAllocatedBytesPrecise()
+{
+    size_t total = m_deadThreadsAllocatedBytes;
+    GCToEEInterface::GcEnumAllocContexts(AddAllocatedBytesFn, &total);
+    VolatileStore(&m_lastPreciseAllocatedBytes, total);
+    return total;
+}
+
+// Moves the last tick of the counter up to ALLOCATION_TICK_BYTES behind the counter, if it is further behind.
+// Ticks may happen concurrently, so this only moves the last tick forward.
+/* static */
+void SatoriAllocator::CatchUpAllocationTick(AllocatedBytesCounter* counter)
+{
+    size_t bytes = VolatileLoadWithoutBarrier(&counter->bytes);
+    size_t target = bytes > Satori::ALLOCATION_TICK_BYTES ? bytes - Satori::ALLOCATION_TICK_BYTES : 0;
+    size_t atLastTick = VolatileLoadWithoutBarrier(&counter->bytesAtLastTick);
+    while ((ptrdiff_t)(target - atLastTick) > 0)
+    {
+        size_t observed = Interlocked::CompareExchange(&counter->bytesAtLastTick, target, atLastTick);
+        if (observed == atLastTick)
+        {
+            break;
+        }
+
+        atLastTick = observed;
     }
 }
 
-void SatoriAllocator::AllocationTickDecrement(size_t totalUnused)
+// Tells if the allocation tick event is enabled.
+// While the event is off, the last ticks of the counters are not maintained, so when we see that it was
+// turned on, we bring them up to date - as if the event was on for the last ALLOCATION_TICK_BYTES or so.
+// NB: this must be called after publishing. Then, if a thread sees the event on, what it has just published
+//     is either from the time the event was on, or the last ticks are caught up with it.
+//     Checking before publishing could report bytes allocated while the event was off.
+bool SatoriAllocator::IsAllocationTickEnabled()
 {
-    // Only need to correct the amount when the event is enabled, since only then it is incremented.
-    // Otherwise this would be a pointless interlocked operation on a location shared by all allocating threads.
-    if (!EVENT_ENABLED(GCAllocationTick_V4))
+#ifdef FEATURE_EVENT_TRACE
+    bool isEnabled = EVENT_ENABLED(GCAllocationTick_V4);
+    if (isEnabled != m_allocationTickWasEnabled)
+    {
+        if (isEnabled)
+        {
+            for (int i = 0; i < m_smallAllocatedBytesCounterCount; i++)
+            {
+                CatchUpAllocationTick(&m_smallAllocatedBytes[i]);
+            }
+
+            CatchUpAllocationTick(&m_largeAllocatedBytes);
+            CatchUpAllocationTick(&m_pinnedAllocatedBytes);
+        }
+
+        m_allocationTickWasEnabled = isEnabled;
+    }
+
+    return isEnabled;
+#else
+    return false;
+#endif
+}
+
+// Fires an allocation tick event if ALLOCATION_TICK_BYTES or more were published to the counter since the last tick.
+// The event reports the bytes published to the counter since the last tick and the object that was just allocated.
+// "total" is the value of the counter right after the current thread published to it. That includes the object.
+/* static */
+void SatoriAllocator::MaybeFireAllocationTick(AllocatedBytesCounter* counter, size_t total, AllocationTickKind kind, SatoriObject* obj, size_t size)
+{
+    size_t atLastTick = VolatileLoadWithoutBarrier(&counter->bytesAtLastTick);
+
+    // Other threads may publish and tick after we have published, then atLastTick is ahead of our total and
+    // what we have published is already reported. The comparison is signed, so that such case does not look
+    // like a large amount.
+    ptrdiff_t sinceLastTick = (ptrdiff_t)(total - atLastTick);
+    if (sinceLastTick <= 0)
     {
         return;
     }
 
-    Interlocked::ExchangeAdd64(&m_smallAllocTickAmount, (size_t)(-(ptrdiff_t)totalUnused));
+    // What we have just published includes the object, so the bytes since the last tick are normally at least
+    // the size of the object. They can be less only if catching up after the event was turned on moved the last
+    // tick past some of our bytes. (see IsAllocationTickEnabled) That should not discard the object that is
+    // being reported, thus we report at least its size. Nothing is reported twice - catching up reports nothing.
+    size_t amount = max((size_t)sinceLastTick, size);
+    if (amount >= Satori::ALLOCATION_TICK_BYTES &&
+        Interlocked::CompareExchange(&counter->bytesAtLastTick, total, atLastTick) == atLastTick)
+    {
+        FIRE_EVENT(GCAllocationTick_V4,
+            amount,
+            /*kind*/ (uint32_t)kind,
+            /*heap_number*/ 0,
+            (void*)obj,
+            size);
+    }
+}
+
+// What the current thread has allocated of the given kind, but has not published yet.
+static size_t UnpublishedBytes(SatoriAllocationContext* context, AllocationTickKind kind)
+{
+    UnpublishedAllocatedBytes& unpublished = t_unpublishedAllocatedBytes;
+    switch (kind)
+    {
+    case AllocationTickKind::Small:
+    {
+        int64_t smallAllocated = SmallAllocatedBytes(context);
+        _ASSERTE(smallAllocated >= unpublished.smallPublished);
+        return (size_t)(smallAllocated - unpublished.smallPublished);
+    }
+    case AllocationTickKind::Large:
+        return unpublished.large;
+    default:
+        return unpublished.pinned;
+    }
+}
+
+// Publishes what the current thread has allocated of the given kind since the last time.
+// "obj" is the object of that kind that was just allocated. It is reported if an allocation tick is due.
+// If "obj" is null, no ticks are fired.
+void SatoriAllocator::PublishAllocatedBytes(SatoriAllocationContext* context, AllocationTickKind kind, SatoriObject* obj, size_t size)
+{
+    size_t bytes = UnpublishedBytes(context, kind);
+    if (bytes == 0)
+    {
+        return;
+    }
+
+    UnpublishedAllocatedBytes& unpublished = t_unpublishedAllocatedBytes;
+    AllocatedBytesCounter* counter;
+    switch (kind)
+    {
+    case AllocationTickKind::Small:
+        unpublished.smallPublished += (int64_t)bytes;
+        counter = &m_smallAllocatedBytes[SmallAllocatedBytesCounterIndex()];
+        break;
+    case AllocationTickKind::Large:
+        unpublished.large = 0;
+        counter = &m_largeAllocatedBytes;
+        break;
+    default:
+        unpublished.pinned = 0;
+        counter = &m_pinnedAllocatedBytes;
+        break;
+    }
+
+    size_t total = Interlocked::ExchangeAdd64(&counter->bytes, bytes) + bytes;
+
+    // NB: the event is checked after publishing. (see IsAllocationTickEnabled)
+    if (IsAllocationTickEnabled() && obj != nullptr)
+    {
+        MaybeFireAllocationTick(counter, total, kind, obj, size);
+    }
+}
+
+// Publishes what the current thread has allocated of the given kind, if enough has accumulated since the last time.
+// Called after allocations that are not satisfied from the allocation context.
+// "obj" is the object of the given kind that was just allocated. It is reported if an allocation tick is due.
+void SatoriAllocator::PublishAllocatedBytesIfNeeded(SatoriAllocationContext* context, AllocationTickKind kind, SatoriObject* obj, size_t size)
+{
+    // same granularity as pacing.
+    if (UnpublishedBytes(context, kind) >= Satori::PACE_BUDGET)
+    {
+        PublishAllocatedBytes(context, kind, obj, size);
+    }
+}
+
+// Accounts for a large or pinned object that the current thread has just allocated.
+void SatoriAllocator::OnLargeOrPinnedAllocated(SatoriAllocationContext* context, uint32_t flags, SatoriObject* obj, size_t size)
+{
+    context->alloc_bytes_uoh += size;
+
+    AllocationTickKind kind;
+    // immortal objects do not move either, we count them as pinned.
+    if (flags & (GC_ALLOC_PINNED_OBJECT_HEAP | GC_ALLOC_IMMORTAL))
+    {
+        kind = AllocationTickKind::Pinned;
+        t_unpublishedAllocatedBytes.pinned += size;
+    }
+    else
+    {
+        kind = AllocationTickKind::Large;
+        t_unpublishedAllocatedBytes.large += size;
+    }
+
+    PublishAllocatedBytesIfNeeded(context, kind, obj, size);
+}
+
+// The current thread is terminating and its allocation context is about to be cleared.
+// Publishes all that is not published yet, moves the precise count from the context to the total
+// for terminated threads, and resets the accounting to match the cleared context.
+// NB: this runs on the terminating thread itself, after its allocation context is deactivated.
+void SatoriAllocator::PublishAllocatedBytesOnThreadExit(SatoriAllocationContext* context)
+{
+    PublishAllocatedBytes(context, AllocationTickKind::Small, /*obj*/ nullptr, /*size*/ 0);
+    PublishAllocatedBytes(context, AllocationTickKind::Large, /*obj*/ nullptr, /*size*/ 0);
+    PublishAllocatedBytes(context, AllocationTickKind::Pinned, /*obj*/ nullptr, /*size*/ 0);
+    t_unpublishedAllocatedBytes = {};
+
+    // The runtime calls this when EE cannot be suspended (in cooperative mode or holding the thread store lock),
+    // so GetTotalAllocatedBytesPrecise sees the count either in the context or in the total, never in both.
+    // Other threads may be terminating concurrently though.
+    Interlocked::ExchangeAdd64(&m_deadThreadsAllocatedBytes, (size_t)AllocatedBytes(context));
+    context->alloc_bytes = 0;
+    context->alloc_bytes_uoh = 0;
 }
 
 Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags)
@@ -286,10 +587,13 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
             context->alloc_ptr += size;
             return result;
         }
-        else
+
+        if (size < Satori::LARGE_OBJECT_THRESHOLD)
         {
             return AllocRegular(context, size, flags);
         }
+
+        flags |= GC_ALLOC_LARGE_OBJECT_HEAP;
     }
 
     if (flags & GC_ALLOC_PINNED_OBJECT_HEAP)
@@ -429,10 +733,16 @@ tryAgain:
     SatoriRegion* region = context->RegularRegion();
     _ASSERTE(region == nullptr || region->IsAttachedToAllocatingOwner());
 
-    if (region != nullptr && region->ClearStaleEscapeMarks())
+    if (region != nullptr)
     {
-        // the barrier stopped tracking because of too many escapes.
-        SatoriRegion::OnEscapeTrackingEnded();
+        // if a GC took the region while it stayed attached, start a new accounting period.
+        region->RebaselineUsableIfStale(context->alloc_bytes);
+
+        if (region->ClearStaleEscapeMarks())
+        {
+            // the barrier stopped tracking because of too many escapes.
+            SatoriRegion::OnEscapeTrackingEnded();
+        }
     }
 
     while (true)
@@ -461,11 +771,24 @@ tryAgain:
                         size_t quantum = min(SatoriUtil::MinZeroInitSize(), SatoriUtil::RoundDownPwr2(allocRemaining));
                         moreSpace = max(moreSpace, quantum);
                     }
+                    else
+                    {
+                        // The tail of the span is smaller than that. Taking just what is needed would send every
+                        // allocation in the tail here again, so take all of it, as long as the object would fit in it
+                        // by itself. When it would not (the object hangs over from the current allocation context),
+                        // what is left after it is unlikely to fit the next object of a similar size, and zeroing it
+                        // would likely be wasted. (it is also too small for a free list)
+                        if (size <= allocRemaining)
+                        {
+                            moreSpace = allocRemaining;
+                        }
+                    }
 
                     // What is already known to be zeroed costs nothing to take.
                     // In fresh memory that can be the rest of the region, so take at most PACE_BUDGET / 2 (64 KB):
                     // the fast-path array allocator assumes the allocation context never exceeds LARGE_OBJECT_SIZE,
                     // and allocation pacing runs when we come here.
+                    static_assert(Satori::PACE_BUDGET / 2 + Satori::INDEX_GRANULARITY < LARGE_OBJECT_SIZE);
                     size_t zeroedRemaining = min(region->GetAllocZeroedRemaining(), (size_t)(Satori::PACE_BUDGET / 2));
                     moreSpace = max(moreSpace, min(zeroedRemaining, allocRemaining));
 
@@ -493,14 +816,11 @@ tryAgain:
                     }
 
                     context->alloc_ptr += size;
+                    _ASSERTE((size_t)(context->alloc_limit - context->alloc_ptr) < LARGE_OBJECT_SIZE);
                     result->CleanSyncBlock();
                     region->SetIndicesForObject(result, result->Start() + size);
 
-                    if (EVENT_ENABLED(GCAllocationTick_V4))
-                    {
-                        AllocationTickIncrement(AllocationTickKind::Small, moreSpace, result, size);
-                    }
-
+                    PublishAllocatedBytesIfNeeded(context, AllocationTickKind::Small, result, size);
                     return result;
                 }
                 else
@@ -513,7 +833,6 @@ tryAgain:
             // unclaim unused.
             size_t unused = context->alloc_limit - context->alloc_ptr;
             context->alloc_bytes -= unused;
-            AllocationTickDecrement(unused);
 
             bool collectAtTlgcLimit = region->ShouldCollectAtTlgcLimit(context->alloc_bytes);
 
@@ -556,13 +875,35 @@ tryAgain:
                         continue;
                     }
                 }
+                else
+                {
+                    SatoriRegion::OnEscapeTrackingEnded(/* outOfSpace */ true);
+                    region->StopEscapeTracking();
+                }
+            }
+
+            // A pointer-free medium object that does not fit, while the region still has a lot of space in smaller
+            // holes. Retiring the region would waste that space (and charge for it), so serve this object from the
+            // large allocator instead and keep the region for the smaller allocations.
+            // Pointer-free, so the object does not care about the region and its escape tracking. Finalizable
+            // objects are registered with their region, so they stay out of this.
+            // Only 8 KB or more: the large allocator serves each object individually, without an allocation context,
+            // which is reasonable for objects that are a sizable fraction of LARGE_OBJECT_THRESHOLD, but too costly
+            // per byte for smaller ones. Those retire the region as before and continue in another one.
+            if (size >= 8 * 1024 &&
+                !(flags & (GC_ALLOC_CONTAINS_REF | GC_ALLOC_FINALIZE)) &&
+                region->UsableCapacity() > Satori::REGION_SIZE_GRANULARITY / 32)
+            {
+                // the region stays attached, but not allocating.
+                context->alloc_ptr = context->alloc_limit = nullptr;
+                return AllocLarge(context, size, flags | GC_ALLOC_LARGE_OBJECT_HEAP);
             }
 
             context->alloc_ptr = context->alloc_limit = nullptr;
             if (region->IsEscapeTracking())
             {
                 // the region ran out of space while tracking.
-                SatoriRegion::OnEscapeTrackingEnded();
+                SatoriRegion::OnEscapeTrackingEnded(/* outOfSpace */ true);
             }
 
             region->DetachFromAlocatingOwnerRelease();
@@ -578,7 +919,7 @@ tryAgain:
         // we only use it to look at its neighbor in the page.
         _ASSERTE(region == nullptr);
         region = prevRegion;
-        TryGetRegularRegion(region);
+        TryGetRegularRegion(region, size);
 
         if (region == nullptr)
         {
@@ -596,13 +937,10 @@ tryAgain:
         region->AttachToAllocatingOwner(&context->RegularRegion());
         if (SatoriUtil::IsGen0Enabled())
         {
-            // No backoff in low latency mode. There backoff was measured to trade allocation throughput
-            // for longer GC pauses (likely more work for the concurrent GC in untracked regions).
-            bool allowBackoff = !m_heap->Recycler()->IsLowLatencyMode();
             switch (region->ReusableFor())
             {
             case SatoriRegion::ReuseLevel::Gen0:
-                if (!SatoriRegion::ShouldStartEscapeTracking(allowBackoff))
+                if (!SatoriRegion::ShouldStartEscapeTracking())
                 {
                     region->SetGenerationRelease(1);
                     break;
@@ -611,7 +949,7 @@ tryAgain:
                 region->EscapeAll();
                 goto fallthrough;
             case SatoriRegion::ReuseLevel::None:
-                if (!SatoriRegion::ShouldStartEscapeTracking(allowBackoff))
+                if (!SatoriRegion::ShouldStartEscapeTracking())
                 {
                     region->SetGenerationRelease(1);
                     break;
@@ -722,11 +1060,7 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
                     ZeroInitDirtyBody(result->Start(), result->Start() + moreSpace, dirtyStart, dirtyEnd);
                 }
 
-                if (EVENT_ENABLED(GCAllocationTick_V4))
-                {
-                    AllocationTickIncrement(AllocationTickKind::Small, moreSpace, result, size);
-                }
-
+                PublishAllocatedBytesIfNeeded(context, AllocationTickKind::Small, result, size);
                 return result;
             }
 
@@ -734,6 +1068,9 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
             {
                 region->StopAllocating();
             }
+
+            // if a GC took the region while it stayed attached, start a new accounting period.
+            region->RebaselineUsableIfStale(0);
 
             // try get from the free list
             size_t desiredFreeSpace = size + Satori::MIN_FREE_SIZE;
@@ -747,7 +1084,7 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
             m_heap->Recycler()->AddEphemeralRegion(region);
         }
 
-        TryGetRegularRegion(region);
+        TryGetRegularRegion(region, size);
         if (region == nullptr)
         {
             //OOM
@@ -763,8 +1100,13 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
     }
 }
 
-void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region)
+// Gets a region for a regular allocation of the given size. Prefers reusable regions, but a reusable region
+// that cannot serve the request from its free lists would just be retired on the spot while charging
+// the budget for its unused space. Such regions are skipped and left to be used for smaller requests.
+void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region, size_t size)
 {
+    size_t minFree = size + Satori::MIN_FREE_SIZE;
+
     // opportunistically try get the next region, if available
     SatoriRegion* next = nullptr;
     SatoriQueue<SatoriRegion>* nextContainingQueue = nullptr;
@@ -777,18 +1119,17 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region)
             nextContainingQueue = next->ContainingQueue();
             if (nextContainingQueue &&
                 nextContainingQueue->Kind() == QueueKind::RecyclerReusable &&
+                next->CanFitAllocation(minFree) &&
                 nextContainingQueue->TryRemove(next))
             {
                 region = next;
-                size_t occupancy = region->Occupancy();
-                _ASSERTE(occupancy < Satori::REGION_SIZE_GRANULARITY);
-                region->OccupancyAtReuse() = (int32_t)occupancy;
+                _ASSERTE(region->Occupancy() < Satori::REGION_SIZE_GRANULARITY);
                 return;
             }
         }
     }
 
-    region = m_heap->Recycler()->TryGetReusable();
+    region = m_heap->Recycler()->TryGetReusable(minFree);
 
     if (region == nullptr)
     {
@@ -865,15 +1206,10 @@ tryAgain:
                 }
 
                 // success
-                context->alloc_bytes_uoh += size;
                 result->CleanSyncBlock();
                 region->SetIndicesForObject(result, result->Start() + size);
 
-                if (EVENT_ENABLED(GCAllocationTick_V4))
-                {
-                    AllocationTickIncrement(AllocationTickKind::Large, size, result, size);
-                }
-
+                OnLargeOrPinnedAllocated(context, flags, result, size);
                 return result;
             }
         }
@@ -885,6 +1221,9 @@ tryAgain:
             {
                 region->StopAllocating();
             }
+
+            // if a GC took the region while it stayed attached, start a new accounting period.
+            region->RebaselineUsableIfStale(0);
 
             // try get from the free list
             if (region->StartAllocating(size))
@@ -968,7 +1307,6 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
                 // done with region modifications.
                 m_largeAllocLock.Leave();
 
-                context->alloc_bytes_uoh += size;
                 result->CleanSyncBlockAndSetUnfinished();
                 region->SetIndicesForObject(result, result->Start() + size);
                 if (!(flags & GC_ALLOC_ZEROING_OPTIONAL))
@@ -976,11 +1314,7 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
                     ZeroInitDirtyBody(result->Start(), result->Start() + size, dirtyStart, dirtyEnd);
                 }
 
-                if (EVENT_ENABLED(GCAllocationTick_V4))
-                {
-                    AllocationTickIncrement(AllocationTickKind::Large, size, result, size);
-                }
-
+                OnLargeOrPinnedAllocated(context, flags, result, size);
                 return result;
             }
 
@@ -988,6 +1322,9 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
             {
                 region->StopAllocating();
             }
+
+            // if a GC took the region while it stayed attached, start a new accounting period.
+            region->RebaselineUsableIfStale(0);
 
             // try get from the free list
             if (region->StartAllocating(size))
@@ -1055,7 +1392,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
         return nullptr;
     }
 
-    result->CleanSyncBlock();
+    result->CleanSyncBlockAndSetUnfinished();
     hugeRegion->SetIndicesForObject(result, hugeRegion->Start() + Satori::REGION_SIZE_GRANULARITY);
 
     // huge regions are not attached to contexts and in gen0+ would appear parseable,
@@ -1068,18 +1405,14 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
         hugeRegion->SetHasFinalizables();
         if (!hugeRegion->RegisterForFinalization(result))
         {
+            result->CleanSyncBlock();
             hugeRegion->MakeBlank();
             ReturnRegion(hugeRegion);
             return nullptr;
         }
     }
 
-    context->alloc_bytes_uoh += size;
-    if (EVENT_ENABLED(GCAllocationTick_V4))
-    {
-        AllocationTickIncrement(AllocationTickKind::Large, size, result, size);
-    }
-
+    OnLargeOrPinnedAllocated(context, flags, result, size);
     return result;
 }
 
@@ -1138,7 +1471,6 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
                 // done with region modifications.
                 m_pinnedAllocLock.Leave();
 
-                context->alloc_bytes_uoh += size;
                 result->CleanSyncBlockAndSetUnfinished();
                 region->SetIndicesForObject(result, result->Start() + size);
                 if (!(flags & GC_ALLOC_ZEROING_OPTIONAL))
@@ -1146,11 +1478,7 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
                     ZeroInitDirtyBody(result->Start(), result->Start() + size, dirtyStart, dirtyEnd);
                 }
 
-                if (EVENT_ENABLED(GCAllocationTick_V4))
-                {
-                    AllocationTickIncrement(AllocationTickKind::Pinned, size, result, size);
-                }
-
+                OnLargeOrPinnedAllocated(context, flags, result, size);
                 return result;
             }
 
@@ -1158,6 +1486,9 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
             {
                 region->StopAllocating();
             }
+
+            // if a GC took the region while it stayed attached, start a new accounting period.
+            region->RebaselineUsableIfStale(0);
 
             // try get from the free list
             if (region->StartAllocating(size))
@@ -1220,13 +1551,8 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
                 SatoriObject* result = (SatoriObject*)region->Allocate(size, zeroInitialize);
                 if (result)
                 {
-                    context->alloc_bytes_uoh += size;
                     region->SetIndicesForObject(result, result->Start() + size);
-
-                    if (EVENT_ENABLED(GCAllocationTick_V4))
-                    {
-                        AllocationTickIncrement(AllocationTickKind::Pinned, size, result, size);
-                    }
+                    OnLargeOrPinnedAllocated(context, flags, result, size);
                 }
                 else
                 {
