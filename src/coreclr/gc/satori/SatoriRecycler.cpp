@@ -1789,6 +1789,9 @@ void SatoriRecycler::BlockingMark()
     //     for GC marking only cares about blocking/final marking phase.
     GCToEEInterface::BeforeGcScanRoots(m_condemnedGeneration, /* is_bgc */ false, /* is_concurrent */ false);
 
+    // helpers are likely asleep by now, and marking is a wide parallel piece
+    m_workerGate->WakeAll();
+
     MarkStrongReferences();
     ASSERT_NO_WORK();
     DependentHandlesScan();
