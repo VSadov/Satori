@@ -368,7 +368,8 @@ private:
             uint32_t m_sweepsSinceLastAllocation;
             // Bit N is set when free list N is not empty.
             uint16_t m_nonEmptyFreeLists;
-            // Number of thread-local collections performed in this region, drives the dyadic window schedule.
+            // Number of thread-local collections performed in this region since escape tracking started
+            // or a GC last swept it, drives the dyadic window schedule.
             uint16_t m_tlgcCount;
 
             // ===== 128  bytes boundary
