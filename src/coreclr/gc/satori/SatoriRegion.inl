@@ -917,6 +917,18 @@ inline void SatoriRegion::RebaselineUsableIfStale(size_t allocBytes)
         m_usableAtAttach = UsableCapacity();
         m_allocBytesAtAttach = allocBytes;
         m_usableBaselineStale = false;
+
+        if (IsEscapeTracking())
+        {
+            // The sweep has emptied the region, except for the survivors, which are escaped now.
+            // Thread-local GC starts over. Otherwise the allocation counted since the last collection
+            // would include everything allocated before the GC, and the first window check would collect
+            // the region that has just been emptied.
+            m_allocBytesAtCollect = allocBytes;
+            m_tlgcCount = 0;
+            m_escapedSizeAtCollect = (uint32_t)m_escapedSize;
+            m_unusableInPrefix = 0;
+        }
     }
 }
 
