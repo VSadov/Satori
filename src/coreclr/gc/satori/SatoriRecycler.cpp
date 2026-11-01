@@ -518,7 +518,13 @@ bool SatoriRecycler::ShouldDoConcurrent(int generation)
         return true;
     }
 
-    if (this->GetTotalOccupancy() < concMarkThreshold)
+    // A gen1 GC marks only the ephemeral generations, tenured data is not traversed.
+    // Thus a large tenured generation does not make concurrent marking of gen1 worthwhile.
+    size_t markingEstimate = generation == 2 ?
+        GetTotalOccupancy() :
+        m_occupancy[0] + m_occupancy[1];
+
+    if (markingEstimate < concMarkThreshold)
     {
         return false;
     }
