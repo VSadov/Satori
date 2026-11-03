@@ -83,7 +83,7 @@ public static class CriticalFinalizerOrdering
 
         for (int allocated = 0; allocated < AllocationLimit; allocated += AllocationSize)
         {
-            byte[] buffer = new byte[AllocationSize];
+            object?[] buffer = new object?[AllocationSize / IntPtr.Size];
             if (GC.GetGeneration(buffer) == 0)
             {
                 return;
@@ -101,8 +101,7 @@ public static class CriticalFinalizerOrdering
 
         for (int allocated = 0; allocated < AllocationLimit && Volatile.Read(ref s_finalizedCount) == 0; allocated += AllocationSize)
         {
-            byte[] buffer = new byte[AllocationSize];
-            buffer[0] = (byte)allocated;
+            object?[] buffer = new object?[AllocationSize / IntPtr.Size];
             GC.KeepAlive(buffer);
         }
     }

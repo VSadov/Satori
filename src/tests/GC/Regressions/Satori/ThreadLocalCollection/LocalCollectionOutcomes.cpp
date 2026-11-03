@@ -53,9 +53,11 @@ struct TestRegion
         return nextResult;
     }
 
-    static void OnEscapeTrackingEnded()
+    static void OnEscapeTrackingEnded(bool outOfSpace)
     {
         Require(current->tracking, "Tracking must still be active when history is updated.");
+        Require(outOfSpace == (current->expectedTrigger == SatoriLocalCollectionTrigger::ExhaustedSpan),
+            "Tracking history must preserve the main out-of-space distinction.");
         current->Record('E');
     }
 
@@ -97,7 +99,7 @@ static void CheckAttempt(SatoriLocalCollectionOutcome outcome, SatoriLocalCollec
     TestRegion region(outcome, trigger, succeeds, index);
     bool allocated = SatoriCollectAndRetry(&region, 1048576, 81920, trigger);
     bool retryExpected = trigger == SatoriLocalCollectionTrigger::DyadicLimit || outcome == SatoriLocalCollectionOutcome::Completed;
-    bool trackingEnded = trigger == SatoriLocalCollectionTrigger::DyadicLimit && outcome != SatoriLocalCollectionOutcome::Completed;
+    bool trackingEnded = outcome != SatoriLocalCollectionOutcome::Completed;
     Require(allocated == (retryExpected && succeeds), "Allocation return value changed.");
     Require(region.collections == 1 && region.reports == 1, "Expected one companion record per call.");
     Require(region.allocations == (retryExpected ? 1 : 0), "Diagnostics must not add an allocation retry.");
@@ -105,7 +107,7 @@ static void CheckAttempt(SatoriLocalCollectionOutcome outcome, SatoriLocalCollec
     SatoriLocalCollectionRetry expectedRetry = !retryExpected ? SatoriLocalCollectionRetry::NotAttempted :
         succeeds ? SatoriLocalCollectionRetry::Succeeded : SatoriLocalCollectionRetry::Failed;
     Require(region.reportedRetry == expectedRetry, "Wrong immediate same-region retry state.");
-    Require(strcmp(region.operations, trackingEnded ? "CESAR" : retryExpected ? "CAR" : "CR") == 0,
+    Require(strcmp(region.operations, trackingEnded ? (retryExpected ? "CESAR" : "CESR") : "CAR") == 0,
         "Report must follow the actual retry and preserve tracking-stop order.");
 }
 
@@ -124,7 +126,7 @@ static void CheckTwoCalls(SatoriLocalCollectionOutcome secondOutcome)
     bool secondCompleted = secondOutcome == SatoriLocalCollectionOutcome::Completed;
     Require(allocated == secondCompleted, "Second call changed the exhausted-span allocation decision.");
     Require(region.collections == 2 && region.reports == 2, "Two calls require two independent reports.");
-    Require(strcmp(region.operations, secondCompleted ? "CARCAR" : "CARCR") == 0, "Incorrect two-call sequence.");
+    Require(strcmp(region.operations, secondCompleted ? "CARCAR" : "CARCESR") == 0, "Incorrect two-call sequence.");
 }
 
 int main()

@@ -33,7 +33,7 @@ public static class CollectibleLoaderAllocatorCard
         GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
 
         Array?[] arrays = CreateCollectibleArrays(512 * 1024, 1, separateAllocationRegion: false, out WeakReference loaderAllocatorReference);
-        byte[][] survivors = CreateFragmentedRegions();
+        object?[][] survivors = CreateFragmentedRegions();
         int gen2Collections = GC.CollectionCount(2);
 
         GC.Collect(1, GCCollectionMode.Forced, blocking: true, compacting: true);
@@ -70,7 +70,7 @@ public static class CollectibleLoaderAllocatorCard
 
         // Keep the allocator in a sparse region, then fill separate regions with reference-free collectible arrays.
         Array?[] arrays = CreateCollectibleArrays(2048, 192, separateAllocationRegion: true, out WeakReference loaderAllocatorReference);
-        byte[][] sparseRoots = CreateFragmentedRegions();
+        object?[][] sparseRoots = CreateFragmentedRegions();
         int gen2Collections = GC.CollectionCount(2);
         bool promoted = false;
 
@@ -182,16 +182,16 @@ public static class CollectibleLoaderAllocatorCard
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static byte[][] CreateFragmentedRegions()
+    private static object?[][] CreateFragmentedRegions()
     {
         const int AllocationSize = 8 * 1024;
         const int AllocationCount = 1024;
         const int SurvivorInterval = 4;
 
-        var survivors = new byte[AllocationCount / SurvivorInterval][];
+        var survivors = new object?[AllocationCount / SurvivorInterval][];
         for (int i = 0; i < AllocationCount; i++)
         {
-            byte[] buffer = new byte[AllocationSize];
+            object?[] buffer = new object?[AllocationSize / IntPtr.Size];
             if (i % SurvivorInterval == 0)
             {
                 survivors[i / SurvivorInterval] = buffer;
@@ -211,7 +211,7 @@ public static class CollectibleLoaderAllocatorCard
 
         for (int allocated = 0; allocated < AllocationTotal; allocated += AllocationSize)
         {
-            GC.KeepAlive(new byte[AllocationSize]);
+            GC.KeepAlive(new object?[AllocationSize / IntPtr.Size]);
         }
     }
 }

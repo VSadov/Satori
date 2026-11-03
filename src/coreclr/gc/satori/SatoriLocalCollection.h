@@ -53,9 +53,9 @@ FORCEINLINE bool SatoriCollectAndRetry(TRegion* region, size_t allocBytes, size_
 {
     bool atTlgcLimit = trigger == SatoriLocalCollectionTrigger::DyadicLimit;
     SatoriLocalCollectionResult result = region->ThreadLocalCollect(allocBytes, atTlgcLimit);
-    if (atTlgcLimit && !result.Collected())
+    if (!result.Collected())
     {
-        TRegion::OnEscapeTrackingEnded();
+        TRegion::OnEscapeTrackingEnded(/* outOfSpace */ !atTlgcLimit);
         region->StopEscapeTracking();
     }
 

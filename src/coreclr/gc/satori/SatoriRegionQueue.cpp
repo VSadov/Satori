@@ -304,6 +304,68 @@ SatoriRegion* SatoriRegionQueue::TryDequeueIfHasFreeSpaceInTopBucket()
     return result;
 }
 
+SatoriRegion* SatoriRegionQueue::TryPopFitting(size_t minFree, size_t maxScan)
+{
+    if (IsEmpty())
+    {
+        return nullptr;
+    }
+
+    m_lock.Enter();
+
+    SatoriRegion* result = m_head;
+    for (size_t i = 0; result != nullptr; i++)
+    {
+        if (i == maxScan)
+        {
+            result = nullptr;
+            break;
+        }
+
+        if (result->CanFitAllocation(minFree))
+        {
+            break;
+        }
+
+        result = result->m_next;
+    }
+
+    if (result == nullptr)
+    {
+        m_lock.Leave();
+        return nullptr;
+    }
+
+    SatoriRegion* prev = result->m_prev;
+    SatoriRegion* next = result->m_next;
+    if (prev != nullptr)
+    {
+        prev->m_next = next;
+    }
+    else
+    {
+        m_head = next;
+    }
+
+    if (next != nullptr)
+    {
+        next->m_prev = prev;
+    }
+    else
+    {
+        m_tail = prev;
+    }
+
+    m_count--;
+    result->m_containingQueue = nullptr;
+
+    m_lock.Leave();
+
+    result->m_prev = nullptr;
+    result->m_next = nullptr;
+    return result;
+}
+
 SatoriRegionQueue* SatoriRegionQueue::AllocAligned(QueueKind kind)
 {
     const size_t align = alignof(SatoriRegionQueue);
