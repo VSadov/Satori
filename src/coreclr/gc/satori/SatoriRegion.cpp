@@ -1705,9 +1705,14 @@ static bool ThreadLocalCollectionEventEnabled()
 
 SatoriLocalCollectionResult SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
 {
+    SatoriLocalCollectionResult result{ SatoriLocalCollectionOutcome::EscapedLimit, 0 };
+    result.allocationBytes = allocBytes;
+    result.allocationBytesBaseline = m_allocBytesAtCollect;
+    result.progressStatus = SatoriProgressStatus(allocBytes, m_allocBytesAtCollect, m_localCollectionProgressStatus);
+    result.usableBefore = result.usableAfter = UsableCapacity();
     if (m_escapedSize > Satori::MAX_ESCAPE_SIZE)
     {
-        return { SatoriLocalCollectionOutcome::EscapedLimit, 0 };
+        return result;
     }
 
     size_t minProgress = atTlgcLimit ? 2 * SatoriUtil::MinZeroInitSize() : Satori::REGION_SIZE_GRANULARITY / 4;
@@ -1716,10 +1721,12 @@ SatoriLocalCollectionResult SatoriRegion::ThreadLocalCollect(size_t allocBytes, 
         // this is too soon. last collection did not buy us as much as we wanted
         // either due to fragmentation or unfortunate allocation pattern in this thread.
         // we will not collect this region, lest it keeps coming back.
-        return { SatoriLocalCollectionOutcome::InsufficientProgress, 0 };
+        result.outcome = SatoriLocalCollectionOutcome::InsufficientProgress;
+        return result;
     }
 
     m_allocBytesAtCollect = allocBytes;
+    m_localCollectionProgressStatus = SatoriLocalCollectionProgressStatus::Available;
     t_trackingHistory.attempted = true;
 
     size_t count = Recycler()->IncrementGen0Count();
@@ -1748,6 +1755,8 @@ SatoriLocalCollectionResult SatoriRegion::ThreadLocalCollect(size_t allocBytes, 
         }
     }
 
+    result.usableAfter = UsableCapacity();
+
     // schedule pending finalizables if we have them
     // must be after compaction, since pend may escape objects.
     if (HasPendingFinalizables())
@@ -1763,7 +1772,9 @@ SatoriLocalCollectionResult SatoriRegion::ThreadLocalCollect(size_t allocBytes, 
         FIRE_EVENT(GCThreadLocalCollection, (uint32_t)count, shouldCollect, (uint64_t)occupancyBefore, (uint64_t)m_occupancy, durationNs);
     }
 
-    return { shouldCollect ? SatoriLocalCollectionOutcome::Completed : SatoriLocalCollectionOutcome::SurvivalAbort, (uint32_t)count };
+    result.outcome = shouldCollect ? SatoriLocalCollectionOutcome::Completed : SatoriLocalCollectionOutcome::SurvivalAbort;
+    result.collectionIndex = static_cast<uint32_t>(count);
+    return result;
 }
 
 void SatoriRegion::ReportThreadLocalCollection(const SatoriLocalCollectionResult& result, size_t requestedBytes,
@@ -1781,7 +1792,9 @@ void SatoriRegion::ReportThreadLocalCollection(const SatoriLocalCollectionResult
         FIRE_EVENT(GCThreadLocalCollectionOutcome,
             (uint64_t)SatoriUtil::GetCurrentThreadTag(), (uint64_t)Start(),
             result.HasCollectionIndex(), result.collectionIndex, (uint64_t)requestedBytes,
-            (uint32_t)trigger, (uint32_t)result.outcome, (uint32_t)retry);
+            (uint32_t)trigger, (uint32_t)result.outcome, (uint32_t)retry,
+            result.allocationBytes, result.allocationBytesBaseline, static_cast<uint32_t>(result.progressStatus),
+            result.usableBefore, result.usableAfter);
     }
 }
 

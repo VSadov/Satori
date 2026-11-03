@@ -1499,6 +1499,11 @@
                         <data name="Trigger" inType="win:UInt32" />
                         <data name="Outcome" inType="win:UInt32" />
                         <data name="Retry" inType="win:UInt32" />
+                        <data name="AllocationBytes" inType="win:UInt64" />
+                        <data name="AllocationBytesBaseline" inType="win:UInt64" />
+                        <data name="ProgressStatus" inType="win:UInt32" />
+                        <data name="UsableBefore" inType="win:UInt64" />
+                        <data name="UsableAfter" inType="win:UInt64" />
 
                         <UserData>
                             <GCThreadLocalCollectionOutcome xmlns="myNs">
@@ -1511,6 +1516,11 @@
                                 <Trigger> %7 </Trigger>
                                 <Outcome> %8 </Outcome>
                                 <Retry> %9 </Retry>
+                                <AllocationBytes> %10 </AllocationBytes>
+                                <AllocationBytesBaseline> %11 </AllocationBytesBaseline>
+                                <ProgressStatus> %12 </ProgressStatus>
+                                <UsableBefore> %13 </UsableBefore>
+                                <UsableAfter> %14 </UsableAfter>
                             </GCThreadLocalCollectionOutcome>
                         </UserData>
                     </template>
@@ -8659,7 +8669,7 @@
                 <string id="RuntimePublisher.GCLOHCompactEventMessage" value="ClrInstanceID=%1;%nCount=%2" />
                 <string id="RuntimePublisher.GCFitBucketInfoEventMessage" value="ClrInstanceID=%1;%nBucketKind=%2;%nTotalSize=%3;%nCount=%4" />
                 <string id="RuntimePublisher.GCThreadLocalCollectionEventMessage" value="ClrInstanceID=%1;%nCount=%2;%nCollected=%3;%nOccupancyBefore=%4;%nOccupancyAfter=%5;%nDurationNs=%6" />
-                <string id="RuntimePublisher.GCThreadLocalCollectionOutcomeEventMessage" value="ClrInstanceID=%1;%nThreadTag=%2;%nRegionID=%3;%nHasCollectionIndex=%4;%nCollectionIndex=%5;%nRequestedBytes=%6;%nTrigger=%7;%nOutcome=%8;%nRetry=%9" />
+                <string id="RuntimePublisher.GCThreadLocalCollectionOutcomeEventMessage" value="ClrInstanceID=%1;%nThreadTag=%2;%nRegionID=%3;%nHasCollectionIndex=%4;%nCollectionIndex=%5;%nRequestedBytes=%6;%nTrigger=%7;%nOutcome=%8;%nRetry=%9;%nAllocationBytes=%10;%nAllocationBytesBaseline=%11;%nProgressStatus=%12;%nUsableBefore=%13;%nUsableAfter=%14" />
                 <string id="RuntimePublisher.FinalizeObjectEventMessage" value="TypeID=%1;%nObjectID=%2;%nClrInstanceID=%3" />
                 <string id="RuntimePublisher.GCTriggeredEventMessage" value="Reason=%1" />
                 <string id="RuntimePublisher.PinObjectAtGCTimeEventMessage" value="HandleID=%1;%nObjectID=%2;%nObjectSize=%3;%nTypeName=%4;%n;%nClrInstanceID=%5" />

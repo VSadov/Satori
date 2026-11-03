@@ -36,6 +36,10 @@ struct TestRegion
         : nextResult{outcome, index}, allocationSucceeds(succeeds), expectedTrigger(trigger), expectedIndex(index)
     {
         current = this;
+        nextResult.allocationBytes = 1048576;
+        nextResult.allocationBytesBaseline = 983040;
+        nextResult.usableBefore = 4096;
+        nextResult.usableAfter = 2048;
     }
 
     void Record(char operation)
@@ -81,6 +85,13 @@ struct TestRegion
     {
         Require(result.outcome == nextResult.outcome, "Outcome changed before reporting.");
         Require(result.collectionIndex == expectedIndex, "Collection index changed before reporting.");
+        Require(result.allocationBytes == nextResult.allocationBytes &&
+            result.allocationBytesBaseline == nextResult.allocationBytesBaseline,
+            "Allocation progress must survive tracking-stop and retry.");
+        Require(result.progressStatus == nextResult.progressStatus,
+            "A completed collection must not make unavailable progress available.");
+        Require(result.usableBefore == nextResult.usableBefore && result.usableAfter == nextResult.usableAfter,
+            "Raw usable recovery may be negative and must not be clamped.");
         bool marked = result.outcome == SatoriLocalCollectionOutcome::SurvivalAbort ||
             result.outcome == SatoriLocalCollectionOutcome::Completed;
         Require(result.HasCollectionIndex() == marked, "Rejected calls must not acquire a collection index.");
@@ -119,6 +130,10 @@ static void CheckTwoCalls(SatoriLocalCollectionOutcome secondOutcome)
     Require(region.reportedRetry == SatoriLocalCollectionRetry::Failed, "First report must describe the first retry only.");
 
     region.nextResult = { secondOutcome, secondOutcome == SatoriLocalCollectionOutcome::Completed ? 43u : 0u };
+    region.nextResult.allocationBytes = 1048576;
+    region.nextResult.allocationBytesBaseline = 983040;
+    region.nextResult.usableBefore = 4096;
+    region.nextResult.usableAfter = 2048;
     region.expectedIndex = region.nextResult.collectionIndex;
     region.expectedTrigger = SatoriLocalCollectionTrigger::ExhaustedSpan;
     region.allocationSucceeds = true;
@@ -127,6 +142,41 @@ static void CheckTwoCalls(SatoriLocalCollectionOutcome secondOutcome)
     Require(allocated == secondCompleted, "Second call changed the exhausted-span allocation decision.");
     Require(region.collections == 2 && region.reports == 2, "Two calls require two independent reports.");
     Require(strcmp(region.operations, secondCompleted ? "CARCAR" : "CARCESR") == 0, "Incorrect two-call sequence.");
+}
+
+static int CheckProgress()
+{
+    using Status = SatoriLocalCollectionProgressStatus;
+    Require(SatoriProgressStatus(0, 0, Status::Available) == Status::Available, "Zero progress is available.");
+    Require(SatoriProgressStatus(1048576, 983040, Status::Available) == Status::Available, "First or repeated progress.");
+    Require(SatoriProgressStatus(983039, 983040, Status::Available) == Status::CounterRollback, "Returned claim rollback.");
+    Require(SatoriProgressStatus(1048576, 983040, Status::AccountingRebased) == Status::AccountingRebased,
+        "A rebase must be unavailable even when the counter increased.");
+    Require(SatoriProgressStatus(1048576, 983040, Status::CounterRollback) == Status::CounterRollback,
+        "Regrowing past a rolled-back baseline must not erase the discontinuity.");
+    Require(SatoriProgressAfterClaim(INT64_MAX - 16, 16, Status::Available) == Status::Available, "No signed overflow at boundary.");
+    Require(SatoriProgressAfterClaim(INT64_MAX - 16, 17, Status::Available) == Status::CounterOverflow, "Signed claim overflow.");
+    Require(SatoriProgressAfterClaim(SIZE_MAX, 0, Status::Available) == Status::CounterOverflow,
+        "A negative allocation counter converted to size_t is unavailable.");
+    Require(SatoriProgressStatus(0, SIZE_MAX, Status::Available) == Status::CounterOverflow,
+        "A negative marking baseline is not an ordinary rollback.");
+    Require(SatoriProgressStatus(0, SIZE_MAX, Status::CounterOverflow) == Status::CounterOverflow,
+        "Overflow must not become an ordinary rollback.");
+    Require(SatoriProgressAfterClaim(100, 8, Status::CounterOverflow) == Status::CounterOverflow, "Overflow persists.");
+    for (uint32_t status = 0; status <= 3; status++)
+    {
+        TestRegion region(SatoriLocalCollectionOutcome::Completed, SatoriLocalCollectionTrigger::DyadicLimit, true, 42);
+        region.nextResult.progressStatus = static_cast<Status>(status);
+        if (status == 0)
+        {
+            region.nextResult.allocationBytesBaseline = region.nextResult.allocationBytes;
+            region.nextResult.usableBefore = region.nextResult.usableAfter = 0;
+        }
+        Require(SatoriCollectAndRetry(&region, 1048576, 81920, region.expectedTrigger),
+            "Validity reporting must not change the allocation result.");
+    }
+
+    return 15;
 }
 
 int main()
@@ -154,5 +204,6 @@ int main()
     CheckTwoCalls(SatoriLocalCollectionOutcome::Completed);
     cases += 2;
     printf("PASS: %d deterministic outcome/retry cases\n", cases);
+    printf("PASS: %d allocation-progress validity cases\n", CheckProgress());
     return 0;
 }

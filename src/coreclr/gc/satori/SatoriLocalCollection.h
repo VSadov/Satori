@@ -28,10 +28,45 @@ enum class SatoriLocalCollectionRetry : uint32_t
     Failed = 2,
 };
 
+enum class SatoriLocalCollectionProgressStatus : uint32_t
+{
+    Available = 0,
+    CounterRollback = 1,
+    AccountingRebased = 2,
+    CounterOverflow = 3,
+};
+
+inline SatoriLocalCollectionProgressStatus SatoriProgressStatus(size_t current, size_t baseline,
+    SatoriLocalCollectionProgressStatus status)
+{
+    if (current > static_cast<uint64_t>(INT64_MAX) || baseline > static_cast<uint64_t>(INT64_MAX))
+    {
+        return SatoriLocalCollectionProgressStatus::CounterOverflow;
+    }
+
+    return status == SatoriLocalCollectionProgressStatus::Available && current < baseline ?
+        SatoriLocalCollectionProgressStatus::CounterRollback : status;
+}
+
+inline SatoriLocalCollectionProgressStatus SatoriProgressAfterClaim(size_t current, size_t claimed,
+    SatoriLocalCollectionProgressStatus status)
+{
+    // gc_alloc_context::alloc_bytes is signed, although the region's baselines use size_t.
+    return current > static_cast<uint64_t>(INT64_MAX) || claimed > static_cast<uint64_t>(INT64_MAX) - current ?
+        SatoriLocalCollectionProgressStatus::CounterOverflow : status;
+}
+
 struct SatoriLocalCollectionResult
 {
     SatoriLocalCollectionOutcome outcome;
     uint32_t collectionIndex;
+    // Sampled before the marking baseline is updated, after unused claims are returned.
+    uint64_t allocationBytes = 0;
+    uint64_t allocationBytesBaseline = 0;
+    SatoriLocalCollectionProgressStatus progressStatus = SatoriLocalCollectionProgressStatus::Available;
+    // Both samples precede the allocation retry. Outcome qualifies completed-compaction recovery.
+    uint64_t usableBefore = 0;
+    uint64_t usableAfter = 0;
 
     bool HasCollectionIndex() const
     {

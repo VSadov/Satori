@@ -806,6 +806,7 @@ tryAgain:
                 if (region->Allocate(moreSpace, zeroInitialize))
                 {
                     context->alloc_limit += moreSpace;
+                    region->ObserveAllocationClaim(context->alloc_bytes, moreSpace);
                     context->alloc_bytes += moreSpace;
 
                     SatoriObject* result = (SatoriObject*)(size_t)context->alloc_ptr;
@@ -833,6 +834,7 @@ tryAgain:
             // unclaim unused.
             size_t unused = context->alloc_limit - context->alloc_ptr;
             context->alloc_bytes -= unused;
+            region->ObserveAllocationReturn(context->alloc_bytes);
 
             bool collectAtTlgcLimit = region->ShouldCollectAtTlgcLimit(context->alloc_bytes);
 
