@@ -443,10 +443,11 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
             // A demoted region reused for gen0. Its demoted objects will be marked as roots
             // and the region may get pinned in this GC, which escape tracking does not allow.
             // Stop tracking, the region continues as a regular gen1 region.
-            region->StopEscapeTracking();
+            region->StopEscapeTracking(SatoriTrackingReason::DemotedRegion);
         }
         else
         {
+            region->BeginTrackingRebuild();
             region->ClearMarks();
         }
     }
@@ -1050,7 +1051,7 @@ void SatoriRecycler::ConcurrentPhasePrepFn(gc_alloc_context* gcContext, void* pa
     SatoriRegion* region = context->RegularRegion();
     if (region)
     {
-        region->StopEscapeTracking();
+        region->StopEscapeTracking(SatoriTrackingReason::ConcurrentPreparation);
 
         if (region->HasUnmarkedDemotedObjects())
         {
@@ -2247,7 +2248,7 @@ void SatoriRecycler::MarkOwnStack(gc_alloc_context* aContext, MarkContext* markC
         SatoriRegion* region = ((SatoriAllocationContext*)aContext)->RegularRegion();
         if (region)
         {
-            region->StopEscapeTracking();
+            region->StopEscapeTracking(SatoriTrackingReason::ConcurrentOwnStack);
         }
     }
 

@@ -256,6 +256,11 @@ inline SatoriObject* SatoriRegion::FirstObject()
     return &m_firstObject;
 }
 
+FORCEINLINE uint64_t SatoriRegion::TrackingEventState()
+{
+    return VolatileLoad(&s_trackingEventState);
+}
+
 inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag, size_t allocBytes, size_t minAllocSize)
 {
     _ASSERTE(m_generation == -1 || m_reusableFor == ReuseLevel::Gen0);
@@ -272,12 +277,15 @@ inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag, size_t al
     {
         m_tlgcAllocEnd = ComputeTlgcAllocEnd(minAllocSize, allocBytes);
     }
+    ReportTrackingLifecycle(SatoriTrackingKind::Start);
+    ReportTrackingCheckpoint(SatoriTrackingCheckpoint::Initialization);
 }
 
-inline void SatoriRegion::StopEscapeTracking()
+inline void SatoriRegion::StopEscapeTracking(SatoriTrackingReason reason)
 {
     if (IsEscapeTracking())
     {
+        m_tracking.CaptureStop(reason, TrackingEventState(), false);
         _ASSERTE(!HasPinnedObjects());
         ClearMarks();
 
@@ -289,10 +297,12 @@ inline void SatoriRegion::StopEscapeTracking()
         m_generation = 1;
         m_escapedSize = 0;
         m_allocBytesAtCollect = 0;
+        FlushTrackingStop();
     }
     else
     {
         ClearStaleEscapeMarks();
+        FlushTrackingStop();
     }
 }
 
@@ -302,6 +312,7 @@ inline void SatoriRegion::StopEscapeTracking()
 inline void SatoriRegion::StopEscapeTrackingFromBarrier()
 {
     _ASSERTE(IsEscapeTracking());
+    m_tracking.CaptureStop(SatoriTrackingReason::BarrierEscapeLimit, TrackingEventState(), true);
 
     // the flag must be set before ownership is cleared, so that concurrent marking,
     // which checks ownership first, never sees neither and does not use dirty mark table.
@@ -328,6 +339,7 @@ inline bool SatoriRegion::ClearStaleEscapeMarks()
     // must reset the flag after clearing marks
     // to make sure concurrent marking does not use dirty mark table
     VolatileStore(&m_staleEscapeMarks, false);
+    FlushTrackingStop();
     return true;
 }
 
@@ -782,6 +794,10 @@ bool SatoriRegion::Sweep()
     this->m_maxParseableEnd = objLimit;
 
     SetOccupancy(occupancy, objCount);
+    if (isEscapeTracking)
+    {
+        EndTrackingRebuild();
+    }
     if (objCount !=0)
     {
         cannotRecycle = true;
@@ -920,11 +936,11 @@ inline void SatoriRegion::RebaselineUsableIfStale(size_t allocBytes)
     }
 }
 
-inline void SatoriRegion::DetachFromAlocatingOwnerRelease()
+inline void SatoriRegion::DetachFromAlocatingOwnerRelease(SatoriTrackingReason reason)
 {
     _ASSERTE(*m_allocatingOwnerAttachmentPoint == this);
 
-    StopEscapeTracking();
+    StopEscapeTracking(reason);
 
     *m_allocatingOwnerAttachmentPoint = nullptr;
     // all allocations must be committed prior to detachement.
@@ -1100,12 +1116,13 @@ inline bool SatoriRegion::IsEscaped(SatoriObject* o)
     return IsMarked(o + MarkOffset::Escaped);
 }
 
-inline void SatoriRegion::SetEscaped(SatoriObject* o)
+inline void SatoriRegion::SetEscaped(SatoriObject* o, bool seed)
 {
     // Escaped objects are always live as far as thread-local GC is concerned, so they are also marked.
     // Thread-local GC clears marks when done, except marks of escaped objects.
     // NB: both bits are cleared together when tracking stops or when GC takes over the region.
     _ASSERTE(o->SameRegion(this));
+    m_tracking.Count(seed ? m_tracking.seedObjects : m_tracking.newlyEscapedObjects, TrackingEventState());
 
     size_t word = o->Start();
     size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);

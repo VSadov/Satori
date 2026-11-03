@@ -144,6 +144,10 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     // regions are aligned, so the first 64 bytes of the header are one cache line.
     static_assert(offsetof(SatoriRegion, m_reusableFor) < 64 && offsetof(SatoriRegion, m_staleEscapeMarks) < 64,
         "the fields that MaybeEscapeTrackingAcquire reads are in the first cache line of the header.");
+    static_assert(offsetof(SatoriRegion, m_tracking) >= 64, "Diagnostic writes must not share the barrier cache line.");
+    static_assert(offsetof(SatoriRegion, m_ownerThreadTag) == 0 &&
+        offsetof(SatoriRegion, m_escapeFunc) == 8 && offsetof(SatoriRegion, m_generation) == 16,
+        "Satori write-barrier assembly offsets must not change.");
 
     // clear the header if was used before
     size_t zeroUpTo = min(used, (size_t)&result->m_syncBlock);
@@ -242,6 +246,8 @@ void SatoriRegion::ResetCardsForEphemeral()
 
 void SatoriRegion::MakeBlank()
 {
+    FlushTrackingStop();
+    _ASSERTE(m_tracking.phase != 1 && m_tracking.phase != 2);
     _ASSERTE(NothingMarked());
     _ASSERTE(!m_staleEscapeMarks);
 
@@ -1301,6 +1307,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
 {
     _ASSERTE(this->IsEscapeTrackedByCurrentThread());
     _ASSERTE(o->SameRegion(this));
+    m_tracking.Count(m_tracking.escapeRecursivelyCalls, TrackingEventState());
 
     if (IsEscaped(o))
     {
@@ -1537,7 +1544,7 @@ void SatoriRegion::EscapeShallow(SatoriObject* o, size_t size)
     //    it is possible, if we have a lot of stack roots, but highly unlikely and otherwise ok.
     //    typically objects have died and we have fewer escapes than before the GC,
     //    so we do not bother to check
-    SetEscaped(o);
+    SetEscaped(o, /* seed */ true);
     m_escapedSize += (int32_t)size;
 
     o->ForEachObjectRef(
@@ -1571,28 +1578,144 @@ void SatoriRegion::SetOccupancy(size_t occupancy)
 
 namespace
 {
-    struct EscapeTrackingHistory
-    {
-        size_t stackBase;
-        // length of the current untracked span, doubles on every unproductive probe
-        uint8_t backoff;
-        // eligible regions to attach untracked before the next probe
-        uint8_t skip;
-        // a tracked region is attached and its outcome is not known yet
-        bool tracking;
-        // thread-local GC paid off in the tracked region (see IsTlgcProductive)
-        bool collected;
-        // thread-local GC went beyond the refusal checks in the tracked region
-        bool attempted;
-    };
+    thread_local SatoriTrackingHistory t_trackingHistory;
+    size_t s_nextTrackingLifetime;
 
-    thread_local EscapeTrackingHistory t_trackingHistory;
+    void ReportTrackingDecision(const SatoriTrackingHistory& before, const SatoriTrackingHistory& after,
+        SatoriTrackingKind kind, uint64_t candidate = 0, SatoriTrackingReason reason = SatoriTrackingReason::None)
+    {
+        uint64_t epoch = SatoriRegion::TrackingEventState();
+        if (epoch & 1)
+        {
+            GCToEEInterface::EventSink()->FireGCTrackingLifecycle(static_cast<uint64_t>(SatoriUtil::GetCurrentThreadTag()),
+                candidate == 0 ? before.region : candidate, kind == SatoriTrackingKind::History ? before.lifetime : 0,
+                kind == SatoriTrackingKind::BackoffSkip ? before.lifetime : 0, epoch, static_cast<uint64_t>(0),
+                static_cast<uint32_t>(kind),
+                static_cast<uint32_t>(reason),
+                before.lifetime == 0 ? static_cast<uint32_t>(SatoriTrackingState::IdentityUnavailable) : 0u,
+                static_cast<uint32_t>(before.backoff), static_cast<uint32_t>(after.backoff),
+                static_cast<uint32_t>(before.skip), static_cast<uint32_t>(after.skip), before.attempted, before.collected);
+        }
+    }
+}
+
+uint64_t SatoriRegion::s_trackingEventState;
+
+void SatoriRegion::UpdateTrackingEventState()
+{
+    bool enabled = false;
+#ifdef BUILD_AS_STANDALONE
+    // This sink extension requires matching GC/EE builds (the EE major remains 6).
+    if (g_runtimeSupportedVersion.MajorVersion < 6)
+    {
+        return;
+    }
+#endif
+#if FEATURE_EVENT_TRACE
+    // Keyword/level unions can combine GC Information from one listener with Verbose
+    // from an unrelated listener. Query the family's effective ETW/EventPipe masks.
+    enabled = GCToEEInterface::EventSink()->IsGCTrackingEnabled();
+#endif
+    // ControlEvents callbacks are serialized by the EE. Never touch another thread's
+    // history or counters here. Conservatively advance on every public reconfiguration:
+    // delayed callbacks must not conceal an off/on gap. Overlapping listeners keep counting.
+    uint64_t state = VolatileLoad(&s_trackingEventState);
+    VolatileStore(&s_trackingEventState, state < UINT64_MAX - 2 ?
+        ((state & ~static_cast<uint64_t>(1)) + 2) | static_cast<uint64_t>(enabled) :
+        (UINT64_MAX - 1) | static_cast<uint64_t>(enabled));
+}
+
+void SatoriRegion::PrepareTrackingDiagnostics()
+{
+    FlushTrackingStop();
+    size_t previous = VolatileLoad(&s_nextTrackingLifetime);
+    size_t id;
+    while (true)
+    {
+        if (previous == SIZE_MAX)
+        {
+            id = 0;
+            break;
+        }
+        id = previous + 1;
+        size_t observed = Interlocked::CompareExchange(&s_nextTrackingLifetime, id, previous);
+        if (observed == previous)
+        {
+            break;
+        }
+        previous = observed;
+    }
+    if (!m_tracking.Begin(id, SatoriUtil::GetCurrentThreadTag(), TrackingEventState()))
+    {
+        _ASSERTE(!"A physical tracking lifetime must be drained before a new one starts.");
+    }
+    t_trackingHistory.lifetime = id;
+    t_trackingHistory.region = Start();
+}
+
+void SatoriRegion::ReportTrackingLifecycle(SatoriTrackingKind kind)
+{
+    m_tracking.ObserveEpoch(TrackingEventState());
+    uint64_t sequence = m_tracking.NextSequence();
+    if (TrackingEventState() & 1)
+    {
+        GCToEEInterface::EventSink()->FireGCTrackingLifecycle(m_tracking.owner, static_cast<uint64_t>(Start()), m_tracking.lifetime,
+            static_cast<uint64_t>(0), m_tracking.lastEpoch, sequence, static_cast<uint32_t>(kind),
+            static_cast<uint32_t>(kind == SatoriTrackingKind::End ? m_tracking.reason : SatoriTrackingReason::None),
+            static_cast<uint32_t>(m_tracking.flags), 0u, 0u, 0u, 0u, false, false);
+    }
+}
+
+void SatoriRegion::FlushTrackingStop()
+{
+    // Only the owner, a suspended-owner GC, or the exclusive detached-region holder
+    // may drain. Concurrent marking only reads the physical tracking/mark flags.
+    // Consume before calling the sink; detach/reuse publishes the region only after return.
+    if (m_tracking.TryDrain())
+    {
+        ReportTrackingCheckpoint(SatoriTrackingCheckpoint::Final);
+        ReportTrackingLifecycle(SatoriTrackingKind::End);
+    }
+}
+
+void SatoriRegion::ReportTrackingCheckpoint(SatoriTrackingCheckpoint kind, uint32_t collectionIndex, bool hasCollectionIndex)
+{
+    uint64_t epoch = TrackingEventState();
+    m_tracking.ObserveEpoch(epoch);
+    uint64_t sequence = m_tracking.NextSequence();
+    if (epoch & 1)
+    {
+        GCToEEInterface::EventSink()->FireGCTrackingCheckpoint(m_tracking.owner, static_cast<uint64_t>(Start()), m_tracking.lifetime,
+            m_tracking.intervalEpoch, epoch, sequence, m_tracking.segment, static_cast<uint32_t>(kind),
+            static_cast<uint32_t>(m_tracking.flags), hasCollectionIndex, collectionIndex,
+            m_tracking.escapeFnCalls, m_tracking.escapeRecursivelyCalls, m_tracking.newlyEscapedObjects, m_tracking.seedObjects);
+    }
+    m_tracking.ResetInterval(epoch);
+}
+
+void SatoriRegion::BeginTrackingRebuild()
+{
+    _ASSERTE(IsEscapeTracking());
+    _ASSERTE(Recycler()->IsBlockingPhase());
+    _ASSERTE(!(m_tracking.flags & SatoriTrackingState::Rebuilding));
+    ReportTrackingCheckpoint(SatoriTrackingCheckpoint::BeforeRebuild);
+    m_tracking.NextSegment();
+    m_tracking.flags |= SatoriTrackingState::Rebuilding;
+}
+
+void SatoriRegion::EndTrackingRebuild()
+{
+    _ASSERTE(IsEscapeTracking());
+    _ASSERTE(Recycler()->IsBlockingPhase());
+    _ASSERTE(m_tracking.flags & SatoriTrackingState::Rebuilding);
+    ReportTrackingCheckpoint(SatoriTrackingCheckpoint::Rebuilt);
+    m_tracking.flags &= static_cast<uint8_t>(~SatoriTrackingState::Rebuilding);
 }
 
 size_t SatoriRegion::CurrentStackDepth()
 {
     size_t sp = (size_t)&sp;
-    EscapeTrackingHistory& h = t_trackingHistory;
+    SatoriTrackingHistory& h = t_trackingHistory;
     if (sp > h.stackBase || h.stackBase - sp > Satori::REGION_SIZE_GRANULARITY)
     {
         h.stackBase = sp;
@@ -1604,9 +1727,10 @@ size_t SatoriRegion::CurrentStackDepth()
 
 bool SatoriRegion::ShouldStartEscapeTracking()
 {
-    EscapeTrackingHistory& h = t_trackingHistory;
+    SatoriTrackingHistory& h = t_trackingHistory;
     if (h.tracking)
     {
+        SatoriTrackingHistory before = h;
         // Tracking of the previous region was stopped by GC, or the region was detached
         // for reasons other than running out of space. That says little about this thread
         // unless the region had a successful collection.
@@ -1615,11 +1739,14 @@ bool SatoriRegion::ShouldStartEscapeTracking()
         {
             h.backoff = 0;
         }
+        ReportTrackingDecision(before, h, SatoriTrackingKind::History, 0, SatoriTrackingReason::AbandonedHistory);
     }
 
     if (h.skip > 0 && SatoriUtil::TrackBackoffCap() > 0)
     {
+        SatoriTrackingHistory before = h;
         h.skip--;
+        ReportTrackingDecision(before, h, SatoriTrackingKind::BackoffSkip, Start());
         return false;
     }
 
@@ -1627,34 +1754,22 @@ bool SatoriRegion::ShouldStartEscapeTracking()
     h.tracking = true;
     h.collected = false;
     h.attempted = false;
+    PrepareTrackingDiagnostics();
     return true;
 }
 
 void SatoriRegion::OnEscapeTrackingEnded(bool outOfSpace)
 {
-    EscapeTrackingHistory& h = t_trackingHistory;
+    SatoriTrackingHistory& h = t_trackingHistory;
     if (!h.tracking)
     {
         return;
     }
 
-    h.tracking = false;
-    if (h.collected)
-    {
-        h.backoff = 0;
-    }
-    else if (outOfSpace && !h.attempted)
-    {
-        // The region ran out of space and no thread-local GC was tried in it (the refill was too soon,
-        // or the region was retired by a request that did not fit). No evidence that tracking does not pay off.
-    }
-    else
-    {
-        // the region ended without a productive thread-local GC, back off.
-        int backoff = h.backoff == 0 ? 1 : h.backoff * 2;
-        h.backoff = (uint8_t)min(backoff, SatoriUtil::TrackBackoffCap());
-        h.skip = h.backoff;
-    }
+    SatoriTrackingHistory before = h;
+    h.End(outOfSpace, SatoriUtil::TrackBackoffCap());
+    ReportTrackingDecision(before, h, SatoriTrackingKind::History, 0,
+        outOfSpace ? SatoriTrackingReason::AllocationExhausted : SatoriTrackingReason::None);
 }
 
 bool SatoriRegion::IsTlgcProductive(size_t allocBytes)
@@ -1679,6 +1794,7 @@ bool SatoriRegion::IsTlgcProductive(size_t allocBytes)
 // NB: dst is unused, it is just to avoid argument shuffle in x64 barriers
 void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
 {
+    region->m_tracking.Count(region->m_tracking.escapeFnCalls, TrackingEventState());
     region->EscapeRecursively(src);
     if (region->m_escapedSize > Satori::MAX_ESCAPE_SIZE)
     {
@@ -1707,12 +1823,14 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
 {
     if (m_escapedSize > Satori::MAX_ESCAPE_SIZE)
     {
+        m_tracking.reason = SatoriTrackingReason::CollectionEscapeLimit;
         return false;
     }
 
     size_t minProgress = atTlgcLimit ? 2 * SatoriUtil::MinZeroInitSize() : Satori::REGION_SIZE_GRANULARITY / 4;
     if (allocBytes - m_allocBytesAtCollect < minProgress)
     {
+        m_tracking.reason = SatoriTrackingReason::InsufficientProgress;
         // this is too soon. last collection did not buy us as much as we wanted
         // either due to fragmentation or unfortunate allocation pattern in this thread.
         // we will not collect this region, lest it keeps coming back.
@@ -1731,6 +1849,7 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
     rootCache.count = 0;
 
     bool shouldCollect = ThreadLocalMark(&rootCache);
+    m_tracking.reason = shouldCollect ? SatoriTrackingReason::None : SatoriTrackingReason::SurvivalAbort;
     if (shouldCollect)
     {
         m_tlgcCount++;
@@ -1762,6 +1881,11 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
         double durationNs = (double)(minipal_hires_ticks() - eventStartTicks) * 1e9 / (double)minipal_hires_tick_frequency();
         FIRE_EVENT(GCThreadLocalCollection, (uint32_t)count, shouldCollect, (uint64_t)occupancyBefore, (uint64_t)m_occupancy, durationNs);
     }
+    if (count > UINT32_MAX)
+    {
+        m_tracking.flags |= SatoriTrackingState::Overflow;
+    }
+    ReportTrackingCheckpoint(SatoriTrackingCheckpoint::LocalCollection, static_cast<uint32_t>(count), true);
 
     return shouldCollect;
 }

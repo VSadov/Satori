@@ -98,6 +98,7 @@ if (CLR_CMAKE_TARGET_WIN32)
     satori/SatoriPage.h
     satori/SatoriRegion.h
     satori/SatoriRegion.inl
+    satori/SatoriTrackingState.h
     satori/SatoriObject.h
     satori/SatoriObject.inl
     satori/SatoriPrefetchQueue.h
