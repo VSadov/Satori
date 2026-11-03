@@ -2106,7 +2106,7 @@ size_t SatoriRegion::ThreadLocalPlan()
             }
             else if (IsPinnedLocal(unmovable))
             {
-                dstStart += unmovable->Size();
+                dstStart += SizeLocal(unmovable);
             }
             else
             {
@@ -2475,6 +2475,13 @@ void SatoriRegion::ThreadLocalCompact(size_t denseEnd)
             {
                 // escaped objects do not move, skip those that follow each other at once.
                 s1 = (SatoriObject*)SkipEscapedThreadLocal(s1->Start());
+                continue;
+            }
+
+            if (!IsMarked(s1))
+            {
+                // free space, the next survivor is in the bitmap
+                s1 = SkipUnmarkedThreadLocal(s1);
                 continue;
             }
 
@@ -3042,7 +3049,7 @@ size_t SatoriRegion::MarkedSizeThreadLocal(SatoriObject* o)
         return SkipEscapedThreadLocal(o->Start()) - o->Start();
     }
 
-    return o->Size();
+    return SizeLocal(o);
 }
 
 #ifdef _DEBUG
