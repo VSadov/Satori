@@ -39,6 +39,7 @@ class SatoriRegionQueue;
 class SatoriObject;
 class SatoriAllocationContext;
 struct SatoriLocalRootCache;
+struct SatoriLocalStayRuns;
 
 // The Region contains objects and their metadata.
 class SatoriRegion
@@ -404,7 +405,10 @@ private:
             // An object is at least 3 words, so these are different words and, other than that, there are
             // no bits inside of such objects. Escaped objects are marked before the thread-local GC starts and are not in here.
             // NB: when compaction clears the mark of an object that moves, it removes the last word of the object from here as well.
-            //     The bits are only for the objects that are still marked. (see SkipEscapedThreadLocal)
+            //     The old copy is ahead of the sweep, where a leftover bit could be taken for the end of an object that follows
+            //     escaped objects. (see SkipEscapedThreadLocal)
+            //     An object that stays is unmarked when the sweep gets to it, one by one or a run at a time, and keeps its bit.
+            //     Nothing looks at what is behind the sweep.
             size_t* m_localBitmap;
             uint32_t m_escapedSizeAtCollect;
             uint32_t m_lastStackSlots;
@@ -459,9 +463,9 @@ private:
 
     bool ThreadLocalMark(SatoriLocalRootCache* rootCache, size_t* localStorage);
     void ThreadLocalPropagateMarks(size_t maxSurv);
-    size_t ThreadLocalPlan();
+    size_t ThreadLocalPlan(SatoriLocalStayRuns* stayRuns);
     void ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache);
-    void ThreadLocalCompact(size_t denseEnd);
+    void ThreadLocalCompact(size_t denseEnd, SatoriLocalStayRuns* stayRuns);
     void ThreadLocalPendFinalizables();
     size_t FindUnmovableThreadLocal(size_t from, size_t to, bool includePinned);
     size_t SkipDenseThreadLocal(size_t from, int32_t* objCount);
