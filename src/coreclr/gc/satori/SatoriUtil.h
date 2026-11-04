@@ -143,10 +143,11 @@ namespace Satori
     static const int TLGC_MIN_FREE_PERCENT = 70;
 
     // The allocation window between thread-local collections is at least this long.
-    // It is sized to stay in the cache of a core that is shared by two threads, so that the memory that is reused
-    // after a collection is still there. Longer windows lose the cache, and since a collection that carries little
-    // costs little, there is nothing to gain from them.
-    static const size_t TLGC_BASE_WINDOW = 256 * 1024;
+    // A thread that runs alone collects less often with a longer window. When many threads allocate, the windows of all
+    // of them have to fit in the cache that they share, or the memory that is reused after a collection is not there.
+    // This is the second level cache of a core of the processor where it was measured. A window of a whole region (2 MB)
+    // was clearly worse for 32 threads that allocate at the same time.
+    static const size_t TLGC_BASE_WINDOW = 1024 * 1024;
 
     // A thread-local collection visits every object that is alive after the previous one - the escaped objects (they
     // are only walked) and the survivors (they are also marked, updated and copied). That takes 10-20 ns per object,
