@@ -374,9 +374,6 @@ private:
             uint32_t m_sweepsSinceLastAllocation;
             // Bit N is set when free list N is not empty.
             uint16_t m_nonEmptyFreeLists;
-            // Number of thread-local collections performed in this region since escape tracking started
-            // or a GC last swept it, drives the dyadic window schedule.
-            uint16_t m_tlgcCount;
 
             // ===== 128  bytes boundary
             SatoriRegion* m_prev;
@@ -385,7 +382,7 @@ private:
 
             size_t m_occupancy;
             size_t m_demotedOccupancy;
-            // End of the current dyadic allocation window (<= m_allocEnd) when escape-tracking.
+            // End of the current allocation window (<= m_allocEnd) when escape-tracking.
             size_t m_tlgcAllocEnd;
             // Upper bound on the end of all non-free objects in the region, bounds thread-local bitmap and index scans.
             size_t m_maxParseableEnd;
@@ -413,6 +410,9 @@ private:
             uint32_t m_escapedSizeAtCollect;
             uint32_t m_lastStackSlots;
             int32_t m_objCount;
+            // The number of survivors that are not escaped (they are marked, updated and copied by every
+            // thread-local collection) as of the last collection. The rest of m_objCount is escaped or pinned.
+            uint32_t m_movableCountAtCollect;
 
             int32_t m_unfinishedAllocationCount;
 
@@ -462,7 +462,7 @@ private:
     NOINLINE void EscapeReachable(SatoriObject* o);
 
     bool ThreadLocalMark(SatoriLocalRootCache* rootCache, size_t* localStorage);
-    void ThreadLocalPropagateMarks(size_t maxSurv);
+    void ThreadLocalPropagateMarks(size_t maxSurv, size_t maxCount, size_t maxPointerBytes, size_t& pointerBytes);
     size_t ThreadLocalPlan(SatoriLocalStayRuns* stayRuns);
     void ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache);
     void ThreadLocalCompact(size_t denseEnd, SatoriLocalStayRuns* stayRuns);
@@ -479,7 +479,7 @@ private:
     bool IsAllMarked(size_t first, size_t length);
 #endif
 
-    void PushToMarkStackIfHasPointers(SatoriObject* obj);
+    bool PushToMarkStackIfHasPointers(SatoriObject* obj);
     SatoriObject* PopFromMarkStack();
     SatoriObject* ObjectForMarkBit(size_t bitmapIndex, int offset);
     void CompactFinalizableTrackers();
@@ -500,7 +500,7 @@ private:
     void SetPinnedLocal(SatoriObject* o);
     void SetEndLocal(SatoriObject* o, size_t size);
     void ClearEndLocal(SatoriObject* o, size_t size);
-    void AddSurvivorLocal(SatoriObject* o);
+    size_t AddSurvivorLocal(SatoriObject* o);
     size_t SizeLocal(SatoriObject* o);
     bool IsEscaped(SatoriObject* o);
     void SetEscaped(SatoriObject* o);

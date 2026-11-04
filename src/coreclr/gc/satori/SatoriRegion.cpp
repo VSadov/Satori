@@ -101,6 +101,7 @@ struct SatoriLocalScanContext : ScanContext
 {
     SatoriLocalRootCache* rootCache;
     uint32_t stackSlots;
+    size_t pointerBytes;
 };
 
 // The runs of survivors that planning has found in the middle of the region, which stay where they are:
@@ -210,11 +211,11 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     result->m_maxParseableEnd = result->m_allocStart;
     result->m_unusableInPrefix = 0;
     result->m_escapedSizeAtCollect = 0;
+    result->m_movableCountAtCollect = 0;
     result->m_usableAtAttach = 0;
     result->m_allocBytesAtAttach = 0;
     result->m_usableBaselineStale = false;
     result->m_lastStackSlots = 0;
-    result->m_tlgcCount = 0;
     result->m_allocZeroedEnd = 0;
     result->m_occupancy = result->m_allocEnd - result->m_allocStart;
     result->m_demotedOccupancy = 0;
@@ -321,8 +322,8 @@ void SatoriRegion::MakeBlank()
     m_maxParseableEnd = m_allocStart;
     m_unusableInPrefix = 0;
     m_escapedSizeAtCollect = 0;
+    m_movableCountAtCollect = 0;
     m_lastStackSlots = 0;
-    m_tlgcCount = 0;
     m_allocZeroedEnd = 0;
 
     // m_used                    stays the same
@@ -1270,8 +1271,11 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
     if (!region->IsMarked(o))
     {
         region->SetMarked(o);
-        region->AddSurvivorLocal(o);
-        region->PushToMarkStackIfHasPointers(o);
+        size_t size = region->AddSurvivorLocal(o);
+        if (region->PushToMarkStackIfHasPointers(o))
+        {
+            ((SatoriLocalScanContext*)sc)->pointerBytes += size;
+        }
     }
 
     if (flags & GC_CALL_PINNED)
@@ -1284,7 +1288,7 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
     }
 }
 
-inline void SatoriRegion::PushToMarkStackIfHasPointers(SatoriObject* obj)
+inline bool SatoriRegion::PushToMarkStackIfHasPointers(SatoriObject* obj)
 {
     _ASSERTE(obj->SameRegion(this));
     _ASSERTE(!obj->GetNextInLocalMarkStack());
@@ -1294,7 +1298,10 @@ inline void SatoriRegion::PushToMarkStackIfHasPointers(SatoriObject* obj)
         obj->SetNextInLocalMarkStack(m_markStack);
         _ASSERTE(m_markStack == obj->GetNextInLocalMarkStack());
         m_markStack = (int32_t)(obj->Start() - this->Start());
+        return true;
     }
+
+    return false;
 }
 
 inline SatoriObject* SatoriRegion::PopFromMarkStack()
@@ -1775,11 +1782,16 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
     bool shouldCollect = ThreadLocalMark(&rootCache, localBitmap);
     if (shouldCollect)
     {
-        m_tlgcCount++;
+        // marking counted the survivors in m_objCount, planning will replace that with all that is live.
+        uint32_t movableCount = (uint32_t)m_objCount;
+
         size_t denseEnd = ThreadLocalPlan(&stayRuns);
         ThreadLocalUpdatePointers(&rootCache);
         ThreadLocalCompact(denseEnd, &stayRuns);
         _ASSERTE(m_occupancy <= occupancyBefore);
+
+        // Every next collection will carry the escaped objects (they are walked) and these (they are also moved).
+        m_movableCountAtCollect = movableCount;
 
         // Within an accounting period, compacting is the only thing that returns reclaimed usable space,
         // so this is the one place to notice that thread-local GC paid off. (see IsTlgcProductive)
@@ -1812,14 +1824,14 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
 }
 
 // Transitively marks thread-local objects reachable from the mark stack.
-// Stops early once maxSurv bytes are found alive.
+// Stops early once maxSurv bytes, maxCount objects or maxPointerBytes of objects with pointers are found alive.
 //
 // Newly discovered objects go through a prefetch queue before their size and type are read,
 // so marking does not stall on every discovered object. See SatoriPrefetchQueue.
-void SatoriRegion::ThreadLocalPropagateMarks(size_t maxSurv)
+void SatoriRegion::ThreadLocalPropagateMarks(size_t maxSurv, size_t maxCount, size_t maxPointerBytes, size_t& pointerBytes)
 {
     SatoriLocalPrefetchQueue queue;
-    while (m_occupancy < maxSurv)
+    while (m_occupancy < maxSurv && (size_t)m_objCount < maxCount && pointerBytes < maxPointerBytes)
     {
         SatoriObject* o = PopFromMarkStack();
         if (o == nullptr)
@@ -1831,8 +1843,12 @@ void SatoriRegion::ThreadLocalPropagateMarks(size_t maxSurv)
                 break;
             }
 
-            AddSurvivorLocal(queued);
-            PushToMarkStackIfHasPointers(queued);
+            size_t size = AddSurvivorLocal(queued);
+            if (PushToMarkStackIfHasPointers(queued))
+            {
+                pointerBytes += size;
+            }
+
             continue;
         }
 
@@ -1848,8 +1864,11 @@ void SatoriRegion::ThreadLocalPropagateMarks(size_t maxSurv)
                     SetMarked(child);
                     if (SatoriObject* oldest = queue.Push(child))
                     {
-                        AddSurvivorLocal(oldest);
-                        PushToMarkStackIfHasPointers(oldest);
+                        size_t size = AddSurvivorLocal(oldest);
+                        if (PushToMarkStackIfHasPointers(oldest))
+                        {
+                            pointerBytes += size;
+                        }
                     }
                 }
             },
@@ -1913,10 +1932,25 @@ bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache, size_t* loca
     const size_t liveLimit = usableSize - Satori::REGION_SIZE_GRANULARITY / 100 * Satori::TLGC_MIN_FREE_PERCENT;
     const size_t maxSurv = liveLimit > (size_t)m_escapedSize ? liveLimit - (size_t)m_escapedSize : 0;
 
-    // Temporarily use m_occupancy to estimate surviving size.
-    // If we proceed with collection, m_occupancy will be recomputed anyways.
+    // A collection also costs per live object, whatever its size, and per pointer in the survivors.
+    // If the live objects are too many (see TLGC_MIN_WINDOW_PER_OBJECT) or the survivors have too much of pointers
+    // (see TLGC_MAX_POINTER_BYTES), the collection is not worth it.
+    // The escaped objects are known from the last collection, the survivors are counted while marking.
+    const size_t maxLiveCount = usableSize / Satori::TLGC_MIN_WINDOW_PER_OBJECT;
+    const size_t escapedCount = m_objCount > (int32_t)m_movableCountAtCollect ? m_objCount - m_movableCountAtCollect : 0;
+    const size_t maxCount = maxLiveCount > escapedCount ? maxLiveCount - escapedCount : 0;
+    const size_t maxPointerBytes = Satori::TLGC_MAX_POINTER_BYTES;
+    if (maxCount == 0)
+    {
+        return false;
+    }
+
+    // Temporarily use m_occupancy and m_objCount to estimate surviving size and count.
+    // If we proceed with collection, they will be recomputed anyways.
     size_t uncollectedOccupancy = m_occupancy;
+    int32_t uncollectedObjCount = m_objCount;
     m_occupancy = 0;
+    m_objCount = 0;
 
     // Objects have bits in the local bitmap only when they are marked here, thus it must be clean.
     // Only the part of the map that can have objects needs cleaning.
@@ -1931,6 +1965,7 @@ bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache, size_t* loca
     sc._unused1 = this;
     sc.rootCache = rootCache;
     sc.stackSlots = 0;
+    sc.pointerBytes = 0;
 
     if (SatoriUtil::IsConservativeMode())
         GCToEEInterface::GcScanCurrentStackRoots((promote_func*)MarkFn<true>, &sc);
@@ -1941,13 +1976,14 @@ bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache, size_t* loca
 
     // now recursively mark all the objects reachable from the stack roots.
  propagateMarks:
-    ThreadLocalPropagateMarks(maxSurv);
+    ThreadLocalPropagateMarks(maxSurv, maxCount, maxPointerBytes, sc.pointerBytes);
 
-    if (m_occupancy >= maxSurv)
+    if (m_occupancy >= maxSurv || (size_t)m_objCount >= maxCount || sc.pointerBytes >= maxPointerBytes)
     {
         // surviving set is too large.
         while (PopFromMarkStack()){};
         m_occupancy = uncollectedOccupancy;
+        m_objCount = uncollectedObjCount;
         return false;
     }
 
@@ -1961,7 +1997,7 @@ bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache, size_t* loca
         // - push to mark stack
         // - trace through reachable again to mark children that are now F-reachable
         ForEachFinalizableThreadLocal(
-            [this](SatoriObject* finalizable)
+            [this, &sc](SatoriObject* finalizable)
             {
                 _ASSERTE(((size_t)finalizable & Satori::FINALIZATION_PENDING) == 0);
                 if (!IsMarked(finalizable))
@@ -1978,8 +2014,12 @@ bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache, size_t* loca
                     {
                         // keep alive
                         SetMarked(finalizable);
-                        AddSurvivorLocal(finalizable);
-                        PushToMarkStackIfHasPointers(finalizable);
+                        size_t size = AddSurvivorLocal(finalizable);
+                        if (PushToMarkStackIfHasPointers(finalizable))
+                        {
+                            sc.pointerBytes += size;
+                        }
+
                         (size_t&)finalizable |= Satori::FINALIZATION_PENDING_ANY;
                         HasPendingFinalizables() = true;
                     }

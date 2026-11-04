@@ -142,6 +142,27 @@ namespace Satori
     // A thread-local collection proceeds only if at least this much of the region will be free after it.
     static const int TLGC_MIN_FREE_PERCENT = 70;
 
+    // The allocation window between thread-local collections is at least this long.
+    // It is sized to stay in the cache of a core that is shared by two threads, so that the memory that is reused
+    // after a collection is still there. Longer windows lose the cache, and since a collection that carries little
+    // costs little, there is nothing to gain from them.
+    static const size_t TLGC_BASE_WINDOW = 256 * 1024;
+
+    // A thread-local collection visits every object that is alive after the previous one - the escaped objects (they
+    // are only walked) and the survivors (they are also marked, updated and copied). That takes 10-20 ns per object,
+    // whatever its size, which is about what the regular GC spends on this much allocation.
+    // The window is longer by this much for every live object.
+    static const size_t TLGC_WINDOW_PER_OBJECT = 2 * 1024;
+
+    // A collection is not worth it when a region cannot give even this much of a window to every live object.
+    // The cost is then several times what the regular GC would spend on the same allocation. It is not worth it
+    // beyond that, but thread-local collections do not stop other threads, so some of the excess is still a gain.
+    static const size_t TLGC_MIN_WINDOW_PER_OBJECT = 512;
+
+    // The survivors that have pointers are scanned and updated by every collection, whatever their number.
+    // A collection that has to carry more than this much of them is not worth it.
+    static const size_t TLGC_MAX_POINTER_BYTES = 32 * 1024;
+
     // objects smaller than this go into regular region.
     static const int LARGE_OBJECT_THRESHOLD = 32 * 1024;
 

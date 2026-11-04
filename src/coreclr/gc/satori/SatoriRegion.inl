@@ -146,24 +146,21 @@ inline size_t SatoriRegion::GetAllocRemaining()
 
 inline size_t SatoriRegion::ComputeTlgcWindow()
 {
-    // Dyadic ("ruler-function") schedule: baseWindow << tzcnt(m_tlgcCount + 1).
-    // Half of collections use baseWindow, 1/4 use 2 * baseWindow, 1/8 use 4 * baseWindow, etc.,
-    // so every level of the cache hierarchy captures all scales that fit in it without knowing cache sizes.
-    DWORD scale;
-    BitScanForward64(&scale, (size_t)m_tlgcCount + 1);
-    size_t baseWindow = 4 * SatoriUtil::MinZeroInitSize();
-    size_t dyadicWindow = scale < 6 ? (baseWindow << scale) : Satori::REGION_SIZE_GRANULARITY;
-    dyadicWindow = min(dyadicWindow, (size_t)Satori::REGION_SIZE_GRANULARITY);
+    // Every collection visits all the objects that are alive after the previous one - the escaped ones and the survivors -
+    // so its cost grows with their number, not with their size. Scale up the window, so that this cost is spread over
+    // a proportional amount of allocation.
+    size_t liveFloor = (size_t)max(m_objCount, 0) * Satori::TLGC_WINDOW_PER_OBJECT;
 
-    // Scale up by total unrecoverable/live bytes (survivors + escaped + sub-quantum fragments)
-    // so at least ~75% of the window is free space (matching TLGC_MIN_FREE_PERCENT = 70),
-    // and by stack depth / root count so deep stacks do not scan on small windows.
+    // The objects that have escaped since then will be carried too. If much of the window escapes, extend it,
+    // instead of collecting early. (see ShouldCollectAtTlgcLimit)
     size_t escapedSinceCollect = (size_t)m_escapedSize > m_escapedSizeAtCollect ?
         (size_t)m_escapedSize - m_escapedSizeAtCollect : 0;
-    size_t unusableBytes = max((size_t)m_escapedSize, m_unusableInPrefix + escapedSinceCollect);
-    size_t liveFloor = unusableBytes * 4;
+    size_t escapeFloor = escapedSinceCollect * 4;
+
+    // And by stack depth / root count so deep stacks do not scan on small windows.
     size_t stackFloor = max(CurrentStackDepth() * 8, (size_t)m_lastStackSlots * 256);
-    return min((size_t)Satori::REGION_SIZE_GRANULARITY, max(dyadicWindow, max(liveFloor, stackFloor)));
+    return min((size_t)Satori::REGION_SIZE_GRANULARITY,
+        max(Satori::TLGC_BASE_WINDOW, max(max(liveFloor, escapeFloor), stackFloor)));
 }
 
 inline size_t SatoriRegion::ComputeTlgcAllocEnd(size_t minAllocSize, size_t allocBytes)
@@ -213,7 +210,7 @@ inline bool SatoriRegion::ShouldCollectAtTlgcLimit(size_t allocBytes)
             (size_t)m_escapedSize - m_escapedSizeAtCollect : 0;
         if (escapedSinceCollect * 4 > alreadyAllocated)
         {
-            // Too much of the current window escaped; let the live-size floor extend it instead of collecting early.
+            // Too much of the current window escaped; let the window extend (see ComputeTlgcWindow) instead of collecting early.
             return false;
         }
 
@@ -263,8 +260,8 @@ inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag, size_t al
     m_escapeFunc = EscapeFn;
     m_ownerThreadTag = threadTag;
     m_allocBytesAtCollect = allocBytes;
-    m_tlgcCount = 0;
     m_escapedSizeAtCollect = (uint32_t)m_escapedSize;
+    m_movableCountAtCollect = 0;
     m_allocBytesAtAttach = allocBytes;
     m_lastStackSlots = 0;
     VolatileStore(&m_generation, 0);
@@ -925,8 +922,8 @@ inline void SatoriRegion::RebaselineUsableIfStale(size_t allocBytes)
             // would include everything allocated before the GC, and the first window check would collect
             // the region that has just been emptied.
             m_allocBytesAtCollect = allocBytes;
-            m_tlgcCount = 0;
             m_escapedSizeAtCollect = (uint32_t)m_escapedSize;
+            m_movableCountAtCollect = 0;
             m_unusableInPrefix = 0;
         }
     }
@@ -1105,14 +1102,16 @@ inline void SatoriRegion::ClearEndLocal(SatoriObject* o, size_t size)
     m_localBitmap[bitmapIndex] &= ~mask;
 }
 
-// Accounts for an object that was just marked by a thread-local GC. The object must not be escaped.
-inline void SatoriRegion::AddSurvivorLocal(SatoriObject* o)
+// Accounts for an object that was just marked by a thread-local GC and returns its size. The object must not be escaped.
+inline size_t SatoriRegion::AddSurvivorLocal(SatoriObject* o)
 {
     _ASSERTE(!IsEscaped(o));
 
     size_t size = o->Size();
     m_occupancy += size;
+    m_objCount++;
     SetEndLocal(o, size);
+    return size;
 }
 
 // The size of an object that is marked and is not escaped. Does not read the object.
