@@ -61,8 +61,18 @@ public static class ThreadLocalCollectionEvents
         EscapedByteMarkers.Log.Begin(0);
         EscapedByteMarkers.Log.End();
         EscapedByteMarkers.Log.Pulse();
+
+        // The same goes for waiting. The first wait on a thread allocates a thread static holder that is published,
+        // and the calibration below waits for the probe, so the holder would be counted as escaped by the region.
+        probe.Ready.WaitOne(0);
+
         var retained = new byte[RegionSize / RegionAdvanceAllocationSize][];
         GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+
+        // A Checked runtime starts with a tiny finalization queue. When the collection above overflows it, the finalizer
+        // thread runs full collections until the queue has grown, and they would promote the region acquired below.
+        GC.WaitForPendingFinalizers();
+
         byte[] anchor = AcquireThreadLocalRegion();
         anchor = AcquireUnescapedRegion(anchor, retained, probe);
         nuint region = RegionFor(anchor);
@@ -112,7 +122,10 @@ public static class ThreadLocalCollectionEvents
         {
             probe.Ready.Reset();
             EscapedByteMarkers.Log.Begin(1);
-            AllocateTransientInRegion(anchor, RegionSize / 2);
+
+            // A thread-local collection comes after the window is allocated, which is at least 1 MB, and more when the
+            // region has many objects. Half of the region is not always enough to get one.
+            AllocateTransientInRegion(anchor, RegionSize);
             // Live readers may hold a partial block until more events arrive.
             // Keep the stream moving without allocating into the region under test.
             long deadline = Environment.TickCount64 + 30_000;
@@ -240,7 +253,10 @@ public static class ThreadLocalCollectionEvents
             Assert.Equal(0, source.EventsLost);
             Assert.Equal(1, scopes);
             Assert.Equal(-1, activeThread);
-            Assert.True(samples.Count >= 3, $"Expected repeated local collections; saw {samples.Count}.");
+            // The workload cannot leave the tracked 2 MB region and a thread-local GC window is at least 1 MB, so a region
+            // yields two collections. Two are what the checks below need: the first one sees the escaped bytes and a later
+            // one must not count them again.
+            Assert.True(samples.Count >= 2, $"Expected repeated local collections; saw {samples.Count}.");
 
             ulong expected = scenario switch
             {
