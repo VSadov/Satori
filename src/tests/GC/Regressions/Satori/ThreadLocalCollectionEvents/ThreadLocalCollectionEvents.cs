@@ -122,7 +122,10 @@ public static class ThreadLocalCollectionEvents
         {
             probe.Ready.Reset();
             EscapedByteMarkers.Log.Begin(1);
-            AllocateTransientInRegion(anchor, RegionSize / 2);
+
+            // A thread-local collection comes after the window is allocated, which is at least 1 MB, and more when the
+            // region has many objects. Half of the region is not always enough to get one.
+            AllocateTransientInRegion(anchor, RegionSize);
             // Live readers may hold a partial block until more events arrive.
             // Keep the stream moving without allocating into the region under test.
             long deadline = Environment.TickCount64 + 30_000;
