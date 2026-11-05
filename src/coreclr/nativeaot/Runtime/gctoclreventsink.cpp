@@ -248,7 +248,11 @@ void GCToCLREventSink::FireGCTrackingCheckpoint(uint64_t threadTag, uint64_t reg
 
 bool GCToCLREventSink::IsGCTrackingEnabled()
 {
+#ifdef FEATURE_EVENT_TRACE
     return EventEnabledGCTrackingLifecycle() || EventEnabledGCTrackingCheckpoint();
+#else
+    return false;
+#endif // FEATURE_EVENT_TRACE
 }
 
 void GCToCLREventSink::FirePinPlugAtGCTime(uint8_t* plugStart, uint8_t* plugEnd, uint8_t* gapBeforeSize)

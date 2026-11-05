@@ -321,7 +321,11 @@ void GCToCLREventSink::FireGCTrackingCheckpoint(uint64_t threadTag, uint64_t reg
 bool GCToCLREventSink::IsGCTrackingEnabled()
 {
     LIMITED_METHOD_CONTRACT;
+#ifdef FEATURE_EVENT_TRACE
     return EventEnabledGCTrackingLifecycle() || EventEnabledGCTrackingCheckpoint();
+#else
+    return false;
+#endif // FEATURE_EVENT_TRACE
 }
 
 void GCToCLREventSink::FireBGCBegin()

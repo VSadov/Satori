@@ -1655,9 +1655,10 @@ void SatoriRegion::PrepareTrackingDiagnostics()
 
 void SatoriRegion::ReportTrackingLifecycle(SatoriTrackingKind kind)
 {
-    m_tracking.ObserveEpoch(TrackingEventState());
+    uint64_t epoch = TrackingEventState();
+    m_tracking.ObserveEpoch(epoch);
     uint64_t sequence = m_tracking.NextSequence();
-    if (TrackingEventState() & 1)
+    if (epoch & 1)
     {
         GCToEEInterface::EventSink()->FireGCTrackingLifecycle(m_tracking.owner, static_cast<uint64_t>(Start()), m_tracking.lifetime,
             static_cast<uint64_t>(0), m_tracking.lastEpoch, sequence, static_cast<uint32_t>(kind),
