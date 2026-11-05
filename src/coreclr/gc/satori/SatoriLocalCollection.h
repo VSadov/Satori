@@ -80,9 +80,8 @@ struct SatoriLocalCollectionResult
     }
 };
 
-// Keep the allocation decision shared with the deterministic native test. In particular,
-// a limit-triggered rejection still retries, whereas an exhausted-span rejection does not.
-// Inline in the runtime so the adapter does not add a frame to stack-depth-based windows.
+// Limit-triggered rejections still retry allocation; exhausted-span rejections do not.
+// Keep inline to avoid adding a frame to stack-depth-based collection windows.
 template <typename TRegion>
 FORCEINLINE bool SatoriCollectAndRetry(TRegion* region, size_t allocBytes, size_t requestedBytes, SatoriLocalCollectionTrigger trigger)
 {

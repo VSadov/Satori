@@ -4,6 +4,9 @@
 #define FORCEINLINE inline
 #include "SatoriLocalCollection.h"
 #undef FORCEINLINE
+#ifdef SATORI_LOCAL_COLLECTION_TEST_LIBRARY
+#include "platformdefines.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -179,7 +182,11 @@ static int CheckProgress()
     return 15;
 }
 
+#ifdef SATORI_LOCAL_COLLECTION_TEST_LIBRARY
+extern "C" DLL_EXPORT int RunLocalCollectionOutcomes()
+#else
 int main()
+#endif
 {
     int cases = 0;
     for (uint32_t outcome = 0; outcome <= 3; outcome++)
