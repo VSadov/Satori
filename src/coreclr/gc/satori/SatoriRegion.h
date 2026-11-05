@@ -33,6 +33,7 @@
 #include "SatoriUtil.h"
 #include "SatoriObject.h"
 #include "SatoriPrefetchQueue.h"
+#include "SatoriTrackingState.h"
 
 class SatoriAllocator;
 class SatoriRegionQueue;
@@ -105,7 +106,7 @@ public:
     size_t UsableCapacity();
 
     void StartEscapeTrackingRelease(size_t threadTag, size_t allocBytes = 0, size_t minAllocSize = 0);
-    void StopEscapeTracking();
+    void StopEscapeTracking(SatoriTrackingReason reason = SatoriTrackingReason::OwnerDetach);
     // NB: called from the write barrier - must not touch vector registers or TLS.
     void StopEscapeTrackingFromBarrier();
     // Clears marks left by StopEscapeTrackingFromBarrier, if any.
@@ -118,13 +119,19 @@ public:
     // Per-thread history of escape tracking outcomes. A thread whose tracked regions keep
     // ending without a productive thread-local GC backs off and allocates some regions untracked.
     // Called by the owning thread when attaching an eligible region.
-    static bool ShouldStartEscapeTracking();
+    bool ShouldStartEscapeTracking();
     // Called by the owning thread when detaching a region that ran out of space while it was
     // tracked, or when it finds that the barrier stopped tracking because of too many escapes.
     // NB: not from the write barrier - uses TLS.
     // When outOfSpace is true, the region ran out of space. If no thread-local GC was even attempted in it,
     // that tells nothing about whether tracking pays off, so the history is left as is.
     static void OnEscapeTrackingEnded(bool outOfSpace = false);
+    static void UpdateTrackingEventState();
+    FORCEINLINE static uint64_t TrackingEventState();
+    void FlushTrackingStop();
+    SatoriTrackingReason CollectionTrackingStopReason() { return m_tracking.reason; }
+    void BeginTrackingRebuild();
+    void EndTrackingRebuild();
 
     // Thread-local GC paid off in this region: in the current accounting period it returned at least
     // REGION_SIZE_GRANULARITY / 4 of usable space to the free lists. (reclaimed fragments too small to reuse do not count)
@@ -132,7 +139,7 @@ public:
 
     // Attaching starts an accounting period for the gen1 budget. (see TakeBudgetCharge)
     void AttachToAllocatingOwner(SatoriRegion** attachementPoint);
-    void DetachFromAlocatingOwnerRelease();
+    void DetachFromAlocatingOwnerRelease(SatoriTrackingReason reason = SatoriTrackingReason::OwnerDetach);
     // Returns how much of the gen1 budget the region spent in the current accounting period.
     // Called when the region is handed to the recycler. (see SatoriRecycler::AddEphemeralRegion)
     size_t TakeBudgetCharge(bool gcIsStarting);
@@ -432,6 +439,7 @@ private:
             // TODO: VS can fold with m_doNotSweep?
             bool m_hasMarksSet;
 
+            SatoriTrackingState m_tracking;
             size_t m_freeListCapacities[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeListTails[Satori::FREELIST_COUNT];
@@ -444,6 +452,10 @@ private:
     SatoriObject m_firstObject;
 
 private:
+    static uint64_t s_trackingEventState;
+    void PrepareTrackingDiagnostics();
+    void ReportTrackingLifecycle(SatoriTrackingKind kind);
+    void ReportTrackingCheckpoint(SatoriTrackingCheckpoint kind, uint32_t collectionIndex = 0, bool hasCollectionIndex = false);
     static size_t CurrentStackDepth();
     size_t ComputeTlgcWindow();
     size_t ComputeTlgcAllocEnd(size_t minAllocSize, size_t allocBytes);

@@ -29,6 +29,7 @@
 
 #include "common.h"
 #include "../gc.h"
+#include "SatoriTrackingState.h"
 
 class SatoriRegion;
 class SatoriRecycler;
@@ -48,7 +49,7 @@ public:
     }
 
     // stop allocating on all associated regions and optionally detach from the context.
-    void Deactivate(SatoriRecycler* recycler, bool detach);
+    void Deactivate(SatoriRecycler* recycler, bool detach, SatoriTrackingReason reason = SatoriTrackingReason::GlobalGCDetach);
     SatoriObject* FinishAllocFromShared();
 
 private:

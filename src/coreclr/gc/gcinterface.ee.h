@@ -195,6 +195,19 @@ public:
     // and after publishing pending finalizers.
     virtual
     void FireGCThreadLocalCollection(uint32_t count, bool collected, uint64_t occupancyBefore, uint64_t occupancyAfter, double durationNs, uint64_t escapedBytesBefore, uint64_t escapedBytesAfter) PURE_VIRTUAL
+    // Unreleased Satori diagnostics; requires matching GC/EE builds, retaining EE major version 6.
+    virtual
+    void FireGCTrackingLifecycle(uint64_t threadTag, uint64_t regionID, uint64_t lifetime, uint64_t relatedLifetime,
+        uint64_t epoch, uint64_t sequence, uint32_t kind, uint32_t reason, uint32_t flags,
+        uint32_t backoffBefore, uint32_t backoffAfter, uint32_t skipBefore, uint32_t skipAfter,
+        bool attempted, bool productive) PURE_VIRTUAL
+    virtual
+    void FireGCTrackingCheckpoint(uint64_t threadTag, uint64_t regionID, uint64_t lifetime,
+        uint64_t epochBegin, uint64_t epochEnd, uint64_t sequence, uint32_t segment, uint32_t kind, uint32_t flags,
+        bool hasCollectionIndex, uint32_t collectionIndex, uint32_t escapeFnCalls, uint32_t escapeRecursivelyCalls,
+        uint32_t newlyEscapedObjects, uint32_t seedObjects) PURE_VIRTUAL
+    virtual
+    bool IsGCTrackingEnabled() PURE_VIRTUAL
 };
 
 // This interface provides the interface that the GC will use to speak to the rest

@@ -441,7 +441,7 @@ void SatoriGC::FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap
     // this is only called when thread is terminating and about to clear its context.
     // NB: it is called on the terminating thread itself.
     SatoriAllocationContext* context = (SatoriAllocationContext*)acontext;
-    context->Deactivate(m_heap->Recycler(), /*detach*/ true);
+    context->Deactivate(m_heap->Recycler(), /*detach*/ true, SatoriTrackingReason::ThreadExit);
     m_heap->Allocator()->PublishAllocatedBytesOnThreadExit(context);
 }
 
@@ -752,6 +752,7 @@ bool SatoriGC::IsInFrozenSegment(Object* object)
 void SatoriGC::ControlEvents(GCEventKeyword keyword, GCEventLevel level)
 {
     GCEventStatus::Set(GCEventProvider_Default, keyword, level);
+    SatoriRegion::UpdateTrackingEventState();
 }
 
 void SatoriGC::ControlPrivateEvents(GCEventKeyword keyword, GCEventLevel level)
