@@ -61,8 +61,18 @@ public static class ThreadLocalCollectionEvents
         EscapedByteMarkers.Log.Begin(0);
         EscapedByteMarkers.Log.End();
         EscapedByteMarkers.Log.Pulse();
+
+        // The same goes for waiting. The first wait on a thread allocates a thread static holder that is published,
+        // and the calibration below waits for the probe, so the holder would be counted as escaped by the region.
+        probe.Ready.WaitOne(0);
+
         var retained = new byte[RegionSize / RegionAdvanceAllocationSize][];
         GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+
+        // A Checked runtime starts with a tiny finalization queue. When the collection above overflows it, the finalizer
+        // thread runs full collections until the queue has grown, and they would promote the region acquired below.
+        GC.WaitForPendingFinalizers();
+
         byte[] anchor = AcquireThreadLocalRegion();
         anchor = AcquireUnescapedRegion(anchor, retained, probe);
         nuint region = RegionFor(anchor);
