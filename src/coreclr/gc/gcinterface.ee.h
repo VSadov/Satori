@@ -195,6 +195,13 @@ public:
     // and after publishing pending finalizers.
     virtual
     void FireGCThreadLocalCollection(uint32_t count, bool collected, uint64_t occupancyBefore, uint64_t occupancyAfter, double durationNs, uint64_t escapedBytesBefore, uint64_t escapedBytesAfter) PURE_VIRTUAL
+
+    // Added in EE_INTERFACE_MAJOR_VERSION 6
+    virtual
+    void FireGCThreadLocalCollectionOutcome(uint64_t threadTag, uint64_t regionId, bool hasCollectionIndex,
+        uint32_t collectionIndex, uint64_t requestedBytes, uint32_t trigger, uint32_t outcome, uint32_t retry,
+        uint64_t allocationBytes, uint64_t allocationBytesBaseline, uint32_t progressStatus,
+        uint64_t usableBefore, uint64_t usableAfter) PURE_VIRTUAL
 };
 
 // This interface provides the interface that the GC will use to speak to the rest

@@ -260,6 +260,7 @@ inline void SatoriRegion::StartEscapeTrackingRelease(size_t threadTag, size_t al
     m_escapeFunc = EscapeFn;
     m_ownerThreadTag = threadTag;
     m_allocBytesAtCollect = allocBytes;
+    m_localCollectionProgressStatus = SatoriLocalCollectionProgressStatus::Available;
     m_escapedSizeAtCollect = (uint32_t)m_escapedSize;
     m_movableCountAtCollect = 0;
     m_allocBytesAtAttach = allocBytes;
@@ -909,6 +910,7 @@ inline void SatoriRegion::RebaselineUsableIfStale(size_t allocBytes)
 {
     if (m_usableBaselineStale)
     {
+        m_localCollectionProgressStatus = SatoriLocalCollectionProgressStatus::AccountingRebased;
         // the GC deactivated the region, the owner cannot be in the middle of allocating from it.
         _ASSERTE(!IsAllocating());
         m_usableAtAttach = UsableCapacity();
@@ -926,6 +928,23 @@ inline void SatoriRegion::RebaselineUsableIfStale(size_t allocBytes)
             m_movableCountAtCollect = 0;
             m_unusableInPrefix = 0;
         }
+    }
+}
+
+inline void SatoriRegion::ObserveAllocationClaim(size_t allocBytes, size_t claimed)
+{
+    if (IsEscapeTracking())
+    {
+        m_localCollectionProgressStatus = SatoriProgressAfterClaim(allocBytes, claimed, m_localCollectionProgressStatus);
+    }
+}
+
+inline void SatoriRegion::ObserveAllocationReturn(size_t allocBytes)
+{
+    if (IsEscapeTracking())
+    {
+        m_localCollectionProgressStatus = SatoriProgressStatus(allocBytes, m_allocBytesAtCollect,
+            m_localCollectionProgressStatus);
     }
 }
 

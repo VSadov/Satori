@@ -1744,13 +1744,18 @@ static bool ThreadLocalCollectionEventEnabled()
     return EVENT_ENABLED(GCThreadLocalCollection);
 }
 
-bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
+SatoriLocalCollectionResult SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
 {
     size_t escapedBytesBefore = m_escapedSize;
 
+    SatoriLocalCollectionResult result{ SatoriLocalCollectionOutcome::EscapedLimit, 0 };
+    result.allocationBytes = allocBytes;
+    result.allocationBytesBaseline = m_allocBytesAtCollect;
+    result.progressStatus = SatoriProgressStatus(allocBytes, m_allocBytesAtCollect, m_localCollectionProgressStatus);
+    result.usableBefore = result.usableAfter = UsableCapacity();
     if (m_escapedSize > Satori::MAX_ESCAPE_SIZE)
     {
-        return false;
+        return result;
     }
 
     size_t minProgress = atTlgcLimit ? 2 * SatoriUtil::MinZeroInitSize() : Satori::REGION_SIZE_GRANULARITY / 4;
@@ -1759,10 +1764,12 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
         // this is too soon. last collection did not buy us as much as we wanted
         // either due to fragmentation or unfortunate allocation pattern in this thread.
         // we will not collect this region, lest it keeps coming back.
-        return false;
+        result.outcome = SatoriLocalCollectionOutcome::InsufficientProgress;
+        return result;
     }
 
     m_allocBytesAtCollect = allocBytes;
+    m_localCollectionProgressStatus = SatoriLocalCollectionProgressStatus::Available;
     t_trackingHistory.attempted = true;
 
     size_t count = Recycler()->IncrementGen0Count();
@@ -1807,6 +1814,8 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
     // the local bitmap goes away with this frame
     m_localBitmap = nullptr;
 
+    result.usableAfter = UsableCapacity();
+
     // schedule pending finalizables if we have them
     // must be after compaction, since pend may escape objects.
     if (HasPendingFinalizables())
@@ -1823,7 +1832,30 @@ bool SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
         FIRE_EVENT(GCThreadLocalCollection, (uint32_t)count, shouldCollect, (uint64_t)occupancyBefore, (uint64_t)m_occupancy, durationNs, (uint64_t)escapedBytesBefore, (uint64_t)escapedBytesAfter);
     }
 
-    return shouldCollect;
+    result.outcome = shouldCollect ? SatoriLocalCollectionOutcome::Completed : SatoriLocalCollectionOutcome::SurvivalAbort;
+    result.collectionIndex = static_cast<uint32_t>(count);
+    return result;
+}
+
+void SatoriRegion::ReportThreadLocalCollection(const SatoriLocalCollectionResult& result, size_t requestedBytes,
+    SatoriLocalCollectionTrigger trigger, SatoriLocalCollectionRetry retry)
+{
+#ifdef BUILD_AS_STANDALONE
+    if (g_runtimeSupportedVersion.MajorVersion < 6)
+    {
+        return;
+    }
+#endif
+
+    if (EVENT_ENABLED(GCThreadLocalCollectionOutcome))
+    {
+        FIRE_EVENT(GCThreadLocalCollectionOutcome,
+            (uint64_t)SatoriUtil::GetCurrentThreadTag(), (uint64_t)Start(),
+            result.HasCollectionIndex(), result.collectionIndex, (uint64_t)requestedBytes,
+            (uint32_t)trigger, (uint32_t)result.outcome, (uint32_t)retry,
+            result.allocationBytes, result.allocationBytesBaseline, static_cast<uint32_t>(result.progressStatus),
+            result.usableBefore, result.usableAfter);
+    }
 }
 
 // Transitively marks thread-local objects reachable from the mark stack.
