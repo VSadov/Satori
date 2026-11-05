@@ -1515,6 +1515,8 @@
                         <data name="OccupancyBefore" inType="win:UInt64" />
                         <data name="OccupancyAfter" inType="win:UInt64" />
                         <data name="DurationNs" inType="win:Double" />
+                        <data name="EscapedBytesBefore" inType="win:UInt64" />
+                        <data name="EscapedBytesAfter" inType="win:UInt64" />
 
                         <UserData>
                             <GCThreadLocalCollection xmlns="myNs">
@@ -1524,6 +1526,8 @@
                                 <OccupancyBefore> %4 </OccupancyBefore>
                                 <OccupancyAfter> %5 </OccupancyAfter>
                                 <DurationNs> %6 </DurationNs>
+                                <EscapedBytesBefore> %7 </EscapedBytesBefore>
+                                <EscapedBytesAfter> %8 </EscapedBytesAfter>
                             </GCThreadLocalCollection>
                         </UserData>
                     </template>
@@ -8675,7 +8679,7 @@
                 <string id="RuntimePublisher.GCFitBucketInfoEventMessage" value="ClrInstanceID=%1;%nBucketKind=%2;%nTotalSize=%3;%nCount=%4" />
                 <string id="RuntimePublisher.GCTrackingCheckpointEventMessage" value="ClrInstanceID=%1;%nThreadTag=%2;%nRegionID=%3;%nLifetime=%4;%nEpochBegin=%5;%nEpochEnd=%6;%nSequence=%7;%nSegment=%8;%nKind=%9;%nFlags=%10;%nHasCollectionIndex=%11;%nCollectionIndex=%12;%nEscapeFnCalls=%13;%nEscapeRecursivelyCalls=%14;%nNewlyEscapedObjects=%15;%nSeedObjects=%16" />
                 <string id="RuntimePublisher.GCTrackingLifecycleEventMessage" value="ClrInstanceID=%1;%nThreadTag=%2;%nRegionID=%3;%nLifetime=%4;%nRelatedLifetime=%5;%nEpoch=%6;%nSequence=%7;%nKind=%8;%nReason=%9;%nFlags=%10;%nBackoffBefore=%11;%nBackoffAfter=%12;%nSkipBefore=%13;%nSkipAfter=%14;%nAttempted=%15;%nProductive=%16" />
-                <string id="RuntimePublisher.GCThreadLocalCollectionEventMessage" value="ClrInstanceID=%1;%nCount=%2;%nCollected=%3;%nOccupancyBefore=%4;%nOccupancyAfter=%5;%nDurationNs=%6" />
+                <string id="RuntimePublisher.GCThreadLocalCollectionEventMessage" value="ClrInstanceID=%1;%nCount=%2;%nCollected=%3;%nOccupancyBefore=%4;%nOccupancyAfter=%5;%nDurationNs=%6;%nEscapedBytesBefore=%7;%nEscapedBytesAfter=%8" />
                 <string id="RuntimePublisher.FinalizeObjectEventMessage" value="TypeID=%1;%nObjectID=%2;%nClrInstanceID=%3" />
                 <string id="RuntimePublisher.GCTriggeredEventMessage" value="Reason=%1" />
                 <string id="RuntimePublisher.PinObjectAtGCTimeEventMessage" value="HandleID=%1;%nObjectID=%2;%nObjectSize=%3;%nTypeName=%4;%n;%nClrInstanceID=%5" />

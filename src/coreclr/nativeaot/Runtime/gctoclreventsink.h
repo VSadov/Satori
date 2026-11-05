@@ -93,7 +93,7 @@ public:
     void FirePrvSetGCHandle(void *handleID, void *objectID, uint32_t kind, uint32_t generation);
     void FireDestroyGCHandle(void *handleID);
     void FirePrvDestroyGCHandle(void *handleID);
-    void FireGCThreadLocalCollection(uint32_t count, bool collected, uint64_t occupancyBefore, uint64_t occupancyAfter, double durationNs);
+    void FireGCThreadLocalCollection(uint32_t count, bool collected, uint64_t occupancyBefore, uint64_t occupancyAfter, double durationNs, uint64_t escapedBytesBefore, uint64_t escapedBytesAfter);
     void FireGCTrackingLifecycle(uint64_t threadTag, uint64_t regionID, uint64_t lifetime, uint64_t relatedLifetime,
         uint64_t epoch, uint64_t sequence, uint32_t kind, uint32_t reason, uint32_t flags,
         uint32_t backoffBefore, uint32_t backoffAfter, uint32_t skipBefore, uint32_t skipAfter,

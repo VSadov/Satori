@@ -265,7 +265,7 @@ else  ;FEATURE_SATORI_GC
 ;   rcx - dest address 
 ;   rdx - object
 ;
-LEAF_ENTRY RhpCheckedAssignRef, _TEXT
+LEAF_ENTRY_ALIGN64 RhpCheckedAssignRef
 
     ; See if dst is in GCHeap
         mov     rax, [g_card_bundle_table] ; fetch the page byte map
@@ -278,13 +278,13 @@ NotInHeap:
 ALTERNATE_ENTRY RhpCheckedAssignRefAVLocation
     mov     [rcx], rdx
     ret
-LEAF_END RhpCheckedAssignRef, _TEXT
+LEAF_END_ALIGN64 RhpCheckedAssignRef
 
 ;
 ;   rcx - dest address 
 ;   rdx - object
 ;
-LEAF_ENTRY RhpAssignRef, _TEXT
+LEAF_ENTRY_ALIGN64 RhpAssignRef
 
 ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
     ; check if src is in heap
@@ -449,7 +449,7 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         pop     rcx
         pop     rsp
         jmp     AssignAndMarkCards
-LEAF_END RhpAssignRef, _TEXT
+LEAF_END_ALIGN64 RhpAssignRef
 
 LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
     ;; Setup rax with the new object for the exchange, that way it will automatically hold the correct result
