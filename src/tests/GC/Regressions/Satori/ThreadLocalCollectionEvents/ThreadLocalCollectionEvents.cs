@@ -240,7 +240,10 @@ public static class ThreadLocalCollectionEvents
             Assert.Equal(0, source.EventsLost);
             Assert.Equal(1, scopes);
             Assert.Equal(-1, activeThread);
-            Assert.True(samples.Count >= 3, $"Expected repeated local collections; saw {samples.Count}.");
+            // The workload cannot leave the tracked 2 MB region and a thread-local GC window is at least 1 MB, so a region
+            // yields two collections. Two are what the checks below need: the first one sees the escaped bytes and a later
+            // one must not count them again.
+            Assert.True(samples.Count >= 2, $"Expected repeated local collections; saw {samples.Count}.");
 
             ulong expected = scenario switch
             {
