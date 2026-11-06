@@ -46,6 +46,8 @@
 #include "SatoriFinalizationQueue.h"
 #include "../gcscan.h"
 
+#include <stdio.h>
+
 //#pragma optimize("", off)
 
 #ifdef memcpy
@@ -53,6 +55,130 @@
 #endif //memcpy
 
 static const int MIN_GEN1_BUDGET = 2 * Satori::REGION_SIZE_GRANULARITY;
+
+// (experimental) statistics of concurrent marking, summed over all threads that mark.
+static volatile int64_t s_markStatCalls;
+static volatile int64_t s_markStatTicks;
+static volatile int64_t s_markStatSlots;
+static volatile int64_t s_markStatChildren;
+static volatile int64_t s_markStatTracked;
+static volatile int64_t s_markStatSeen;
+static volatile int64_t s_markStatMarked;
+static volatile int64_t s_markStatWindows;
+
+struct MarkStats
+{
+    int64_t startTicks;
+    int64_t slots;
+    // not null and not external
+    int64_t children;
+    // in a thread local region, cannot be marked
+    int64_t tracked;
+    // already marked or older
+    int64_t seen;
+    int64_t marked;
+    // marked children that are in a different 4K window than the child marked before
+    int64_t windows;
+    size_t lastWindow;
+    bool enabled;
+
+    MarkStats(bool enable) :
+        startTicks(enable ? SatoriUtil::GetTimeStamp() : 0),
+        slots(0), children(0), tracked(0), seen(0), marked(0), windows(0), lastWindow(0), enabled(enable)
+    {
+    }
+
+    ~MarkStats()
+    {
+        if (enabled)
+        {
+            Interlocked::ExchangeAdd64(&s_markStatTicks, SatoriUtil::GetTimeStamp() - startTicks);
+            Interlocked::ExchangeAdd64(&s_markStatCalls, (int64_t)1);
+            Interlocked::ExchangeAdd64(&s_markStatSlots, slots);
+            Interlocked::ExchangeAdd64(&s_markStatChildren, children);
+            Interlocked::ExchangeAdd64(&s_markStatTracked, tracked);
+            Interlocked::ExchangeAdd64(&s_markStatSeen, seen);
+            Interlocked::ExchangeAdd64(&s_markStatMarked, marked);
+            Interlocked::ExchangeAdd64(&s_markStatWindows, windows);
+        }
+    }
+};
+
+static void PrintMarkStats()
+{
+    double ns = 1e9 / (double)SatoriUtil::GetTimeStampFrequency() * (double)s_markStatTicks;
+    double marked = (double)s_markStatMarked;
+    fprintf(stderr,
+        "[satori mark] calls=%lld time=%.3fs slots=%lld children=%lld tracked=%lld seen=%lld marked=%lld "
+        "newWindow=%.1f%% ns/marked=%.1f ns/slot=%.1f\n",
+        (long long)s_markStatCalls, ns / 1e9, (long long)s_markStatSlots, (long long)s_markStatChildren,
+        (long long)s_markStatTracked, (long long)s_markStatSeen, (long long)s_markStatMarked,
+        marked > 0 ? 100.0 * (double)s_markStatWindows / marked : 0.0,
+        marked > 0 ? ns / marked : 0.0,
+        s_markStatSlots > 0 ? ns / (double)s_markStatSlots : 0.0);
+    fflush(stderr);
+}
+
+// (experimental) SatoriPrefetchQueue with the depth chosen at run time (a power of 2, up to MAX_DEPTH).
+class SatoriMarkRing
+{
+public:
+    static constexpr int MAX_DEPTH = 64;
+
+    SatoriMarkRing(int depth)
+        : m_depth(depth), m_head(0), m_count(0)
+    {
+        _ASSERTE(depth > 0 && depth <= MAX_DEPTH && (depth & (depth - 1)) == 0);
+    }
+
+    FORCEINLINE SatoriObject* Push(SatoriObject* o)
+    {
+        SatoriUtil::Prefetch(o);
+        if (m_count == m_depth)
+        {
+            SatoriObject* oldest = m_items[m_head];
+            m_items[m_head] = o;
+            m_head = (m_head + 1) & (m_depth - 1);
+            return oldest;
+        }
+
+        m_items[(m_head + m_count) & (m_depth - 1)] = o;
+        m_count++;
+        return nullptr;
+    }
+
+    FORCEINLINE SatoriObject* Pop()
+    {
+        if (m_count == 0)
+        {
+            return nullptr;
+        }
+
+        SatoriObject* oldest = m_items[m_head];
+        m_head = (m_head + 1) & (m_depth - 1);
+        m_count--;
+        return oldest;
+    }
+
+private:
+    SatoriObject* m_items[MAX_DEPTH];
+    int m_depth;
+    int m_head;
+    int m_count;
+};
+
+static int MarkRingDepth()
+{
+    int depth = SatoriUtil::MarkRing();
+    depth = max(1, min(depth, SatoriMarkRing::MAX_DEPTH));
+    // round down to a power of 2
+    while (depth & (depth - 1))
+    {
+        depth &= depth - 1;
+    }
+
+    return depth;
+}
 
 // Publishes the barrier state to the barriers via the g_write_watch_table slot.
 void ToggleWriteBarrier(int barrierState, bool eeSuspended)
@@ -190,6 +316,11 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 void SatoriRecycler::ShutDown()
 {
     m_activeWorkerFn = nullptr;
+
+    if (SatoriUtil::IsMarkStatsEnabled())
+    {
+        PrintMarkStats();
+    }
 }
 
 /* static */
@@ -2467,7 +2598,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
 
     // Newly marked children go through a prefetch queue. When a child comes out, its type is likely in cache.
     // Children without references are done at that point, only the rest go to dstChunk to be scanned.
-    SatoriPrefetchQueue<8> childQueue;
+    SatoriMarkRing childQueue(MarkRingDepth());
 
     const int condemnedGeneration = m_condemnedGeneration;
 
@@ -2491,23 +2622,90 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         }
     };
 
-    auto markChildFn = [&](SatoriObject** ref)
+    const int markAhead = SatoriUtil::MarkAhead();
+    const int markAheadKind = SatoriUtil::MarkAheadKind();
+    MarkStats stats(SatoriUtil::IsMarkStatsEnabled());
+
+    // Looks at a reference field that is going to be visited soon and starts bringing in what marking its child would touch.
+    // NB: must not touch what marking would not. A thread local region has its bitmap modified by the owner thread.
+    auto prefetchChildFn = [&](SatoriObject** ref)
     {
+        if (markAheadKind & 8)
+        {
+            SatoriUtil::Prefetch((char*)ref + 256);
+        }
+
         SatoriObject* child = VolatileLoadWithoutBarrier(ref);
         if (child && !child->IsExternal())
         {
+            SatoriRegion* childRegion = child->ContainingRegion();
+            if (!childRegion->MaybeEscapeTrackingAcquire() && childRegion->Generation() <= condemnedGeneration)
+            {
+                if (markAheadKind & 2)
+                {
+                    childRegion->PrefetchForSetMarkedAtomic(child, /* forWrite */ true);
+                }
+                else if (markAheadKind & 1)
+                {
+                    childRegion->PrefetchForSetMarkedAtomic(child, /* forWrite */ false);
+                }
+
+                if (markAheadKind & 4)
+                {
+                    SatoriUtil::Prefetch(child);
+                }
+            }
+        }
+    };
+
+    auto markChildFn = [&](SatoriObject** ref)
+    {
+        SatoriObject* child = VolatileLoadWithoutBarrier(ref);
+        if (stats.enabled)
+        {
+            stats.slots++;
+        }
+
+        if (child && !child->IsExternal())
+        {
+            if (stats.enabled)
+            {
+                stats.children++;
+            }
+
             SatoriRegion* childRegion = child->ContainingRegion();
             if (!childRegion->MaybeEscapeTrackingAcquire())
             {
                 if (!child->IsMarkedOrOlderThan(condemnedGeneration))
                 {
                     child->SetMarkedAtomic();
+                    if (stats.enabled)
+                    {
+                        stats.marked++;
+                        size_t window = child->Start() >> 12;
+                        if (window != stats.lastWindow)
+                        {
+                            stats.windows++;
+                            stats.lastWindow = window;
+                        }
+                    }
+
                     if (SatoriObject* oldest = childQueue.Push(child))
                     {
                         processChild(oldest);
                     }
                 }
+                else if (stats.enabled)
+                {
+                    stats.seen++;
+                }
+
                 return;
+            }
+
+            if (stats.enabled)
+            {
+                stats.tracked++;
             }
 
             // cannot mark the child in a thread local region. just mark the ref as dirty to visit later.
@@ -2544,7 +2742,14 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
 
             srcChunk = nullptr;
             // mark children in the range
-            o->ForEachObjectRef(markChildFn, o->Size(), start, end, /* includeCollectibleAllocator */ true);
+            if (markAhead > 0)
+            {
+                o->ForEachObjectRefAhead(markChildFn, prefetchChildFn, markAhead, o->Size(), start, end, /* includeCollectibleAllocator */ true);
+            }
+            else
+            {
+                o->ForEachObjectRef(markChildFn, o->Size(), start, end, /* includeCollectibleAllocator */ true);
+            }
         }
         else
         {
@@ -2583,7 +2788,14 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
                     continue;
                 }
 
-                o->ForEachObjectRef(markChildFn, size, /* includeCollectibleAllocator */ true);
+                if (markAhead > 0)
+                {
+                    o->ForEachObjectRefAhead(markChildFn, prefetchChildFn, markAhead, size, /* includeCollectibleAllocator */ true);
+                }
+                else
+                {
+                    o->ForEachObjectRef(markChildFn, size, /* includeCollectibleAllocator */ true);
+                }
             }
         }
 
@@ -5345,4 +5557,14 @@ void SatoriRecycler::UpdateGcCounters(int64_t blockingStart)
 
     m_percentTimeInGcSinceLastGc = timeSinceLastGcEnded != 0 ? (int)(totalTimeInCurrentGc * 100 / timeSinceLastGcEnded) : 0;
     m_totalTimeAtLastGcEnd = osNow;
+
+    if (SatoriUtil::IsMarkStatsEnabled())
+    {
+        // temporary: shutdown may not run, so report the totals so far once in a while.
+        static int s_gcCount;
+        if ((++s_gcCount & 63) == 0)
+        {
+            PrintMarkStats();
+        }
+    }
 }

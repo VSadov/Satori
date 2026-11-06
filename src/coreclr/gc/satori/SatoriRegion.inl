@@ -1010,6 +1010,22 @@ inline void SatoriRegion::SetMarkedAtomic(SatoriObject* o)
 #endif
 }
 
+// Brings the bitmap word that has the mark bit of o closer, ahead of SetMarkedAtomic.
+inline void SatoriRegion::PrefetchForSetMarkedAtomic(SatoriObject* o, bool forWrite)
+{
+    size_t word = o->Start();
+    size_t bitmapIndex = (word >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
+    void* addr = (void*)&m_bitmap[bitmapIndex];
+    if (forWrite)
+    {
+        SatoriUtil::PrefetchW(addr);
+    }
+    else
+    {
+        SatoriUtil::Prefetch(addr);
+    }
+}
+
 inline void SatoriRegion::ClearMarked(SatoriObject* o)
 {
     _ASSERTE(o->SameRegion(this));

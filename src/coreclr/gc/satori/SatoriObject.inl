@@ -490,4 +490,133 @@ inline void SatoriObject::ForEachObjectRef(F lambda, size_t size, size_t start, 
     }
 }
 
+// (experimental) Same as ForEachObjectRef, but also calls "prefetch" with the location of the reference fields
+// that will be visited soon - "distance" fields ahead of the current one within a run of reference fields.
+// The first "distance" fields of every run are reported before the run starts.
+// The locations are always actual reference fields, so a lookahead can safely read them.
+// Arrays of structs do not get a lookahead.
+template <typename F, typename P>
+inline void SatoriObject::ForEachObjectRefAhead(F lambda, P prefetch, size_t distance, size_t size, bool includeCollectibleAllocator)
+{
+    _ASSERTE(size == Size());
+    MethodTable* mt = RawGetMethodTable();
+
+    if (mt->ContainsGCPointers() && (ptrdiff_t)CGCDesc::GetCGCDescFromMT(mt)->GetNumSeries() < 0)
+    {
+        ForEachObjectRefCore(mt, size, lambda, includeCollectibleAllocator);
+        return;
+    }
+
+    if (includeCollectibleAllocator)
+    {
+        ReportCollectibleAllocator(mt, lambda);
+    }
+
+    if (!mt->ContainsGCPointers())
+    {
+        return;
+    }
+
+    CGCDesc* map = CGCDesc::GetCGCDescFromMT(mt);
+    CGCDescSeries* cur = map->GetHighestSeries();
+    CGCDescSeries* last = map->GetLowestSeries();
+
+    do
+    {
+        size_t refPtr = (size_t)this + cur->GetSeriesOffset();
+        // series size is offset by the object size, so need to compensate for that.
+        size_t refPtrStop = refPtr + size + cur->GetSeriesSize();
+
+        size_t ahead = refPtr;
+        size_t aheadStop = min(refPtr + distance * sizeof(size_t), refPtrStop);
+        for (; ahead < aheadStop; ahead += sizeof(size_t))
+        {
+            prefetch((SatoriObject**)ahead);
+        }
+
+        while (refPtr < refPtrStop)
+        {
+            if (ahead < refPtrStop)
+            {
+                prefetch((SatoriObject**)ahead);
+                ahead += sizeof(size_t);
+            }
+
+            lambda((SatoriObject**)refPtr);
+            refPtr += sizeof(size_t);
+        }
+
+        cur--;
+    } while (cur >= last);
+}
+
+template <typename F, typename P>
+inline void SatoriObject::ForEachObjectRefAhead(F lambda, P prefetch, size_t distance, size_t size, size_t start, size_t end, bool includeCollectibleAllocator)
+{
+    _ASSERTE(size == Size());
+    MethodTable* mt = RawGetMethodTable();
+
+    if (mt->ContainsGCPointers() && (ptrdiff_t)CGCDesc::GetCGCDescFromMT(mt)->GetNumSeries() < 0)
+    {
+        ForEachObjectRef(lambda, size, start, end, includeCollectibleAllocator);
+        return;
+    }
+
+    // report the allocator once - with the range that includes the start of the object.
+    if (includeCollectibleAllocator && start <= Start())
+    {
+        ReportCollectibleAllocator(mt, lambda);
+    }
+
+    if (!mt->ContainsGCPointers())
+    {
+        return;
+    }
+
+    CGCDesc* map = CGCDesc::GetCGCDescFromMT(mt);
+    CGCDescSeries* cur = map->GetHighestSeries();
+    CGCDescSeries* last = map->GetLowestSeries();
+
+    do
+    {
+        size_t refPtr = (size_t)this + cur->GetSeriesOffset();
+        // series size is offset by the object size, so need to compensate for that.
+        size_t refPtrStop = refPtr + size + cur->GetSeriesSize();
+
+        bool reachedEnd = refPtrStop >= end;
+        if (reachedEnd)
+        {
+            refPtrStop = end;
+        }
+
+        refPtr = max(refPtr, start);
+
+        size_t ahead = refPtr;
+        size_t aheadStop = min(refPtr + distance * sizeof(size_t), refPtrStop);
+        for (; ahead < aheadStop; ahead += sizeof(size_t))
+        {
+            prefetch((SatoriObject**)ahead);
+        }
+
+        while (refPtr < refPtrStop)
+        {
+            if (ahead < refPtrStop)
+            {
+                prefetch((SatoriObject**)ahead);
+                ahead += sizeof(size_t);
+            }
+
+            lambda((SatoriObject**)refPtr);
+            refPtr += sizeof(size_t);
+        }
+
+        if (reachedEnd)
+        {
+            return;
+        }
+
+        cur--;
+    } while (cur >= last);
+}
+
 #endif

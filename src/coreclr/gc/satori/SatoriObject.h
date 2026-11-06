@@ -136,6 +136,13 @@ public:
     // does not quietly bind to the sized overload with "end" converted to bool.
     template <typename F> void ForEachObjectRef(F lambda, size_t, size_t) = delete;
 
+    // (experimental) with a lookahead, see the definition.
+    template <typename F, typename P>
+    void ForEachObjectRefAhead(F lambda, P prefetch, size_t distance, size_t size, bool includeCollectibleAllocator);
+
+    template <typename F, typename P>
+    void ForEachObjectRefAhead(F lambda, P prefetch, size_t distance, size_t size, size_t start, size_t end, bool includeCollectibleAllocator);
+
 private:
     // the walk of the whole object, shared by the overloads above that differ in how they get the method table and the size.
     template <typename F>

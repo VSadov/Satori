@@ -274,6 +274,20 @@ public:
 #endif
     }
 
+    // Prefetches for a write, so that the line arrives in a state that does not need another round trip to modify.
+    static void PrefetchW(void* addr)
+    {
+#if TARGET_WINDOWS
+#if defined(TARGET_ARM64)
+        __prefetch(addr);
+#else
+        _m_prefetchw(addr);
+#endif
+#else
+        __builtin_prefetch(addr, 1);
+#endif
+    }
+
     // A cheap monotonically increasing timestamp, for deadline checks and similar heuristics.
     // This reads the hardware counter inline - typically just a few instructions.
     //
@@ -736,6 +750,35 @@ public:
         }
 
         return gcSpin;
+    }
+
+    // DOTNET_gcMarkAhead
+    // (experimental) how many reference slots ahead concurrent marking prefetches for the children. 0 - do not.
+    static int MarkAhead()
+    {
+        return (int)GCConfig::GetMarkAhead();
+    }
+
+    // DOTNET_gcMarkAheadKind
+    // (experimental) what to prefetch: 1 - the mark word for reading, 2 - the mark word for writing, 4 - the child object,
+    // 8 - the reference slots further ahead.
+    static int MarkAheadKind()
+    {
+        return (int)GCConfig::GetMarkAheadKind();
+    }
+
+    // DOTNET_gcMarkRing
+    // (experimental) depth of the prefetch queue of newly marked children in concurrent marking.
+    static int MarkRing()
+    {
+        return (int)GCConfig::GetMarkRing();
+    }
+
+    // DOTNET_gcMarkStats
+    // (experimental) print statistics of concurrent marking.
+    static bool IsMarkStatsEnabled()
+    {
+        return (GCConfig::GetMarkStats());
     }
 
     // DOTNET_gcReusableTarget

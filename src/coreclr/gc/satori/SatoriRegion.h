@@ -113,6 +113,8 @@ public:
     bool ClearStaleEscapeMarks();
     bool IsEscapeTracking();
     bool MaybeEscapeTrackingAcquire();
+    // (experimental) starts bringing in the bitmap word that SetMarkedAtomic(o) will modify.
+    void PrefetchForSetMarkedAtomic(SatoriObject* o, bool forWrite);
     bool IsEscapeTrackedByCurrentThread();
 
     // Per-thread history of escape tracking outcomes. A thread whose tracked regions keep
