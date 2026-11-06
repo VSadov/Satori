@@ -38,6 +38,10 @@ int64_t SatoriUtil::s_timeStampFrequency = 0;
 int64_t SatoriUtil::s_osTimeStampFrequency = 0;
 int64_t SatoriUtil::s_ticksPerUsec = 1;
 
+#if defined(HOST_AMD64)
+bool SatoriUtil::s_hasMonitorX = false;
+#endif
+
 // a counter that ticks slower than this is too coarse for the intervals that we measure.
 static const int64_t MIN_USABLE_FREQUENCY = 1000 * 1000;
 
@@ -82,6 +86,26 @@ static bool HasConstantRateTimeStamp()
 static bool HasConstantRateTimeStamp()
 {
     return false;
+}
+
+#endif
+
+#if defined(HOST_AMD64)
+
+// MONITORX/MWAITX are AMD's MONITOR/MWAIT that work in user mode and have a timeout.
+static bool HasMonitorX()
+{
+    int regs[4];
+
+    __cpuid(regs, (int)0x80000000);
+    if ((uint32_t)regs[0] < 0x80000001)
+    {
+        return false;
+    }
+
+    __cpuid(regs, (int)0x80000001);
+    const int MONITORX = 1 << 29;
+    return (regs[2] & MONITORX) != 0;
 }
 
 #endif
@@ -139,6 +163,10 @@ int64_t SatoriUtil::MeasureTimeStampFrequency()
 
 void SatoriUtil::Initialize()
 {
+#if defined(HOST_AMD64)
+    s_hasMonitorX = UseMWaitX() && HasMonitorX();
+#endif
+
     s_osTimeStampFrequency = minipal_hires_tick_frequency();
 
     // The choice is made once and for all - switching timers later would leave

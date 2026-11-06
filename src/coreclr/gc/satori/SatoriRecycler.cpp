@@ -216,30 +216,27 @@ void SatoriRecycler::WorkerThreadMainLoop(void* param)
             int64_t lastTick = minipal_hires_ticks();
             int64_t limit = lastTick + ticksPerMicro * SatoriUtil::GcSpin();
 
-            // We do not know how long YieldProcessor takes, it varies a lot between hardware.
-            // Start with a short batch and keep doubling it, but only while batches take less than a microsecond.
-            // After that the batch stays the same, so the clock is read about once per microsecond
-            // and we overshoot the limit by no more than one batch.
+            // We do not know how long a wait takes, it varies a lot between hardware.
+            // Start with a short wait and keep doubling it, but only while waits take less than a microsecond.
+            // After that the wait stays the same, so the clock is read about once per microsecond
+            // and we overshoot the limit by no more than one wait.
+            // Waits that keep ending early look short too, the cap keeps the overshoot to a few microseconds.
             int i = 1;
             int64_t now;
             do
             {
-                int j = (1 << i);
-                while (--j > 0)
-                {
-                    YieldProcessor();
+                SatoriUtil::WaitFor(1 << i, &recycler->m_gateSignaled);
 
-                    if (recycler->m_gateSignaled &&
-                        Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
-                    {
-                        goto released;
-                    }
+                if (recycler->m_gateSignaled &&
+                    Interlocked::CompareExchange(&recycler->m_gateSignaled, 0, 1) == 1)
+                {
+                    goto released;
                 }
 
                 now = minipal_hires_ticks();
                 if (now - lastTick < ticksPerMicro)
                 {
-                    i = min(30, i + 1);
+                    i = min(8, i + 1);
                 }
 
                 lastTick = now;

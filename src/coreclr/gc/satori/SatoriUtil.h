@@ -274,6 +274,40 @@ public:
 #endif
     }
 
+    // Waits for a write to the cache line of addr, but for no longer than about length, and returns.
+    // This is the inner loop of a spin-wait. It does not look at the value, so the caller must check
+    // its condition after every return. The wait may end without a write, and a write right
+    // before the wait starts is only noticed when the wait runs out.
+    //
+    // With MWAITX the thread waits in a light state, until the line is written to or the time runs out.
+    // Nothing is polled and the core is left to the SMT sibling. A unit of length is 64 TSC ticks,
+    // which is about as long as a yield.
+    // Otherwise, the thread yields length times, and addr is not used.
+    static FORCEINLINE void WaitFor(int length, const volatile void* addr)
+    {
+        // nothing to wait for. a zero timeout would make MWAITX wait for as long as it takes.
+        if (length <= 0)
+        {
+            return;
+        }
+
+#if defined(HOST_AMD64)
+        if (s_hasMonitorX)
+        {
+            // TSC ticks are much shorter than a yield, 64 of them give 30-60 waits in a microsecond.
+            // the product must not wrap around to 0 either.
+            int64_t ticks = min((int64_t)length * 64, (int64_t)0xFFFFFFFF);
+            MonitorWaitX(addr, (unsigned int)ticks);
+            return;
+        }
+#endif // HOST_AMD64
+
+        for (int i = 0; i < length; i++)
+        {
+            YieldProcessor();
+        }
+    }
+
     // A cheap monotonically increasing timestamp, for deadline checks and similar heuristics.
     // This reads the hardware counter inline - typically just a few instructions.
     //
@@ -738,6 +772,13 @@ public:
         return gcSpin;
     }
 
+    // DOTNET_gcMWaitX
+    // 0 - do not use MWAITX even if the CPU has it, as if it was not there.
+    static bool UseMWaitX()
+    {
+        return (GCConfig::GetUseMWaitX());
+    }
+
     // DOTNET_gcReusableTarget
     // How much free space may be parked in reusable regions, as a percentage of expected
     // gen1 allocation. Reusables are drained into ephemeral queues when a blocking GC starts,
@@ -820,6 +861,28 @@ private:
     static int64_t s_ticksPerUsec;
 
     static int64_t MeasureTimeStampFrequency();
+
+#if defined(HOST_AMD64)
+    // whether MONITORX/MWAITX can be used, see WaitFor. The CPU has them and gcMWaitX does not turn them off.
+    static bool s_hasMonitorX;
+
+    // Waits for a write to the cache line of addr, for an interrupt, or for timeout TSC ticks.
+    // The timeout must not be 0, that would wait for as long as it takes.
+    static FORCEINLINE void MonitorWaitX(const volatile void* addr, unsigned int timeout)
+    {
+        // MWAITX hint 0xF0 - stay in C0, a deeper C-state would make the wake up slow.
+        // MWAITX extension 0x2 - use the timer.
+#ifdef _MSC_VER
+        _mm_monitorx(const_cast<const void*>(addr), 0, 0);
+        _mm_mwaitx(0x2, 0xF0, timeout);
+        // the caller looks at its flag after the wait, which must not move above it.
+        _ReadWriteBarrier();
+#else
+        __asm__ __volatile__("monitorx" : : "a"(addr), "c"(0), "d"(0) : "memory");
+        __asm__ __volatile__("mwaitx" : : "a"(0xF0), "b"(timeout), "c"(0x2) : "memory");
+#endif
+    }
+#endif // HOST_AMD64
 
     static FORCEINLINE int64_t ReadHwTimeStamp()
     {
