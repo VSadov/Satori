@@ -54,6 +54,7 @@ public:
     Object* Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     SatoriRegion* GetRegion(size_t minSize);
+    SatoriRegion* GetRegionLow(size_t minSize);
     void AddRegion(SatoriRegion* region);
     void ReturnRegion(SatoriRegion* region);
 
@@ -106,9 +107,12 @@ private:
     DECLSPEC_ALIGN(64)
     SatoriLock m_pinnedAllocLock;
 
+    DECLSPEC_ALIGN(64)
+    SatoriLock m_lowRegionLock;
+
     // Work chunks are added by one thread at a time (see AddMoreWorkChunks), the others wait for it by polling.
     // Thus nobody may ask for a work chunk while holding what the refilling thread needs to get a region.
-    // Lock order: the allocation locks, this lock, the locks of the queues.
+    // Lock order: the allocation locks, this lock, m_lowRegionLock, the locks of the queues.
     DECLSPEC_ALIGN(64)
     SatoriLock m_workChunkRefillLock;
 
@@ -152,6 +156,8 @@ private:
     SatoriObject* AllocImmortal(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     void TryGetRegularRegion(SatoriRegion*& region, size_t size);
+    SatoriRegion* GetRegionCore(size_t regionSize, bool low);
+    SatoriRegion* TryGetRegionLow(size_t regionSize);
     bool AddMoreWorkChunks();
 
     static int SizeToBucket(size_t size)
