@@ -68,6 +68,8 @@ bool SatoriFinalizationQueue::Initialize(SatoriHeap* heap)
         return false;
     }
 
+    // The region could come committed, and we need only a part of it.
+    region->TryDecommit();
     m_data = (Entry*)region->Allocate(allocSize, /*zeroInitialize*/false);
     if (m_data == nullptr)
     {

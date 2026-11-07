@@ -97,6 +97,10 @@ namespace Satori
     // this includes header, so the number of objects is slightly less (by -2)
     const static size_t MARK_CHUNK_SIZE = MARK_CHUNK_COUNT * sizeof(size_t);
 
+    // When the pool of work chunks is refilled, fresh chunks are published in chains of this many, as they are made.
+    // Threads that wait for the refill get the first chunks without waiting for the whole region to be formatted.
+    const static size_t WORK_CHUNK_REFILL_CHAIN = 32;
+
     // objects that are bigger are chunked into ranges when marking.
     // the threshold is slightly less than MARK_CHUNK_SIZE, so that object in the range
     // could fit into same chunk

@@ -106,6 +106,15 @@ private:
     DECLSPEC_ALIGN(64)
     SatoriLock m_pinnedAllocLock;
 
+    // Work chunks are added by one thread at a time (see AddMoreWorkChunks), the others wait for it by polling.
+    // Thus nobody may ask for a work chunk while holding what the refilling thread needs to get a region.
+    // Lock order: the allocation locks, this lock, the locks of the queues.
+    DECLSPEC_ALIGN(64)
+    SatoriLock m_workChunkRefillLock;
+
+    // the shard to publish the next chain of fresh work chunks to. Protected by m_workChunkRefillLock.
+    size_t m_workChunkRefillShard;
+
     // Small objects are allocated most often, thus their counter is sharded,
     // one counter per ALLOCATED_BYTES_COUNTER_PROCESSORS processors.
     // Large and pinned objects are allocated less often and have a single counter each.
