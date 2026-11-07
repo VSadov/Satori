@@ -92,6 +92,9 @@ private:
 
     int m_smallAllocatedBytesCounterCount;
 
+    // how many regular regions to carve at once when splitting a large free region. (see GetRegionCore)
+    int m_regionCarveBatch;
+
     // the allocation tick event was enabled when last checked. (see IsAllocationTickEnabled)
     volatile bool m_allocationTickWasEnabled;
 

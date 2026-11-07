@@ -97,6 +97,10 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     int counterCount = (processorCount + Satori::ALLOCATED_BYTES_COUNTER_PROCESSORS - 1) / Satori::ALLOCATED_BYTES_COUNTER_PROCESSORS;
     m_smallAllocatedBytesCounterCount = max(1, min(counterCount, Satori::MAX_ALLOCATED_BYTES_COUNTERS));
 
+    // The batch follows the CPUs this process can use (affinity, container quota, DOTNET_PROCESSOR_COUNT),
+    // not the machine, since that is how many threads can ask for regions at once.
+    m_regionCarveBatch = max(1, min((int)GCToEEInterface::GetCurrentProcessCpuCount(), Satori::MAX_REGION_CARVE_BATCH));
+
     for (int i = 0; i < Satori::MAX_ALLOCATED_BYTES_COUNTERS; i++)
     {
         m_smallAllocatedBytes[i] = {};
@@ -162,18 +166,41 @@ tryAgain:
         region = m_queues[bucket]->TryPopWithSize(regionSize, putBack);
         if (putBack)
         {
-            // Split the remainder so two threads can allocate from it concurrently.
-            if (region && putBack->Size() > region->Size() * 2)
+            // The remainder is out of the queue until we add it back, and until then other threads would not find it.
+            // So we split a batch of regions off its top in one piece and add the rest back right away.
+            // The batch is formatted as regions after that, and they become available to others one by one.
+            // The rest stays one free run and the regions keep coming from one edge of it.
+            // Only regular requests come in herds. Low requests are rare and TryGetRegionLow serializes them.
+            SatoriRegion* batch = nullptr;
+            if (region && !low && regionSize == Satori::REGION_SIZE_GRANULARITY)
             {
-                SatoriRegion* half = putBack->TrySplit(ALIGN_DOWN((putBack->Size() / 2), Satori::REGION_SIZE_GRANULARITY));
-                if (half)
+                // leave at least two regions in the rest.
+                size_t regions = putBack->Size() / regionSize;
+                size_t extra = regions > 2 ? min((size_t)m_regionCarveBatch - 1, regions - 2) : 0;
+                if (extra)
                 {
-                    AddRegion(half);
+                    batch = putBack->TrySplit(extra * regionSize);
                 }
             }
 
             AddRegion(putBack);
             putBack = nullptr;
+
+            while (batch && batch->Size() > regionSize)
+            {
+                SatoriRegion* next = batch->TrySplit(regionSize);
+                if (!next)
+                {
+                    break;
+                }
+
+                AddRegion(next);
+            }
+
+            if (batch)
+            {
+                AddRegion(batch);
+            }
         }
 
         if (region)
