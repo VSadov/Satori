@@ -73,7 +73,7 @@ public:
 private:
     // Bytes allocated by threads, as published by the threads. (see PublishAllocatedBytes)
     // Each counter is on its own cache line.
-    struct DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY) AllocatedBytesCounter
+    struct DECLSPEC_ALIGN(Satori::WIDE_CACHE_GRANULARITY) AllocatedBytesCounter
     {
         size_t bytes;
         // the value of "bytes" at the last allocation tick. (see MaybeFireAllocationTick)

@@ -81,6 +81,11 @@ namespace Satori
     static const size_t CACHE_LINE_GRANULARITY = 128;
 #endif
 
+    // the same, for the few fields that are contended by design - polled by spinning threads,
+    // or updated by many. Always 128: those are worth the padding even where
+    // CACHE_LINE_GRANULARITY is 64 and the hardware may still pair lines.
+    static const size_t WIDE_CACHE_GRANULARITY = 128;
+
     // minimal free size that can be made parseable.
     // we use a trivial array object to fill holes, thus this is the size of a shortest array object.
     static const size_t MIN_FREE_SIZE = 3 * sizeof(size_t);
