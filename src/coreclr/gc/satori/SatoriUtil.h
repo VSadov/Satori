@@ -130,6 +130,9 @@ namespace Satori
     static const int BYTES_PER_CARD_GROUP = REGION_SIZE_GRANULARITY / 2;
     static const int CARD_BYTES_IN_CARD_GROUP = Satori::BYTES_PER_CARD_GROUP / BYTES_PER_CARD_BYTE;
 
+    // the first region of a page follows the card table, so no region is closer than this to the beginning of its page.
+    static const size_t MIN_REGION_OFFSET = PAGE_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;
+
     namespace CardState
     {
         static const int8_t EPHEMERAL = -128; // 0b10000000 only used in cards (not groups or higher)

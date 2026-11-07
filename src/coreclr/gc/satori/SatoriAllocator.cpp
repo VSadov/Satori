@@ -77,6 +77,8 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     m_pinnedRegion = nullptr;
     m_pinnedAllocLock.Initialize();
 
+    m_lowRegionLock.Initialize();
+
     m_largeRegion = nullptr;
     m_largeAllocLock.Initialize();
 
@@ -105,12 +107,34 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
 
 SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
 {
+    return GetRegionCore(regionSize, /* low */ false);
+}
+
+// Same as GetRegion, but for the regions that are long-lived and rarely freed, like the ones for immortal allocations,
+// work chunks or the finalization queue. Such regions are placed as close to the beginning of a page as possible,
+// so that they do not fragment the rest of the page and do not prevent free regions from coalescing.
+SatoriRegion* SatoriAllocator::GetRegionLow(size_t regionSize)
+{
+    return GetRegionCore(regionSize, /* low */ true);
+}
+
+SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize, bool low)
+{
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
     int64_t newPageDeadline = 0;
     int newPageSpin = 0;
 
 tryAgain:
     SatoriRegion* putBack = nullptr;
+
+    if (low)
+    {
+        SatoriRegion* lowRegion = TryGetRegionLow(regionSize);
+        if (lowRegion)
+        {
+            return lowRegion;
+        }
+    }
 
     int bucket = SizeToBucket(regionSize);
 
@@ -195,9 +219,29 @@ tryAgain:
         {
             if (page)
             {
-                putBack = page->InitialRegion();
-                region = putBack->TrySplit(regionSize);
-                AddRegion(putBack);
+                if (low)
+                {
+                    // keep the beginning of the page for the region and leave the rest free.
+                    region = page->InitialRegion();
+                    putBack = region->TrySplit(region->Size() - regionSize);
+                    if (putBack)
+                    {
+                        AddRegion(putBack);
+                    }
+                    else
+                    {
+                        // OOM
+                        AddRegion(region);
+                        region = nullptr;
+                    }
+                }
+                else
+                {
+                    putBack = page->InitialRegion();
+                    region = putBack->TrySplit(regionSize);
+                    AddRegion(putBack);
+                }
+
                 Interlocked::Decrement(&m_singePageAdders);
                 if (region)
                 {
@@ -259,6 +303,74 @@ allocationFailed:
     }
 
     // most likely OOM
+    return nullptr;
+}
+
+// Takes the free region that is the closest to the beginning of a page and splits what is needed off its beginning.
+// The rest stays free.
+//
+// Pages are carved from the top, so the remainder at the bottom of a page is its biggest free region and the closest
+// region is usually in the biggest non-empty bucket. That does not always hold in an aged heap, so the offsets in all
+// buckets are compared, but we start with the biggest regions and stop when we see the first region of a page, since
+// no region could be closer.
+//
+// The requests are serialized. While one of them has the remainder of a page out of the queue to split it, the others
+// would not see it and would settle for a region that is further away. That is common when many GC workers run out of
+// work chunks at the same time.
+SatoriRegion* SatoriAllocator::TryGetRegionLow(size_t regionSize)
+{
+    SatoriLockHolder holder(&m_lowRegionLock);
+
+    // The queues keep changing and the best region could be gone by the time we try to take it.
+    for (int attempt = 0; attempt < 3; attempt++)
+    {
+        int bestBucket = -1;
+        size_t bestShard = 0;
+        size_t bestOffset = SIZE_MAX;
+        for (int bucket = Satori::ALLOCATOR_BUCKET_COUNT - 1; bucket >= SizeToBucket(regionSize); bucket--)
+        {
+            size_t shard = 0;
+            size_t offset = m_queues[bucket]->LowestOffset(regionSize, shard);
+            if (offset < bestOffset)
+            {
+                bestBucket = bucket;
+                bestShard = shard;
+                bestOffset = offset;
+                if (offset <= Satori::MIN_REGION_OFFSET)
+                {
+                    // nothing can be closer.
+                    break;
+                }
+            }
+        }
+
+        if (bestBucket < 0)
+        {
+            return nullptr;
+        }
+
+        SatoriRegion* region = m_queues[bestBucket]->TryRemoveLowest(bestShard, regionSize, bestOffset);
+        if (!region)
+        {
+            continue;
+        }
+
+        if (region->Size() > regionSize)
+        {
+            SatoriRegion* rest = region->TrySplit(region->Size() - regionSize);
+            if (!rest)
+            {
+                // OOM
+                AddRegion(region);
+                return nullptr;
+            }
+
+            AddRegion(rest);
+        }
+
+        return region;
+    }
+
     return nullptr;
 }
 
@@ -1576,8 +1688,8 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
             }
         }
 
-        // get a new regular region.
-        region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
+        // get a new regular region. It will stay forever, so place it near the beginning of a page.
+        region = GetRegionLow(Satori::REGION_SIZE_GRANULARITY);
         if (!region)
         {
             //OOM
@@ -1678,7 +1790,7 @@ SatoriWorkChunk* SatoriAllocator::GetWorkChunk()
 
 bool SatoriAllocator::AddMoreWorkChunks()
 {
-    SatoriRegion* region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
+    SatoriRegion* region = GetRegionLow(Satori::REGION_SIZE_GRANULARITY);
     if (!region)
     {
         return false;

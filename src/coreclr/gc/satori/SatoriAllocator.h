@@ -54,6 +54,7 @@ public:
     Object* Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     SatoriRegion* GetRegion(size_t minSize);
+    SatoriRegion* GetRegionLow(size_t minSize);
     void AddRegion(SatoriRegion* region);
     void ReturnRegion(SatoriRegion* region);
 
@@ -106,6 +107,9 @@ private:
     DECLSPEC_ALIGN(64)
     SatoriLock m_pinnedAllocLock;
 
+    DECLSPEC_ALIGN(64)
+    SatoriLock m_lowRegionLock;
+
     // Small objects are allocated most often, thus their counter is sharded,
     // one counter per ALLOCATED_BYTES_COUNTER_PROCESSORS processors.
     // Large and pinned objects are allocated less often and have a single counter each.
@@ -143,6 +147,8 @@ private:
     SatoriObject* AllocImmortal(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     void TryGetRegularRegion(SatoriRegion*& region, size_t size);
+    SatoriRegion* GetRegionCore(size_t regionSize, bool low);
+    SatoriRegion* TryGetRegionLow(size_t regionSize);
     bool AddMoreWorkChunks();
 
     static int SizeToBucket(size_t size)

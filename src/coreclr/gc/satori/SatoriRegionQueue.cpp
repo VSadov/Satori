@@ -33,6 +33,7 @@
 #include "SatoriUtil.h"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
+#include "SatoriPage.inl"
 
 SatoriRegion* SatoriRegionQueue::TryPopWithSize(size_t regionSize, SatoriRegion*& putBack)
 {
@@ -265,6 +266,97 @@ SatoriRegion* SatoriRegionQueue::TryRemoveWithSize(
         }
     }
 
+    return result;
+}
+
+// Must be called under the lock.
+SatoriRegion* SatoriRegionQueue::FindLowest(size_t regionSize, size_t maxRegions, size_t& lowestOffset)
+{
+    SatoriRegion* result = nullptr;
+    lowestOffset = SIZE_MAX;
+    for (SatoriRegion* cur = m_head; cur != nullptr && maxRegions > 0; cur = cur->m_next, maxRegions--)
+    {
+        if (cur->Size() < regionSize)
+        {
+            continue;
+        }
+
+        size_t offset = cur->Start() - cur->ContainingPage()->Start();
+        if (offset < lowestOffset)
+        {
+            result = cur;
+            lowestOffset = offset;
+            if (offset <= Satori::MIN_REGION_OFFSET)
+            {
+                // nothing can be closer.
+                break;
+            }
+        }
+    }
+
+    return result;
+}
+
+size_t SatoriRegionQueue::LowestOffset(size_t regionSize, size_t maxRegions)
+{
+    if (IsEmpty())
+    {
+        return SIZE_MAX;
+    }
+
+    size_t lowestOffset;
+    {
+        SatoriLockHolder holder(&m_lock);
+        FindLowest(regionSize, maxRegions, lowestOffset);
+    }
+
+    return lowestOffset;
+}
+
+SatoriRegion* SatoriRegionQueue::TryRemoveLowest(size_t regionSize, size_t maxOffset, size_t maxRegions)
+{
+    if (IsEmpty())
+    {
+        return nullptr;
+    }
+
+    m_lock.Enter();
+
+    size_t lowestOffset;
+    SatoriRegion* result = FindLowest(regionSize, maxRegions, lowestOffset);
+    if (result == nullptr || lowestOffset > maxOffset)
+    {
+        m_lock.Leave();
+        return nullptr;
+    }
+
+    _ASSERTE(result->ValidateBlank());
+
+    // take out the result
+    m_count--;
+    result->m_containingQueue = nullptr;
+    if (result->m_prev == nullptr)
+    {
+        m_head = result->m_next;
+    }
+    else
+    {
+        result->m_prev->m_next = result->m_next;
+    }
+
+    if (result->m_next == nullptr)
+    {
+        m_tail = result->m_prev;
+    }
+    else
+    {
+        result->m_next->m_prev = result->m_prev;
+    }
+
+    m_lock.Leave();
+
+    result->m_prev = nullptr;
+    result->m_next = nullptr;
     return result;
 }
 
