@@ -79,6 +79,9 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
 
     m_lowRegionLock.Initialize();
 
+    m_workChunkRefillLock.Initialize();
+    m_workChunkRefillShard = 0;
+
     m_largeRegion = nullptr;
     m_largeAllocLock.Initialize();
 
@@ -1788,13 +1791,58 @@ SatoriWorkChunk* SatoriAllocator::GetWorkChunk()
     return chunk;
 }
 
+// Refills the pool of work chunks, one thread at a time.
+//
+// Many threads run out of chunks together, e.g. when marking starts. If each of them took a region for chunks,
+// we would have as many regions as there were waiters and most of the chunks would sit unused.
+// Instead the one that gets the lock refills and the others poll for chunks, which they do as long as we return true.
+// The chunks are published in chains as they are made, so the waiters do not wait for the whole region to be formatted,
+// and the chains go to different shards, so that every shard has some.
+//
+// Returns false if there is no memory to get chunks.
 bool SatoriAllocator::AddMoreWorkChunks()
 {
+    // One shot - TryEnter would spin in the lock, and the waiters need to be looking for the chunks as they are published.
+    if (!m_workChunkRefillLock.TryEnterOneShot())
+    {
+        // Someone else is refilling and publishes chunks as it goes. Look for them or for the end of the refill.
+        for (int i = 0; i < 32; i++)
+        {
+            if (!m_workChunks->IsEmpty() || !m_workChunkRefillLock.IsLocked())
+            {
+                return true;
+            }
+
+            YieldProcessor();
+        }
+
+        // Still nothing. Let the refilling thread run, in case it was preempted.
+        GCToOSInterface::YieldThread(0);
+        return true;
+    }
+
+    SatoriLockHolder holder(&m_workChunkRefillLock, /* isLocked */ true);
+
+    // The pool could have been refilled, or chunks returned, since the caller looked.
+    if (!m_workChunks->IsEmpty())
+    {
+        return true;
+    }
+
+    // The chunks stay forever, so place the region near the beginning of a page.
     SatoriRegion* region = GetRegionLow(Satori::REGION_SIZE_GRANULARITY);
     if (!region)
     {
         return false;
     }
+
+    // Commit all at once, not in small steps as chunks are allocated.
+    region->TryCommit();
+
+    SatoriWorkChunk* first = nullptr;
+    SatoriWorkChunk* last = nullptr;
+    size_t chainLength = 0;
+    size_t totalLength = 0;
 
     while (true)
     {
@@ -1805,7 +1853,35 @@ bool SatoriAllocator::AddMoreWorkChunks()
         }
 
         SatoriWorkChunk* chunk = SatoriWorkChunk::InitializeAt(mem);
-        m_workChunks->Push(chunk);
+        if (last)
+        {
+            last->SetNext(chunk);
+        }
+        else
+        {
+            first = chunk;
+        }
+
+        last = chunk;
+        totalLength++;
+        if (++chainLength == Satori::WORK_CHUNK_REFILL_CHAIN)
+        {
+            m_workChunks->PushChainToShard(m_workChunkRefillShard++, first, last);
+            first = last = nullptr;
+            chainLength = 0;
+        }
+    }
+
+    if (first)
+    {
+        m_workChunks->PushChainToShard(m_workChunkRefillShard++, first, last);
+    }
+
+    if (totalLength == 0)
+    {
+        // could not commit anything.
+        ReturnRegion(region);
+        return false;
     }
 
     return true;

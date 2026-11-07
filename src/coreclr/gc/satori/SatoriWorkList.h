@@ -228,6 +228,13 @@ public:
         CurrentShard()->PushChain(first, last);
     }
 
+    // Same as PushChain, to a chosen shard. (the index wraps around)
+    // This is for spreading chunks that are added in bulk, so that every shard gets some.
+    void PushChainToShard(size_t shard, SatoriWorkChunk* first, SatoriWorkChunk* last)
+    {
+        Shard(shard & m_shardMask)->PushChain(first, last);
+    }
+
     SatoriWorkChunk* TryPop()
     {
         size_t ownedShard = CurrentShardIndex();
