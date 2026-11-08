@@ -993,7 +993,7 @@ size_t SatoriRegion::AllocateDirty(size_t size, size_t* dirtyStart, size_t* dirt
         size_t ensureCommitted = chunkEnd + Satori::MIN_FREE_SIZE;
         if (ensureCommitted > m_committed)
         {
-            size_t newComitted = ALIGN_UP(ensureCommitted, SatoriUtil::CommitGranularity());
+            size_t newComitted = ALIGN_UP(ensureCommitted, TraceCommitStep()); // TEMP-TRACE
             size_t toCommit = newComitted - m_committed;
             if (!TraceVirtualCommit((void*)m_committed, toCommit)) // TEMP-TRACE
             {

@@ -74,6 +74,16 @@ static volatile int32_t g_preAddPages;
 static thread_local int64_t t_addTokenTs;
 static thread_local int64_t t_addHoldTicks;
 static volatile int32_t g_addNoYield;
+// More experiments of step 2. SATORI_COMMIT_STEP_KB: memory for allocation is committed in steps of this size, if it is bigger than
+// the commit granularity. SATORI_CLAIM_TOPDOWN=1: regular regions are claimed from the top of a page, SATORI_CLAIM_NOHINT=1: from the first page.
+static size_t g_commitStep;
+static volatile int32_t g_claimTopDown;
+static volatile int32_t g_claimNoHint;
+
+size_t TraceCommitStep()
+{
+    return g_commitStep ? g_commitStep : SatoriUtil::CommitGranularity();
+}
 
 // The commits and decommits that are asked of the OS, sharded by thread to keep the counting cheap.
 struct DECLSPEC_ALIGN(128) TraceOsShard
@@ -322,6 +332,21 @@ static void TraceInit(SatoriAllocator* allocator)
     if (GetEnvironmentVariableA("SATORI_ADD_NOYIELD", preAdd, sizeof(preAdd)) != 0)
     {
         g_addNoYield = atoi(preAdd);
+    }
+
+    if (GetEnvironmentVariableA("SATORI_COMMIT_STEP_KB", preAdd, sizeof(preAdd)) != 0)
+    {
+        g_commitStep = max(SatoriUtil::CommitGranularity(), (size_t)atoi(preAdd) * 1024);
+    }
+
+    if (GetEnvironmentVariableA("SATORI_CLAIM_TOPDOWN", preAdd, sizeof(preAdd)) != 0)
+    {
+        g_claimTopDown = atoi(preAdd);
+    }
+
+    if (GetEnvironmentVariableA("SATORI_CLAIM_NOHINT", preAdd, sizeof(preAdd)) != 0)
+    {
+        g_claimNoHint = atoi(preAdd);
     }
 
     DWORD n = GetEnvironmentVariableA("SATORI_TRACE_DIR", dir, sizeof(dir));
@@ -1224,6 +1249,10 @@ SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& o
         // Threads on different processors start with different pages.
         // Requests for long-lived regions start with the first page, to keep those regions together.
         size_t startHint = low ? 0 : ProcessorHint();
+        if (g_claimNoHint) // TEMP-TRACE
+        { // TEMP-TRACE
+            startHint = 0; // TEMP-TRACE
+        } // TEMP-TRACE
 
         // Regular requests take a region that is committed in full, if there is one. Others take any.
         for (int pass = low ? 1 : 0; pass < 2 && !result && !outOfMemory; pass++)
@@ -1232,7 +1261,7 @@ SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& o
             m_heap->ForEachPageFrom(startHint,
                 [&](SatoriPage* page)
                 {
-                    size_t granule = page->TryClaimGranule(warmOnly, /* fromTop */ low, retries);
+                    size_t granule = page->TryClaimGranule(warmOnly, /* fromTop */ low || g_claimTopDown, retries); // TEMP-TRACE
                     if (granule == SIZE_MAX)
                     {
                         return false;
@@ -1266,7 +1295,7 @@ SatoriRegion* SatoriAllocator::TryClaimRegionInPage(SatoriPage* page, size_t gra
     }
     else
     {
-        first = page->TryClaimGranule(/* warmOnly */ false, /* fromTop */ low, retries);
+        first = page->TryClaimGranule(/* warmOnly */ false, /* fromTop */ low || g_claimTopDown, retries); // TEMP-TRACE
     }
 
     SatoriRegion* result = nullptr;
