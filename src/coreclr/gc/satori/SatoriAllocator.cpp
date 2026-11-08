@@ -77,12 +77,26 @@ static volatile int32_t g_addNoYield;
 // More experiments of step 2. SATORI_COMMIT_STEP_KB: memory for allocation is committed in steps of this size, if it is bigger than
 // the commit granularity. SATORI_CLAIM_TOPDOWN=1: regular regions are claimed from the top of a page, SATORI_CLAIM_NOHINT=1: from the first page.
 static size_t g_commitStep;
+static volatile int32_t g_commitDoubling;
 static volatile int32_t g_claimTopDown;
 static volatile int32_t g_claimNoHint;
 
-size_t TraceCommitStep()
+// Where the memory for allocation is committed up to, when allocation needs more than a region has committed.
+// SATORI_COMMIT_STEP_KB: in steps of that size. SATORI_COMMIT_DOUBLING=1: each step is as much as the region has committed already, up to 2 MB.
+size_t TraceCommitTo(size_t regionStart, size_t committed, size_t ensureCommitted)
 {
-    return g_commitStep ? g_commitStep : SatoriUtil::CommitGranularity();
+    size_t step = g_commitStep ? g_commitStep : SatoriUtil::CommitGranularity();
+    if (g_commitDoubling)
+    {
+        size_t have = committed > regionStart ? committed - regionStart : 0;
+        DWORD bit;
+        if (have && BitScanReverse64(&bit, have))
+        {
+            step = max(step, min((size_t)1 << bit, (size_t)Satori::REGION_SIZE_GRANULARITY));
+        }
+    }
+
+    return ALIGN_UP(ensureCommitted, step);
 }
 
 // The commits and decommits that are asked of the OS, sharded by thread to keep the counting cheap.
@@ -337,6 +351,11 @@ static void TraceInit(SatoriAllocator* allocator)
     if (GetEnvironmentVariableA("SATORI_COMMIT_STEP_KB", preAdd, sizeof(preAdd)) != 0)
     {
         g_commitStep = max(SatoriUtil::CommitGranularity(), (size_t)atoi(preAdd) * 1024);
+    }
+
+    if (GetEnvironmentVariableA("SATORI_COMMIT_DOUBLING", preAdd, sizeof(preAdd)) != 0)
+    {
+        g_commitDoubling = atoi(preAdd);
     }
 
     if (GetEnvironmentVariableA("SATORI_CLAIM_TOPDOWN", preAdd, sizeof(preAdd)) != 0)

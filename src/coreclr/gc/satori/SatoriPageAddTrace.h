@@ -79,8 +79,8 @@ void TraceNoteValveUse(int64_t waitStart);
 // Step 2 of Milestone 2b: the commits and decommits that the GC asks the OS for, and the time they take. (see [osstats])
 bool TraceVirtualCommit(void* address, size_t size);
 bool TraceVirtualDecommit(void* address, size_t size);
-// The size that memory for allocation is committed in. (SATORI_COMMIT_STEP_KB)
-size_t TraceCommitStep();
+// Where memory for allocation is committed up to. (SATORI_COMMIT_STEP_KB, SATORI_COMMIT_DOUBLING)
+size_t TraceCommitTo(size_t regionStart, size_t committed, size_t ensureCommitted);
 
 // Step 2 of Milestone 2b: where the time of the growth phase goes.
 // The GetRegion calls and the time in them, and the time that a blocking GC waits for the world to stop.
