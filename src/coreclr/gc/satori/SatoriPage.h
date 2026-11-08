@@ -86,6 +86,9 @@ public:
     // Gives back a page that was not published.
     void Release();
 
+    // TEMP-TRACE: prints a character per granule, see SatoriHeap::PrintTrace.
+    void PrintLayout();
+
 #if _DEBUG
     // Checks that the free bits, the watermarks, the region map and the regions agree with each other.
     // Reports the problems and returns their number. The page must be quiet: no claims or frees.

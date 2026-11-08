@@ -475,6 +475,12 @@ void SatoriGC::Shutdown()
 #if _DEBUG
     m_heap->VerifyGranulesBestEffort();
 #endif
+
+    // TEMP-TRACE
+    if (SatoriTrace::s_enabled)
+    {
+        m_heap->PrintTrace();
+    }
 }
 
 size_t SatoriGC::GetLastGCStartTime(int generation)

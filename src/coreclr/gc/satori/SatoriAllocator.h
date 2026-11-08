@@ -54,10 +54,12 @@ public:
     void Initialize(SatoriHeap* heap);
     Object* Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
-    SatoriRegion* GetRegion(size_t minSize);
-    SatoriRegion* GetRegionLow(size_t minSize);
+    // TEMP-TRACE: who asks is for the counters only
+    SatoriRegion* GetRegion(size_t minSize, SatoriRegionRequester requester = SatoriRegionRequester::Unknown);
+    SatoriRegion* GetRegionLow(size_t minSize, SatoriRegionRequester requester = SatoriRegionRequester::Unknown);
     void AddRegion(SatoriRegion* region);
     void ReturnRegion(SatoriRegion* region);
+    void PrintTrace();
 
     size_t GetTotalAllocatedBytes();
     size_t GetTotalAllocatedBytesPrecise();
@@ -171,11 +173,13 @@ private:
     SatoriObject* AllocImmortal(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     void TryGetRegularRegion(SatoriRegion*& region, size_t size);
-    SatoriRegion* GetRegionCore(size_t regionSize, bool low);
+    SatoriRegion* GetRegionCore(size_t regionSize, bool low, SatoriRegionRequester requester);
+    SatoriRegion* GetRegionImpl(size_t regionSize, bool low, SatoriRegionRequester requester);
     SatoriRegion* TryClaimRegion(size_t granules, bool low, bool& outOfMemory);
     SatoriRegion* TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, bool& outOfMemory);
     bool TryCacheRegion(SatoriRegion* region, bool recentlyUsed);
     void FreeToBitmap(SatoriRegion* region);
+    void TraceClaim(SatoriRegion* region, size_t granules, size_t retries, size_t rollbacks, int64_t startTime);
     bool AddMoreWorkChunks();
 };
 

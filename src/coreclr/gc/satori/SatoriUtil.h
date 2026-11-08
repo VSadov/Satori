@@ -873,4 +873,123 @@ private:
     static int64_t GetTimeStampSlow();
 };
 
+// TEMP-TRACE: counters for the experiments with the allocation of regions.
+// They are counted only when DOTNET_gcTraceCounters is set, and printed when the GC shuts down.
+// (see SatoriHeap::PrintTrace)
+
+// Who asks for a region.
+enum class SatoriRegionRequester : uint8_t
+{
+    Unknown,
+    Regular,            // R
+    Large,              // L
+    SharedLarge,        // S
+    Huge,               // H
+    Pinned,             // P
+    Immortal,           // I
+    WorkChunks,         // W
+    FinalizationQueue,  // F
+    RelocationTarget,   // T
+    Count
+};
+
+struct SatoriTraceCounters
+{
+    // log2 scale with 4 steps per octave, in the units of the time stamp
+    static const int HISTOGRAM_BUCKETS = 256;
+
+    // pages that threads added, by who asked for the region that the page was added for
+    size_t pageAdds[(int)SatoriRegionRequester::Count];
+
+    size_t claimsSingle;
+    size_t claimsRun;
+    // the attempts to take a bit that other threads won, and the claims of runs that were rolled back
+    size_t casRetries;
+    size_t runRollbacks;
+    // the claims of the granule that follows the region that a thread has, see SatoriAllocator::TryGetRegularRegion
+    size_t adjacentTries;
+    size_t adjacentClaims;
+    size_t cacheHits;
+    size_t cacheMisses;
+    size_t freesToCache;
+    // the regions that could have gone to the cache, but it was full
+    size_t cacheOverflows;
+    size_t freesToBitmap;
+    size_t freesToBitmapGranules;
+    size_t gapCommitBytes;
+
+    // how long it takes to claim and format granules, and to get a region, in any way
+    size_t claimTicks[HISTOGRAM_BUCKETS];
+    size_t getRegionTicks[HISTOGRAM_BUCKETS];
+};
+
+class SatoriTrace
+{
+public:
+    static bool s_enabled;
+    static SatoriTraceCounters s_counters;
+
+    static FORCEINLINE void Count(size_t& counter, size_t n = 1)
+    {
+        if (s_enabled)
+        {
+            Interlocked::ExchangeAdd64((volatile size_t*)&counter, n);
+        }
+    }
+
+    static FORCEINLINE void CountTime(size_t* histogram, int64_t ticks)
+    {
+        if (s_enabled)
+        {
+            Interlocked::ExchangeAdd64((volatile size_t*)&histogram[BucketOf(ticks)], (size_t)1);
+        }
+    }
+
+    // The smallest number of ticks that is in the same bucket.
+    static int64_t BucketLowerBound(int bucket)
+    {
+        if (bucket < 4)
+        {
+            return bucket;
+        }
+
+        return (int64_t)(4 + (bucket & 3)) << ((bucket >> 2) - 2);
+    }
+
+    // The number of ticks at the given percentile, a bucket's lower bound.
+    static int64_t Percentile(size_t* histogram, double percentile, size_t& total)
+    {
+        total = 0;
+        for (int i = 0; i < SatoriTraceCounters::HISTOGRAM_BUCKETS; i++)
+        {
+            total += histogram[i];
+        }
+
+        size_t seen = 0;
+        for (int i = 0; i < SatoriTraceCounters::HISTOGRAM_BUCKETS; i++)
+        {
+            seen += histogram[i];
+            if (total != 0 && (double)seen >= percentile * (double)total)
+            {
+                return BucketLowerBound(i);
+            }
+        }
+
+        return 0;
+    }
+
+private:
+    static int BucketOf(int64_t ticks)
+    {
+        if (ticks < 4)
+        {
+            return ticks < 0 ? 0 : (int)ticks;
+        }
+
+        DWORD log2;
+        BitScanReverse64(&log2, (uint64_t)ticks);
+        return (int)((log2 << 2) | (uint32_t)((ticks >> (log2 - 2)) & 3));
+    }
+};
+
 #endif

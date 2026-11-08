@@ -38,6 +38,10 @@ int64_t SatoriUtil::s_timeStampFrequency = 0;
 int64_t SatoriUtil::s_osTimeStampFrequency = 0;
 int64_t SatoriUtil::s_ticksPerUsec = 1;
 
+// TEMP-TRACE
+bool SatoriTrace::s_enabled = false;
+SatoriTraceCounters SatoriTrace::s_counters;
+
 // a counter that ticks slower than this is too coarse for the intervals that we measure.
 static const int64_t MIN_USABLE_FREQUENCY = 1000 * 1000;
 

@@ -36,9 +36,7 @@
 #include "SatoriObject.h"
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
-#if _DEBUG
 #include <minipal/log.h>
-#endif
 
 int8_t* SatoriHeap::s_pageByteMap;
 
@@ -102,6 +100,9 @@ SatoriHeap* SatoriHeap::Create()
     heap->m_reservedMapSize = mapSize;
     heap->m_committedMapSize = commitSize - offsetof(SatoriHeap, m_pageMap);
     heap->m_committedBytes = commitSize;
+    heap->m_peakCommittedBytes = commitSize;
+    // TEMP-TRACE
+    SatoriTrace::s_enabled = GCConfig::GetTraceCounters();
     InitWriteBarrier(heap->m_pageMap, s_pageByteMap, heap->CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
     heap->m_mapLock.Initialize();
 
@@ -313,6 +314,28 @@ SatoriRegion* SatoriHeap::RegionForAddressChecked(size_t address)
     }
 
     return nullptr;
+}
+
+// TEMP-TRACE: the counters of the allocator, the heap and the layout of the pages, lowest page first.
+void SatoriHeap::PrintTrace()
+{
+    size_t pageCount = 0;
+    ForEachPage([&](SatoriPage* page) { pageCount++; });
+
+    minipal_log_print_error("Satori TEMP-TRACE heap: pages=%zu, committed=%zu MB, peak committed=%zu MB\n",
+        pageCount, m_committedBytes >> 20, m_peakCommittedBytes >> 20);
+
+    m_allocator.PrintTrace();
+
+    minipal_log_print_error("Satori TEMP-TRACE page layouts, a character per granule: '#' card table, '.' free and not committed in full, "
+        "':' free and committed in full, '0' '1' '2' region of that generation, 'I' immortal, 'c' in the cache, 'L' other region without generation, '=' continues a region\n");
+    ForEachPageFrom(0,
+        [&](SatoriPage* page)
+        {
+            page->PrintLayout();
+            return false;
+        }
+    );
 }
 
 #if _DEBUG

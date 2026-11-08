@@ -34,6 +34,7 @@
 #include "SatoriPage.inl"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
+#include "SatoriRegionQueue.h"
 #include <minipal/log.h>
 
 SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap, InitStatus& status)
@@ -464,6 +465,51 @@ void SatoriPage::Release()
     GCToOSInterface::VirtualRelease(this, m_end - Start());
 }
 
+// TEMP-TRACE
+void SatoriPage::PrintLayout()
+{
+    size_t count = GranuleCount();
+    size_t first = FirstGranule();
+    minipal_log_print_error("  page %p, %zu granules\n", (void*)this, count);
+
+    char row[65];
+    for (size_t rowStart = 0; rowStart < count; rowStart += 64)
+    {
+        for (size_t i = 0; i < 64; i++)
+        {
+            size_t granule = rowStart + i;
+            char c;
+            if (granule < first)
+            {
+                c = '#';
+            }
+            else if ((VolatileLoad(&m_freeBitmap[granule / 64]) >> (granule % 64)) & 1)
+            {
+                c = ((m_warmBitmap[granule / 64] >> (granule % 64)) & 1) ? ':' : '.';
+            }
+            else if (RegionMap()[granule] == 1)
+            {
+                SatoriRegion* region = (SatoriRegion*)GranuleStart(granule);
+                int generation = region->Generation();
+                SatoriQueue<SatoriRegion>* queue = region->ContainingQueue();
+                c = (queue && queue->Kind() == QueueKind::Allocator) ? 'c' :
+                    generation == 3 ? 'I' :
+                    generation >= 0 ? (char)('0' + generation) :
+                    'L';
+            }
+            else
+            {
+                c = '=';
+            }
+
+            row[i] = c;
+        }
+
+        row[64] = 0;
+        minipal_log_print_error("  %5zu %s\n", rowStart, row);
+    }
+}
+
 #if _DEBUG
 static size_t GranuleProblem(SatoriPage* page, size_t granule, const char* what, bool report)
 {
@@ -665,6 +711,7 @@ SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count)
             }
 
             m_heap->IncBytesCommitted(gapEnd - gapStart);
+            SatoriTrace::Count(SatoriTrace::s_counters.gapCommitBytes, gapEnd - gapStart);
             return true;
         }
     );

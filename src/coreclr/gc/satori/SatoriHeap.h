@@ -160,7 +160,13 @@ public:
 
     void IncBytesCommitted(size_t bytes)
     {
-        Interlocked::ExchangeAdd64(&m_committedBytes, bytes);
+        size_t total = Interlocked::ExchangeAdd64(&m_committedBytes, bytes) + bytes;
+        // TEMP-TRACE: the peak. Racing threads can only make it lower than it was.
+        if (total > m_peakCommittedBytes)
+        {
+            m_peakCommittedBytes = total;
+        }
+
         _ASSERTE((ptrdiff_t)m_committedBytes > 0);
     }
 
@@ -174,6 +180,9 @@ public:
     {
         return m_committedBytes;
     }
+
+    // TEMP-TRACE: prints the counters of the allocator and the heap, and the layout of the pages.
+    void PrintTrace();
 
 #if _DEBUG
     // Checks that the free granules of all pages are consistent with the region maps and the regions,
@@ -206,6 +215,8 @@ private:
     SatoriLock m_mapLock;
 
     size_t m_committedBytes;
+    // TEMP-TRACE
+    size_t m_peakCommittedBytes;
 
     DECLSPEC_ALIGN(64)
     SatoriFinalizationQueue m_finalizationQueue;

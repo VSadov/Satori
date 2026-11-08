@@ -42,6 +42,7 @@
 #include "SatoriAllocationContext.h"
 #include "SatoriWorkChunk.h"
 #include "SatoriWorkList.h"
+#include <minipal/log.h>
 
 // Zeroes [start + sizeof(size_t), end - sizeof(size_t)), but only the part of it in [dirtyStart, dirtyEnd).
 // The rest is known to be zeroed already. (see SatoriRegion::AllocateDirty)
@@ -122,23 +123,36 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     m_lastPreciseAllocatedBytes = 0;
 }
 
-SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
+SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize, SatoriRegionRequester requester)
 {
-    return GetRegionCore(regionSize, /* low */ false);
+    return GetRegionCore(regionSize, /* low */ false, requester);
 }
 
 // Same as GetRegion, but for the regions that are long-lived and rarely freed, like the ones for immortal allocations,
 // work chunks or the finalization queue. Such regions are placed at the opposite end of a page from the regular ones,
 // at the highest free granules, so that they do not fragment the space that the regular regions fill.
-SatoriRegion* SatoriAllocator::GetRegionLow(size_t regionSize)
+SatoriRegion* SatoriAllocator::GetRegionLow(size_t regionSize, SatoriRegionRequester requester)
 {
-    return GetRegionCore(regionSize, /* low */ true);
+    return GetRegionCore(regionSize, /* low */ true, requester);
+}
+
+SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize, bool low, SatoriRegionRequester requester)
+{
+    if (!SatoriTrace::s_enabled)
+    {
+        return GetRegionImpl(regionSize, low, requester);
+    }
+
+    int64_t start = SatoriUtil::GetTimeStamp();
+    SatoriRegion* region = GetRegionImpl(regionSize, low, requester);
+    SatoriTrace::CountTime(SatoriTrace::s_counters.getRegionTicks, SatoriUtil::GetTimeStamp() - start);
+    return region;
 }
 
 // Gets a region of the given size from the free granules of the pages, and adds a page if there are none.
 // A regular request first takes a region from the cache, and then claims the lowest free granules,
 // the ones that are committed in full first. A request for a long-lived region takes the highest ones.
-SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize, bool low)
+SatoriRegion* SatoriAllocator::GetRegionImpl(size_t regionSize, bool low, SatoriRegionRequester requester)
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
     size_t granules = regionSize >> Satori::REGION_BITS;
@@ -155,8 +169,11 @@ tryAgain:
         if (region)
         {
             Interlocked::Decrement(&m_regionCacheCount);
+            SatoriTrace::Count(SatoriTrace::s_counters.cacheHits);
             return region;
         }
+
+        SatoriTrace::Count(SatoriTrace::s_counters.cacheMisses);
     }
 
     outOfMemory = false;
@@ -206,6 +223,8 @@ tryAgain:
         {
             if (page)
             {
+                SatoriTrace::Count(SatoriTrace::s_counters.pageAdds[(int)requester]);
+
                 // The page is ours. Claim from it right away, before the others take what we need.
                 region = TryClaimRegionInPage(page, granules, low, outOfMemory);
                 Interlocked::Decrement(&m_singePageAdders);
@@ -231,6 +250,7 @@ tryAgain:
         if (page)
         {
             _ASSERTE(region);
+            SatoriTrace::Count(SatoriTrace::s_counters.pageAdds[(int)requester]);
             return region;
         }
     }
@@ -243,14 +263,16 @@ tryAgain:
 // Returns nullptr if there is nothing free, or if what we claimed cannot be committed. (outOfMemory)
 SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& outOfMemory)
 {
+    int64_t start = SatoriTrace::s_enabled ? SatoriUtil::GetTimeStamp() : 0;
     SatoriRegion* result = nullptr;
+    size_t retries = 0;
+    size_t rollbacks = 0;
 
     if (granules > 1)
     {
         // Runs are rare, all of them are for huge objects. The first page that has room is as good as any.
         SatoriPage* claimedPage = nullptr;
         size_t first = SIZE_MAX;
-        size_t rollbacks = 0;
 
         m_runClaimLock.Enter();
         m_heap->ForEachPageFrom(0,
@@ -273,64 +295,84 @@ SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& o
             result = claimedPage->FormatClaimed(first, granules);
             outOfMemory = (result == nullptr);
         }
-
-        return result;
     }
-
-    size_t retries = 0;
-
-    // Threads on different processors start with different pages.
-    // Requests for long-lived regions start with the first page, to keep those regions together.
-    size_t startHint = low ? 0 : ProcessorHint();
-
-    // Regular requests take a region that is committed in full, if there is one. Others take any.
-    for (int pass = low ? 1 : 0; pass < 2 && !result && !outOfMemory; pass++)
+    else
     {
-        bool warmOnly = pass == 0;
-        m_heap->ForEachPageFrom(startHint,
-            [&](SatoriPage* page)
-            {
-                size_t granule = page->TryClaimGranule(warmOnly, /* fromTop */ low, retries);
-                if (granule == SIZE_MAX)
-                {
-                    return false;
-                }
+        // Threads on different processors start with different pages.
+        // Requests for long-lived regions start with the first page, to keep those regions together.
+        size_t startHint = low ? 0 : ProcessorHint();
 
-                result = page->FormatClaimed(granule, 1);
-                outOfMemory = (result == nullptr);
-                return true;
-            }
-        );
+        // Regular requests take a region that is committed in full, if there is one. Others take any.
+        for (int pass = low ? 1 : 0; pass < 2 && !result && !outOfMemory; pass++)
+        {
+            bool warmOnly = pass == 0;
+            m_heap->ForEachPageFrom(startHint,
+                [&](SatoriPage* page)
+                {
+                    size_t granule = page->TryClaimGranule(warmOnly, /* fromTop */ low, retries);
+                    if (granule == SIZE_MAX)
+                    {
+                        return false;
+                    }
+
+                    result = page->FormatClaimed(granule, 1);
+                    outOfMemory = (result == nullptr);
+                    return true;
+                }
+            );
+        }
     }
 
+    TraceClaim(result, granules, retries, rollbacks, start);
     return result;
 }
 
 // The same as TryClaimRegion, but for one page.
 SatoriRegion* SatoriAllocator::TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, bool& outOfMemory)
 {
+    int64_t start = SatoriTrace::s_enabled ? SatoriUtil::GetTimeStamp() : 0;
+    size_t retries = 0;
+    size_t rollbacks = 0;
+
     size_t first;
     if (granules > 1)
     {
-        size_t rollbacks = 0;
         m_runClaimLock.Enter();
         first = page->TryClaimRun(granules, /* fromTop */ low, rollbacks);
         m_runClaimLock.Leave();
     }
     else
     {
-        size_t retries = 0;
         first = page->TryClaimGranule(/* warmOnly */ false, /* fromTop */ low, retries);
     }
 
-    if (first == SIZE_MAX)
+    SatoriRegion* result = nullptr;
+    if (first != SIZE_MAX)
     {
-        return nullptr;
+        result = page->FormatClaimed(first, granules);
+        outOfMemory = (result == nullptr);
     }
 
-    SatoriRegion* result = page->FormatClaimed(first, granules);
-    outOfMemory = (result == nullptr);
+    TraceClaim(result, granules, retries, rollbacks, start);
     return result;
+}
+
+// TEMP-TRACE
+void SatoriAllocator::TraceClaim(SatoriRegion* region, size_t granules, size_t retries, size_t rollbacks, int64_t startTime)
+{
+    if (!SatoriTrace::s_enabled)
+    {
+        return;
+    }
+
+    SatoriTraceCounters& counters = SatoriTrace::s_counters;
+    SatoriTrace::Count(counters.casRetries, retries);
+    SatoriTrace::Count(counters.runRollbacks, rollbacks);
+    if (region)
+    {
+        SatoriTrace::Count(granules > 1 ? counters.claimsRun : counters.claimsSingle);
+        SatoriTrace::CountTime(counters.claimTicks, SatoriUtil::GetTimeStamp() - startTime);
+    }
 }
 
 void SatoriAllocator::AddRegion(SatoriRegion* region)
@@ -356,14 +398,20 @@ void SatoriAllocator::ReturnRegion(SatoriRegion* region)
 // Puts a 2 MB region in the cache, if the cache is not full. The regions that are used most recently go to the front.
 bool SatoriAllocator::TryCacheRegion(SatoriRegion* region, bool recentlyUsed)
 {
-    if (region->Size() != Satori::REGION_SIZE_GRANULARITY ||
-        m_regionCacheCount >= m_regionCacheCap)
+    if (region->Size() != Satori::REGION_SIZE_GRANULARITY)
     {
+        return false;
+    }
+
+    if (m_regionCacheCount >= m_regionCacheCap)
+    {
+        SatoriTrace::Count(SatoriTrace::s_counters.cacheOverflows);
         return false;
     }
 
     // The count is ahead of the queue, so a pop never takes the count below 0.
     Interlocked::Increment(&m_regionCacheCount);
+    SatoriTrace::Count(SatoriTrace::s_counters.freesToCache);
     if (recentlyUsed)
     {
         m_regionCache->Push(region);
@@ -379,7 +427,57 @@ bool SatoriAllocator::TryCacheRegion(SatoriRegion* region, bool recentlyUsed)
 // Frees the region into the free granules of its page.
 void SatoriAllocator::FreeToBitmap(SatoriRegion* region)
 {
+    if (SatoriTrace::s_enabled)
+    {
+        SatoriTrace::Count(SatoriTrace::s_counters.freesToBitmap);
+        SatoriTrace::Count(SatoriTrace::s_counters.freesToBitmapGranules, region->Size() >> Satori::REGION_BITS);
+    }
+
     region->ContainingPage()->FreeRegion(region);
+}
+
+// TEMP-TRACE: what the allocator of regions has counted, and the layout of the pages.
+void SatoriAllocator::PrintTrace()
+{
+    SatoriTraceCounters& c = SatoriTrace::s_counters;
+    static const char requesterTags[] = "?RLSHPIWFT";
+    static_assert(sizeof(requesterTags) == (int)SatoriRegionRequester::Count + 1, "a tag for every requester");
+
+    size_t totalPageAdds = 0;
+    for (int i = 0; i < (int)SatoriRegionRequester::Count; i++)
+    {
+        totalPageAdds += c.pageAdds[i];
+    }
+
+    double microsPerTick = 1000000.0 / (double)SatoriUtil::GetTimeStampFrequency();
+    size_t claimCount, getCount;
+    int64_t claimP50 = SatoriTrace::Percentile(c.claimTicks, 0.50, claimCount);
+    int64_t claimP99 = SatoriTrace::Percentile(c.claimTicks, 0.99, claimCount);
+    int64_t getP50 = SatoriTrace::Percentile(c.getRegionTicks, 0.50, getCount);
+    int64_t getP99 = SatoriTrace::Percentile(c.getRegionTicks, 0.99, getCount);
+
+    minipal_log_print_error("Satori TEMP-TRACE allocator counters (cache cap %zu):\n", m_regionCacheCap);
+    minipal_log_print_error("  page adds: total=%zu by requester:", totalPageAdds);
+    for (int i = 0; i < (int)SatoriRegionRequester::Count; i++)
+    {
+        if (c.pageAdds[i])
+        {
+            minipal_log_print_error(" %c=%zu", requesterTags[i], c.pageAdds[i]);
+        }
+    }
+
+    minipal_log_print_error("\n");
+    minipal_log_print_error("  claims: single=%zu run=%zu  cas retries=%zu  run rollbacks=%zu\n",
+        c.claimsSingle, c.claimsRun, c.casRetries, c.runRollbacks);
+    minipal_log_print_error("  adjacent claims: tried=%zu claimed=%zu\n", c.adjacentTries, c.adjacentClaims);
+    minipal_log_print_error("  cache: hits=%zu misses=%zu frees=%zu overflows to bitmap=%zu (in cache now %zu)\n",
+        c.cacheHits, c.cacheMisses, c.freesToCache, c.cacheOverflows, (size_t)m_regionCacheCount);
+    minipal_log_print_error("  frees into bitmap: regions=%zu granules=%zu  gap commit bytes=%zu\n",
+        c.freesToBitmap, c.freesToBitmapGranules, c.gapCommitBytes);
+    minipal_log_print_error("  claim time (us): p50=%.2f p99=%.2f of %zu claims\n",
+        claimP50 * microsPerTick, claimP99 * microsPerTick, claimCount);
+    minipal_log_print_error("  GetRegion time (us): p50=%.2f p99=%.2f of %zu calls\n",
+        getP50 * microsPerTick, getP99 * microsPerTick, getCount);
 }
 
 // Allocated bytes accounting.
@@ -1245,19 +1343,21 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region, size_t size)
         // Free memory has no header to read, so this takes a claim and nothing else.
         if (page && nextStart < page->End())
         {
+            SatoriTrace::Count(SatoriTrace::s_counters.adjacentTries);
             size_t granule = (nextStart - page->Start()) >> Satori::REGION_BITS;
             if (page->TryClaimGranuleAt(granule))
             {
                 region = page->FormatClaimed(granule, 1);
                 if (region)
                 {
+                    SatoriTrace::Count(SatoriTrace::s_counters.adjacentClaims);
                     _ASSERTE(region->NothingMarked());
                     return;
                 }
             }
         }
 
-        region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
+        region = GetRegion(Satori::REGION_SIZE_GRANULARITY, SatoriRegionRequester::Regular);
         _ASSERTE(region == nullptr || region->NothingMarked());
     }
 }
@@ -1358,7 +1458,7 @@ tryAgain:
 
         if (!region)
         {
-            region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
+            region = GetRegion(Satori::REGION_SIZE_GRANULARITY, SatoriRegionRequester::Large);
             if (!region)
             {
                 //OOM
@@ -1457,7 +1557,7 @@ SatoriObject* SatoriAllocator::AllocLargeShared(SatoriAllocationContext* context
 
         if (!region)
         {
-            region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
+            region = GetRegion(Satori::REGION_SIZE_GRANULARITY, SatoriRegionRequester::SharedLarge);
             if (!region)
             {
                 //OOM
@@ -1483,7 +1583,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
 
     size_t regionSize = SatoriRegion::RegionSizeForAlloc(size);
     _ASSERTE(regionSize > Satori::REGION_SIZE_GRANULARITY);
-    SatoriRegion* hugeRegion = GetRegion(regionSize);
+    SatoriRegion* hugeRegion = GetRegion(regionSize, SatoriRegionRequester::Huge);
     if (!hugeRegion)
     {
         //OOM
@@ -1621,7 +1721,7 @@ SatoriObject* SatoriAllocator::AllocPinned(SatoriAllocationContext* context, siz
 
         if (!region)
         {
-            region = GetRegion(Satori::REGION_SIZE_GRANULARITY);
+            region = GetRegion(Satori::REGION_SIZE_GRANULARITY, SatoriRegionRequester::Pinned);
             if (!region)
             {
                 //OOM
@@ -1685,7 +1785,7 @@ SatoriObject* SatoriAllocator::AllocImmortal(SatoriAllocationContext* context, s
         }
 
         // get a new regular region. It will stay forever, so place it near the beginning of a page.
-        region = GetRegionLow(Satori::REGION_SIZE_GRANULARITY);
+        region = GetRegionLow(Satori::REGION_SIZE_GRANULARITY, SatoriRegionRequester::Immortal);
         if (!region)
         {
             //OOM
@@ -1823,7 +1923,7 @@ bool SatoriAllocator::AddMoreWorkChunks()
     }
 
     // The chunks stay forever, so place the region near the beginning of a page.
-    SatoriRegion* region = GetRegionLow(Satori::REGION_SIZE_GRANULARITY);
+    SatoriRegion* region = GetRegionLow(Satori::REGION_SIZE_GRANULARITY, SatoriRegionRequester::WorkChunks);
     if (!region)
     {
         return false;

@@ -64,7 +64,7 @@ bool SatoriFinalizationQueue::Initialize(SatoriHeap* heap)
     size_t regionSize = SatoriRegion::RegionSizeForAlloc(allocSize);
 
     // The queue lives as long as the process, so place its region near the beginning of a page.
-    SatoriRegion* region = m_heap->Allocator()->GetRegionLow(regionSize);
+    SatoriRegion* region = m_heap->Allocator()->GetRegionLow(regionSize, SatoriRegionRequester::FinalizationQueue);
     if (region == nullptr)
     {
         return false;
@@ -119,7 +119,7 @@ void SatoriFinalizationQueue::TryResizeIfOverflowing()
 
         // The queue is long-lived, so place the new region near the beginning of a page.
         // The old region is returned after the transfer and becomes a hole that other low requests can reuse.
-        SatoriRegion* newRegion = m_heap->Allocator()->GetRegionLow(regionSize);
+        SatoriRegion* newRegion = m_heap->Allocator()->GetRegionLow(regionSize, SatoriRegionRequester::FinalizationQueue);
         if (newRegion)
         {
             newRegion->TryDecommit();
