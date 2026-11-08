@@ -87,18 +87,35 @@ public:
     void Release();
 
     // Trimming. Only the trimmer decommits the memory of free granules, and only of the ones that it has claimed.
-    // The head of a granule stays committed, see TrimmedHeadBytes.
+    // A trimmed granule has nothing committed, not even its head, and that is safe because no thread reads the header of a region
+    // that it does not own without being registered, see EnterUnownedHeaderRead.
     //
-    // Finds the first free granule that has more than its head committed, not before `from`. When asked, only among the granules
+    // Finds the first free granule that has anything committed, not before `from`. When asked, only among the granules
     // that were also free when the trimmer last looked at this page. Returns SIZE_MAX if there is none.
     size_t NextGranuleToTrim(size_t from, bool onlyIfSeenFree);
-    // Claims the granule, decommits what its last owners left committed beyond the head, and gives it back as free and cold.
-    // When asked, only if the granule is still one that was seen free: the caller may have found it before it was claimed
+    // Claims the granule `first`, which NextGranuleToTrim found, and the free granules after it that have anything committed,
+    // up to `maxCount` granules together. Decommits them with one call and gives them back as free and cold.
+    // When asked, only the granules that are still ones that were seen free: the caller may have found them before they were claimed
     // and freed again, and then the claim takes the new free bit.
-    // Returns true if it decommitted anything.
-    bool TryTrimGranule(size_t granule, bool onlyIfSeenFree);
+    // `count` is the number of granules that the run covered (at least 1), the caller goes on after them.
+    // Returns true if it decommitted anything. It decommits nothing, and gives the granules back, if a thread is registered as a reader
+    // of an unowned header.
+    bool TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, size_t& count);
     // Remembers which granules are free now, for the next time.
     void RememberFreeGranules();
+
+    // A thread that reads the header of a region that it does not own (the region that follows its own, see TryGetRegularRegion)
+    // registers with the page before it reads the region map for that region, and leaves after its last read of the header.
+    // The region can be freed meanwhile, and the trimmer decommits the granule of a free region. The trimmer looks at the registrations
+    // after it claims a granule, and does not decommit while there is one. A thread that registers after that look reads the region map
+    // after the region was removed from it (the map is cleared before the free bit is set), and does not read the header.
+    // So the header that the map has found is committed for as long as the thread is registered.
+    void EnterUnownedHeaderRead();
+    void LeaveUnownedHeaderRead();
+#if _DEBUG
+    // A registered thread is about to read the header of the region that starts at the granule.
+    void AssertHeaderIsReadable(size_t granule);
+#endif
 
     // TEMP-TRACE: prints a character per granule, see SatoriHeap::PrintTrace.
     void PrintLayout();
@@ -219,6 +236,7 @@ private:
     size_t FindRun(size_t count, bool fromTop);
     bool TryClearRun(size_t first, size_t count);
     void ForgetSeenFree(size_t first, size_t count);
+    bool IsTrimCandidate(size_t granule, bool onlyIfSeenFree);
 
     union
     {
@@ -236,6 +254,8 @@ private:
         {
             int8_t m_cardState;
             uint8_t m_scanTicket;
+            // The number of registered readers of unowned headers, see EnterUnownedHeaderRead.
+            volatile int32_t m_unownedHeaderReaders;
             size_t m_end;
             size_t m_initialCommit;
             size_t m_firstRegion;

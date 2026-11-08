@@ -71,6 +71,22 @@ inline SatoriHeap* SatoriPage::Heap()
     return m_heap;
 }
 
+inline void SatoriPage::EnterUnownedHeaderRead()
+{
+    Interlocked::Increment(&m_unownedHeaderReaders);
+
+    // The caller reads the region map after this, and the trimmer looks at the count after it claims a granule.
+    // Each of the two sides must see the other's write: either the caller sees that the region is gone from the map,
+    // or the trimmer sees the caller.
+    MemoryBarrier();
+}
+
+inline void SatoriPage::LeaveUnownedHeaderRead()
+{
+    // a release: the reads of the header are done before the trimmer can see that we are gone.
+    Interlocked::Decrement(&m_unownedHeaderReaders);
+}
+
 // order is unimportant, but we want to read it only once when we read it, thus volatile.
 inline volatile int8_t& SatoriPage::CardState()
 {

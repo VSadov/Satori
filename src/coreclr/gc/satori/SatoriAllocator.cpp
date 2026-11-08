@@ -166,6 +166,38 @@ void TraceTrimRound()
     Interlocked::Increment(&g_trimRounds);
 }
 
+// Step 4 of Milestone 2b: why the rounds ran, the decommit calls of the trimmer, and what a call covered. (see [trimstats])
+static volatile size_t g_trimRoundsGen2;
+static volatile size_t g_trimRoundsIdle;
+static volatile size_t g_trimCalls;
+static volatile size_t g_trimCallGranules;
+static volatile size_t g_trimCallBytes;
+// runs of 1, 2-3, 4-7, 8-15, 16-31, 32 granules
+static volatile size_t g_trimRunHist[6];
+static volatile size_t g_trimSkippedForReader;
+static volatile size_t g_trimSkippedGranules;
+
+void TraceTrimRoundWhy(bool idle)
+{
+    Interlocked::Increment(idle ? &g_trimRoundsIdle : &g_trimRoundsGen2);
+}
+
+void TraceTrimCall(size_t granules, size_t bytes)
+{
+    Interlocked::Increment(&g_trimCalls);
+    Interlocked::ExchangeAdd64(&g_trimCallGranules, granules);
+    Interlocked::ExchangeAdd64(&g_trimCallBytes, bytes);
+    DWORD bucket;
+    BitScanReverse64(&bucket, granules);
+    Interlocked::Increment(&g_trimRunHist[min((size_t)bucket, (size_t)5)]);
+}
+
+void TraceTrimSkippedForReader(size_t granules)
+{
+    Interlocked::Increment(&g_trimSkippedForReader);
+    Interlocked::ExchangeAdd64(&g_trimSkippedGranules, granules);
+}
+
 // When something was decommitted in a 2 MB granule, and how much of it is not committed again yet.
 // The slots are per block of 1 GB, found in a small open addressing table, allocated when the first decommit in the block is seen.
 struct TraceSlot
@@ -923,6 +955,15 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
         TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, ev,
         g_nbrReqs, g_nbrWithNext, g_nbrNextNoQueue, g_nbrNextReusable, g_nbrNextOther, g_nbrReusableTaken,
         g_nbrReusableHit, SatoriTrace::s_counters.adjacentTries, SatoriTrace::s_counters.adjacentClaims, g_nbrGetRegion);
+    TraceWrite(buf, len);
+
+    len = snprintf(buf, sizeof(buf),
+        "[trimstats] t=%.3f ev=%s roundsGen2=%zu roundsIdle=%zu calls=%zu granules=%zu MB=%.1f "
+        "runHist=%zu,%zu,%zu,%zu,%zu,%zu skippedForReader=%zu skippedGranules=%zu\n",
+        TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, ev,
+        g_trimRoundsGen2, g_trimRoundsIdle, g_trimCalls, g_trimCallGranules, (double)g_trimCallBytes / (1 << 20),
+        g_trimRunHist[0], g_trimRunHist[1], g_trimRunHist[2], g_trimRunHist[3], g_trimRunHist[4], g_trimRunHist[5],
+        g_trimSkippedForReader, g_trimSkippedGranules);
     TraceWrite(buf, len);
 }
 
@@ -2316,6 +2357,52 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
     }
 }
 
+// The region that follows `region` in its page, if it is in a reusable queue and fits the request, taken out of that queue.
+//
+// The next region is not ours to look at. It can be freed meanwhile, and the granule of a free region is decommitted by the trimmer.
+// This is the only place where a thread reads the header of a region that it does not own, and it is safe for these reasons:
+//  - The thread registers with the page (EnterUnownedHeaderRead) before it reads the region map, and leaves after its last read
+//    of the header. The trimmer does not decommit while a thread is registered with the page.
+//  - A region is removed from the map before its granules are marked free, and the trimmer claims only free granules, and looks
+//    at the registrations after it claims. So if the map has a region at `next` after we registered, then either the region is
+//    still there, or it was freed and the trimmer sees us and leaves the memory committed.
+//  - The header of a region that was freed holds what it held, and FreeRegion asserts that its queue is null, so the read finds no queue.
+//    A region that was freed and is in use again by somebody else is a region, whatever it is used for, and its queue is what it is.
+//    The removal checks the queue under its lock.
+// The free granule after the region, which the caller claims, has no header. It is a bit operation, and reads no memory of the granule.
+// Other readers get to headers through the region map too (conservative marking, interior pointers, the card groups).
+// They run only on regions that are live: in the precise mode a reference is to a live object, a card group is set only for a live region,
+// and in the conservative mode the trimmer is stopped while the GC marks (see DrainDeferredSweepQueueConcurrent).
+static SatoriRegion* TryTakeReusableNext(SatoriPage* page, SatoriRegion* region, size_t minFree)
+{
+    SatoriRegion* result = nullptr;
+
+    page->EnterUnownedHeaderRead();
+    SatoriRegion* next = region->NextInPage();
+    if (next)
+    {
+#if _DEBUG
+        page->AssertHeaderIsReadable((next->Start() - page->Start()) >> Satori::REGION_BITS);
+#endif
+        TraceCount(&g_nbrWithNext); // TEMP-TRACE
+        SatoriQueue<SatoriRegion>* nextContainingQueue = next->ContainingQueue();
+        if (!nextContainingQueue) TraceCount(&g_nbrNextNoQueue); // TEMP-TRACE
+        else if (nextContainingQueue->Kind() == QueueKind::RecyclerReusable) TraceCount(&g_nbrNextReusable); // TEMP-TRACE
+        else TraceCount(&g_nbrNextOther); // TEMP-TRACE
+        if (nextContainingQueue &&
+            nextContainingQueue->Kind() == QueueKind::RecyclerReusable &&
+            next->CanFitAllocation(minFree) &&
+            nextContainingQueue->TryRemove(next))
+        {
+            TraceCount(&g_nbrReusableTaken); // TEMP-TRACE
+            result = next;
+        }
+    }
+
+    page->LeaveUnownedHeaderRead();
+    return result;
+}
+
 // Gets a region for a regular allocation of the given size. Prefers reusable regions, but a reusable region
 // that cannot serve the request from its free lists would just be retired on the spot while charging
 // the budget for its unused space. Such regions are skipped and left to be used for smaller requests.
@@ -2333,24 +2420,12 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region, size_t size)
         page = region->ContainingPage();
         nextStart = region->End();
 
-        SatoriRegion* next = region->NextInPage();
+        SatoriRegion* next = TryTakeReusableNext(page, region, minFree);
         if (next)
         {
-            TraceCount(&g_nbrWithNext); // TEMP-TRACE
-            SatoriQueue<SatoriRegion>* nextContainingQueue = next->ContainingQueue();
-            if (!nextContainingQueue) TraceCount(&g_nbrNextNoQueue); // TEMP-TRACE
-            else if (nextContainingQueue->Kind() == QueueKind::RecyclerReusable) TraceCount(&g_nbrNextReusable); // TEMP-TRACE
-            else TraceCount(&g_nbrNextOther); // TEMP-TRACE
-            if (nextContainingQueue &&
-                nextContainingQueue->Kind() == QueueKind::RecyclerReusable &&
-                next->CanFitAllocation(minFree) &&
-                nextContainingQueue->TryRemove(next))
-            {
-                TraceCount(&g_nbrReusableTaken); // TEMP-TRACE
-                region = next;
-                _ASSERTE(region->Occupancy() < Satori::REGION_SIZE_GRANULARITY);
-                return;
-            }
+            region = next;
+            _ASSERTE(region->Occupancy() < Satori::REGION_SIZE_GRANULARITY);
+            return;
         }
     }
 

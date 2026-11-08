@@ -69,6 +69,9 @@ namespace Satori
     static const size_t WATERMARK_UNIT = (size_t)1 << WATERMARK_UNIT_BITS;
     static const size_t WATERMARK_UNITS_PER_GRANULE = REGION_SIZE_GRANULARITY / WATERMARK_UNIT;
 
+    // The trimmer decommits runs of adjacent free granules with one call, up to this many granules (64 MB).
+    static const size_t TRIM_RUN_GRANULES = 32;
+
     const static int INDEX_GRANULARITY_BITS = 11;
     const static int INDEX_GRANULARITY = 1 << INDEX_GRANULARITY_BITS;
     const static int INDEX_LENGTH = REGION_SIZE_GRANULARITY / INDEX_GRANULARITY;

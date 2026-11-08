@@ -39,6 +39,11 @@ extern volatile size_t g_recommit120Bytes;
 void TraceTrimInc();
 void TraceTrimDec();
 void TraceTrimRound();
+// Step 4 of Milestone 2b: why a round ran (an idle one, or after a gen2), a decommit call of the trimmer and the granules and bytes it covered,
+// a run that the trimmer gave back, because a thread was registered as a reader of an unowned header.
+void TraceTrimRoundWhy(bool idle);
+void TraceTrimCall(size_t granules, size_t bytes);
+void TraceTrimSkippedForReader(size_t granules);
 void TraceNoteCommitSlow(size_t address, size_t bytes);
 void TraceNoteDecommitSlow(size_t address, size_t bytes);
 

@@ -229,7 +229,7 @@ void SatoriPage::FreeRegion(SatoriRegion* region)
     size_t count = (end - start) >> Satori::REGION_BITS;
 
 #if _DEBUG
-    // before the seen bits are cleared and the free bits set, see TryTrimGranule
+    // before the seen bits are cleared and the free bits set, see TryTrimRun
     size_t freeStamp = Interlocked::Increment(&s_freeClock);
 #endif
 
@@ -513,14 +513,20 @@ void SatoriPage::ForgetSeenFree(size_t first, size_t count)
     }
 }
 
-// The head of a trimmed granule that stays committed, a whole number of watermark units.
-// TryGetRegularRegion reads the header of the region that follows its own, a region that it does not own. That region
-// can be freed and its granule trimmed meanwhile, and the read must not fault. What the head holds is what the last region
-// left there, and FreeRegion asserts that its queue is null, so the read finds no queue and moves on.
-// This also covers any other reader that gets to a header through the region map.
-static size_t TrimmedHeadBytes()
+// The granule is free and has anything committed. When asked, it was also free when the trimmer last looked at the page.
+// The watermark of a free granule is stable, but the granule may be claimed any moment. This is only a hint,
+// TryTrimRun looks at the watermark again when the granules are ours.
+bool SatoriPage::IsTrimCandidate(size_t granule, bool onlyIfSeenFree)
 {
-    return ALIGN_UP(SatoriUtil::CommitGranularity(), Satori::WATERMARK_UNIT);
+    size_t word = granule / 64;
+    size_t candidates = VolatileLoad(&m_freeBitmap[word]);
+    if (onlyIfSeenFree)
+    {
+        // after the free bits: see FreeRegion
+        candidates &= VolatileLoad(&m_seenFreeBitmap[word]);
+    }
+
+    return ((candidates >> (granule % 64)) & 1) && m_commitWatermarks[granule] != 0;
 }
 
 size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree)
@@ -545,9 +551,8 @@ size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree)
             BitScanForward64(&bit, candidates);
             size_t candidate = word * 64 + bit;
 
-            // The watermark of a free granule is stable, but the granule may be claimed any moment. This is only a hint,
-            // TryTrimGranule looks at the watermark again when the granule is ours.
-            if (((size_t)m_commitWatermarks[candidate] << Satori::WATERMARK_UNIT_BITS) > TrimmedHeadBytes())
+            // a hint, see IsTrimCandidate
+            if (m_commitWatermarks[candidate] != 0)
             {
                 return candidate;
             }
@@ -561,56 +566,124 @@ size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree)
     return SIZE_MAX;
 }
 
-bool SatoriPage::TryTrimGranule(size_t granule, bool onlyIfSeenFree)
+bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, size_t& count)
 {
-    if (!TryClaimGranuleAt(granule))
-    {
-        return false;
-    }
+    _ASSERTE(maxCount > 0);
+    count = 1;
 
-    TraceTrimInc(); // TEMP-TRACE
-
-    // The granule could have been claimed and freed again after the caller found it, and then our claim took the new free bit.
-    // FreeRegion clears the seen bit before it sets the free bit, so a granule that is seen now was not freed since it was seen.
-    if (onlyIfSeenFree && ((VolatileLoad(&m_seenFreeBitmap[granule / 64]) >> (granule % 64)) & 1) == 0)
+    size_t claimed = 0;
+    size_t limit = min(first + maxCount, GranuleCount());
+    for (size_t granule = first; granule < limit; granule++)
     {
-        PublishFreeGranules(granule, 1);
-        TraceTrimDec(); // TEMP-TRACE
-        return false;
-    }
+        // The first granule is the one that the caller found. The others join if they are next to the run and look like they can.
+        if (granule != first && !IsTrimCandidate(granule, onlyIfSeenFree))
+        {
+            break;
+        }
+
+        if (!TryClaimGranuleAt(granule))
+        {
+            break;
+        }
+
+        TraceTrimInc(); // TEMP-TRACE
+
+        // The granule could have been claimed and freed again after it was found, and then our claim took the new free bit.
+        // FreeRegion clears the seen bit before it sets the free bit, so a granule that is seen now was not freed since it was seen.
+        // The watermark is stable now that the granule is ours. A granule that has nothing committed is not worth a run.
+        if ((onlyIfSeenFree && ((VolatileLoad(&m_seenFreeBitmap[granule / 64]) >> (granule % 64)) & 1) == 0) ||
+            m_commitWatermarks[granule] == 0)
+        {
+            PublishFreeGranules(granule, 1);
+            TraceTrimDec(); // TEMP-TRACE
+            break;
+        }
 
 #if _DEBUG
-    if (onlyIfSeenFree && m_freeStamps[granule] >= m_snapshotStamp)
-    {
-        minipal_log_print_error("Satori: page %p, granule %zu: the trimmer took a granule that was freed (stamp %zu) after the last look at its page (stamp %zu)\n",
-            (void*)this, granule, m_freeStamps[granule], m_snapshotStamp);
-        _ASSERTE(!"the trimmer took a granule that was freed after the last look at its page");
-    }
+        if (onlyIfSeenFree && m_freeStamps[granule] >= m_snapshotStamp)
+        {
+            minipal_log_print_error("Satori: page %p, granule %zu: the trimmer took a granule that was freed (stamp %zu) after the last look at its page (stamp %zu)\n",
+                (void*)this, granule, m_freeStamps[granule], m_snapshotStamp);
+            _ASSERTE(!"the trimmer took a granule that was freed after the last look at its page");
+        }
 #endif
 
-    // The granule is ours. What is committed is what the watermarks say, and no region is looking at the memory.
-    // Everything but the head is decommitted.
-    bool trimmed = false;
-    size_t headBytes = TrimmedHeadBytes();
-    size_t committedBytes = (size_t)m_commitWatermarks[granule] << Satori::WATERMARK_UNIT_BITS;
-    if (committedBytes > headBytes &&
-        TraceVirtualDecommit((void*)(GranuleStart(granule) + headBytes), committedBytes - headBytes)) // TEMP-TRACE
-    {
-        m_heap->DecBytesCommitted(committedBytes - headBytes);
-        TraceNoteDecommit(GranuleStart(granule) + headBytes, committedBytes - headBytes); // TEMP-TRACE
-
-        // what is committed next time is the head, and it may hold what the last region left there. No part of it is warm.
-        size_t headUnits = headBytes >> Satori::WATERMARK_UNIT_BITS;
-        m_commitWatermarks[granule] = (uint8_t)headUnits;
-        m_dirtyWatermarks[granule] = (uint8_t)min((size_t)m_dirtyWatermarks[granule], headUnits);
-        Interlocked::And(&m_warmBitmap[granule / 64], ~((size_t)1 << (granule % 64)));
-        trimmed = true;
+        claimed++;
     }
 
-    PublishFreeGranules(granule, 1);
-    TraceTrimDec(); // TEMP-TRACE
+    if (claimed == 0)
+    {
+        return false;
+    }
+
+    count = claimed;
+
+    // The granules are ours. What is committed is what the watermarks say. No region is using the memory, but a thread that read the region map
+    // before the region of a granule was freed may still be about to read its header, see EnterUnownedHeaderRead. This look comes after the claims,
+    // a thread that registers after it finds the regions gone from the map. If there is a reader, the granules go back as they were, and are trimmed
+    // when the trimmer comes again.
+    MemoryBarrier();
+    bool trimmed = false;
+    if (VolatileLoad(&m_unownedHeaderReaders) == 0)
+    {
+        size_t committedBytes = 0;
+        size_t decommitEnd = 0;
+        for (size_t i = 0; i < claimed; i++)
+        {
+            size_t bytes = (size_t)m_commitWatermarks[first + i] << Satori::WATERMARK_UNIT_BITS;
+            committedBytes += bytes;
+            decommitEnd = GranuleStart(first + i) + bytes;
+        }
+
+        // One call covers the run. The granules before the last one are committed in full or not, and decommitting
+        // what is not committed does nothing.
+        size_t decommitStart = GranuleStart(first);
+        if (TraceVirtualDecommit((void*)decommitStart, decommitEnd - decommitStart)) // TEMP-TRACE
+        {
+            m_heap->DecBytesCommitted(committedBytes);
+            TraceTrimCall(claimed, committedBytes); // TEMP-TRACE
+
+            // What is committed next time is whatever the next owner commits, and all of it is zero. No granule is warm.
+            for (size_t i = 0; i < claimed; i++)
+            {
+                TraceNoteDecommit(GranuleStart(first + i), (size_t)m_commitWatermarks[first + i] << Satori::WATERMARK_UNIT_BITS); // TEMP-TRACE
+                m_commitWatermarks[first + i] = 0;
+                m_dirtyWatermarks[first + i] = 0;
+            }
+
+            for (size_t word = first / 64; word <= (first + claimed - 1) / 64; word++)
+            {
+                Interlocked::And(&m_warmBitmap[word], ~RunBitsInWord(first, claimed, word));
+            }
+
+            trimmed = true;
+        }
+    }
+    else
+    {
+        TraceTrimSkippedForReader(claimed); // TEMP-TRACE
+    }
+
+    PublishFreeGranules(first, claimed);
+    for (size_t i = 0; i < claimed; i++)
+    {
+        TraceTrimDec(); // TEMP-TRACE
+    }
+
     return trimmed;
 }
+
+#if _DEBUG
+void SatoriPage::AssertHeaderIsReadable(size_t granule)
+{
+    _ASSERTE(VolatileLoad(&m_unownedHeaderReaders) > 0);
+
+    // A region that was freed after the reader found it makes its granule free, with a commit that its header gives it: FreeRegion
+    // records the commit of the region, and a region has its header committed. The trimmer does not decommit while we are registered.
+    bool isFree = (VolatileLoad(&m_freeBitmap[granule / 64]) >> (granule % 64)) & 1;
+    _ASSERTE(!isFree || m_commitWatermarks[granule] != 0);
+}
+#endif
 
 // TEMP-TRACE
 void SatoriPage::TraceCollect(TraceSnap& s, size_t request)
