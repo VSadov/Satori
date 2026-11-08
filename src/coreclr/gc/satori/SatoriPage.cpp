@@ -318,6 +318,151 @@ bool SatoriPage::TryClaimGranuleAt(size_t granule)
     return false;
 }
 
+// Finds the first granule of a run of free granules that is the lowest (or the highest) among the runs that fit.
+// The free bits are read as they are, claimers of single granules could change them meanwhile.
+size_t SatoriPage::FindRun(size_t count, bool fromTop)
+{
+    _ASSERTE(count > 1);
+
+    size_t first = FirstGranule();
+    size_t end = GranuleCount();
+    size_t runLength = 0;
+
+    if (!fromTop)
+    {
+        size_t granule = first;
+        while (granule < end)
+        {
+            size_t word = VolatileLoad(&m_freeBitmap[granule / 64]);
+            size_t bit = granule % 64;
+            if (bit == 0 && word == 0)
+            {
+                // nothing is free in the word
+                runLength = 0;
+                granule += 64;
+                continue;
+            }
+
+            if ((word >> bit) & 1)
+            {
+                // this is the end of the run if it is long enough.
+                if (++runLength == count)
+                {
+                    return granule + 1 - count;
+                }
+            }
+            else
+            {
+                runLength = 0;
+            }
+
+            granule++;
+        }
+    }
+    else
+    {
+        // the granule before this one is the next to look at
+        size_t granule = end;
+        while (granule > first)
+        {
+            size_t current = granule - 1;
+            size_t word = VolatileLoad(&m_freeBitmap[current / 64]);
+            size_t bit = current % 64;
+            if (bit == 63 && word == 0)
+            {
+                runLength = 0;
+                granule -= 64;
+                continue;
+            }
+
+            if ((word >> bit) & 1)
+            {
+                // this is the start of the run if it is long enough.
+                if (++runLength == count)
+                {
+                    return current;
+                }
+            }
+            else
+            {
+                runLength = 0;
+            }
+
+            granule--;
+        }
+    }
+
+    return SIZE_MAX;
+}
+
+// The bits of the run [first, first + count) that are in the word.
+static size_t RunBitsInWord(size_t first, size_t count, size_t word)
+{
+    size_t lowGranule = max(first, word * 64);
+    size_t highGranule = min(first + count, word * 64 + 64);
+    return BitRange(lowGranule - word * 64, highGranule - lowGranule);
+}
+
+// Clears the free bits of the run, if all of them are set. Otherwise leaves everything as it was.
+bool SatoriPage::TryClearRun(size_t first, size_t count)
+{
+    size_t firstWord = first / 64;
+    size_t lastWord = (first + count - 1) / 64;
+    for (size_t word = firstWord; word <= lastWord; word++)
+    {
+        size_t runBits = RunBitsInWord(first, count, word);
+        size_t freeBits = VolatileLoad(&m_freeBitmap[word]);
+        while (true)
+        {
+            if ((freeBits & runBits) != runBits)
+            {
+                // Someone has taken a granule of the run. Put back what we have cleared.
+                for (size_t cleared = firstWord; cleared < word; cleared++)
+                {
+                    Interlocked::Or(&m_freeBitmap[cleared], RunBitsInWord(first, count, cleared));
+                }
+
+                return false;
+            }
+
+            size_t seen = Interlocked::CompareExchange(&m_freeBitmap[word], freeBits & ~runBits, freeBits);
+            if (seen == freeBits)
+            {
+                break;
+            }
+
+            freeBits = seen;
+        }
+    }
+
+    return true;
+}
+
+size_t SatoriPage::TryClaimRun(size_t count, bool fromTop, size_t& rollbacks)
+{
+    // Every failed attempt means that somebody claimed a granule of the run that we found. That is rare,
+    // and it is not worth looking for long on this page if it keeps happening.
+    for (int attempt = 0; attempt < 4; attempt++)
+    {
+        size_t first = FindRun(count, fromTop);
+        if (first == SIZE_MAX || TryClearRun(first, count))
+        {
+            return first;
+        }
+
+        rollbacks++;
+    }
+
+    return SIZE_MAX;
+}
+
+// Gives back a page that was not published. The only thing committed in it is the card table.
+void SatoriPage::Release()
+{
+    m_heap->DecBytesCommitted(m_initialCommit - Start());
+    GCToOSInterface::VirtualRelease(this, m_end - Start());
+}
+
 // Calls the function for the ranges of a claimed run that must be committed to make its commit a prefix.
 // The commit of the granules is whatever the last owners left. The function returns false to stop.
 template <typename F>

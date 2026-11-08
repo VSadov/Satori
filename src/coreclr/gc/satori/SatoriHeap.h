@@ -49,7 +49,9 @@ public:
     static SatoriHeap* Create();
 
     bool TryAddRegularPage(SatoriPage*& newPage);
-    SatoriPage* AddLargePage(size_t size);
+    // Adds a page for a region of the given size, and claims the region in it before the page is published.
+    // Returns the page, and the region in `region`, or nullptr if the page can't be added or the region can't be formatted.
+    SatoriPage* AddLargePage(size_t size, bool low, SatoriRegion*& region);
 
     SatoriAllocator* Allocator()
     {

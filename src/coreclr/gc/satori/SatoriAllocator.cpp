@@ -86,6 +86,8 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     m_workChunkRefillLock.Initialize();
     m_workChunkRefillShard = 0;
 
+    m_runClaimLock.Initialize();
+
     m_largeRegion = nullptr;
     m_largeAllocLock.Initialize();
 
@@ -132,12 +134,6 @@ SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize, bool low)
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
     size_t granules = regionSize >> Satori::REGION_BITS;
-    if (granules != 1)
-    {
-        // TODO: runs of granules.
-        return nullptr;
-    }
-
     int64_t newPageDeadline = 0;
     int newPageSpin = 0;
 
@@ -209,7 +205,13 @@ tryAgain:
     }
     else
     {
-        // TODO: runs of granules, for the requests of more than one granule.
+        // A region of half a page or more may need a larger page. It is claimed in the page before the page is published.
+        SatoriPage* page = m_heap->AddLargePage(regionSize, low, region);
+        if (page)
+        {
+            _ASSERTE(region);
+            return region;
+        }
     }
 
     // most likely OOM
@@ -220,9 +222,40 @@ tryAgain:
 // Returns nullptr if there is nothing free, or if what we claimed cannot be committed. (outOfMemory)
 SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& outOfMemory)
 {
-    _ASSERTE(granules == 1);
-
     SatoriRegion* result = nullptr;
+
+    if (granules > 1)
+    {
+        // Runs are rare, all of them are for huge objects. The first page that has room is as good as any.
+        SatoriPage* claimedPage = nullptr;
+        size_t first = SIZE_MAX;
+        size_t rollbacks = 0;
+
+        m_runClaimLock.Enter();
+        m_heap->ForEachPageFrom(0,
+            [&](SatoriPage* page)
+            {
+                first = page->TryClaimRun(granules, /* fromTop */ low, rollbacks);
+                if (first == SIZE_MAX)
+                {
+                    return false;
+                }
+
+                claimedPage = page;
+                return true;
+            }
+        );
+        m_runClaimLock.Leave();
+
+        if (claimedPage)
+        {
+            result = claimedPage->FormatClaimed(first, granules);
+            outOfMemory = (result == nullptr);
+        }
+
+        return result;
+    }
+
     size_t retries = 0;
 
     // Threads on different processors start with different pages.
@@ -255,16 +288,26 @@ SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& o
 // The same as TryClaimRegion, but for one page.
 SatoriRegion* SatoriAllocator::TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, bool& outOfMemory)
 {
-    _ASSERTE(granules == 1);
+    size_t first;
+    if (granules > 1)
+    {
+        size_t rollbacks = 0;
+        m_runClaimLock.Enter();
+        first = page->TryClaimRun(granules, /* fromTop */ low, rollbacks);
+        m_runClaimLock.Leave();
+    }
+    else
+    {
+        size_t retries = 0;
+        first = page->TryClaimGranule(/* warmOnly */ false, /* fromTop */ low, retries);
+    }
 
-    size_t retries = 0;
-    size_t granule = page->TryClaimGranule(/* warmOnly */ false, /* fromTop */ low, retries);
-    if (granule == SIZE_MAX)
+    if (first == SIZE_MAX)
     {
         return nullptr;
     }
 
-    SatoriRegion* result = page->FormatClaimed(granule, 1);
+    SatoriRegion* result = page->FormatClaimed(first, granules);
     outOfMemory = (result == nullptr);
     return result;
 }

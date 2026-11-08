@@ -109,9 +109,14 @@ private:
 
     // Work chunks are added by one thread at a time (see AddMoreWorkChunks), the others wait for it by polling.
     // Thus nobody may ask for a work chunk while holding what the refilling thread needs to get a region.
-    // Lock order: the allocation locks, this lock.
+    // Lock order: the allocation locks, this lock, m_runClaimLock.
     DECLSPEC_ALIGN(64)
     SatoriLock m_workChunkRefillLock;
+
+    // Serializes the threads that claim runs of granules for big regions. (see SatoriPage::TryClaimRun)
+    // Claims of single granules do not take it. Nothing else is locked while holding it.
+    DECLSPEC_ALIGN(64)
+    SatoriLock m_runClaimLock;
 
     // the shard to publish the next chain of fresh work chunks to. Protected by m_workChunkRefillLock.
     size_t m_workChunkRefillShard;

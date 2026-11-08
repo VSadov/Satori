@@ -220,8 +220,10 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
 // also unlikely that we cross-use one if just comitted.
 // we scan ahead and claim, but do not move m_nextPageIndex
 // unless we claimed contiguously.
-SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
+SatoriPage* SatoriHeap::AddLargePage(size_t minSize, bool low, SatoriRegion*& region)
 {
+    region = nullptr;
+
     // The page starts with the card table, which is 1/512 of the page size, not of minSize.
     // The rest of the page must fit minSize:
     //    pageSize - pageSize / 512 >= minSize
@@ -258,6 +260,18 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize)
             }
             if (newPage)
             {
+                // The page is made for this region, claim it before others can see the page and take a granule of it.
+                // That also means that a failure to format the region can still release the entire reservation.
+                size_t granules = minSize >> Satori::REGION_BITS;
+                size_t rollbacks = 0;
+                size_t first = newPage->TryClaimRun(granules, low, rollbacks);
+                _ASSERTE(first != SIZE_MAX);
+                if (first == SIZE_MAX || (region = newPage->FormatClaimed(first, granules)) == nullptr)
+                {
+                    newPage->Release();
+                    return nullptr;
+                }
+
                 // mark the map, before an object can be allocated in the new page and
                 // may be seen in a GC barrier
                 for (size_t j = 0; j < mapMarkCount; j++)

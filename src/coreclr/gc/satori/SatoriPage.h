@@ -75,8 +75,16 @@ public:
     size_t TryClaimGranule(bool warmOnly, bool fromTop, size_t& retries);
     // Claims the granule if it is free.
     bool TryClaimGranuleAt(size_t granule);
+    // Claims a run of free granules, the lowest (or the highest) one that fits. Returns its first granule or SIZE_MAX.
+    // The threads that claim runs must not run this on the same page at the same time, but other threads
+    // may claim single granules meanwhile. If one takes a granule from the run, the claim is rolled back and tried again,
+    // and counted in `rollbacks`.
+    size_t TryClaimRun(size_t count, bool fromTop, size_t& rollbacks);
     // Formats claimed granules as a region. If that is not possible, gives the granules back and returns nullptr.
     SatoriRegion* FormatClaimed(size_t first, size_t count);
+
+    // Gives back a page that was not published.
+    void Release();
 
     // Makes the granules of a region that nobody uses any more free for others to claim.
     void FreeRegion(SatoriRegion* region);
@@ -182,6 +190,9 @@ public:
     void ForEachRegion(F lambda);
 
 private:
+    size_t FindRun(size_t count, bool fromTop);
+    bool TryClearRun(size_t first, size_t count);
+
     union
     {
         // 1bit  - 64  bytes
