@@ -87,11 +87,12 @@ public:
     void Release();
 
     // Trimming. Only the trimmer decommits the memory of free granules, and only of the ones that it has claimed.
+    // The head of a granule stays committed, see TrimmedHeadBytes.
     //
-    // Finds the first free granule that has something committed, not before `from`. When asked, only among the granules
+    // Finds the first free granule that has more than its head committed, not before `from`. When asked, only among the granules
     // that were also free when the trimmer last looked at this page. Returns SIZE_MAX if there is none.
     size_t NextGranuleToTrim(size_t from, bool onlyIfSeenFree);
-    // Claims the granule, decommits what its last owners left committed, and gives it back as free and cold.
+    // Claims the granule, decommits what its last owners left committed beyond the head, and gives it back as free and cold.
     // When asked, only if the granule is still one that was seen free: the caller may have found it before it was claimed
     // and freed again, and then the claim takes the new free bit.
     // Returns true if it decommitted anything.

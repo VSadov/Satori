@@ -512,6 +512,16 @@ void SatoriPage::ForgetSeenFree(size_t first, size_t count)
     }
 }
 
+// The head of a trimmed granule that stays committed, a whole number of watermark units.
+// TryGetRegularRegion reads the header of the region that follows its own, a region that it does not own. That region
+// can be freed and its granule trimmed meanwhile, and the read must not fault. What the head holds is what the last region
+// left there, and FreeRegion asserts that its queue is null, so the read finds no queue and moves on.
+// This also covers any other reader that gets to a header through the region map.
+static size_t TrimmedHeadBytes()
+{
+    return ALIGN_UP(SatoriUtil::CommitGranularity(), Satori::WATERMARK_UNIT);
+}
+
 size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree)
 {
     size_t end = GranuleCount();
@@ -536,7 +546,7 @@ size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree)
 
             // The watermark of a free granule is stable, but the granule may be claimed any moment. This is only a hint,
             // TryTrimGranule looks at the watermark again when the granule is ours.
-            if (m_commitWatermarks[candidate] != 0)
+            if (((size_t)m_commitWatermarks[candidate] << Satori::WATERMARK_UNIT_BITS) > TrimmedHeadBytes())
             {
                 return candidate;
             }
@@ -575,15 +585,19 @@ bool SatoriPage::TryTrimGranule(size_t granule, bool onlyIfSeenFree)
 #endif
 
     // The granule is ours. What is committed is what the watermarks say, and no region is looking at the memory.
+    // Everything but the head is decommitted.
     bool trimmed = false;
+    size_t headBytes = TrimmedHeadBytes();
     size_t committedBytes = (size_t)m_commitWatermarks[granule] << Satori::WATERMARK_UNIT_BITS;
-    if (committedBytes != 0 && GCToOSInterface::VirtualDecommit((void*)GranuleStart(granule), committedBytes))
+    if (committedBytes > headBytes &&
+        GCToOSInterface::VirtualDecommit((void*)(GranuleStart(granule) + headBytes), committedBytes - headBytes))
     {
-        m_heap->DecBytesCommitted(committedBytes);
+        m_heap->DecBytesCommitted(committedBytes - headBytes);
 
-        // what is committed next time is zero, and no part of it is warm.
-        m_commitWatermarks[granule] = 0;
-        m_dirtyWatermarks[granule] = 0;
+        // what is committed next time is the head, and it may hold what the last region left there. No part of it is warm.
+        size_t headUnits = headBytes >> Satori::WATERMARK_UNIT_BITS;
+        m_commitWatermarks[granule] = (uint8_t)headUnits;
+        m_dirtyWatermarks[granule] = (uint8_t)min((size_t)m_dirtyWatermarks[granule], headUnits);
         Interlocked::And(&m_warmBitmap[granule / 64], ~((size_t)1 << (granule % 64)));
         trimmed = true;
     }

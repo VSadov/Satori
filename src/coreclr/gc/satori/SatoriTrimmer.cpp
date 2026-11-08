@@ -136,9 +136,9 @@ void SatoriTrimmer::Loop()
 
                 int64_t lastGen1 = m_heap->Recycler()->GetCollectionCount(1);
 
-                // Only the granules that were free on the previous round too. That is an idle period of at least seconds,
-                // and it is also what makes reading a header of a region that has just been freed safe.
-                // (see TryGetRegularRegion)
+                // Only the granules that were free on the previous round too, so that memory that a busy process
+                // is about to take again is not decommitted. The head of a trimmed granule stays committed,
+                // and that is what makes the unlocked header read in TryGetRegularRegion safe. (see TrimmedHeadBytes)
                 for (size_t granule = page->NextGranuleToTrim(0, /* onlyIfSeenFree */ true);
                      granule != SIZE_MAX;
                      granule = page->NextGranuleToTrim(granule + 1, /* onlyIfSeenFree */ true))
