@@ -199,6 +199,7 @@ private:
     void TraceTakeSnapshot(TraceSnap& s, SatoriPage* excludePage, size_t request);
     void TraceMiss(TracePageAddCtx& c);
     void TraceBeforeAdd(TracePageAddCtx& c, size_t regionSize);
+    void TraceRegularAdd(TracePageAddCtx& c);
     void TraceAfterAdd(TracePageAddCtx& c, SatoriPage* page, size_t regionSize, bool low, SatoriRegionRequester requester);
     void TraceWriteState(bool isFinal, const char* ev);
     // TEMP-TRACE-END

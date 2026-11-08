@@ -6,6 +6,7 @@
 //   [pageadd]  one line per page add,
 //   [state]    every SATORI_TRACE_STATE_SEC (30 by default), at the end of every gen2 and at exit,
 //   [counters] at exit and with every [state], the work of the allocator of regions.
+//   [addstats] the waits for a page add in flight and the durations of adds, after every [state] line.
 // If it is not set, nothing is written and nothing is measured.
 // The same lines are printed by the three builds of the milestone, so that one analyzer reads all of them.
 //
@@ -23,6 +24,7 @@ extern volatile size_t g_missEmpty;
 // All failed lookups, including the retries while waiting for a page to be added.
 extern volatile size_t g_missPasses;
 // Page adds made after the 1 msec deadline, while another thread was adding.
+// (after the herd fix: adds through the valve, started while another add was in flight)
 extern volatile size_t g_timedOutAdds;
 
 // The trimmer. A round is one pass over the pages. A decommit is any decommit of the memory of a region or a granule.
@@ -54,6 +56,24 @@ inline void TraceNoteDecommit(size_t address, size_t bytes)
     }
 }
 
+// Step 1 of Milestone 2b: waiting for a page add in flight, and how long adds take.
+// A wait episode is one wait that ended, because an add completed or because the valve opened.
+extern volatile size_t g_addWaitEpisodes;
+extern volatile size_t g_addWaitTicks;
+extern volatile size_t g_addWaitMaxTicks;
+// Adds that started while another add was in flight, and the valve uses. They are the same thing, counted in two places.
+extern volatile size_t g_addsOverlapped;
+extern volatile size_t g_addValveUses;
+// Regular page adds, and the time from the decision to add to the page being published.
+extern volatile size_t g_addCount;
+extern volatile size_t g_addTicks;
+extern volatile size_t g_addMaxTicks;
+// What the current GetRegionImpl call has waited for adds in flight.
+extern thread_local int64_t t_addWaitedTicks;
+
+void TraceNoteAddWaitEnd(int64_t waitStart);
+void TraceNoteValveUse(int64_t waitStart);
+
 // Per-call state of GetRegionImpl.
 struct TracePageAddCtx
 {
@@ -73,6 +93,10 @@ struct TracePageAddCtx
     // the heap commit at the decision, and its peak so far
     size_t commitBefore;
     size_t peakBefore;
+    // adds in flight at the decision, counting ours. The time this call has waited for adds in flight. When the page was published.
+    int inFlight;
+    int64_t waitedTicks;
+    int64_t publishedTs;
 };
 
 // What is free: the free granules of the pages and the regions in the cache.

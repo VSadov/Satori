@@ -58,6 +58,18 @@ volatile size_t g_timedOutAdds;
 volatile size_t g_trimRounds;
 volatile size_t g_decommitBytes;
 volatile size_t g_recommit120Bytes;
+volatile size_t g_addWaitEpisodes;
+volatile size_t g_addWaitTicks;
+volatile size_t g_addWaitMaxTicks;
+volatile size_t g_addsOverlapped;
+volatile size_t g_addValveUses;
+volatile size_t g_addCount;
+volatile size_t g_addTicks;
+volatile size_t g_addMaxTicks;
+thread_local int64_t t_addWaitedTicks;
+// Bucket 0 is < 1 usec, bucket k is [2^(k-1), 2^k) usec.
+static volatile size_t s_addWaitHist[20];
+static volatile size_t s_addHist[20];
 
 // C, B, A, E, Dg, Di
 static volatile size_t s_traceAdds[6];
@@ -346,6 +358,67 @@ void SatoriAllocator::TraceTakeSnapshot(TraceSnap& s, SatoriPage* excludePage, s
     );
 }
 
+static int TraceUsBucket(double us)
+{
+    int k = 0;
+    while (k < 19 && us >= (double)((size_t)1 << k))
+    {
+        k++;
+    }
+
+    return k;
+}
+
+static void TraceRaiseMax(volatile size_t* target, size_t value)
+{
+    size_t current;
+    while (value > (current = *target) && Interlocked::CompareExchange(target, value, current) != current)
+    {
+    }
+}
+
+// A wait for a page add in flight has ended.
+void TraceNoteAddWaitEnd(int64_t waitStart)
+{
+    if (!g_traceOn || waitStart == 0)
+    {
+        return;
+    }
+
+    int64_t ticks = max((int64_t)0, SatoriUtil::GetTimeStamp() - waitStart);
+    Interlocked::Increment(&g_addWaitEpisodes);
+    Interlocked::ExchangeAdd64(&g_addWaitTicks, (size_t)ticks);
+    TraceRaiseMax(&g_addWaitMaxTicks, (size_t)ticks);
+    Interlocked::Increment(&s_addWaitHist[TraceUsBucket(TraceTicksToUs(ticks))]);
+    t_addWaitedTicks += ticks;
+}
+
+// A wait for a page add in flight has ended because the valve opened, and we are to add a page.
+void TraceNoteValveUse(int64_t waitStart)
+{
+    if (g_traceOn)
+    {
+        Interlocked::Increment(&g_addValveUses);
+        TraceNoteAddWaitEnd(waitStart);
+    }
+}
+
+// The page is published, so others can find it. The time since the decision is the duration of the add.
+static void TraceNoteAddPublished(TracePageAddCtx& c)
+{
+    if (!g_traceOn)
+    {
+        return;
+    }
+
+    c.publishedTs = SatoriUtil::GetTimeStamp();
+    int64_t ticks = max((int64_t)0, c.publishedTs - c.decisionTs);
+    Interlocked::Increment(&g_addCount);
+    Interlocked::ExchangeAdd64(&g_addTicks, (size_t)ticks);
+    TraceRaiseMax(&g_addMaxTicks, (size_t)ticks);
+    Interlocked::Increment(&s_addHist[TraceUsBucket(TraceTicksToUs(ticks))]);
+}
+
 // A lookup found nothing.
 void SatoriAllocator::TraceMiss(TracePageAddCtx& c)
 {
@@ -389,6 +462,18 @@ void SatoriAllocator::TraceBeforeAdd(TracePageAddCtx& c, size_t regionSize)
     c.preCount = before.regions;
 
     m_heap->Recycler()->TraceGetState(c.gcState, c.condemned, c.defSweep, c.relocated);
+}
+
+// A regular page add is about to start. A second add in flight is a valve use, which the old counters call a timeout.
+void SatoriAllocator::TraceRegularAdd(TracePageAddCtx& c)
+{
+    c.inFlight = m_pageAddsInFlight;
+    c.waitedTicks = t_addWaitedTicks;
+    if (c.inFlight > 1)
+    {
+        c.timedOut = true;
+        Interlocked::Increment(&g_addsOverlapped);
+    }
 }
 
 // We did add a page. The new page is not in the snapshot.
@@ -443,7 +528,7 @@ void SatoriAllocator::TraceAfterAdd(TracePageAddCtx& c, SatoriPage* page, size_t
         "[pageadd] t=%.3f tid=%lu tag=%c reqKB=%zu low=%d large=%d cls=%s why=%s sawOut=%d passes=%d waitUs=%.0f "
         "out=%zu trim=%zu preCount=%zu gc=%d cgen=%d defsweep=%zu relocq=%zu "
         "free=%zu n2=%zu n46=%zu nbig=%zu freeMB=%.1f freeCommMB=%.1f maxregKB=%zu maxrunKB=%zu runs=%zu "
-        "singleGE=%zu runsGE=%zu runsGEc=%zu trunc=%d pages=%zu committedMB=%.1f commBeforeMB=%.1f peakBeforeMB=%.1f\n",
+        "singleGE=%zu runsGE=%zu runsGEc=%zu trunc=%d pages=%zu committedMB=%.1f commBeforeMB=%.1f peakBeforeMB=%.1f inflight=%d waitedUs=%.0f addUs=%.0f\n",
         TraceTicksToUs(c.decisionTs - s_traceStartTs) / 1000.0, (unsigned long)GetCurrentThreadId(), tag,
         regionSize >> 10, (int)low, (int)(regionSize >= Satori::PAGE_SIZE_GRANULARITY / 2), s_traceClassNames[cls], why,
         (int)(c.sawOut || c.out > 0), c.passes, waitUs,
@@ -451,7 +536,8 @@ void SatoriAllocator::TraceAfterAdd(TracePageAddCtx& c, SatoriPage* page, size_t
         s.regions, s.n2, s.n46, s.nBig, (double)s.freeBytes / (1 << 20), (double)s.freeCommitted / (1 << 20),
         s.maxRegion >> 10, s.maxRun >> 10, s.runs,
         s.singleGE, s.runsGE, s.runsGECommitted, (int)s.truncated, pages, (double)m_heap->GetBytesCommitted() / (1 << 20),
-        (double)c.commitBefore / (1 << 20), (double)c.peakBefore / (1 << 20));
+        (double)c.commitBefore / (1 << 20), (double)c.peakBefore / (1 << 20),
+        c.inFlight, TraceTicksToUs(c.waitedTicks), c.publishedTs ? TraceTicksToUs(c.publishedTs - c.decisionTs) : 0.0);
     TraceWrite(buf, len);
 }
 
@@ -539,6 +625,24 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
         coldN, coldP50, coldP99, TraceTicksToUs((int64_t)c.claimColdTotalTicks) / 1000.0,
         getN, getP50, getP99);
     TraceWrite(counters, len);
+
+    char waitHist[256];
+    char addHist[256];
+    int waitPos = 0;
+    int addPos = 0;
+    for (int k = 0; k < 20; k++)
+    {
+        waitPos += snprintf(waitHist + waitPos, sizeof(waitHist) - waitPos, k ? ",%zu" : "%zu", s_addWaitHist[k]);
+        addPos += snprintf(addHist + addPos, sizeof(addHist) - addPos, k ? ",%zu" : "%zu", s_addHist[k]);
+    }
+
+    len = snprintf(buf, sizeof(buf),
+        "[addstats] t=%.3f ev=%s waits=%zu waitMs=%.3f waitMaxUs=%.0f valve=%zu overlapped=%zu adds=%zu addMs=%.3f addMaxUs=%.0f waitHist=%s addHist=%s\n",
+        TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, ev,
+        g_addWaitEpisodes, TraceTicksToUs((int64_t)g_addWaitTicks) / 1000.0, TraceTicksToUs((int64_t)g_addWaitMaxTicks),
+        g_addValveUses, g_addsOverlapped, g_addCount, TraceTicksToUs((int64_t)g_addTicks) / 1000.0, TraceTicksToUs((int64_t)g_addMaxTicks),
+        waitHist, addHist);
+    TraceWrite(buf, len);
 }
 
 void SatoriAllocator::TraceStateAtGen2End()
@@ -678,6 +782,7 @@ SatoriRegion* SatoriAllocator::GetRegionImpl(size_t regionSize, bool low, Satori
     int64_t pageAddWaitStart = 0;
     TracePageAddCtx traceCtx = {}; // TEMP-TRACE
     t_traceContention = 0; // TEMP-TRACE
+    t_addWaitedTicks = 0; // TEMP-TRACE
 
     SatoriRegion* region;
     bool outOfMemory;
@@ -723,11 +828,13 @@ tryAgain:
 
         SatoriPage* page = nullptr;
         TraceBeforeAdd(traceCtx, regionSize); // TEMP-TRACE
+        TraceRegularAdd(traceCtx); // TEMP-TRACE
         if (m_heap->TryAddRegularPage(page))
         {
             if (page)
             {
                 SatoriTrace::Count(SatoriTrace::s_counters.pageAdds[(int)requester]);
+                TraceNoteAddPublished(traceCtx); // TEMP-TRACE
 
                 // The page is ours. Claim from it right away, before the others take what we need.
                 region = TryClaimRegionInPage(page, granules, low, outOfMemory);
@@ -796,12 +903,14 @@ bool SatoriAllocator::BeginRegularPageAdd(int32_t pageAddsCompleted, int64_t* wa
 
             // An add has completed since the caller looked for regions. It is not our turn to add.
             Interlocked::Decrement(&m_pageAddsInFlight);
+            TraceNoteAddWaitEnd(*waitStart); // TEMP-TRACE
             *waitStart = 0;
             return false;
         }
 
         if (VolatileLoad(&m_pageAddsCompleted) != pageAddsCompleted)
         {
+            TraceNoteAddWaitEnd(*waitStart); // TEMP-TRACE
             *waitStart = 0;
             return false;
         }
@@ -819,6 +928,7 @@ bool SatoriAllocator::BeginRegularPageAdd(int32_t pageAddsCompleted, int64_t* wa
             Interlocked::CompareExchange(&m_pageAddsInFlight, 2, 1) == 1)
         {
             // Nothing has completed for long, the adder may have been descheduled. One more add, but no more than that.
+            TraceNoteValveUse(*waitStart); // TEMP-TRACE
             *waitStart = 0;
             return true;
         }
