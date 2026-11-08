@@ -34,6 +34,7 @@
 #include "SatoriPage.inl"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
+#include <minipal/log.h>
 
 SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap, InitStatus& status)
 {
@@ -462,6 +463,125 @@ void SatoriPage::Release()
     m_heap->DecBytesCommitted(m_initialCommit - Start());
     GCToOSInterface::VirtualRelease(this, m_end - Start());
 }
+
+#if _DEBUG
+static size_t GranuleProblem(SatoriPage* page, size_t granule, const char* what, bool report)
+{
+    if (report)
+    {
+        minipal_log_print_error("Satori: page %p, granule %zu: %s\n", (void*)page, granule, what);
+    }
+
+    return 1;
+}
+
+size_t SatoriPage::VerifyGranules(size_t& committedBytes, bool report)
+{
+    size_t problems = 0;
+    size_t first = FirstGranule();
+    size_t end = GranuleCount();
+
+    // The card table is neither free nor covered by regions.
+    for (size_t granule = 0; granule < first; granule++)
+    {
+        if ((m_freeBitmap[granule / 64] >> (granule % 64)) & 1)
+        {
+            problems += GranuleProblem(this, granule, "a granule of the card table is free", report);
+        }
+
+        if (RegionMap()[granule] != 0)
+        {
+            problems += GranuleProblem(this, granule, "a granule of the card table is in the region map", report);
+        }
+    }
+
+    committedBytes += min(m_initialCommit, m_firstRegion) - Start();
+
+    // Every other granule is either free or covered by exactly one region.
+    size_t granule = first;
+    while (granule < end)
+    {
+        bool isFree = (VolatileLoad(&m_freeBitmap[granule / 64]) >> (granule % 64)) & 1;
+        uint8_t mapValue = RegionMap()[granule];
+
+        if (isFree)
+        {
+            if (mapValue != 0)
+            {
+                problems += GranuleProblem(this, granule, "a free granule is in the region map", report);
+            }
+
+            size_t committedUnits = m_commitWatermarks[granule];
+            size_t dirtyUnits = m_dirtyWatermarks[granule];
+            bool isWarm = (m_warmBitmap[granule / 64] >> (granule % 64)) & 1;
+            if (dirtyUnits > committedUnits || committedUnits > Satori::WATERMARK_UNITS_PER_GRANULE)
+            {
+                problems += GranuleProblem(this, granule, "the watermarks of a free granule are not in order", report);
+            }
+
+            if (isWarm != (committedUnits == Satori::WATERMARK_UNITS_PER_GRANULE))
+            {
+                problems += GranuleProblem(this, granule, "the warm bit of a free granule does not match its commit", report);
+            }
+
+            committedBytes += committedUnits << Satori::WATERMARK_UNIT_BITS;
+            granule++;
+            continue;
+        }
+
+        if (mapValue != 1)
+        {
+            problems += GranuleProblem(this, granule, "a granule is not free and is not the start of a region", report);
+            granule++;
+            continue;
+        }
+
+        SatoriRegion* region = (SatoriRegion*)GranuleStart(granule);
+        size_t size = region->Size();
+        size_t count = size >> Satori::REGION_BITS;
+        if (region->Start() != GranuleStart(granule) ||
+            region->ContainingPage() != this ||
+            size == 0 ||
+            size % Satori::REGION_SIZE_GRANULARITY != 0 ||
+            granule + count > end)
+        {
+            problems += GranuleProblem(this, granule, "a region does not fit where the region map has it", report);
+            granule++;
+            continue;
+        }
+
+        if (region->CommittedEnd() < region->Start() ||
+            region->CommittedEnd() > region->End() ||
+            region->UsedEnd() > region->CommittedEnd())
+        {
+            problems += GranuleProblem(this, granule, "a region has its commit or used part out of order", report);
+        }
+        else
+        {
+            committedBytes += region->CommittedEnd() - region->Start();
+        }
+
+        for (size_t i = 1; i < count; i++)
+        {
+            DWORD log2;
+            BitScanReverse64(&log2, i);
+            if (RegionMap()[granule + i] != (uint8_t)(log2 + 2))
+            {
+                problems += GranuleProblem(this, granule + i, "the region map does not continue the region", report);
+            }
+
+            if ((m_freeBitmap[(granule + i) / 64] >> ((granule + i) % 64)) & 1)
+            {
+                problems += GranuleProblem(this, granule + i, "a granule of a region is free", report);
+            }
+        }
+
+        granule += count;
+    }
+
+    return problems;
+}
+#endif
 
 // Calls the function for the ranges of a claimed run that must be committed to make its commit a prefix.
 // The commit of the granules is whatever the last owners left. The function returns false to stop.

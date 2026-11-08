@@ -175,6 +175,15 @@ public:
         return m_committedBytes;
     }
 
+#if _DEBUG
+    // Checks that the free granules of all pages are consistent with the region maps and the regions,
+    // and that what the heap counts as committed is what the pages, the regions and the free granules have.
+    // Reports the problems and returns their number. The heap must be quiet: no allocations or frees.
+    size_t VerifyGranules(bool report);
+    // The same, for when other threads may be running. Only what does not go away is a problem.
+    void VerifyGranulesBestEffort();
+#endif
+
 private:
     // We need to cover the whole addressable space, but no need to handle inaccessible VA.
     // Accessing that should not happen for any valid reason, and will fail anyway.

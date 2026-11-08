@@ -36,6 +36,9 @@
 #include "SatoriObject.h"
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
+#if _DEBUG
+#include <minipal/log.h>
+#endif
 
 int8_t* SatoriHeap::s_pageByteMap;
 
@@ -311,3 +314,51 @@ SatoriRegion* SatoriHeap::RegionForAddressChecked(size_t address)
 
     return nullptr;
 }
+
+#if _DEBUG
+size_t SatoriHeap::VerifyGranules(bool report)
+{
+    // what the heap has committed is the map itself, the card tables of the pages,
+    // the regions and the free granules.
+    size_t committedBytes = offsetof(SatoriHeap, m_pageMap) + m_committedMapSize;
+    size_t problems = 0;
+
+    ForEachPage(
+        [&](SatoriPage* page)
+        {
+            problems += page->VerifyGranules(committedBytes, report);
+        }
+    );
+
+    if (committedBytes != m_committedBytes)
+    {
+        if (report)
+        {
+            minipal_log_print_error("Satori: the heap counts %zu bytes as committed, the map, the pages, the regions and the free granules have %zu\n",
+                m_committedBytes, committedBytes);
+        }
+
+        problems++;
+    }
+
+    return problems;
+}
+
+void SatoriHeap::VerifyGranulesBestEffort()
+{
+    // Other threads may be claiming and freeing granules, and what we see in the middle of that is not a problem.
+    // A real one would not go away.
+    for (int attempt = 0; attempt < 5; attempt++)
+    {
+        if (VerifyGranules(/* report */ false) == 0)
+        {
+            return;
+        }
+
+        GCToOSInterface::YieldThread(0);
+    }
+
+    size_t problems = VerifyGranules(/* report */ true);
+    _ASSERTE(problems == 0);
+}
+#endif

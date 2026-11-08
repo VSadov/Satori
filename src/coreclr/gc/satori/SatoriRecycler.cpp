@@ -1643,6 +1643,12 @@ void SatoriRecycler::BlockingCollectImpl()
     Relocate();
     Update();
 
+#if _DEBUG
+    // Every drain is done and the world is stopped, so nothing is being claimed or freed.
+    size_t granuleProblems = m_heap->VerifyGranules(/* report */ true);
+    _ASSERTE(granuleProblems == 0);
+#endif
+
     // All regions are swept and every drain is done. When asked, release as much memory as we can before the world restarts.
     // This counts as GC work, same as in the stock GC.
     if (m_forceTrim)
@@ -2054,15 +2060,25 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
             return;
         }
 
-        // since this is concurrent, in a conservative case an allocation could have caused a split
-        // that shortened the found region and the region no longer contains the ref (which means the ref is not real).
-        // Note that the split could only happen before we are done with allocator queue (which is synchronising)
-        // and assign 0+ gen to the region.
-        // So check here in the opposite order - first that region is 0+ gen and then that the size is still right.
-        if (isConservative &&
-            (containingRegion->GenerationAcquire() < 0 || location >= containingRegion->End()))
+        // Since this is concurrent, in a conservative case the region that we have found could be freed meanwhile,
+        // and its granules claimed again, for a region of another size or as a part of a bigger one.
+        // Then the ref is not real, and what we read from the "header" may not even be a header.
+        // That is fine while we use what we read only to bail out. After the reads, we make sure that the region map
+        // still has the region where we found it, and only then go on to use the region.
+        // (the gen is read before the end. A reused region gets its gen last, see SetGenerationRelease)
+        if (isConservative)
         {
-            return;
+            if (containingRegion->GenerationAcquire() < 0 || location >= containingRegion->End())
+            {
+                return;
+            }
+
+            // the reads above must be done before we look at the map again.
+            MemoryBarrier();
+            if (markContext->m_heap->RegionForAddressChecked(location) != containingRegion)
+            {
+                return;
+            }
         }
 
         // Concurrent FindObject is unsafe in active regions. While ref may be in a real obj,

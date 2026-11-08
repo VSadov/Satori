@@ -86,6 +86,13 @@ public:
     // Gives back a page that was not published.
     void Release();
 
+#if _DEBUG
+    // Checks that the free bits, the watermarks, the region map and the regions agree with each other.
+    // Reports the problems and returns their number. The page must be quiet: no claims or frees.
+    // Adds up what the page has committed. (see SatoriHeap::VerifyGranules)
+    size_t VerifyGranules(size_t& committedBytes, bool report);
+#endif
+
     // Makes the granules of a region that nobody uses any more free for others to claim.
     void FreeRegion(SatoriRegion* region);
     void OnRegionFreed(SatoriRegion* region);

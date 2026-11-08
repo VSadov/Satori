@@ -471,6 +471,10 @@ void SatoriGC::Shutdown()
 {
     m_shuttingDown = true;
     m_heap->Recycler()->ShutDown();
+
+#if _DEBUG
+    m_heap->VerifyGranulesBestEffort();
+#endif
 }
 
 size_t SatoriGC::GetLastGCStartTime(int generation)
