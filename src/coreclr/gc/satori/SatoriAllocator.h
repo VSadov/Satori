@@ -34,6 +34,7 @@
 #include "SatoriRegionQueue.h"
 
 class SatoriHeap;
+class SatoriPage;
 class SatoriRegion;
 class SatoriObject;
 class SatoriAllocationContext;
@@ -82,7 +83,6 @@ private:
     };
 
     SatoriHeap* m_heap;
-    SatoriShardedRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
     SatoriShardedWorkList* m_workChunks;
 
     SatoriRegion* m_regularRegion;
@@ -91,9 +91,6 @@ private:
     SatoriRegion* m_immortalRegion;
 
     int m_smallAllocatedBytesCounterCount;
-
-    // how many regular regions to carve at once when splitting a large free region. (see GetRegionCore)
-    int m_regionCarveBatch;
 
     // the allocation tick event was enabled when last checked. (see IsAllocationTickEnabled)
     volatile bool m_allocationTickWasEnabled;
@@ -110,12 +107,9 @@ private:
     DECLSPEC_ALIGN(64)
     SatoriLock m_pinnedAllocLock;
 
-    DECLSPEC_ALIGN(64)
-    SatoriLock m_lowRegionLock;
-
     // Work chunks are added by one thread at a time (see AddMoreWorkChunks), the others wait for it by polling.
     // Thus nobody may ask for a work chunk while holding what the refilling thread needs to get a region.
-    // Lock order: the allocation locks, this lock, m_lowRegionLock, the locks of the queues.
+    // Lock order: the allocation locks, this lock.
     DECLSPEC_ALIGN(64)
     SatoriLock m_workChunkRefillLock;
 
@@ -160,17 +154,10 @@ private:
 
     void TryGetRegularRegion(SatoriRegion*& region, size_t size);
     SatoriRegion* GetRegionCore(size_t regionSize, bool low);
-    SatoriRegion* TryGetRegionLow(size_t regionSize);
+    SatoriRegion* TryClaimRegion(size_t granules, bool low, bool& outOfMemory);
+    SatoriRegion* TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, bool& outOfMemory);
+    void FreeToBitmap(SatoriRegion* region);
     bool AddMoreWorkChunks();
-
-    static int SizeToBucket(size_t size)
-    {
-        _ASSERTE(size >= Satori::REGION_SIZE_GRANULARITY);
-
-        DWORD highestBit;
-        BitScanReverse64(&highestBit, size);
-        return min((int)highestBit - Satori::REGION_BITS, Satori::ALLOCATOR_BUCKET_COUNT - 1);
-    }
 };
 
 #endif

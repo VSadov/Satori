@@ -117,25 +117,29 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     // make sure the first useful card word is beyond the header.
     _ASSERTE(result->Start() + cardTableStart >= (size_t)(result->m_dirtyWatermarks) + regionCount);
 
-    // Initialize the first region before publishing the page in the heap map.
-    // Until then a failed commit can safely release the entire reservation.
-    size_t used = (size_t)&result->m_cardTable[cardTableSize];
-    if (SatoriRegion::InitializeAt(result, result->m_firstRegion, result->m_end - result->m_firstRegion,
-        result->m_initialCommit, used) == nullptr)
+    // Everything after the card table is free. If the commit granularity made us commit more than the card table,
+    // that part is committed and clean.
+    // The page is published in the heap only after this, so nobody can claim anything before it is ready.
+    for (size_t granule = result->FirstGranule(); granule < regionCount; granule++)
     {
-        heap->DecBytesCommitted(commitSize);
-        GCToOSInterface::VirtualRelease(result, pageSize);
-        status = InitStatus::CommitFailed;
-        return nullptr;
+        size_t bit = (size_t)1 << (granule % 64);
+        result->m_freeBitmap[granule / 64] |= bit;
+
+        size_t granuleStart = result->GranuleStart(granule);
+        size_t committedBytes = result->m_initialCommit > granuleStart ?
+            min(result->m_initialCommit - granuleStart, Satori::REGION_SIZE_GRANULARITY) :
+            0;
+
+        size_t committedUnits = committedBytes >> Satori::WATERMARK_UNIT_BITS;
+        result->m_commitWatermarks[granule] = (uint8_t)committedUnits;
+        if (committedUnits == Satori::WATERMARK_UNITS_PER_GRANULE)
+        {
+            result->m_warmBitmap[granule / 64] |= bit;
+        }
     }
 
     status = InitStatus::Success;
     return result;
-}
-
-SatoriRegion* SatoriPage::InitialRegion()
-{
-    return (SatoriRegion*)m_firstRegion;
 }
 
 void SatoriPage::OnRegionInitialized(SatoriRegion* region)
@@ -232,12 +236,201 @@ void SatoriPage::FreeRegion(SatoriRegion* region)
 
     // The interlocked operation is a release for everything above. The next owner reads
     // the watermarks and the region map only after it clears its free bit.
+    PublishFreeGranules(first, count);
+}
+
+// Sets the free bits of the granules.
+// The granules must be ready for the next owner: the watermarks written and the region map bytes zero.
+// (A claim that did not format anything gives the granules back with the watermarks that it found.)
+void SatoriPage::PublishFreeGranules(size_t first, size_t count)
+{
+    _ASSERTE(first >= FirstGranule() && first + count <= GranuleCount());
     for (size_t word = first / 64; word <= (first + count - 1) / 64; word++)
     {
         size_t lowGranule = max(first, word * 64);
         size_t highGranule = min(first + count, word * 64 + 64);
-        Interlocked::Or(&m_freeBitmap[word], BitRange(lowGranule - word * 64, highGranule - lowGranule));
+        size_t bits = BitRange(lowGranule - word * 64, highGranule - lowGranule);
+        _ASSERTE((VolatileLoad(&m_freeBitmap[word]) & bits) == 0);
+        Interlocked::Or(&m_freeBitmap[word], bits);
     }
+}
+
+// Claims the granule that has the lowest (or the highest) address of the free ones. When asked, only among the warm ones.
+// Returns SIZE_MAX if there is none. Every failed attempt to take a bit is counted as a retry.
+size_t SatoriPage::TryClaimGranule(bool warmOnly, bool fromTop, size_t& retries)
+{
+    size_t wordCount = GranuleCount() / 64;
+    for (size_t i = 0; i < wordCount; i++)
+    {
+        size_t word = fromTop ? wordCount - 1 - i : i;
+        size_t freeBits = VolatileLoad(&m_freeBitmap[word]);
+        while (true)
+        {
+            size_t candidates = warmOnly ? (freeBits & VolatileLoad(&m_warmBitmap[word])) : freeBits;
+            if (candidates == 0)
+            {
+                break;
+            }
+
+            DWORD bit;
+            if (fromTop)
+            {
+                BitScanReverse64(&bit, candidates);
+            }
+            else
+            {
+                BitScanForward64(&bit, candidates);
+            }
+
+            size_t seen = Interlocked::CompareExchange(&m_freeBitmap[word], freeBits & ~((size_t)1 << bit), freeBits);
+            if (seen == freeBits)
+            {
+                return word * 64 + bit;
+            }
+
+            // the word has changed. Whether our bit is still there is decided by the next round.
+            freeBits = seen;
+            retries++;
+        }
+    }
+
+    return SIZE_MAX;
+}
+
+// Claims the granule, if it is free.
+bool SatoriPage::TryClaimGranuleAt(size_t granule)
+{
+    _ASSERTE(granule >= FirstGranule() && granule < GranuleCount());
+
+    size_t bit = (size_t)1 << (granule % 64);
+    size_t freeBits = VolatileLoad(&m_freeBitmap[granule / 64]);
+    while (freeBits & bit)
+    {
+        size_t seen = Interlocked::CompareExchange(&m_freeBitmap[granule / 64], freeBits & ~bit, freeBits);
+        if (seen == freeBits)
+        {
+            return true;
+        }
+
+        freeBits = seen;
+    }
+
+    return false;
+}
+
+// Calls the function for the ranges of a claimed run that must be committed to make its commit a prefix.
+// The commit of the granules is whatever the last owners left. The function returns false to stop.
+template <typename F>
+static bool ForEachCommitGap(SatoriPage* page, size_t first, size_t count, size_t committed, uint8_t* commitWatermarks, F fn)
+{
+    size_t gapStart = 0;
+    size_t gapEnd = 0;
+    for (size_t granule = first; granule < first + count; granule++)
+    {
+        size_t granuleStart = page->GranuleStart(granule);
+        if (granuleStart >= committed)
+        {
+            break;
+        }
+
+        // what is committed in this granule and what must be
+        size_t have = granuleStart + ((size_t)commitWatermarks[granule] << Satori::WATERMARK_UNIT_BITS);
+        size_t need = min(granuleStart + Satori::REGION_SIZE_GRANULARITY, committed);
+        if (have < need)
+        {
+            if (gapEnd == have)
+            {
+                gapEnd = need;
+            }
+            else
+            {
+                if (gapStart != gapEnd && !fn(gapStart, gapEnd))
+                {
+                    return false;
+                }
+
+                gapStart = have;
+                gapEnd = need;
+            }
+        }
+    }
+
+    return gapStart == gapEnd || fn(gapStart, gapEnd);
+}
+
+// Formats claimed granules as a region.
+// The granules are ours, so what the last owners left in the watermarks is stable.
+// If that can't be done, gives the granules back as they were and returns nullptr.
+SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count)
+{
+    _ASSERTE(count > 0);
+    size_t start = GranuleStart(first);
+
+    // The region is committed as a prefix, so it is the highest committed byte that matters.
+    // Same for the dirty part, the rest of the committed part is zeroed.
+    size_t committed = start;
+    size_t used = start;
+    for (size_t granule = first; granule < first + count; granule++)
+    {
+        size_t committedUnits = m_commitWatermarks[granule];
+        size_t dirtyUnits = m_dirtyWatermarks[granule];
+        _ASSERTE(dirtyUnits <= committedUnits && committedUnits <= Satori::WATERMARK_UNITS_PER_GRANULE);
+
+        if (committedUnits)
+        {
+            committed = GranuleStart(granule) + (committedUnits << Satori::WATERMARK_UNIT_BITS);
+        }
+
+        if (dirtyUnits)
+        {
+            used = GranuleStart(granule) + (dirtyUnits << Satori::WATERMARK_UNIT_BITS);
+        }
+    }
+
+    // Fill the gaps in the commit, the object that needed the run would commit them anyway.
+    // This is not a thing that a single granule needs.
+    size_t failedAt = SIZE_MAX;
+    bool committedGaps = ForEachCommitGap(this, first, count, committed, m_commitWatermarks,
+        [&](size_t gapStart, size_t gapEnd)
+        {
+            if (!GCToOSInterface::VirtualCommit((void*)gapStart, gapEnd - gapStart))
+            {
+                failedAt = gapStart;
+                return false;
+            }
+
+            m_heap->IncBytesCommitted(gapEnd - gapStart);
+            return true;
+        }
+    );
+
+    SatoriRegion* region = nullptr;
+    if (committedGaps)
+    {
+        region = SatoriRegion::InitializeAt(this, start, count << Satori::REGION_BITS, committed, used);
+    }
+
+    if (region == nullptr)
+    {
+        // out of memory. Decommit what we have committed and give the granules back.
+        ForEachCommitGap(this, first, count, committed, m_commitWatermarks,
+            [&](size_t gapStart, size_t gapEnd)
+            {
+                if (gapStart >= failedAt)
+                {
+                    return false;
+                }
+
+                GCToOSInterface::VirtualDecommit((void*)gapStart, gapEnd - gapStart);
+                m_heap->DecBytesCommitted(gapEnd - gapStart);
+                return true;
+            }
+        );
+
+        PublishFreeGranules(first, count);
+    }
+
+    return region;
 }
 
 SatoriRegion* SatoriPage::RegionForAddressChecked(size_t address)

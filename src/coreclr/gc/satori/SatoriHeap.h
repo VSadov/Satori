@@ -126,6 +126,36 @@ public:
         }
     }
 
+    // Visits the pages in the order of the page map, starting with the first one at or after the start hint,
+    // and wrapping around. The lambda returns true to stop. Returns true if it did.
+    template <typename F>
+    bool ForEachPageFrom(size_t startHint, F lambda)
+    {
+        size_t usedLength = m_usedMapLength;
+        if (usedLength <= 1)
+        {
+            return false;
+        }
+
+        // map index 0 is never used
+        size_t span = usedLength - 1;
+        size_t start = startHint % span;
+        for (size_t i = 0; i < span; i++)
+        {
+            size_t mapIndex = 1 + (start + i) % span;
+            SatoriPage* page = m_pageMap[mapIndex];
+            if (page && IsFirstMapEntryOfPage(page, mapIndex))
+            {
+                if (lambda(page))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     void IncBytesCommitted(size_t bytes)
     {
         Interlocked::ExchangeAdd64(&m_committedBytes, bytes);

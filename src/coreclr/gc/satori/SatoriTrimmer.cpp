@@ -94,102 +94,14 @@ void SatoriTrimmer::Loop()
             StopAndWait();
         }
 
-        m_heap->ForEachPage(
-            [&](SatoriPage* page)
-            {
-                // limit the rate of scanning to 1 page/msec.
-                Pause(1);
-                if (m_state != TRIMMER_STATE_RUNNING)
-                {
-                    StopAndWait();
-                }
-
-                int64_t lastGen1 = m_heap->Recycler()->GetCollectionCount(1);
-
-                page->ForEachRegion(
-                    [&](SatoriRegion* region)
-                    {
-                        if (TryTrimRegion(region, /* drainsAreDone */ false))
-                        {
-                            // limit the decommit/coalesce rate to 1 region/10 msec.
-                            Pause(10);
-                            if (m_state != TRIMMER_STATE_RUNNING)
-                            {
-                                StopAndWait();
-                            }
-                        }
-
-                        // also we will pause for 1 sec if there was a GC - to further reduce the churn
-                        // if the app is allocation-active.
-                        int64_t newGen1 = m_heap->Recycler()->GetCollectionCount(1);
-                        if (newGen1 != lastGen1)
-                        {
-                            lastGen1 = newGen1;
-                            Pause(1000);
-                        }
-
-                        if (m_state != TRIMMER_STATE_RUNNING)
-                        {
-                            StopAndWait();
-                        }
-                    }
-                );
-            }
-        );
+        // M1: free memory is tracked per granule, nothing merges and the trimmer does not decommit free granules yet.
     }
 }
 
-// Coalesces a free region with the free region after it and decommits the result.
-// Returns true if it did anything.
-bool SatoriTrimmer::TryTrimRegion(SatoriRegion* region, bool drainsAreDone)
-{
-    SatoriQueue<SatoriRegion>* queue = region->ContainingQueue();
-    if (queue && queue->Kind() == QueueKind::Allocator)
-    {
-        if (region->CanDecommit() || region->CanCoalesceWithNext())
-        {
-            if (queue->TryRemove(region))
-            {
-                bool didSomeWork = region->TryCoalesceWithNext(drainsAreDone);
-                if (region->TryDecommit())
-                {
-                    m_heap->Allocator()->AddRegion(region);
-                    didSomeWork = true;
-                }
-                else
-                {
-                    m_heap->Allocator()->ReturnRegion(region);
-                }
-
-                return didSomeWork;
-            }
-        }
-    }
-
-    return false;
-}
-
-// Trims all free regions on the current thread, without any throttling.
-// This is for a blocking GC that was asked to release as much memory as it can.
-// The GC must be done with all its drains, so that coalescing is safe, see TryCoalesceWithNext.
+// M1: free granules are not trimmed yet.
 void SatoriTrimmer::TrimNow()
 {
     _ASSERTE(m_heap->Recycler()->IsBlockingPhase());
-
-    // The trimmer was asked to stop when the GC started. Make sure it did, so that we do not run two things at once.
-    WaitForStop();
-
-    m_heap->ForEachPage(
-        [&](SatoriPage* page)
-        {
-            page->ForEachRegion(
-                [&](SatoriRegion* region)
-                {
-                    TryTrimRegion(region, /* drainsAreDone */ true);
-                }
-            );
-        }
-    );
 }
 
 void SatoriTrimmer::StopAndWait()

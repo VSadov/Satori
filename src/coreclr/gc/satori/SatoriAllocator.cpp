@@ -34,6 +34,7 @@
 #include "SatoriObject.h"
 #include "SatoriObject.inl"
 #include "SatoriPage.h"
+#include "SatoriPage.inl"
 #include "SatoriAllocator.h"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
@@ -55,19 +56,24 @@ static void ZeroInitDirtyBody(size_t start, size_t end, size_t dirtyStart, size_
     }
 }
 
+// Where threads on different processors start their search for free granules.
+static size_t ProcessorHint()
+{
+    if (GCToOSInterface::CanGetCurrentProcessorNumber())
+    {
+        // on SMT systems consecutive processors are the logical processors of one core, mix them in
+        uint32_t processor = GCToOSInterface::GetCurrentProcessorNumber();
+        return processor ^ (processor >> 1);
+    }
+
+    return (size_t)((SatoriUtil::GetCurrentThreadTag() * 11400714819323198485llu) >> 32);
+}
+
 void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
     m_heap = heap;
 
     int processorCount = (int)GCToOSInterface::GetTotalProcessorCount();
-    for (int i = 0; i < Satori::ALLOCATOR_BUCKET_COUNT; i++)
-    {
-        // Bucket 0 (regular 2MB regions) carries nearly all allocator traffic.
-        // Bucket 1 (4-6MB) sees moderate traffic; larger buckets are rarely accessed.
-        size_t shardCount = (i == 0) ? SatoriShardedRegionQueue::ShardCountForProcessors(4) :
-                            (i == 1) ? SatoriShardedRegionQueue::ShardCountForProcessors(16) : 1;
-        m_queues[i] = SatoriShardedRegionQueue::AllocAligned(QueueKind::Allocator, shardCount);
-    }
 
     m_workChunks = SatoriShardedWorkList::AllocAlignedForProcessors(4);
 
@@ -76,8 +82,6 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
 
     m_pinnedRegion = nullptr;
     m_pinnedAllocLock.Initialize();
-
-    m_lowRegionLock.Initialize();
 
     m_workChunkRefillLock.Initialize();
     m_workChunkRefillShard = 0;
@@ -97,10 +101,6 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     int counterCount = (processorCount + Satori::ALLOCATED_BYTES_COUNTER_PROCESSORS - 1) / Satori::ALLOCATED_BYTES_COUNTER_PROCESSORS;
     m_smallAllocatedBytesCounterCount = max(1, min(counterCount, Satori::MAX_ALLOCATED_BYTES_COUNTERS));
 
-    // The batch follows the CPUs this process can use (affinity, container quota, DOTNET_PROCESSOR_COUNT),
-    // not the machine, since that is how many threads can ask for regions at once.
-    m_regionCarveBatch = max(1, min((int)GCToEEInterface::GetCurrentProcessCpuCount(), Satori::MAX_REGION_CARVE_BATCH));
-
     for (int i = 0; i < Satori::MAX_ALLOCATED_BYTES_COUNTERS; i++)
     {
         m_smallAllocatedBytes[i] = {};
@@ -118,95 +118,35 @@ SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
 }
 
 // Same as GetRegion, but for the regions that are long-lived and rarely freed, like the ones for immortal allocations,
-// work chunks or the finalization queue. Such regions are placed as close to the beginning of a page as possible,
-// so that they do not fragment the rest of the page and do not prevent free regions from coalescing.
+// work chunks or the finalization queue. Such regions are placed at the opposite end of a page from the regular ones,
+// at the highest free granules, so that they do not fragment the space that the regular regions fill.
 SatoriRegion* SatoriAllocator::GetRegionLow(size_t regionSize)
 {
     return GetRegionCore(regionSize, /* low */ true);
 }
 
+// Gets a region of the given size from the free granules of the pages, and adds a page if there are none.
+// A regular request takes the lowest free granules, the ones that are committed in full first.
+// A request for a long-lived region takes the highest ones.
 SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize, bool low)
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
+    size_t granules = regionSize >> Satori::REGION_BITS;
+    if (granules != 1)
+    {
+        // TODO: runs of granules.
+        return nullptr;
+    }
+
     int64_t newPageDeadline = 0;
     int newPageSpin = 0;
 
 tryAgain:
-    SatoriRegion* putBack = nullptr;
-
-    if (low)
-    {
-        SatoriRegion* lowRegion = TryGetRegionLow(regionSize);
-        if (lowRegion)
-        {
-            return lowRegion;
-        }
-    }
-
-    int bucket = SizeToBucket(regionSize);
-
-    SatoriRegion* region = (bucket == 0) ?
-                            m_queues[bucket]->TryPop():
-                            m_queues[bucket]->TryRemoveWithSize(regionSize, putBack);
-
-    // Return putBack even if the split failed to avoid losing the original region.
-    if (putBack)
-    {
-        AddRegion(putBack);
-        putBack = nullptr;
-    }
-
-    if (region)
+    bool outOfMemory = false;
+    SatoriRegion* region = TryClaimRegion(granules, low, outOfMemory);
+    if (region || outOfMemory)
     {
         return region;
-    }
-
-    while (++bucket < Satori::ALLOCATOR_BUCKET_COUNT)
-    {
-        region = m_queues[bucket]->TryPopWithSize(regionSize, putBack);
-        if (putBack)
-        {
-            // The remainder is out of the queue until we add it back, and until then other threads would not find it.
-            // So we split a batch of regions off its top in one piece and add the rest back right away.
-            // The batch is formatted as regions after that, and they become available to others one by one.
-            // The rest stays one free run and the regions keep coming from one edge of it.
-            // Only regular requests come in herds. Low requests are rare and TryGetRegionLow serializes them.
-            SatoriRegion* batch = nullptr;
-            if (region && !low && regionSize == Satori::REGION_SIZE_GRANULARITY)
-            {
-                // leave at least two regions in the rest.
-                size_t regions = putBack->Size() / regionSize;
-                size_t extra = regions > 2 ? min((size_t)m_regionCarveBatch - 1, regions - 2) : 0;
-                if (extra)
-                {
-                    batch = putBack->TrySplit(extra * regionSize);
-                }
-            }
-
-            AddRegion(putBack);
-            putBack = nullptr;
-
-            while (batch && batch->Size() > regionSize)
-            {
-                SatoriRegion* next = batch->TrySplit(regionSize);
-                if (!next)
-                {
-                    break;
-                }
-
-                AddRegion(next);
-            }
-
-            if (batch)
-            {
-                AddRegion(batch);
-            }
-        }
-
-        if (region)
-        {
-            return region;
-        }
     }
 
     // for regions < 1/2 page granularity, just allocate a regular page
@@ -249,36 +189,15 @@ tryAgain:
         {
             if (page)
             {
-                if (low)
-                {
-                    // keep the beginning of the page for the region and leave the rest free.
-                    region = page->InitialRegion();
-                    putBack = region->TrySplit(region->Size() - regionSize);
-                    if (putBack)
-                    {
-                        AddRegion(putBack);
-                    }
-                    else
-                    {
-                        // OOM
-                        AddRegion(region);
-                        region = nullptr;
-                    }
-                }
-                else
-                {
-                    putBack = page->InitialRegion();
-                    region = putBack->TrySplit(regionSize);
-                    AddRegion(putBack);
-                }
-
+                // The page is ours. Claim from it right away, before the others take what we need.
+                region = TryClaimRegionInPage(page, granules, low, outOfMemory);
                 Interlocked::Decrement(&m_singePageAdders);
-                if (region)
+                if (region || outOfMemory)
                 {
                     return region;
                 }
 
-                goto allocationFailed;
+                goto tryAgain;
             }
 
             // Someone added a page, but not us. There could be more regions.
@@ -290,133 +209,84 @@ tryAgain:
     }
     else
     {
-        SatoriPage* page = m_heap->AddLargePage(regionSize);
-        if (page)
-        {
-            region = page->InitialRegion();
-            _ASSERTE(region->Size() >= regionSize);
-            if (region->Size() > regionSize)
-            {
-                putBack = region->TrySplit(region->Size() - regionSize);
-                if (putBack)
-                {
-                    AddRegion(putBack);
-                }
-                else
-                {
-                    // OOM
-                    AddRegion(region);
-                    region = nullptr;
-                }
-            }
-
-            if (region)
-            {
-                return region;
-            }
-        }
-    }
-
-allocationFailed:
-    // Prefer a region that can be split without another commit attempt.
-    bucket = SizeToBucket(regionSize);
-    if (bucket != 0)
-    {
-        putBack = nullptr;
-        region = m_queues[bucket]->TryRemoveWithSize(regionSize, putBack, SIZE_MAX, /*preferCommitted*/ true);
-        if (putBack)
-        {
-            AddRegion(putBack);
-        }
-
-        return region;
+        // TODO: runs of granules, for the requests of more than one granule.
     }
 
     // most likely OOM
     return nullptr;
 }
 
-// Takes the free region that is the closest to the beginning of a page and splits what is needed off its beginning.
-// The rest stays free.
-//
-// Pages are carved from the top, so the remainder at the bottom of a page is its biggest free region and the closest
-// region is usually in the biggest non-empty bucket. That does not always hold in an aged heap, so the offsets in all
-// buckets are compared, but we start with the biggest regions and stop when we see the first region of a page, since
-// no region could be closer.
-//
-// The requests are serialized. While one of them has the remainder of a page out of the queue to split it, the others
-// would not see it and would settle for a region that is further away. That is common when many GC workers run out of
-// work chunks at the same time.
-SatoriRegion* SatoriAllocator::TryGetRegionLow(size_t regionSize)
+// Claims free granules for a region of the given number of granules, in the pages that we have.
+// Returns nullptr if there is nothing free, or if what we claimed cannot be committed. (outOfMemory)
+SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& outOfMemory)
 {
-    SatoriLockHolder holder(&m_lowRegionLock);
+    _ASSERTE(granules == 1);
 
-    // The queues keep changing and the best region could be gone by the time we try to take it.
-    for (int attempt = 0; attempt < 3; attempt++)
+    SatoriRegion* result = nullptr;
+    size_t retries = 0;
+
+    // Threads on different processors start with different pages.
+    // Requests for long-lived regions start with the first page, to keep those regions together.
+    size_t startHint = low ? 0 : ProcessorHint();
+
+    // Regular requests take a region that is committed in full, if there is one. Others take any.
+    for (int pass = low ? 1 : 0; pass < 2 && !result && !outOfMemory; pass++)
     {
-        int bestBucket = -1;
-        size_t bestShard = 0;
-        size_t bestOffset = SIZE_MAX;
-        for (int bucket = Satori::ALLOCATOR_BUCKET_COUNT - 1; bucket >= SizeToBucket(regionSize); bucket--)
-        {
-            size_t shard = 0;
-            size_t offset = m_queues[bucket]->LowestOffset(regionSize, shard);
-            if (offset < bestOffset)
+        bool warmOnly = pass == 0;
+        m_heap->ForEachPageFrom(startHint,
+            [&](SatoriPage* page)
             {
-                bestBucket = bucket;
-                bestShard = shard;
-                bestOffset = offset;
-                if (offset <= Satori::MIN_REGION_OFFSET)
+                size_t granule = page->TryClaimGranule(warmOnly, /* fromTop */ low, retries);
+                if (granule == SIZE_MAX)
                 {
-                    // nothing can be closer.
-                    break;
+                    return false;
                 }
+
+                result = page->FormatClaimed(granule, 1);
+                outOfMemory = (result == nullptr);
+                return true;
             }
-        }
-
-        if (bestBucket < 0)
-        {
-            return nullptr;
-        }
-
-        SatoriRegion* region = m_queues[bestBucket]->TryRemoveLowest(bestShard, regionSize, bestOffset);
-        if (!region)
-        {
-            continue;
-        }
-
-        if (region->Size() > regionSize)
-        {
-            SatoriRegion* rest = region->TrySplit(region->Size() - regionSize);
-            if (!rest)
-            {
-                // OOM
-                AddRegion(region);
-                return nullptr;
-            }
-
-            AddRegion(rest);
-        }
-
-        return region;
+        );
     }
 
-    return nullptr;
+    return result;
+}
+
+// The same as TryClaimRegion, but for one page.
+SatoriRegion* SatoriAllocator::TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, bool& outOfMemory)
+{
+    _ASSERTE(granules == 1);
+
+    size_t retries = 0;
+    size_t granule = page->TryClaimGranule(/* warmOnly */ false, /* fromTop */ low, retries);
+    if (granule == SIZE_MAX)
+    {
+        return nullptr;
+    }
+
+    SatoriRegion* result = page->FormatClaimed(granule, 1);
+    outOfMemory = (result == nullptr);
+    return result;
 }
 
 void SatoriAllocator::AddRegion(SatoriRegion* region)
 {
     _ASSERTE(region->Generation() == -1);
-    m_queues[SizeToBucket(region->Size())]->Enqueue(region);
+    FreeToBitmap(region);
 }
 
-// same as AddRegion, just puts it in front of the queue
-// this is for recently used regions
+// same as AddRegion, for recently used regions
 void SatoriAllocator::ReturnRegion(SatoriRegion* region)
 {
     _ASSERTE(region->IsAttachedToAllocatingOwner() == false);
     _ASSERTE(region->Generation() == -1);
-    m_queues[SizeToBucket(region->Size())]->Push(region);
+    FreeToBitmap(region);
+}
+
+// Frees the region into the free granules of its page.
+void SatoriAllocator::FreeToBitmap(SatoriRegion* region)
+{
+    region->ContainingPage()->FreeRegion(region);
 }
 
 // Allocated bytes accounting.
@@ -1250,15 +1120,18 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region, size_t size)
     size_t minFree = size + Satori::MIN_FREE_SIZE;
 
     // opportunistically try get the next region, if available
-    SatoriRegion* next = nullptr;
-    SatoriQueue<SatoriRegion>* nextContainingQueue = nullptr;
+    SatoriPage* page = nullptr;
+    size_t nextStart = 0;
 
     if (region)
     {
-        next = region->NextInPage();
+        page = region->ContainingPage();
+        nextStart = region->End();
+
+        SatoriRegion* next = region->NextInPage();
         if (next)
         {
-            nextContainingQueue = next->ContainingQueue();
+            SatoriQueue<SatoriRegion>* nextContainingQueue = next->ContainingQueue();
             if (nextContainingQueue &&
                 nextContainingQueue->Kind() == QueueKind::RecyclerReusable &&
                 next->CanFitAllocation(minFree) &&
@@ -1275,19 +1148,19 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region, size_t size)
 
     if (region == nullptr)
     {
-        if (nextContainingQueue &&
-            nextContainingQueue->Kind() == QueueKind::Allocator &&
-            next->Size() == Satori::REGION_SIZE_GRANULARITY &&
-            nextContainingQueue->TryRemove(next))
+        // The granule right after the region, if it is free. That keeps the regions of a thread together.
+        // Free memory has no header to read, so this takes a claim and nothing else.
+        if (page && nextStart < page->End())
         {
-            if (next->Size() != Satori::REGION_SIZE_GRANULARITY)
+            size_t granule = (nextStart - page->Start()) >> Satori::REGION_BITS;
+            if (page->TryClaimGranuleAt(granule))
             {
-                ReturnRegion(next);
-            }
-            else
-            {
-                region = next;
-                return;
+                region = page->FormatClaimed(granule, 1);
+                if (region)
+                {
+                    _ASSERTE(region->NothingMarked());
+                    return;
+                }
             }
         }
 

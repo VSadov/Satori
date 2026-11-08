@@ -73,15 +73,6 @@ namespace Satori
     const static int INDEX_GRANULARITY = 1 << INDEX_GRANULARITY_BITS;
     const static int INDEX_LENGTH = REGION_SIZE_GRANULARITY / INDEX_GRANULARITY;
 
-    static const int ALLOCATOR_BUCKET_COUNT = PAGE_BITS - REGION_BITS;
-
-    // When a regular region is split off a large free region that is out of the queue meanwhile, a batch of regions
-    // is carved off its top for other threads. The batch is as large as the number of CPUs the process can use,
-    // up to this limit.
-    // The limit is low: bigger batches mostly speed up a cold start of many threads, and they showed
-    // a higher peak working set in long-running allocation-heavy processes.
-    static const int MAX_REGION_CARVE_BATCH = 8;
-
     // object starts are aligned to this
     static const size_t OBJECT_ALIGNMENT = sizeof(size_t);
 

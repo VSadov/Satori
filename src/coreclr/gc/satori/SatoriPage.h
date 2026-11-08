@@ -53,7 +53,6 @@ public:
     };
 
     static SatoriPage* InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap, InitStatus& status);
-    SatoriRegion* InitialRegion();
 
     void OnRegionInitialized(SatoriRegion* region);
 
@@ -68,9 +67,22 @@ public:
     size_t FirstGranule();
     size_t GranuleStart(size_t granule);
 
+    // Claiming free granules. The thread that claims a granule by clearing its free bit owns it,
+    // until it frees the granule, or gives it back.
+    //
+    // Claims the free granule that has the lowest (or the highest) address. When asked, only among the warm ones.
+    // Returns SIZE_MAX if there is none. `retries` counts the attempts to take a bit that were lost to other threads.
+    size_t TryClaimGranule(bool warmOnly, bool fromTop, size_t& retries);
+    // Claims the granule if it is free.
+    bool TryClaimGranuleAt(size_t granule);
+    // Formats claimed granules as a region. If that is not possible, gives the granules back and returns nullptr.
+    SatoriRegion* FormatClaimed(size_t first, size_t count);
+
     // Makes the granules of a region that nobody uses any more free for others to claim.
     void FreeRegion(SatoriRegion* region);
     void OnRegionFreed(SatoriRegion* region);
+    // Sets the free bits of granules that are ready for the next owner.
+    void PublishFreeGranules(size_t first, size_t count);
 
     size_t Start();
     size_t End();
