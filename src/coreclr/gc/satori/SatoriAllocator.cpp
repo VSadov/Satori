@@ -67,6 +67,9 @@ volatile size_t g_addCount;
 volatile size_t g_addTicks;
 volatile size_t g_addMaxTicks;
 thread_local int64_t t_addWaitedTicks;
+// Milestone 2b step 2 experiment: SATORI_PREADD_PAGES=n adds n regular pages at the first request for a region,
+// to see what the growth phase costs without the page adds. 0 - none, or done.
+static volatile int32_t g_preAddPages;
 volatile size_t g_getRegionCalls;
 volatile size_t g_getRegionTicks;
 volatile size_t g_getRegionMaxTicks;
@@ -293,6 +296,12 @@ static bool TraceStateDue()
 static void TraceInit(SatoriAllocator* allocator)
 {
     char dir[MAX_PATH];
+    char preAdd[16];
+    if (GetEnvironmentVariableA("SATORI_PREADD_PAGES", preAdd, sizeof(preAdd)) != 0)
+    {
+        g_preAddPages = atoi(preAdd);
+    }
+
     DWORD n = GetEnvironmentVariableA("SATORI_TRACE_DIR", dir, sizeof(dir));
     if (n == 0 || n >= sizeof(dir))
     {
@@ -501,6 +510,38 @@ void SatoriAllocator::TraceRegularAdd(TracePageAddCtx& c)
     {
         c.timedOut = true;
         Interlocked::Increment(&g_addsOverlapped);
+    }
+}
+
+// The first request for a region adds the pages that SATORI_PREADD_PAGES asks for, one add at a time like any other add.
+// The free granules of a new page are available to claims as soon as the page is published.
+void SatoriAllocator::TracePreAddPages()
+{
+    int pages = g_preAddPages;
+    if (pages <= 0 || Interlocked::CompareExchange(&g_preAddPages, 0, pages) != pages)
+    {
+        return;
+    }
+
+    for (int i = 0; i < pages; )
+    {
+        int64_t waitStart = 0;
+        if (!BeginRegularPageAdd(VolatileLoad(&m_pageAddsCompleted), &waitStart))
+        {
+            continue;
+        }
+
+        SatoriPage* page = nullptr;
+        if (m_heap->TryAddRegularPage(page) && page)
+        {
+            i++;
+        }
+        else
+        {
+            i = pages;
+        }
+
+        EndRegularPageAdd();
     }
 }
 
@@ -841,6 +882,7 @@ SatoriRegion* SatoriAllocator::GetRegionImpl(size_t regionSize, bool low, Satori
     TracePageAddCtx traceCtx = {}; // TEMP-TRACE
     t_traceContention = 0; // TEMP-TRACE
     t_addWaitedTicks = 0; // TEMP-TRACE
+    if (g_preAddPages) TracePreAddPages(); // TEMP-TRACE
 
     SatoriRegion* region;
     bool outOfMemory;
