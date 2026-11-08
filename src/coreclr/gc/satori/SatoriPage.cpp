@@ -35,6 +35,7 @@
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
 #include "SatoriRegionQueue.h"
+#include "SatoriPageAddTrace.h" // TEMP-TRACE
 #include <minipal/log.h>
 
 SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap, InitStatus& status)
@@ -567,11 +568,14 @@ bool SatoriPage::TryTrimGranule(size_t granule, bool onlyIfSeenFree)
         return false;
     }
 
+    TraceTrimInc(); // TEMP-TRACE
+
     // The granule could have been claimed and freed again after the caller found it, and then our claim took the new free bit.
     // FreeRegion clears the seen bit before it sets the free bit, so a granule that is seen now was not freed since it was seen.
     if (onlyIfSeenFree && ((VolatileLoad(&m_seenFreeBitmap[granule / 64]) >> (granule % 64)) & 1) == 0)
     {
         PublishFreeGranules(granule, 1);
+        TraceTrimDec(); // TEMP-TRACE
         return false;
     }
 
@@ -593,6 +597,7 @@ bool SatoriPage::TryTrimGranule(size_t granule, bool onlyIfSeenFree)
         GCToOSInterface::VirtualDecommit((void*)(GranuleStart(granule) + headBytes), committedBytes - headBytes))
     {
         m_heap->DecBytesCommitted(committedBytes - headBytes);
+        TraceNoteDecommit(GranuleStart(granule) + headBytes, committedBytes - headBytes); // TEMP-TRACE
 
         // what is committed next time is the head, and it may hold what the last region left there. No part of it is warm.
         size_t headUnits = headBytes >> Satori::WATERMARK_UNIT_BITS;
@@ -603,7 +608,69 @@ bool SatoriPage::TryTrimGranule(size_t granule, bool onlyIfSeenFree)
     }
 
     PublishFreeGranules(granule, 1);
+    TraceTrimDec(); // TEMP-TRACE
     return trimmed;
+}
+
+// TEMP-TRACE
+void SatoriPage::TraceCollect(TraceSnap& s, size_t request)
+{
+    size_t runStart = SIZE_MAX;
+    bool runCommitted = true;
+    auto closeRun = [&](size_t endGranule)
+    {
+        size_t runSize = (endGranule - runStart) << Satori::REGION_BITS;
+        s.runs++;
+        s.maxRun = max(s.maxRun, runSize);
+        s.maxRegion = max(s.maxRegion, runSize);
+        if (runSize >= request)
+        {
+            s.runsGE++;
+            if (runCommitted)
+            {
+                s.runsGECommitted++;
+            }
+        }
+
+        runStart = SIZE_MAX;
+    };
+
+    for (size_t granule = FirstGranule(); granule < GranuleCount(); granule++)
+    {
+        if ((VolatileLoad(&m_freeBitmap[granule / 64]) >> (granule % 64)) & 1)
+        {
+            size_t committedBytes = (size_t)m_commitWatermarks[granule] << Satori::WATERMARK_UNIT_BITS;
+            s.regions++;
+            s.n2++;
+            s.freeBytes += Satori::REGION_SIZE_GRANULARITY;
+            s.freeCommitted += committedBytes;
+            if (request <= Satori::REGION_SIZE_GRANULARITY)
+            {
+                s.singleGE++;
+            }
+
+            if (runStart == SIZE_MAX)
+            {
+                runStart = granule;
+                runCommitted = true;
+            }
+
+            runCommitted = runCommitted && committedBytes == Satori::REGION_SIZE_GRANULARITY;
+            if (committedBytes == Satori::REGION_SIZE_GRANULARITY)
+            {
+                s.warmFree++;
+            }
+        }
+        else if (runStart != SIZE_MAX)
+        {
+            closeRun(granule);
+        }
+    }
+
+    if (runStart != SIZE_MAX)
+    {
+        closeRun(GranuleCount());
+    }
 }
 
 void SatoriPage::RememberFreeGranules()
@@ -885,6 +952,7 @@ SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count)
             }
 
             m_heap->IncBytesCommitted(gapEnd - gapStart);
+            TraceNoteCommit(gapStart, gapEnd - gapStart); // TEMP-TRACE
             SatoriTrace::Count(SatoriTrace::s_counters.gapCommitBytes, gapEnd - gapStart);
             return true;
         }
@@ -910,6 +978,7 @@ SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count)
                 if (GCToOSInterface::VirtualDecommit((void*)gapStart, gapEnd - gapStart))
                 {
                     m_heap->DecBytesCommitted(gapEnd - gapStart);
+                    TraceNoteDecommit(gapStart, gapEnd - gapStart); // TEMP-TRACE
                     return true;
                 }
 

@@ -102,6 +102,8 @@ public:
 
     // TEMP-TRACE: prints a character per granule, see SatoriHeap::PrintTrace.
     void PrintLayout();
+    // TEMP-TRACE: adds the free granules of the page to the snapshot, and the runs that they make.
+    void TraceCollect(struct TraceSnap& s, size_t request);
 
 #if _DEBUG
     // Checks that the free bits, the watermarks, the region map and the regions agree with each other.

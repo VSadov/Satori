@@ -48,6 +48,7 @@
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
 #include "SatoriQueue.h"
+#include "SatoriPageAddTrace.h" // TEMP-TRACE
 #include "SatoriPrefetchQueue.h"
 #include "SatoriWorkChunk.h"
 
@@ -174,6 +175,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
         }
 
         containingPage->Heap()->IncBytesCommitted(toCommit);
+        TraceNoteCommit(committed, toCommit); // TEMP-TRACE
         committed = minCommitted;
     }
 
@@ -857,6 +859,7 @@ bool SatoriRegion::Coalesce(SatoriRegion* next)
         }
 
         m_containingPage->Heap()->DecBytesCommitted(toDecommit);
+        TraceNoteDecommit((size_t)next, toDecommit); // TEMP-TRACE
     }
 
     m_end = next_end;
@@ -927,6 +930,7 @@ bool SatoriRegion::TryDecommit()
             m_committed = decommitStart;
             m_used = min(m_used, decommitStart);
             m_containingPage->Heap()->DecBytesCommitted(decommitSize);
+            TraceNoteDecommit(decommitStart, decommitSize); // TEMP-TRACE
             return true;
         }
     }
@@ -942,6 +946,7 @@ void SatoriRegion::TryCommit()
         if (GCToOSInterface::VirtualCommit((void*)m_committed, toCommit))
         {
             m_containingPage->Heap()->IncBytesCommitted(toCommit);
+            TraceNoteCommit(m_committed, toCommit); // TEMP-TRACE
             m_committed = m_end;
         }
     }
@@ -996,6 +1001,7 @@ size_t SatoriRegion::AllocateDirty(size_t size, size_t* dirtyStart, size_t* dirt
             }
 
             m_containingPage->Heap()->IncBytesCommitted(toCommit);
+            TraceNoteCommit(m_committed, toCommit); // TEMP-TRACE
             m_committed = newComitted;
         }
 
@@ -1055,6 +1061,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
         }
 
         m_containingPage->Heap()->IncBytesCommitted(toCommit);
+        TraceNoteCommit(m_committed, toCommit); // TEMP-TRACE
         m_committed = newComitted;
     }
 

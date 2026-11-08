@@ -182,6 +182,12 @@ public:
         return m_committedBytes;
     }
 
+    // TEMP-TRACE
+    size_t GetPeakBytesCommitted()
+    {
+        return m_peakCommittedBytes;
+    }
+
     // TEMP-TRACE: prints the counters of the allocator and the heap, and the layout of the pages.
     void PrintTrace();
 

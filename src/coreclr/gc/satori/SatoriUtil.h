@@ -874,8 +874,8 @@ private:
 };
 
 // TEMP-TRACE: counters for the experiments with the allocation of regions.
-// They are counted only when DOTNET_gcTraceCounters is set, and printed when the GC shuts down.
-// (see SatoriHeap::PrintTrace)
+// They are counted only when SATORI_TRACE_DIR is set, and written to the log of the process.
+// (see SatoriAllocator::TraceWriteState)
 
 // Who asks for a region.
 enum class SatoriRegionRequester : uint8_t
@@ -921,6 +921,12 @@ struct SatoriTraceCounters
     // how long it takes to claim and format granules, and to get a region, in any way
     size_t claimTicks[HISTOGRAM_BUCKETS];
     size_t getRegionTicks[HISTOGRAM_BUCKETS];
+
+    // the claims, split by whether the region that they got was committed in full (warm) or not (cold): histograms and sums, in ticks
+    size_t claimWarmTicks[HISTOGRAM_BUCKETS];
+    size_t claimColdTicks[HISTOGRAM_BUCKETS];
+    size_t claimWarmTotalTicks;
+    size_t claimColdTotalTicks;
 };
 
 class SatoriTrace

@@ -37,6 +37,7 @@
 #include "SatoriPage.inl"
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
+#include "SatoriPageAddTrace.h" // TEMP-TRACE
 
 SatoriTrimmer::SatoriTrimmer(SatoriHeap* heap)
 {
@@ -120,6 +121,8 @@ void SatoriTrimmer::Loop()
             continue;
         }
 
+        TraceTrimRound(); // TEMP-TRACE
+
         // Regions in the cache are not free granules, and the trimmer only decommits free granules.
         // The ones that nobody has taken by the next round will be decommitted then.
         m_heap->Allocator()->DrainRegionCache();
@@ -188,6 +191,8 @@ void SatoriTrimmer::TrimNow()
 
     // The trimmer was asked to stop when the GC started. Make sure it did, so that we do not run two things at once.
     WaitForStop();
+
+    TraceTrimRound(); // TEMP-TRACE
 
     m_heap->Allocator()->DrainRegionCache();
     m_heap->ForEachPage(

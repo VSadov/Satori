@@ -101,8 +101,6 @@ SatoriHeap* SatoriHeap::Create()
     heap->m_committedMapSize = commitSize - offsetof(SatoriHeap, m_pageMap);
     heap->m_committedBytes = commitSize;
     heap->m_peakCommittedBytes = commitSize;
-    // TEMP-TRACE
-    SatoriTrace::s_enabled = GCConfig::GetTraceCounters();
     InitWriteBarrier(heap->m_pageMap, s_pageByteMap, heap->CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
     heap->m_mapLock.Initialize();
 

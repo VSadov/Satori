@@ -88,6 +88,7 @@ public:
     bool HelpOnce(bool waitForGC = false);
     void MaybeTriggerGC(gc_reason reason);
     bool IsBlockingPhase();
+    void TraceGetState(int& gcState, int& condemned, size_t& deferredSweep, size_t& relocated); // TEMP-TRACE
     void WaitForTrimmerToStop();
 
     bool ShouldDoConcurrent(int generation);

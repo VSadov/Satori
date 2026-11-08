@@ -1677,6 +1677,8 @@ void SatoriRecycler::BlockingCollectImpl()
         {
             m_compactingGcCount[2]++;
         }
+
+        m_heap->Allocator()->TraceStateAtGen2End(); // TEMP-TRACE
     }
     else
     {
@@ -5362,3 +5364,13 @@ void SatoriRecycler::UpdateGcCounters(int64_t blockingStart)
     m_percentTimeInGcSinceLastGc = timeSinceLastGcEnded != 0 ? (int)(totalTimeInCurrentGc * 100 / timeSinceLastGcEnded) : 0;
     m_totalTimeAtLastGcEnd = osNow;
 }
+
+// TEMP-TRACE-BEGIN
+void SatoriRecycler::TraceGetState(int& gcState, int& condemned, size_t& deferredSweep, size_t& relocated)
+{
+    gcState = m_gcState;
+    condemned = m_condemnedGeneration;
+    deferredSweep = m_deferredSweepCount;
+    relocated = m_relocatedRegions->Count();
+}
+// TEMP-TRACE-END

@@ -32,6 +32,7 @@
 #include "SatoriUtil.h"
 
 #include "SatoriRegionQueue.h"
+#include "SatoriPageAddTrace.h" // TEMP-TRACE
 
 class SatoriHeap;
 class SatoriPage;
@@ -63,6 +64,10 @@ public:
     void DrainRegionCache();
     void PrintTrace();
 
+    // TEMP-TRACE-BEGIN
+    void TraceStateAtGen2End();
+    static void TraceAtExit();
+    // TEMP-TRACE-END
     size_t GetTotalAllocatedBytes();
     size_t GetTotalAllocatedBytesPrecise();
     void PublishAllocatedBytesOnThreadExit(SatoriAllocationContext* context);
@@ -183,6 +188,14 @@ private:
     void FreeToBitmap(SatoriRegion* region);
     void TraceClaim(SatoriRegion* region, size_t granules, size_t retries, size_t rollbacks, int64_t startTime);
     bool AddMoreWorkChunks();
+
+    // TEMP-TRACE-BEGIN
+    void TraceTakeSnapshot(TraceSnap& s, SatoriPage* excludePage, size_t request);
+    void TraceMiss(TracePageAddCtx& c);
+    void TraceBeforeAdd(TracePageAddCtx& c, size_t regionSize);
+    void TraceAfterAdd(TracePageAddCtx& c, SatoriPage* page, size_t regionSize, bool low, SatoriRegionRequester requester);
+    void TraceWriteState(bool isFinal, const char* ev);
+    // TEMP-TRACE-END
 };
 
 #endif

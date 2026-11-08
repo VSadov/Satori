@@ -431,6 +431,18 @@ public:
         }
     }
 
+    // TEMP-TRACE-BEGIN
+    template <typename F>
+    void ForEachRegionLocked(F lambda)
+    {
+        size_t shardCount = ShardCount();
+        for (size_t i = 0; i < shardCount; i++)
+        {
+            Shard(i)->ForEachRegionLocked(lambda);
+        }
+    }
+    // TEMP-TRACE-END
+
     size_t Count()
     {
         size_t count = 0;

@@ -44,6 +44,520 @@
 #include "SatoriWorkList.h"
 #include <minipal/log.h>
 
+// TEMP-TRACE-BEGIN
+#include <stdio.h>
+#include <stdlib.h>
+#include "SatoriPageAddTrace.h"
+
+bool g_traceOn;
+volatile size_t g_trimOut;
+volatile size_t g_missWhileOut;
+volatile size_t g_missEmpty;
+volatile size_t g_missPasses;
+volatile size_t g_timedOutAdds;
+volatile size_t g_trimRounds;
+volatile size_t g_decommitBytes;
+volatile size_t g_recommit120Bytes;
+
+// C, B, A, E, Dg, Di
+static volatile size_t s_traceAdds[6];
+static const char* const s_traceClassNames[6] = { "C", "B", "A", "E", "Dg", "Di" };
+static const char s_traceRequesterTags[] = "?RLSHPIWFT";
+
+// What the failed claims of the current call have run into: lost CAS races and rolled back runs.
+static thread_local size_t t_traceContention;
+
+void TraceTrimInc()
+{
+    Interlocked::Increment(&g_trimOut);
+}
+
+void TraceTrimDec()
+{
+    size_t result = Interlocked::Decrement(&g_trimOut);
+    _ASSERTE((ptrdiff_t)result >= 0);
+    (void)result;
+}
+
+void TraceTrimRound()
+{
+    Interlocked::Increment(&g_trimRounds);
+}
+
+// When something was decommitted in a 2 MB granule, and how much of it is not committed again yet.
+// The slots are per block of 1 GB, found in a small open addressing table, allocated when the first decommit in the block is seen.
+struct TraceSlot
+{
+    int64_t stamp;
+    size_t pending;
+};
+
+struct TraceBlock
+{
+    size_t key;
+    TraceSlot* slots;
+};
+
+static const int TRACE_BLOCK_BITS = 30;
+static const int TRACE_TABLE_BITS = 13;
+static const size_t TRACE_TABLE_SIZE = (size_t)1 << TRACE_TABLE_BITS;
+static TraceBlock s_traceBlocks[TRACE_TABLE_SIZE];
+static volatile int32_t s_traceBlocksLock;
+
+static TraceSlot* TraceSlotsForBlock(size_t address, bool create)
+{
+    size_t key = (address >> TRACE_BLOCK_BITS) + 1;
+    size_t i = (size_t)((key * 11400714819323198485llu) >> (64 - TRACE_TABLE_BITS));
+    for (size_t probe = 0; probe < TRACE_TABLE_SIZE; probe++, i = (i + 1) & (TRACE_TABLE_SIZE - 1))
+    {
+        size_t k = VolatileLoad(&s_traceBlocks[i].key);
+        if (k == 0 && create)
+        {
+            while (Interlocked::CompareExchange(&s_traceBlocksLock, 1, 0) != 0)
+            {
+                GCToOSInterface::YieldThread(0);
+            }
+
+            k = s_traceBlocks[i].key;
+            if (k == 0)
+            {
+                s_traceBlocks[i].slots = (TraceSlot*)calloc((size_t)1 << (TRACE_BLOCK_BITS - Satori::REGION_BITS), sizeof(TraceSlot));
+                VolatileStore(&s_traceBlocks[i].key, key);
+                k = key;
+            }
+
+            Interlocked::Exchange(&s_traceBlocksLock, 0);
+        }
+
+        if (k == key)
+        {
+            return s_traceBlocks[i].slots;
+        }
+
+        if (k == 0)
+        {
+            return nullptr;
+        }
+    }
+
+    return nullptr;
+}
+
+void TraceNoteDecommitSlow(size_t address, size_t bytes)
+{
+    Interlocked::ExchangeAdd64(&g_decommitBytes, bytes);
+
+    int64_t now = SatoriUtil::GetTimeStamp();
+    int64_t window = 120 * SatoriUtil::GetTimeStampFrequency();
+    size_t end = address + bytes;
+    for (size_t a = address; a < end; )
+    {
+        size_t pieceEnd = min(end, ((a >> Satori::REGION_BITS) + 1) << Satori::REGION_BITS);
+        TraceSlot* slots = TraceSlotsForBlock(a, /* create */ true);
+        if (slots)
+        {
+            TraceSlot& slot = slots[(a & (((size_t)1 << TRACE_BLOCK_BITS) - 1)) >> Satori::REGION_BITS];
+            if (now - slot.stamp > window)
+            {
+                slot.pending = 0;
+            }
+
+            slot.pending += pieceEnd - a;
+            slot.stamp = now;
+        }
+
+        a = pieceEnd;
+    }
+}
+
+void TraceNoteCommitSlow(size_t address, size_t bytes)
+{
+    int64_t now = SatoriUtil::GetTimeStamp();
+    int64_t window = 120 * SatoriUtil::GetTimeStampFrequency();
+    size_t end = address + bytes;
+    for (size_t a = address; a < end; )
+    {
+        size_t pieceEnd = min(end, ((a >> Satori::REGION_BITS) + 1) << Satori::REGION_BITS);
+        TraceSlot* slots = TraceSlotsForBlock(a, /* create */ false);
+        if (slots)
+        {
+            TraceSlot& slot = slots[(a & (((size_t)1 << TRACE_BLOCK_BITS) - 1)) >> Satori::REGION_BITS];
+            if (slot.pending != 0)
+            {
+                if (now - slot.stamp <= window)
+                {
+                    size_t again = min(pieceEnd - a, slot.pending);
+                    slot.pending -= again;
+                    Interlocked::ExchangeAdd64(&g_recommit120Bytes, again);
+                }
+                else
+                {
+                    slot.pending = 0;
+                }
+            }
+        }
+
+        a = pieceEnd;
+    }
+}
+
+static int64_t s_traceStartTs;
+static int64_t s_traceIntervalTicks;
+static volatile size_t s_traceNextStateTs;
+static SatoriAllocator* s_traceAllocator;
+static void* volatile s_traceFile;
+
+static double TraceTicksToUs(int64_t ticks)
+{
+    return (double)ticks * 1e6 / (double)SatoriUtil::GetTimeStampFrequency();
+}
+
+static void TraceWrite(const char* line, int len)
+{
+    if (len <= 0 || !g_traceOn)
+    {
+        return;
+    }
+
+    void* file = s_traceFile;
+    if (file == nullptr)
+    {
+        char dir[MAX_PATH];
+        DWORD n = GetEnvironmentVariableA("SATORI_TRACE_DIR", dir, sizeof(dir));
+        if (n == 0 || n >= sizeof(dir))
+        {
+            return;
+        }
+
+        char path[MAX_PATH + 32];
+        snprintf(path, sizeof(path), "%s\\%lu.log", dir, (unsigned long)GetCurrentProcessId());
+        void* opened = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        void* prior = Interlocked::CompareExchangePointer((void**)&s_traceFile, opened, (void*)nullptr);
+        if (prior != nullptr)
+        {
+            if (opened != INVALID_HANDLE_VALUE)
+            {
+                CloseHandle(opened);
+            }
+
+            opened = prior;
+        }
+
+        file = opened;
+    }
+
+    if (file != INVALID_HANDLE_VALUE)
+    {
+        DWORD written;
+        WriteFile(file, line, (DWORD)len, &written, nullptr);
+    }
+}
+
+static bool TraceStateDue()
+{
+    if (!g_traceOn)
+    {
+        return false;
+    }
+
+    size_t next = s_traceNextStateTs;
+    int64_t now = SatoriUtil::GetTimeStamp();
+    if (now - (int64_t)next < 0)
+    {
+        return false;
+    }
+
+    return Interlocked::CompareExchange(&s_traceNextStateTs, (size_t)(now + s_traceIntervalTicks), next) == next;
+}
+
+static void TraceInit(SatoriAllocator* allocator)
+{
+    char dir[MAX_PATH];
+    DWORD n = GetEnvironmentVariableA("SATORI_TRACE_DIR", dir, sizeof(dir));
+    if (n == 0 || n >= sizeof(dir))
+    {
+        return;
+    }
+
+    g_traceOn = true;
+    SatoriTrace::s_enabled = true;
+    s_traceAllocator = allocator;
+    s_traceStartTs = SatoriUtil::GetTimeStamp();
+
+    int seconds = 30;
+    char value[16];
+    if (GetEnvironmentVariableA("SATORI_TRACE_STATE_SEC", value, sizeof(value)) != 0)
+    {
+        seconds = max(1, atoi(value));
+    }
+
+    s_traceIntervalTicks = (int64_t)seconds * SatoriUtil::GetTimeStampFrequency();
+    s_traceNextStateTs = (size_t)(s_traceStartTs + s_traceIntervalTicks);
+    atexit(&SatoriAllocator::TraceAtExit);
+}
+
+// What is free: the free granules of the pages, except one, and the regions in the cache. A free granule is a region of 2 MB,
+// and the free granules that touch make a run.
+void SatoriAllocator::TraceTakeSnapshot(TraceSnap& s, SatoriPage* excludePage, size_t request)
+{
+    memset(&s, 0, sizeof(s));
+    if (!g_traceOn)
+    {
+        return;
+    }
+
+    m_heap->ForEachPage(
+        [&](SatoriPage* page)
+        {
+            if (page != excludePage)
+            {
+                page->TraceCollect(s, request);
+            }
+        }
+    );
+
+    // A cached region is formatted and out of the bitmap, so it is a run of its own.
+    m_regionCache->ForEachRegionLocked(
+        [&](SatoriRegion* r)
+        {
+            size_t size = r->Size();
+            size_t committed = r->CommittedEnd() > r->Start() ? min(r->CommittedEnd(), r->End()) - r->Start() : 0;
+            s.regions++;
+            s.n2++;
+            s.freeBytes += size;
+            s.freeCommitted += committed;
+            s.runs++;
+            s.maxRun = max(s.maxRun, size);
+            s.maxRegion = max(s.maxRegion, size);
+            if (committed == size)
+            {
+                s.warmFree++;
+            }
+            if (size >= request)
+            {
+                s.singleGE++;
+                s.runsGE++;
+                if (committed == size)
+                {
+                    s.runsGECommitted++;
+                }
+            }
+        }
+    );
+}
+
+// A lookup found nothing.
+void SatoriAllocator::TraceMiss(TracePageAddCtx& c)
+{
+    if (!g_traceOn)
+    {
+        return;
+    }
+
+    c.passes++;
+    Interlocked::Increment(&g_missPasses);
+    bool out = g_trimOut > 0;
+    if (out)
+    {
+        c.sawOut = true;
+    }
+
+    if (!c.missed)
+    {
+        c.missed = true;
+        c.firstMissTs = SatoriUtil::GetTimeStamp();
+        Interlocked::Increment(out ? &g_missWhileOut : &g_missEmpty);
+    }
+}
+
+// We are about to add a page. Everything that must be seen before the add.
+void SatoriAllocator::TraceBeforeAdd(TracePageAddCtx& c, size_t regionSize)
+{
+    if (!g_traceOn)
+    {
+        return;
+    }
+
+    c.decisionTs = SatoriUtil::GetTimeStamp();
+    c.out = t_traceContention;
+    c.trim = g_trimOut;
+    c.commitBefore = m_heap->GetBytesCommitted();
+    c.peakBefore = m_heap->GetPeakBytesCommitted();
+
+    TraceSnap before;
+    TraceTakeSnapshot(before, nullptr, regionSize);
+    c.preCount = before.regions;
+
+    m_heap->Recycler()->TraceGetState(c.gcState, c.condemned, c.defSweep, c.relocated);
+}
+
+// We did add a page. The new page is not in the snapshot.
+void SatoriAllocator::TraceAfterAdd(TracePageAddCtx& c, SatoriPage* page, size_t regionSize, bool low, SatoriRegionRequester requester)
+{
+    if (!g_traceOn)
+    {
+        return;
+    }
+
+    TraceSnap s;
+    TraceTakeSnapshot(s, page, regionSize);
+
+    bool gcActive = c.gcState != 0 || c.defSweep != 0;
+    int cls;
+    if (c.out > 0 || c.timedOut)
+    {
+        cls = 0;
+    }
+    else if (s.singleGE > 0)
+    {
+        cls = 1;
+    }
+    else if (s.runsGE > 0)
+    {
+        cls = 2;
+    }
+    else if (s.freeBytes >= regionSize)
+    {
+        cls = 3;
+    }
+    else
+    {
+        cls = gcActive ? 4 : 5;
+    }
+
+    Interlocked::Increment(&s_traceAdds[cls]);
+    if (c.timedOut)
+    {
+        Interlocked::Increment(&g_timedOutAdds);
+    }
+
+    size_t pages = 0;
+    m_heap->ForEachPage([&](SatoriPage*) { pages++; });
+
+    const char* why = c.out > 0 ? (c.timedOut ? "out+timeout" : "out") : (c.timedOut ? "timeout" : "-");
+    char tag = s_traceRequesterTags[(int)requester];
+    double waitUs = c.missed ? TraceTicksToUs(c.decisionTs - c.firstMissTs) : 0;
+
+    char buf[1536];
+    int len = snprintf(buf, sizeof(buf),
+        "[pageadd] t=%.3f tid=%lu tag=%c reqKB=%zu low=%d large=%d cls=%s why=%s sawOut=%d passes=%d waitUs=%.0f "
+        "out=%zu trim=%zu preCount=%zu gc=%d cgen=%d defsweep=%zu relocq=%zu "
+        "free=%zu n2=%zu n46=%zu nbig=%zu freeMB=%.1f freeCommMB=%.1f maxregKB=%zu maxrunKB=%zu runs=%zu "
+        "singleGE=%zu runsGE=%zu runsGEc=%zu trunc=%d pages=%zu committedMB=%.1f commBeforeMB=%.1f peakBeforeMB=%.1f\n",
+        TraceTicksToUs(c.decisionTs - s_traceStartTs) / 1000.0, (unsigned long)GetCurrentThreadId(), tag,
+        regionSize >> 10, (int)low, (int)(regionSize >= Satori::PAGE_SIZE_GRANULARITY / 2), s_traceClassNames[cls], why,
+        (int)(c.sawOut || c.out > 0), c.passes, waitUs,
+        c.out, c.trim, c.preCount, c.gcState, c.condemned, c.defSweep, c.relocated,
+        s.regions, s.n2, s.n46, s.nBig, (double)s.freeBytes / (1 << 20), (double)s.freeCommitted / (1 << 20),
+        s.maxRegion >> 10, s.maxRun >> 10, s.runs,
+        s.singleGE, s.runsGE, s.runsGECommitted, (int)s.truncated, pages, (double)m_heap->GetBytesCommitted() / (1 << 20),
+        (double)c.commitBefore / (1 << 20), (double)c.peakBefore / (1 << 20));
+    TraceWrite(buf, len);
+}
+
+void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
+{
+    // at exit other threads may be dead with locks held, so the final line has no snapshot.
+    TraceSnap s;
+    if (isFinal)
+    {
+        memset(&s, 0, sizeof(s));
+    }
+    else
+    {
+        TraceTakeSnapshot(s, nullptr, 2 * Satori::REGION_SIZE_GRANULARITY);
+    }
+
+    size_t pages = 0;
+    m_heap->ForEachPage([&](SatoriPage*) { pages++; });
+
+    int gcState;
+    int condemned;
+    size_t defSweep;
+    size_t relocated;
+    m_heap->Recycler()->TraceGetState(gcState, condemned, defSweep, relocated);
+
+    char buf[2048];
+    int len = snprintf(buf, sizeof(buf),
+        "[state] t=%.3f final=%d pages=%zu committedMB=%.1f gc=%d cgen=%d defsweep=%zu relocq=%zu "
+        "free=%zu n2=%zu n46=%zu nbig=%zu freeMB=%.1f freeCommMB=%.1f maxregKB=%zu maxrunKB=%zu runs=%zu runsGE4=%zu runsGE4c=%zu trunc=%d "
+        "out=%zu trim=%zu missOut=%zu missEmpty=%zu missPasses=%zu timedOutAdds=%zu "
+        "adds=%zu C=%zu B=%zu A=%zu E=%zu Dg=%zu Di=%zu outWin=0 "
+        "ev=%s peakMB=%.1f trimRounds=%zu decommitMB=%.1f recommit120MB=%.1f warmFree=%zu\n",
+        TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, (int)isFinal, pages,
+        (double)m_heap->GetBytesCommitted() / (1 << 20), gcState, condemned, defSweep, relocated,
+        s.regions, s.n2, s.n46, s.nBig, (double)s.freeBytes / (1 << 20), (double)s.freeCommitted / (1 << 20),
+        s.maxRegion >> 10, s.maxRun >> 10, s.runs, s.runsGE, s.runsGECommitted, (int)s.truncated,
+        (size_t)0, g_trimOut, g_missWhileOut, g_missEmpty, g_missPasses, g_timedOutAdds,
+        s_traceAdds[0] + s_traceAdds[1] + s_traceAdds[2] + s_traceAdds[3] + s_traceAdds[4] + s_traceAdds[5],
+        s_traceAdds[0], s_traceAdds[1], s_traceAdds[2], s_traceAdds[3], s_traceAdds[4], s_traceAdds[5],
+        ev, (double)m_heap->GetPeakBytesCommitted() / (1 << 20), g_trimRounds,
+        (double)g_decommitBytes / (1 << 20), (double)g_recommit120Bytes / (1 << 20), s.warmFree);
+    TraceWrite(buf, len);
+
+    // the work of the allocator of regions, as far as it is counted
+    SatoriTraceCounters& c = SatoriTrace::s_counters;
+    size_t totalPageAdds = 0;
+    char byRequester[128];
+    int pos = 0;
+    byRequester[0] = 0;
+    for (int i = 0; i < (int)SatoriRegionRequester::Count; i++)
+    {
+        totalPageAdds += c.pageAdds[i];
+        if (c.pageAdds[i] && pos < (int)sizeof(byRequester) - 16)
+        {
+            pos += snprintf(byRequester + pos, sizeof(byRequester) - pos, "%c%zu", s_traceRequesterTags[i], c.pageAdds[i]);
+        }
+    }
+
+    size_t claimN, warmN, coldN, getN;
+    double claimP50 = TraceTicksToUs(SatoriTrace::Percentile(c.claimTicks, 0.50, claimN));
+    double claimP99 = TraceTicksToUs(SatoriTrace::Percentile(c.claimTicks, 0.99, claimN));
+    double warmP50 = TraceTicksToUs(SatoriTrace::Percentile(c.claimWarmTicks, 0.50, warmN));
+    double warmP99 = TraceTicksToUs(SatoriTrace::Percentile(c.claimWarmTicks, 0.99, warmN));
+    double coldP50 = TraceTicksToUs(SatoriTrace::Percentile(c.claimColdTicks, 0.50, coldN));
+    double coldP99 = TraceTicksToUs(SatoriTrace::Percentile(c.claimColdTicks, 0.99, coldN));
+    double getP50 = TraceTicksToUs(SatoriTrace::Percentile(c.getRegionTicks, 0.50, getN));
+    double getP99 = TraceTicksToUs(SatoriTrace::Percentile(c.getRegionTicks, 0.99, getN));
+
+    char counters[2048];
+    len = snprintf(counters, sizeof(counters),
+        "[counters] t=%.3f final=%d ev=%s cacheCap=%zu cacheNow=%zu padd=%zu paddBy=%s "
+        "claimsSingle=%zu claimsRun=%zu casRetries=%zu runRollbacks=%zu adjTried=%zu adjClaimed=%zu "
+        "cacheHits=%zu cacheMisses=%zu cacheFrees=%zu cacheOverflows=%zu freesBitmap=%zu freesBitmapGranules=%zu gapCommitMB=%.1f "
+        "claimN=%zu claimP50us=%.2f claimP99us=%.2f "
+        "claimWarmN=%zu claimWarmP50us=%.2f claimWarmP99us=%.2f claimWarmMs=%.1f "
+        "claimColdN=%zu claimColdP50us=%.2f claimColdP99us=%.2f claimColdMs=%.1f "
+        "getN=%zu getP50us=%.2f getP99us=%.2f\n",
+        TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, (int)isFinal, ev, m_regionCacheCap, (size_t)m_regionCacheCount,
+        totalPageAdds, byRequester[0] ? byRequester : "-",
+        c.claimsSingle, c.claimsRun, c.casRetries, c.runRollbacks, c.adjacentTries, c.adjacentClaims,
+        c.cacheHits, c.cacheMisses, c.freesToCache, c.cacheOverflows, c.freesToBitmap, c.freesToBitmapGranules,
+        (double)c.gapCommitBytes / (1 << 20),
+        claimN, claimP50, claimP99,
+        warmN, warmP50, warmP99, TraceTicksToUs((int64_t)c.claimWarmTotalTicks) / 1000.0,
+        coldN, coldP50, coldP99, TraceTicksToUs((int64_t)c.claimColdTotalTicks) / 1000.0,
+        getN, getP50, getP99);
+    TraceWrite(counters, len);
+}
+
+void SatoriAllocator::TraceStateAtGen2End()
+{
+    if (g_traceOn)
+    {
+        TraceWriteState(false, "gen2");
+    }
+}
+
+void SatoriAllocator::TraceAtExit()
+{
+    if (s_traceAllocator)
+    {
+        s_traceAllocator->TraceWriteState(true, "final");
+    }
+}
+// TEMP-TRACE-END
+
 // Zeroes [start + sizeof(size_t), end - sizeof(size_t)), but only the part of it in [dirtyStart, dirtyEnd).
 // The rest is known to be zeroed already. (see SatoriRegion::AllocateDirty)
 // NB: the first word is the MethodTable and the last one is the syncblock of whatever follows. Neither is zeroed here.
@@ -73,6 +587,7 @@ static size_t ProcessorHint()
 void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
     m_heap = heap;
+    TraceInit(this); // TEMP-TRACE
 
     int processorCount = (int)GCToOSInterface::GetTotalProcessorCount();
 
@@ -143,9 +658,11 @@ SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize, bool low, Satori
         return GetRegionImpl(regionSize, low, requester);
     }
 
+    bool traceState = TraceStateDue(); // TEMP-TRACE
     int64_t start = SatoriUtil::GetTimeStamp();
     SatoriRegion* region = GetRegionImpl(regionSize, low, requester);
     SatoriTrace::CountTime(SatoriTrace::s_counters.getRegionTicks, SatoriUtil::GetTimeStamp() - start);
+    if (traceState) TraceWriteState(false, "tick"); // TEMP-TRACE
     return region;
 }
 
@@ -158,6 +675,8 @@ SatoriRegion* SatoriAllocator::GetRegionImpl(size_t regionSize, bool low, Satori
     size_t granules = regionSize >> Satori::REGION_BITS;
     int64_t newPageDeadline = 0;
     int newPageSpin = 0;
+    TracePageAddCtx traceCtx = {}; // TEMP-TRACE
+    t_traceContention = 0; // TEMP-TRACE
 
     SatoriRegion* region;
     bool outOfMemory;
@@ -183,6 +702,8 @@ tryAgain:
         return region;
     }
 
+    TraceMiss(traceCtx); // TEMP-TRACE
+
     // for regions < 1/2 page granularity, just allocate a regular page
     // this is the most common case.
     // for bigger ones, use more complex helper that may allocate a larger
@@ -204,6 +725,7 @@ tryAgain:
             if (SatoriUtil::GetTimeStamp() - newPageDeadline > 0)
             {
                 // timed out
+                traceCtx.timedOut = true; // TEMP-TRACE
                 Interlocked::Increment(&m_singePageAdders);
             }
             else
@@ -219,6 +741,7 @@ tryAgain:
         }
 
         SatoriPage* page = nullptr;
+        TraceBeforeAdd(traceCtx, regionSize); // TEMP-TRACE
         if (m_heap->TryAddRegularPage(page))
         {
             if (page)
@@ -228,6 +751,7 @@ tryAgain:
                 // The page is ours. Claim from it right away, before the others take what we need.
                 region = TryClaimRegionInPage(page, granules, low, outOfMemory);
                 Interlocked::Decrement(&m_singePageAdders);
+                TraceAfterAdd(traceCtx, page, regionSize, low, requester); // TEMP-TRACE
                 if (region || outOfMemory)
                 {
                     return region;
@@ -246,11 +770,13 @@ tryAgain:
     else
     {
         // A region of half a page or more may need a larger page. It is claimed in the page before the page is published.
+        TraceBeforeAdd(traceCtx, regionSize); // TEMP-TRACE
         SatoriPage* page = m_heap->AddLargePage(regionSize, low, region);
         if (page)
         {
             _ASSERTE(region);
             SatoriTrace::Count(SatoriTrace::s_counters.pageAdds[(int)requester]);
+            TraceAfterAdd(traceCtx, page, regionSize, low, requester); // TEMP-TRACE
             return region;
         }
     }
@@ -368,10 +894,17 @@ void SatoriAllocator::TraceClaim(SatoriRegion* region, size_t granules, size_t r
     SatoriTraceCounters& counters = SatoriTrace::s_counters;
     SatoriTrace::Count(counters.casRetries, retries);
     SatoriTrace::Count(counters.runRollbacks, rollbacks);
+    t_traceContention += retries + rollbacks;
     if (region)
     {
         SatoriTrace::Count(granules > 1 ? counters.claimsRun : counters.claimsSingle);
-        SatoriTrace::CountTime(counters.claimTicks, SatoriUtil::GetTimeStamp() - startTime);
+        int64_t ticks = SatoriUtil::GetTimeStamp() - startTime;
+        SatoriTrace::CountTime(counters.claimTicks, ticks);
+
+        // warm: the region is committed in full
+        bool warm = region->CommittedEnd() >= region->End();
+        SatoriTrace::CountTime(warm ? counters.claimWarmTicks : counters.claimColdTicks, ticks);
+        SatoriTrace::Count(warm ? counters.claimWarmTotalTicks : counters.claimColdTotalTicks, (size_t)ticks);
     }
 }
 

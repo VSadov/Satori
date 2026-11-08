@@ -166,7 +166,6 @@ public:
     INT_CONFIG   (TrackBackoff,              "gcTrackBackoff",            NULL,                                -1,                 "Specifies max number of regions a thread allocates untracked after unproductive escape tracking (hex). 0 - disabled, -1 - default") \
     /* TEMP-TRACE: experimental bitmap free space */                                                                                                                                                                         \
     INT_CONFIG   (RegionCacheCap,            "gcRegionCacheCap",          NULL,                                -1,                 "TEMP-TRACE: max number of free 2Mb regions that the allocator caches in front of the free granules (hex). 0 - no cache, -1 - default") \
-    BOOL_CONFIG  (TraceCounters,             "gcTraceCounters",           NULL,                                false,              "TEMP-TRACE: count the work of the allocator of regions and print the counters at shutdown")           \
 
 // This class is responsible for retreiving configuration information
 // for how the GC should operate.

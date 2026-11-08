@@ -1,0 +1,99 @@
+// TEMP-TRACE-BEGIN
+//
+// Temporary instrumentation for the page-add investigation (Milestone 2). Not for commit.
+//
+// SATORI_TRACE_DIR is the only switch. If it is set, a process writes <SATORI_TRACE_DIR>\<pid>.log with
+//   [pageadd]  one line per page add,
+//   [state]    every SATORI_TRACE_STATE_SEC (30 by default), at the end of every gen2 and at exit,
+//   [counters] at exit and with every [state], the work of the allocator of regions.
+// If it is not set, nothing is written and nothing is measured.
+// The same lines are printed by the three builds of the milestone, so that one analyzer reads all of them.
+//
+#ifndef __SATORI_PAGEADD_TRACE_H__
+#define __SATORI_PAGEADD_TRACE_H__
+
+// SATORI_TRACE_DIR is set.
+extern bool g_traceOn;
+
+// Granules that the trimmer holds right now: claimed, and not given back yet.
+extern volatile size_t g_trimOut;
+// GetRegion calls whose first lookup found nothing, with the trimmer holding a granule / without.
+extern volatile size_t g_missWhileOut;
+extern volatile size_t g_missEmpty;
+// All failed lookups, including the retries while waiting for a page to be added.
+extern volatile size_t g_missPasses;
+// Page adds made after the 1 msec deadline, while another thread was adding.
+extern volatile size_t g_timedOutAdds;
+
+// The trimmer. A round is one pass over the pages. A decommit is any decommit of the memory of a region or a granule.
+// A commit is a recommit if it is in a 2 MB granule where something was decommitted not more than 120 sec before,
+// and that decommitted memory has not been committed again yet.
+extern volatile size_t g_trimRounds;
+extern volatile size_t g_decommitBytes;
+extern volatile size_t g_recommit120Bytes;
+
+void TraceTrimInc();
+void TraceTrimDec();
+void TraceTrimRound();
+void TraceNoteCommitSlow(size_t address, size_t bytes);
+void TraceNoteDecommitSlow(size_t address, size_t bytes);
+
+inline void TraceNoteCommit(size_t address, size_t bytes)
+{
+    if (g_traceOn)
+    {
+        TraceNoteCommitSlow(address, bytes);
+    }
+}
+
+inline void TraceNoteDecommit(size_t address, size_t bytes)
+{
+    if (g_traceOn)
+    {
+        TraceNoteDecommitSlow(address, bytes);
+    }
+}
+
+// Per-call state of GetRegionImpl.
+struct TracePageAddCtx
+{
+    bool missed;
+    bool sawOut;
+    bool timedOut;
+    int passes;
+    int64_t firstMissTs;
+    int64_t decisionTs;
+    size_t out;
+    size_t trim;
+    size_t preCount;
+    int gcState;
+    int condemned;
+    size_t defSweep;
+    size_t relocated;
+    // the heap commit at the decision, and its peak so far
+    size_t commitBefore;
+    size_t peakBefore;
+};
+
+// What is free: the free granules of the pages and the regions in the cache.
+struct TraceSnap
+{
+    size_t regions;
+    size_t n2;
+    size_t n46;
+    size_t nBig;
+    size_t freeBytes;
+    size_t freeCommitted;
+    size_t maxRegion;
+    size_t maxRun;
+    size_t runs;
+    size_t singleGE;
+    size_t runsGE;
+    size_t runsGECommitted;
+    // free regions (granules) that are committed in full
+    size_t warmFree;
+    bool truncated;
+};
+
+#endif
+// TEMP-TRACE-END

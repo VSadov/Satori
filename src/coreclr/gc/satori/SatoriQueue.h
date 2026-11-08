@@ -574,6 +574,19 @@ public:
         }
     }
 
+    // TEMP-TRACE-BEGIN
+    // Walks under the lock, unlike ForEachRegion. The lambda must not block, allocate or unlink items.
+    template <typename F>
+    void ForEachRegionLocked(F lambda)
+    {
+        SatoriLockHolder holder(&m_lock);
+        for (T* item = m_head; item != nullptr; item = item->m_next)
+        {
+            lambda(item);
+        }
+    }
+    // TEMP-TRACE-END
+
 protected:
     // m_kind is immutable and read off ContainingQueue() by threads that do not take the
     // lock, so it sits here rather than with the fields below.
