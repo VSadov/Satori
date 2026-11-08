@@ -70,6 +70,10 @@ thread_local int64_t t_addWaitedTicks;
 // Milestone 2b step 2 experiment: SATORI_PREADD_PAGES=n adds n regular pages at the first request for a region,
 // to see what the growth phase costs without the page adds. 0 - none, or done.
 static volatile int32_t g_preAddPages;
+// How long an add holds the token, from claiming the add to EndRegularPageAdd. SATORI_ADD_NOYIELD=1: waiters spin and do not yield the processor.
+static thread_local int64_t t_addTokenTs;
+static thread_local int64_t t_addHoldTicks;
+static volatile int32_t g_addNoYield;
 volatile size_t g_getRegionCalls;
 volatile size_t g_getRegionTicks;
 volatile size_t g_getRegionMaxTicks;
@@ -302,6 +306,11 @@ static void TraceInit(SatoriAllocator* allocator)
         g_preAddPages = atoi(preAdd);
     }
 
+    if (GetEnvironmentVariableA("SATORI_ADD_NOYIELD", preAdd, sizeof(preAdd)) != 0)
+    {
+        g_addNoYield = atoi(preAdd);
+    }
+
     DWORD n = GetEnvironmentVariableA("SATORI_TRACE_DIR", dir, sizeof(dir));
     if (n == 0 || n >= sizeof(dir))
     {
@@ -408,6 +417,24 @@ void TraceNoteAddWaitEnd(int64_t waitStart)
     TraceRaiseMax(&g_addWaitMaxTicks, (size_t)ticks);
     Interlocked::Increment(&s_addWaitHist[TraceUsBucket(TraceTicksToUs(ticks))]);
     t_addWaitedTicks += ticks;
+
+    if (TraceTicksToUs(ticks) >= 1000.0)
+    {
+        char line[160];
+        int len = snprintf(line, sizeof(line), "[addwait] t=%.3f tid=%lu waitUs=%.0f\n",
+            TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, (unsigned long)GetCurrentThreadId(), TraceTicksToUs(ticks));
+        TraceWrite(line, len);
+    }
+}
+
+static void TraceTokenTaken()
+{
+    t_addTokenTs = SatoriUtil::GetTimeStamp();
+}
+
+static void TraceTokenReleased()
+{
+    t_addHoldTicks = SatoriUtil::GetTimeStamp() - t_addTokenTs;
 }
 
 // A wait for a page add in flight has ended because the valve opened, and we are to add a page.
@@ -597,7 +624,7 @@ void SatoriAllocator::TraceAfterAdd(TracePageAddCtx& c, SatoriPage* page, size_t
         "[pageadd] t=%.3f tid=%lu tag=%c reqKB=%zu low=%d large=%d cls=%s why=%s sawOut=%d passes=%d waitUs=%.0f "
         "out=%zu trim=%zu preCount=%zu gc=%d cgen=%d defsweep=%zu relocq=%zu "
         "free=%zu n2=%zu n46=%zu nbig=%zu freeMB=%.1f freeCommMB=%.1f maxregKB=%zu maxrunKB=%zu runs=%zu "
-        "singleGE=%zu runsGE=%zu runsGEc=%zu trunc=%d pages=%zu committedMB=%.1f commBeforeMB=%.1f peakBeforeMB=%.1f inflight=%d waitedUs=%.0f addUs=%.0f\n",
+        "singleGE=%zu runsGE=%zu runsGEc=%zu trunc=%d pages=%zu committedMB=%.1f commBeforeMB=%.1f peakBeforeMB=%.1f inflight=%d waitedUs=%.0f addUs=%.0f holdUs=%.0f\n",
         TraceTicksToUs(c.decisionTs - s_traceStartTs) / 1000.0, (unsigned long)GetCurrentThreadId(), tag,
         regionSize >> 10, (int)low, (int)(regionSize >= Satori::PAGE_SIZE_GRANULARITY / 2), s_traceClassNames[cls], why,
         (int)(c.sawOut || c.out > 0), c.passes, waitUs,
@@ -606,7 +633,7 @@ void SatoriAllocator::TraceAfterAdd(TracePageAddCtx& c, SatoriPage* page, size_t
         s.maxRegion >> 10, s.maxRun >> 10, s.runs,
         s.singleGE, s.runsGE, s.runsGECommitted, (int)s.truncated, pages, (double)m_heap->GetBytesCommitted() / (1 << 20),
         (double)c.commitBefore / (1 << 20), (double)c.peakBefore / (1 << 20),
-        c.inFlight, TraceTicksToUs(c.waitedTicks), c.publishedTs ? TraceTicksToUs(c.publishedTs - c.decisionTs) : 0.0);
+        c.inFlight, TraceTicksToUs(c.waitedTicks), c.publishedTs ? TraceTicksToUs(c.publishedTs - c.decisionTs) : 0.0, TraceTicksToUs(t_addHoldTicks));
     TraceWrite(buf, len);
 }
 
@@ -998,6 +1025,7 @@ bool SatoriAllocator::BeginRegularPageAdd(int32_t pageAddsCompleted, int64_t* wa
 
             if (VolatileLoad(&m_pageAddsCompleted) == pageAddsCompleted)
             {
+                TraceTokenTaken(); // TEMP-TRACE
                 return true;
             }
 
@@ -1029,6 +1057,7 @@ bool SatoriAllocator::BeginRegularPageAdd(int32_t pageAddsCompleted, int64_t* wa
         {
             // Nothing has completed for long, the adder may have been descheduled. One more add, but no more than that.
             TraceNoteValveUse(*waitStart); // TEMP-TRACE
+            TraceTokenTaken(); // TEMP-TRACE
             *waitStart = 0;
             return true;
         }
@@ -1043,6 +1072,10 @@ bool SatoriAllocator::BeginRegularPageAdd(int32_t pageAddsCompleted, int64_t* wa
             }
 
             spins = min(spins * 2, 32);
+        }
+        else if (g_addNoYield) // TEMP-TRACE
+        {
+            for (int i = 0; i < 32; i++) YieldProcessor(); // TEMP-TRACE
         }
         else
         {
@@ -1059,6 +1092,7 @@ void SatoriAllocator::EndRegularPageAdd()
     // The count changes before the add stops being in flight, so whoever finds no add in flight sees the change.
     Interlocked::Increment(&m_pageAddsCompleted);
     Interlocked::Decrement(&m_pageAddsInFlight);
+    TraceTokenReleased(); // TEMP-TRACE
 }
 
 // Claims free granules for a region of the given number of granules, in the pages that we have.
