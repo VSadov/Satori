@@ -67,9 +67,17 @@ volatile size_t g_addCount;
 volatile size_t g_addTicks;
 volatile size_t g_addMaxTicks;
 thread_local int64_t t_addWaitedTicks;
+volatile size_t g_getRegionCalls;
+volatile size_t g_getRegionTicks;
+volatile size_t g_getRegionMaxTicks;
+volatile size_t g_suspendCount;
+volatile size_t g_suspendTicks;
+volatile size_t g_suspendMaxTicks;
 // Bucket 0 is < 1 usec, bucket k is [2^(k-1), 2^k) usec.
 static volatile size_t s_addWaitHist[20];
 static volatile size_t s_addHist[20];
+static volatile size_t s_getRegionHist[20];
+static volatile size_t s_suspendHist[20];
 
 // C, B, A, E, Dg, Di
 static volatile size_t s_traceAdds[6];
@@ -419,6 +427,26 @@ static void TraceNoteAddPublished(TracePageAddCtx& c)
     Interlocked::Increment(&s_addHist[TraceUsBucket(TraceTicksToUs(ticks))]);
 }
 
+// A GetRegion call took this long.
+void TraceNoteGetRegion(int64_t ticks)
+{
+    ticks = max((int64_t)0, ticks);
+    Interlocked::Increment(&g_getRegionCalls);
+    Interlocked::ExchangeAdd64(&g_getRegionTicks, (size_t)ticks);
+    TraceRaiseMax(&g_getRegionMaxTicks, (size_t)ticks);
+    Interlocked::Increment(&s_getRegionHist[TraceUsBucket(TraceTicksToUs(ticks))]);
+}
+
+// A blocking GC waited this long for the world to stop.
+void TraceNoteSuspend(int64_t ticks)
+{
+    ticks = max((int64_t)0, ticks);
+    Interlocked::Increment(&g_suspendCount);
+    Interlocked::ExchangeAdd64(&g_suspendTicks, (size_t)ticks);
+    TraceRaiseMax(&g_suspendMaxTicks, (size_t)ticks);
+    Interlocked::Increment(&s_suspendHist[TraceUsBucket(TraceTicksToUs(ticks))]);
+}
+
 // A lookup found nothing.
 void SatoriAllocator::TraceMiss(TracePageAddCtx& c)
 {
@@ -563,13 +591,18 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
     size_t relocated;
     m_heap->Recycler()->TraceGetState(gcState, condemned, defSweep, relocated);
 
+    size_t occPublished[3];
+    size_t occAccumulating[3];
+    m_heap->Recycler()->TraceGetOccupancy(occPublished, occAccumulating);
+
     char buf[2048];
     int len = snprintf(buf, sizeof(buf),
         "[state] t=%.3f final=%d pages=%zu committedMB=%.1f gc=%d cgen=%d defsweep=%zu relocq=%zu "
         "free=%zu n2=%zu n46=%zu nbig=%zu freeMB=%.1f freeCommMB=%.1f maxregKB=%zu maxrunKB=%zu runs=%zu runsGE4=%zu runsGE4c=%zu trunc=%d "
         "out=%zu trim=%zu missOut=%zu missEmpty=%zu missPasses=%zu timedOutAdds=%zu "
         "adds=%zu C=%zu B=%zu A=%zu E=%zu Dg=%zu Di=%zu outWin=0 "
-        "ev=%s peakMB=%.1f trimRounds=%zu decommitMB=%.1f recommit120MB=%.1f warmFree=%zu\n",
+        "ev=%s peakMB=%.1f trimRounds=%zu decommitMB=%.1f recommit120MB=%.1f warmFree=%zu "
+        "occ0MB=%.1f occ1MB=%.1f occ2MB=%.1f accMB=%.1f\n",
         TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, (int)isFinal, pages,
         (double)m_heap->GetBytesCommitted() / (1 << 20), gcState, condemned, defSweep, relocated,
         s.regions, s.n2, s.n46, s.nBig, (double)s.freeBytes / (1 << 20), (double)s.freeCommitted / (1 << 20),
@@ -578,7 +611,9 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
         s_traceAdds[0] + s_traceAdds[1] + s_traceAdds[2] + s_traceAdds[3] + s_traceAdds[4] + s_traceAdds[5],
         s_traceAdds[0], s_traceAdds[1], s_traceAdds[2], s_traceAdds[3], s_traceAdds[4], s_traceAdds[5],
         ev, (double)m_heap->GetPeakBytesCommitted() / (1 << 20), g_trimRounds,
-        (double)g_decommitBytes / (1 << 20), (double)g_recommit120Bytes / (1 << 20), s.warmFree);
+        (double)g_decommitBytes / (1 << 20), (double)g_recommit120Bytes / (1 << 20), s.warmFree,
+        (double)occPublished[0] / (1 << 20), (double)occPublished[1] / (1 << 20), (double)occPublished[2] / (1 << 20),
+        (double)(occAccumulating[0] + occAccumulating[1] + occAccumulating[2]) / (1 << 20));
     TraceWrite(buf, len);
 
     // the work of the allocator of regions, as far as it is counted
@@ -642,6 +677,27 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
         g_addWaitEpisodes, TraceTicksToUs((int64_t)g_addWaitTicks) / 1000.0, TraceTicksToUs((int64_t)g_addWaitMaxTicks),
         g_addValveUses, g_addsOverlapped, g_addCount, TraceTicksToUs((int64_t)g_addTicks) / 1000.0, TraceTicksToUs((int64_t)g_addMaxTicks),
         waitHist, addHist);
+    TraceWrite(buf, len);
+
+    char getHist[256];
+    char suspendHist[256];
+    int getPos = 0;
+    int suspendPos = 0;
+    for (int k = 0; k < 20; k++)
+    {
+        getPos += snprintf(getHist + getPos, sizeof(getHist) - getPos, k ? ",%zu" : "%zu", s_getRegionHist[k]);
+        suspendPos += snprintf(suspendHist + suspendPos, sizeof(suspendHist) - suspendPos, k ? ",%zu" : "%zu", s_suspendHist[k]);
+    }
+
+    // The accumulated pause of blocking GCs. (GetGcAccumulatingDurationMillis returns usec)
+    len = snprintf(buf, sizeof(buf),
+        "[gcstats] t=%.3f ev=%s pauseUs1=%zu pauseUs2=%zu suspends=%zu suspendMs=%.3f suspendMaxUs=%.0f "
+        "getRegionCalls=%zu getRegionMs=%.3f getRegionMaxUs=%.0f suspendHist=%s getRegionHist=%s\n",
+        TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, ev,
+        m_heap->Recycler()->GetGcAccumulatingDurationMillis(1), m_heap->Recycler()->GetGcAccumulatingDurationMillis(2),
+        g_suspendCount, TraceTicksToUs((int64_t)g_suspendTicks) / 1000.0, TraceTicksToUs((int64_t)g_suspendMaxTicks),
+        g_getRegionCalls, TraceTicksToUs((int64_t)g_getRegionTicks) / 1000.0, TraceTicksToUs((int64_t)g_getRegionMaxTicks),
+        suspendHist, getHist);
     TraceWrite(buf, len);
 }
 
@@ -766,7 +822,9 @@ SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize, bool low, Satori
     bool traceState = TraceStateDue(); // TEMP-TRACE
     int64_t start = SatoriUtil::GetTimeStamp();
     SatoriRegion* region = GetRegionImpl(regionSize, low, requester);
-    SatoriTrace::CountTime(SatoriTrace::s_counters.getRegionTicks, SatoriUtil::GetTimeStamp() - start);
+    int64_t getRegionTicks = SatoriUtil::GetTimeStamp() - start; // TEMP-TRACE
+    SatoriTrace::CountTime(SatoriTrace::s_counters.getRegionTicks, getRegionTicks);
+    TraceNoteGetRegion(getRegionTicks); // TEMP-TRACE
     if (traceState) TraceWriteState(false, "tick"); // TEMP-TRACE
     return region;
 }

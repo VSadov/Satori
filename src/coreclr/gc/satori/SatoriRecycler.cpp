@@ -1490,7 +1490,9 @@ void SatoriRecycler::BlockingCollect1()
     size_t blockingStart = minipal_hires_ticks();
 
     // stop other threads.
+    int64_t traceSuspendStart = SatoriUtil::GetTimeStamp(); // TEMP-TRACE
     GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
+    if (g_traceOn) TraceNoteSuspend(SatoriUtil::GetTimeStamp() - traceSuspendStart); // TEMP-TRACE
 
     BlockingCollectImpl();
 
@@ -1516,7 +1518,9 @@ void SatoriRecycler::BlockingCollect2()
     size_t blockingStart = minipal_hires_ticks();
 
     // stop other threads.
+    int64_t traceSuspendStart = SatoriUtil::GetTimeStamp(); // TEMP-TRACE
     GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
+    if (g_traceOn) TraceNoteSuspend(SatoriUtil::GetTimeStamp() - traceSuspendStart); // TEMP-TRACE
 
     BlockingCollectImpl();
 
@@ -5372,5 +5376,15 @@ void SatoriRecycler::TraceGetState(int& gcState, int& condemned, size_t& deferre
     condemned = m_condemnedGeneration;
     deferredSweep = m_deferredSweepCount;
     relocated = m_relocatedRegions->Count();
+}
+
+// The occupancy of the generations as published, which is what the last GC that was completed left. And what is being accumulated by the current one.
+void SatoriRecycler::TraceGetOccupancy(size_t published[3], size_t accumulating[3])
+{
+    for (int i = 0; i < 3; i++)
+    {
+        published[i] = m_occupancy[i];
+        accumulating[i] = m_occupancyAcc[i];
+    }
 }
 // TEMP-TRACE-END

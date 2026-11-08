@@ -7,6 +7,7 @@
 //   [state]    every SATORI_TRACE_STATE_SEC (30 by default), at the end of every gen2 and at exit,
 //   [counters] at exit and with every [state], the work of the allocator of regions.
 //   [addstats] the waits for a page add in flight and the durations of adds, after every [state] line.
+//   [gcstats]  the pause totals of blocking GCs, the time they wait for the world to stop, and the time in GetRegion, after every [state] line.
 // If it is not set, nothing is written and nothing is measured.
 // The same lines are printed by the three builds of the milestone, so that one analyzer reads all of them.
 //
@@ -73,6 +74,18 @@ extern thread_local int64_t t_addWaitedTicks;
 
 void TraceNoteAddWaitEnd(int64_t waitStart);
 void TraceNoteValveUse(int64_t waitStart);
+
+// Step 2 of Milestone 2b: where the time of the growth phase goes.
+// The GetRegion calls and the time in them, and the time that a blocking GC waits for the world to stop.
+extern volatile size_t g_getRegionCalls;
+extern volatile size_t g_getRegionTicks;
+extern volatile size_t g_getRegionMaxTicks;
+extern volatile size_t g_suspendCount;
+extern volatile size_t g_suspendTicks;
+extern volatile size_t g_suspendMaxTicks;
+
+void TraceNoteGetRegion(int64_t ticks);
+void TraceNoteSuspend(int64_t ticks);
 
 // Per-call state of GetRegionImpl.
 struct TracePageAddCtx
