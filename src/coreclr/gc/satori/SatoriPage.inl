@@ -46,6 +46,21 @@ inline size_t SatoriPage::RegionsStart()
     return m_firstRegion;
 }
 
+inline size_t SatoriPage::GranuleCount()
+{
+    return (End() - Start()) >> Satori::REGION_BITS;
+}
+
+inline size_t SatoriPage::FirstGranule()
+{
+    return (m_firstRegion - Start()) >> Satori::REGION_BITS;
+}
+
+inline size_t SatoriPage::GranuleStart(size_t granule)
+{
+    return Start() + (granule << Satori::REGION_BITS);
+}
+
 inline uint8_t* SatoriPage::RegionMap()
 {
     return m_regionMap;
@@ -95,23 +110,33 @@ inline size_t SatoriPage::LocationForCard(int8_t* cardPtr)
     return Start() + ((size_t)cardPtr - Start()) * Satori::BYTES_PER_CARD_BYTE;
 }
 
+// Visits the regions of the page from the end of the page down. Free granules are skipped.
 template <typename F>
     void SatoriPage::ForEachRegion(F lambda)
     {
-        SatoriRegion* region = (SatoriRegion*)this->End();
+        size_t first = FirstGranule();
+        size_t granule = GranuleCount();
 
-        do
+        while (granule > first)
         {
-            region = RegionForAddressChecked(region->Start() - 1);
-            if (!region)
+            granule--;
+            if (VolatileLoad(&RegionMap()[granule]) == 0)
             {
-                // page is not done formatting the region map.
-                break;
+                // a free granule.
+                continue;
             }
 
+            SatoriRegion* region = RegionForAddressChecked(GranuleStart(granule));
+            if (!region)
+            {
+                // the region is gone.
+                continue;
+            }
+
+            // continue below the region. The lambda may change it.
+            granule = (region->Start() - Start()) >> Satori::REGION_BITS;
             lambda(region);
         }
-        while (region->Start() != m_firstRegion);
     }
 
 #endif

@@ -101,10 +101,21 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 
     // make sure offset of m_cardGroups is 128.
     _ASSERTE(offsetof(SatoriPage, m_cardGroups) == 128);
+    static_assert(offsetof(SatoriPage, m_dirtyWatermarks) + sizeof(uint8_t*) <= 128,
+        "the header fields must end before the card groups.");
+
     result->m_regionMap = (uint8_t*)(address + 128 + cardGroupSize);
 
+    // The free bitmap is one cache line per 1Gb. The bitmaps and the watermarks need 2.25 bytes per granule
+    // on top of the region map, and the card table that covers itself has room for that at any page size.
+    _ASSERTE(regionCount % 64 == 0);
+    result->m_freeBitmap = (size_t*)ALIGN_UP((size_t)result->m_regionMap + regionCount, 64);
+    result->m_warmBitmap = result->m_freeBitmap + regionCount / 64;
+    result->m_commitWatermarks = (uint8_t*)(result->m_warmBitmap + regionCount / 64);
+    result->m_dirtyWatermarks = result->m_commitWatermarks + regionCount;
+
     // make sure the first useful card word is beyond the header.
-    _ASSERTE(result->Start() + cardTableStart > (size_t)(result->m_regionMap) + regionCount);
+    _ASSERTE(result->Start() + cardTableStart >= (size_t)(result->m_dirtyWatermarks) + regionCount);
 
     // Initialize the first region before publishing the page in the heap map.
     // Until then a failed commit can safely release the entire reservation.
@@ -139,6 +150,93 @@ void SatoriPage::OnRegionInitialized(SatoriRegion* region)
         DWORD log2;
         BitScanReverse64(&log2, i);
         RegionMap()[startIndex + i] = (uint8_t)(log2 + 2);
+    }
+}
+
+// The reverse of OnRegionInitialized. The start goes first, so that a lookup that does not find the region
+// as it was finds nothing, and not a continuation of a region that is no more.
+void SatoriPage::OnRegionFreed(SatoriRegion* region)
+{
+    size_t startIndex = (region->Start() - Start()) >> Satori::REGION_BITS;
+    size_t mapCount = region->Size() >> Satori::REGION_BITS;
+    _ASSERTE(RegionMap()[startIndex] == 1);
+
+    VolatileStore(&RegionMap()[startIndex], (uint8_t)0);
+    memset(&RegionMap()[startIndex + 1], 0, mapCount - 1);
+}
+
+// The bits [lowBit, lowBit + width) of a bitmap word.
+static size_t BitRange(size_t lowBit, size_t width)
+{
+    _ASSERTE(width > 0 && lowBit + width <= 64);
+    size_t ones = width == 64 ? ~(size_t)0 : (((size_t)1 << width) - 1);
+    return ones << lowBit;
+}
+
+// Turns the granules of a region that nobody uses any more into free granules.
+// Nothing is decommitted or written into the freed memory. What the next owner needs to know about it,
+// how much is committed and how much of that may be dirty, is recorded in the watermarks.
+void SatoriPage::FreeRegion(SatoriRegion* region)
+{
+    _ASSERTE(region->ContainingPage() == this);
+    _ASSERTE(region->Generation() == -1);
+    _ASSERTE(region->ContainingQueue() == nullptr);
+
+    // read everything that is needed from the header while the region is ours.
+    size_t start = region->Start();
+    size_t end = region->End();
+    size_t committed = region->CommittedEnd();
+    size_t used = region->UsedEnd();
+
+    _ASSERTE(start % Satori::REGION_SIZE_GRANULARITY == 0 && end % Satori::REGION_SIZE_GRANULARITY == 0);
+    _ASSERTE(start >= m_firstRegion && end <= End());
+    _ASSERTE(committed >= start && committed <= end);
+    _ASSERTE(used >= start && used <= committed);
+    // every commit is a whole number of watermark units
+    _ASSERTE((committed - start) % Satori::WATERMARK_UNIT == 0);
+
+    size_t first = (start - Start()) >> Satori::REGION_BITS;
+    size_t count = (end - start) >> Satori::REGION_BITS;
+
+    for (size_t granule = first; granule < first + count; granule++)
+    {
+        size_t granuleStart = GranuleStart(granule);
+        size_t committedBytes = committed > granuleStart ?
+            min(committed - granuleStart, Satori::REGION_SIZE_GRANULARITY) :
+            0;
+        size_t usedBytes = used > granuleStart ?
+            min(used - granuleStart, Satori::REGION_SIZE_GRANULARITY) :
+            0;
+
+        // rounding up the used part is the safe direction. It cannot get above the committed part.
+        size_t committedUnits = committedBytes >> Satori::WATERMARK_UNIT_BITS;
+        size_t dirtyUnits = (usedBytes + Satori::WATERMARK_UNIT - 1) >> Satori::WATERMARK_UNIT_BITS;
+        _ASSERTE(dirtyUnits <= committedUnits);
+
+        m_commitWatermarks[granule] = (uint8_t)committedUnits;
+        m_dirtyWatermarks[granule] = (uint8_t)dirtyUnits;
+
+        // the other granules in the word may be changing, thus interlocked.
+        size_t bit = BitRange(granule % 64, 1);
+        if (committedUnits == Satori::WATERMARK_UNITS_PER_GRANULE)
+        {
+            Interlocked::Or(&m_warmBitmap[granule / 64], bit);
+        }
+        else
+        {
+            Interlocked::And(&m_warmBitmap[granule / 64], ~bit);
+        }
+    }
+
+    OnRegionFreed(region);
+
+    // The interlocked operation is a release for everything above. The next owner reads
+    // the watermarks and the region map only after it clears its free bit.
+    for (size_t word = first / 64; word <= (first + count - 1) / 64; word++)
+    {
+        size_t lowGranule = max(first, word * 64);
+        size_t highGranule = min(first + count, word * 64 + 64);
+        Interlocked::Or(&m_freeBitmap[word], BitRange(lowGranule - word * 64, highGranule - lowGranule));
     }
 }
 
@@ -189,6 +287,8 @@ SatoriRegion* SatoriPage::RegionForCardGroup(size_t group)
         mapIndex -= ((size_t)1 << (RegionMap()[mapIndex] - 2));
     }
 
+    // card groups are never set for free granules.
+    _ASSERTE(RegionMap()[mapIndex] == 1);
     return (SatoriRegion*)((mapIndex << Satori::REGION_BITS) + Start());
 }
 

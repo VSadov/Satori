@@ -126,6 +126,16 @@ inline size_t SatoriRegion::Size()
     return End() - Start();
 }
 
+inline size_t SatoriRegion::CommittedEnd()
+{
+    return m_committed;
+}
+
+inline size_t SatoriRegion::UsedEnd()
+{
+    return m_used;
+}
+
 inline bool SatoriRegion::IsLarge()
 {
     return Size() > Satori::REGION_SIZE_GRANULARITY;

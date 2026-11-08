@@ -1045,7 +1045,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     size_t ensureCommitted = chunkEnd + Satori::MIN_FREE_SIZE;
     if (ensureCommitted > m_committed)
     {
-        size_t newComitted = ALIGN_UP(ensureCommitted, GCToOSInterface::GetPageSize());
+        size_t newComitted = ALIGN_UP(ensureCommitted, SatoriUtil::HugeCommitGranularity());
         _ASSERTE(newComitted <= End());
         size_t toCommit = newComitted - m_committed;
         if (!GCToOSInterface::VirtualCommit((void*)m_committed, toCommit))

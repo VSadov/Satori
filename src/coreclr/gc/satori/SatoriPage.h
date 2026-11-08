@@ -62,6 +62,16 @@ public:
 
     SatoriRegion* NextInPage(SatoriRegion* region);
 
+    // The page is divided into granules of REGION_SIZE_GRANULARITY. The granule i starts at Start() + i * REGION_SIZE_GRANULARITY.
+    // The first granules hold the card table. The rest are covered by regions or are free.
+    size_t GranuleCount();
+    size_t FirstGranule();
+    size_t GranuleStart(size_t granule);
+
+    // Makes the granules of a region that nobody uses any more free for others to claim.
+    void FreeRegion(SatoriRegion* region);
+    void OnRegionFreed(SatoriRegion* region);
+
     size_t Start();
     size_t End();
     size_t RegionsStart();
@@ -193,7 +203,28 @@ private:
             // computed size, located after card groups
             // 1byte per region
             // 512 bytes per 1Gb
+            // 0 - the granule is free, 1 - the granule is the start of a region,
+            // 2 and up - a continuation of a region, the distance to its start is 1 << (value - 2) granules.
             uint8_t* m_regionMap;
+
+            // Free space is tracked per granule, in the following computed sizes located after the region map.
+            // It all fits into the unused part of the card table that covers the card table itself.
+            //
+            // A granule is free if and only if its bit is set, and then its region map byte is 0.
+            // 1 bit per granule, 8 words (one cache line) per 1Gb.
+            // The thread that clears the bit owns the granule, until it sets the bit again.
+            size_t* m_freeBitmap;
+            // 1 bit per granule. 1 means the granule is committed in full. Meaningful only while the granule is free.
+            size_t* m_warmBitmap;
+            // 1 byte per granule, meaningful only while the granule is free.
+            // How much of the granule from its start is committed, in WATERMARK_UNITs (0 - 64).
+            uint8_t* m_commitWatermarks;
+            // 1 byte per granule, meaningful only while the granule is free.
+            // How much of the granule from its start may hold nonzero data, rounded up, in WATERMARK_UNITs (0 - 64).
+            // Never above the commit watermark. The rest of the committed part is zeroed.
+            // The watermarks are written by the thread that frees the granule, before it sets the free bit,
+            // and read by the thread that claims the granule, after it clears the bit.
+            uint8_t* m_dirtyWatermarks;
 
             // computed size,
             // 2 byte per card group (4 per region granule)

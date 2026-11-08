@@ -164,6 +164,10 @@ public:
     size_t Start();
     size_t End();
     size_t Size();
+    // The end of the committed prefix of the region.
+    size_t CommittedEnd();
+    // Everything from here to the end of the committed prefix is known to be zero.
+    size_t UsedEnd();
     bool IsLarge();
 
     SatoriObject* FirstObject();

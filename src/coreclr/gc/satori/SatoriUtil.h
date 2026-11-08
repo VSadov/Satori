@@ -63,6 +63,12 @@ namespace Satori
     const static int REGION_BITS = 21;
     const static size_t REGION_SIZE_GRANULARITY = 1 << REGION_BITS;
 
+    // How much of a free granule is committed, and how much of it may hold nonzero data, is tracked in units of this size.
+    // 64 units make a granule, whatever the commit granularity is. (see SatoriPage)
+    static const size_t WATERMARK_UNIT_BITS = 15;
+    static const size_t WATERMARK_UNIT = (size_t)1 << WATERMARK_UNIT_BITS;
+    static const size_t WATERMARK_UNITS_PER_GRANULE = REGION_SIZE_GRANULARITY / WATERMARK_UNIT;
+
     const static int INDEX_GRANULARITY_BITS = 11;
     const static int INDEX_GRANULARITY = 1 << INDEX_GRANULARITY_BITS;
     const static int INDEX_LENGTH = REGION_SIZE_GRANULARITY / INDEX_GRANULARITY;
@@ -830,6 +836,14 @@ public:
         // result = Satori::PAGE_SIZE_GRANULARITY;
 
         return result;
+    }
+
+    // Commits for a huge object are rounded up to this. Every commit must be a whole number of watermark units,
+    // since that is what a freed region can tell about its granules. (see SatoriPage::FreeRegion)
+    // NB: not CommitGranularity(). Under THP that is a whole granule, which a huge object does not need.
+    static size_t HugeCommitGranularity()
+    {
+        return max(Satori::WATERMARK_UNIT, ALIGN_UP(GCToOSInterface::GetPageSize(), Satori::WATERMARK_UNIT));
     }
 
 private:
