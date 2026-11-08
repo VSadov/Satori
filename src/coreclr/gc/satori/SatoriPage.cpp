@@ -64,7 +64,7 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
         pageSize :
         ALIGN_UP(cardTableSize, SatoriUtil::CommitGranularity());
 
-    if (!GCToOSInterface::VirtualCommit((void*)address, commitSize))
+    if (!TraceVirtualCommit((void*)address, commitSize)) // TEMP-TRACE
     {
         GCToOSInterface::VirtualRelease(result, pageSize);
         status = InitStatus::CommitFailed;
@@ -594,7 +594,7 @@ bool SatoriPage::TryTrimGranule(size_t granule, bool onlyIfSeenFree)
     size_t headBytes = TrimmedHeadBytes();
     size_t committedBytes = (size_t)m_commitWatermarks[granule] << Satori::WATERMARK_UNIT_BITS;
     if (committedBytes > headBytes &&
-        GCToOSInterface::VirtualDecommit((void*)(GranuleStart(granule) + headBytes), committedBytes - headBytes))
+        TraceVirtualDecommit((void*)(GranuleStart(granule) + headBytes), committedBytes - headBytes)) // TEMP-TRACE
     {
         m_heap->DecBytesCommitted(committedBytes - headBytes);
         TraceNoteDecommit(GranuleStart(granule) + headBytes, committedBytes - headBytes); // TEMP-TRACE
@@ -945,7 +945,7 @@ SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count)
     bool committedGaps = ForEachCommitGap(this, first, count, committed, m_commitWatermarks,
         [&](size_t gapStart, size_t gapEnd)
         {
-            if (!GCToOSInterface::VirtualCommit((void*)gapStart, gapEnd - gapStart))
+            if (!TraceVirtualCommit((void*)gapStart, gapEnd - gapStart)) // TEMP-TRACE
             {
                 failedAt = gapStart;
                 return false;
@@ -975,7 +975,7 @@ SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count)
                     return false;
                 }
 
-                if (GCToOSInterface::VirtualDecommit((void*)gapStart, gapEnd - gapStart))
+                if (TraceVirtualDecommit((void*)gapStart, gapEnd - gapStart)) // TEMP-TRACE
                 {
                     m_heap->DecBytesCommitted(gapEnd - gapStart);
                     TraceNoteDecommit(gapStart, gapEnd - gapStart); // TEMP-TRACE

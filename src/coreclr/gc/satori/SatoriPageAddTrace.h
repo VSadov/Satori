@@ -8,6 +8,7 @@
 //   [counters] at exit and with every [state], the work of the allocator of regions.
 //   [addstats] the waits for a page add in flight and the durations of adds, after every [state] line.
 //   [gcstats]  the pause totals of blocking GCs, the time they wait for the world to stop, and the time in GetRegion, after every [state] line.
+//   [osstats]  the commits and decommits that the GC asks of the OS, their number, size and time, after every [state] line.
 // If it is not set, nothing is written and nothing is measured.
 // The same lines are printed by the three builds of the milestone, so that one analyzer reads all of them.
 //
@@ -74,6 +75,10 @@ extern thread_local int64_t t_addWaitedTicks;
 
 void TraceNoteAddWaitEnd(int64_t waitStart);
 void TraceNoteValveUse(int64_t waitStart);
+
+// Step 2 of Milestone 2b: the commits and decommits that the GC asks the OS for, and the time they take. (see [osstats])
+bool TraceVirtualCommit(void* address, size_t size);
+bool TraceVirtualDecommit(void* address, size_t size);
 
 // Step 2 of Milestone 2b: where the time of the growth phase goes.
 // The GetRegion calls and the time in them, and the time that a blocking GC waits for the world to stop.

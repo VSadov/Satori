@@ -88,7 +88,7 @@ SatoriHeap* SatoriHeap::Create()
     size_t commitSize = offsetof(SatoriHeap, m_pageMap) + sizeof(SatoriPage*);
     commitSize = ALIGN_UP(commitSize, SatoriUtil::CommitGranularity());
     _ASSERTE(commitSize <= reserveSize);
-    if (!GCToOSInterface::VirtualCommit(reserved, commitSize))
+    if (!TraceVirtualCommit(reserved, commitSize)) // TEMP-TRACE
     {
         // failure
         GCToOSInterface::VirtualRelease(reserved, reserveSize);
@@ -140,7 +140,7 @@ bool SatoriHeap::CommitMoreMap(size_t currentCommittedMapSize)
         // The reservation is rounded up to commit granularity, so the last commit may go past
         // the map size, but it stays within the reservation as long as some of the map is uncommitted.
         _ASSERTE(m_committedMapSize < m_reservedMapSize);
-        if (GCToOSInterface::VirtualCommit(commitFrom, commitSize))
+        if (TraceVirtualCommit(commitFrom, commitSize)) // TEMP-TRACE
         {
             // we did the commit
             m_committedMapSize += commitSize;

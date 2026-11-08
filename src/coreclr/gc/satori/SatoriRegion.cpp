@@ -168,7 +168,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     if (committed < minCommitted)
     {
         size_t toCommit = minCommitted - committed;
-        if (!GCToOSInterface::VirtualCommit((void*)committed, toCommit))
+        if (!TraceVirtualCommit((void*)committed, toCommit)) // TEMP-TRACE
         {
             // OOM
             return nullptr;
@@ -853,7 +853,7 @@ bool SatoriRegion::Coalesce(SatoriRegion* next)
         _ASSERTE(next->m_committed > next->Start());
         size_t toDecommit = next->m_committed - next->Start();
         _ASSERTE(toDecommit % GCToOSInterface::GetPageSize() == 0);
-        if (!GCToOSInterface::VirtualDecommit(next, toDecommit))
+        if (!TraceVirtualDecommit(next, toDecommit)) // TEMP-TRACE
         {
             return false;
         }
@@ -925,7 +925,7 @@ bool SatoriRegion::TryDecommit()
     size_t decommitSize = m_committed - decommitStart;
     if (decommitSize > 0)
     {
-        if (GCToOSInterface::VirtualDecommit((void*)decommitStart, decommitSize))
+        if (TraceVirtualDecommit((void*)decommitStart, decommitSize)) // TEMP-TRACE
         {
             m_committed = decommitStart;
             m_used = min(m_used, decommitStart);
@@ -943,7 +943,7 @@ void SatoriRegion::TryCommit()
     if (m_committed < m_end)
     {
         size_t toCommit =  m_end - m_committed;
-        if (GCToOSInterface::VirtualCommit((void*)m_committed, toCommit))
+        if (TraceVirtualCommit((void*)m_committed, toCommit)) // TEMP-TRACE
         {
             m_containingPage->Heap()->IncBytesCommitted(toCommit);
             TraceNoteCommit(m_committed, toCommit); // TEMP-TRACE
@@ -995,7 +995,7 @@ size_t SatoriRegion::AllocateDirty(size_t size, size_t* dirtyStart, size_t* dirt
         {
             size_t newComitted = ALIGN_UP(ensureCommitted, SatoriUtil::CommitGranularity());
             size_t toCommit = newComitted - m_committed;
-            if (!GCToOSInterface::VirtualCommit((void*)m_committed, toCommit))
+            if (!TraceVirtualCommit((void*)m_committed, toCommit)) // TEMP-TRACE
             {
                 return 0;
             }
@@ -1055,7 +1055,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
         size_t newComitted = ALIGN_UP(ensureCommitted, SatoriUtil::HugeCommitGranularity());
         _ASSERTE(newComitted <= End());
         size_t toCommit = newComitted - m_committed;
-        if (!GCToOSInterface::VirtualCommit((void*)m_committed, toCommit))
+        if (!TraceVirtualCommit((void*)m_committed, toCommit)) // TEMP-TRACE
         {
             return 0;
         }

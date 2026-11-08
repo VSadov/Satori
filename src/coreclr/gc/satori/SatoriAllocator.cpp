@@ -74,6 +74,19 @@ static volatile int32_t g_preAddPages;
 static thread_local int64_t t_addTokenTs;
 static thread_local int64_t t_addHoldTicks;
 static volatile int32_t g_addNoYield;
+
+// The commits and decommits that are asked of the OS, sharded by thread to keep the counting cheap.
+struct DECLSPEC_ALIGN(128) TraceOsShard
+{
+    size_t calls;
+    size_t bytes;
+    size_t ticks;
+    size_t maxTicks;
+    size_t hist[20];
+};
+
+static TraceOsShard s_osCommit[64];
+static TraceOsShard s_osDecommit[64];
 volatile size_t g_getRegionCalls;
 volatile size_t g_getRegionTicks;
 volatile size_t g_getRegionMaxTicks;
@@ -432,6 +445,43 @@ static void TraceTokenTaken()
     t_addTokenTs = SatoriUtil::GetTimeStamp();
 }
 
+static void TraceNoteOsCall(TraceOsShard* shards, size_t bytes, int64_t ticks)
+{
+    ticks = max((int64_t)0, ticks);
+    TraceOsShard& s = shards[GetCurrentThreadId() & 63];
+    Interlocked::Increment(&s.calls);
+    Interlocked::ExchangeAdd64(&s.bytes, bytes);
+    Interlocked::ExchangeAdd64(&s.ticks, (size_t)ticks);
+    TraceRaiseMax(&s.maxTicks, (size_t)ticks);
+    Interlocked::Increment(&s.hist[TraceUsBucket(TraceTicksToUs(ticks))]);
+}
+
+bool TraceVirtualCommit(void* address, size_t size)
+{
+    if (!g_traceOn)
+    {
+        return GCToOSInterface::VirtualCommit(address, size);
+    }
+
+    int64_t start = SatoriUtil::GetTimeStamp();
+    bool result = GCToOSInterface::VirtualCommit(address, size);
+    TraceNoteOsCall(s_osCommit, size, SatoriUtil::GetTimeStamp() - start);
+    return result;
+}
+
+bool TraceVirtualDecommit(void* address, size_t size)
+{
+    if (!g_traceOn)
+    {
+        return GCToOSInterface::VirtualDecommit(address, size);
+    }
+
+    int64_t start = SatoriUtil::GetTimeStamp();
+    bool result = GCToOSInterface::VirtualDecommit(address, size);
+    TraceNoteOsCall(s_osDecommit, size, SatoriUtil::GetTimeStamp() - start);
+    return result;
+}
+
 static void TraceTokenReleased()
 {
     t_addHoldTicks = SatoriUtil::GetTimeStamp() - t_addTokenTs;
@@ -766,6 +816,43 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
         g_suspendCount, TraceTicksToUs((int64_t)g_suspendTicks) / 1000.0, TraceTicksToUs((int64_t)g_suspendMaxTicks),
         g_getRegionCalls, TraceTicksToUs((int64_t)g_getRegionTicks) / 1000.0, TraceTicksToUs((int64_t)g_getRegionMaxTicks),
         suspendHist, getHist);
+    TraceWrite(buf, len);
+
+    size_t os[2][4] = {};
+    size_t osHist[2][20] = {};
+    for (int i = 0; i < 64; i++)
+    {
+        TraceOsShard* shards[2] = { &s_osCommit[i], &s_osDecommit[i] };
+        for (int j = 0; j < 2; j++)
+        {
+            os[j][0] += shards[j]->calls;
+            os[j][1] += shards[j]->bytes;
+            os[j][2] += shards[j]->ticks;
+            os[j][3] = max(os[j][3], shards[j]->maxTicks);
+            for (int k = 0; k < 20; k++)
+            {
+                osHist[j][k] += shards[j]->hist[k];
+            }
+        }
+    }
+
+    char commitHist[256];
+    char decommitHist[256];
+    int commitPos = 0;
+    int decommitPos = 0;
+    for (int k = 0; k < 20; k++)
+    {
+        commitPos += snprintf(commitHist + commitPos, sizeof(commitHist) - commitPos, k ? ",%zu" : "%zu", osHist[0][k]);
+        decommitPos += snprintf(decommitHist + decommitPos, sizeof(decommitHist) - decommitPos, k ? ",%zu" : "%zu", osHist[1][k]);
+    }
+
+    len = snprintf(buf, sizeof(buf),
+        "[osstats] t=%.3f ev=%s commitCalls=%zu commitMB=%.1f commitMs=%.3f commitMaxUs=%.0f "
+        "decommitCalls=%zu decommitMB=%.1f decommitMs=%.3f decommitMaxUs=%.0f commitHist=%s decommitHist=%s\n",
+        TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, ev,
+        os[0][0], (double)os[0][1] / (1 << 20), TraceTicksToUs((int64_t)os[0][2]) / 1000.0, TraceTicksToUs((int64_t)os[0][3]),
+        os[1][0], (double)os[1][1] / (1 << 20), TraceTicksToUs((int64_t)os[1][2]) / 1000.0, TraceTicksToUs((int64_t)os[1][3]),
+        commitHist, decommitHist);
     TraceWrite(buf, len);
 }
 
