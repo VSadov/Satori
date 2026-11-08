@@ -436,6 +436,15 @@ void SatoriAllocator::FreeToBitmap(SatoriRegion* region)
     region->ContainingPage()->FreeRegion(region);
 }
 
+void SatoriAllocator::DrainRegionCache()
+{
+    while (SatoriRegion* region = m_regionCache->TryPop())
+    {
+        Interlocked::Decrement(&m_regionCacheCount);
+        FreeToBitmap(region);
+    }
+}
+
 // TEMP-TRACE: what the allocator of regions has counted, and the layout of the pages.
 void SatoriAllocator::PrintTrace()
 {

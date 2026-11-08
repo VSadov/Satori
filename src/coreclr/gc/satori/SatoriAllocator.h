@@ -59,6 +59,8 @@ public:
     SatoriRegion* GetRegionLow(size_t minSize, SatoriRegionRequester requester = SatoriRegionRequester::Unknown);
     void AddRegion(SatoriRegion* region);
     void ReturnRegion(SatoriRegion* region);
+    // Gives the regions from the cache back to the free granules of their pages, where the trimmer can see them.
+    void DrainRegionCache();
     void PrintTrace();
 
     size_t GetTotalAllocatedBytes();

@@ -31,6 +31,7 @@
 
 #include "SatoriUtil.h"
 #include "SatoriTrimmer.h"
+#include "SatoriAllocator.h"
 #include "SatoriHeap.h"
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
@@ -94,14 +95,89 @@ void SatoriTrimmer::Loop()
             StopAndWait();
         }
 
-        // M1: free memory is tracked per granule, nothing merges and the trimmer does not decommit free granules yet.
+        if (!SatoriUtil::IsGranuleTrimmingEnabled())
+        {
+            continue;
+        }
+
+        // Regions in the cache are not free granules, and the trimmer only decommits free granules.
+        // The ones that nobody has taken by the next round will be decommitted then.
+        m_heap->Allocator()->DrainRegionCache();
+
+        m_heap->ForEachPage(
+            [&](SatoriPage* page)
+            {
+                // limit the rate of scanning to 1 page/msec.
+                Pause(1);
+                if (m_state != TRIMMER_STATE_RUNNING)
+                {
+                    StopAndWait();
+                }
+
+                int64_t lastGen1 = m_heap->Recycler()->GetCollectionCount(1);
+
+                // Only the granules that were free on the previous round too. That is an idle period of at least seconds,
+                // and it is also what makes reading a header of a region that has just been freed safe.
+                // (see TryGetRegularRegion)
+                for (size_t granule = page->NextGranuleToTrim(0, /* onlyIfSeenFree */ true);
+                     granule != SIZE_MAX;
+                     granule = page->NextGranuleToTrim(granule + 1, /* onlyIfSeenFree */ true))
+                {
+                    if (page->TryTrimGranule(granule))
+                    {
+                        // limit the decommit rate to 1 granule/10 msec.
+                        Pause(10);
+                    }
+
+                    // also we will pause for 1 sec if there was a GC - to further reduce the churn
+                    // if the app is allocation-active.
+                    int64_t newGen1 = m_heap->Recycler()->GetCollectionCount(1);
+                    if (newGen1 != lastGen1)
+                    {
+                        lastGen1 = newGen1;
+                        Pause(1000);
+                    }
+
+                    if (m_state != TRIMMER_STATE_RUNNING)
+                    {
+                        StopAndWait();
+                    }
+                }
+
+                page->RememberFreeGranules();
+            }
+        );
     }
 }
 
-// M1: free granules are not trimmed yet.
+// Decommits all free granules, and the regions from the cache with them.
 void SatoriTrimmer::TrimNow()
 {
     _ASSERTE(m_heap->Recycler()->IsBlockingPhase());
+
+    if (!SatoriUtil::IsGranuleTrimmingEnabled())
+    {
+        return;
+    }
+
+    // The trimmer was asked to stop when the GC started. Make sure it did, so that we do not run two things at once.
+    WaitForStop();
+
+    m_heap->Allocator()->DrainRegionCache();
+    m_heap->ForEachPage(
+        [&](SatoriPage* page)
+        {
+            // the world is stopped, there is no use in waiting for the granules to stay free.
+            for (size_t granule = page->NextGranuleToTrim(0, /* onlyIfSeenFree */ false);
+                 granule != SIZE_MAX;
+                 granule = page->NextGranuleToTrim(granule + 1, /* onlyIfSeenFree */ false))
+            {
+                page->TryTrimGranule(granule);
+            }
+
+            page->RememberFreeGranules();
+        }
+    );
 }
 
 void SatoriTrimmer::StopAndWait()

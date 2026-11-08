@@ -86,6 +86,17 @@ public:
     // Gives back a page that was not published.
     void Release();
 
+    // Trimming. Only the trimmer decommits the memory of free granules, and only of the ones that it has claimed.
+    //
+    // Finds the first free granule that has something committed, not before `from`. When asked, only among the granules
+    // that were also free when the trimmer last looked at this page. Returns SIZE_MAX if there is none.
+    size_t NextGranuleToTrim(size_t from, bool onlyIfSeenFree);
+    // Claims the granule, decommits what its last owners left committed, and gives it back as free and cold.
+    // Returns true if it decommitted anything.
+    bool TryTrimGranule(size_t granule);
+    // Remembers which granules are free now, for the next time.
+    void RememberFreeGranules();
+
     // TEMP-TRACE: prints a character per granule, see SatoriHeap::PrintTrace.
     void PrintLayout();
 
@@ -258,6 +269,9 @@ private:
             // The watermarks are written by the thread that frees the granule, before it sets the free bit,
             // and read by the thread that claims the granule, after it clears the bit.
             uint8_t* m_dirtyWatermarks;
+            // 1 bit per granule. The granules that were free when the trimmer last looked at the page.
+            // Only the trimmer uses it (and a GC that trims on request, while the trimmer is stopped).
+            size_t* m_seenFreeBitmap;
 
             // computed size,
             // 2 byte per card group (4 per region granule)

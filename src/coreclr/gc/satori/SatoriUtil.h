@@ -682,6 +682,13 @@ public:
         return (GCConfig::GetTrimmigGC());
     }
 
+    // DOTNET_gcTrimFreeGranules
+    // Off by default. A commit coarser than a region cannot be sparse, so then there is nothing to decommit.
+    static bool IsGranuleTrimmingEnabled()
+    {
+        return GCConfig::GetTrimFreeGranules() && CommitGranularity() <= Satori::REGION_SIZE_GRANULARITY;
+    }
+
     // DOTNET_gcPace
     static bool IsPacingEnabled()
     {

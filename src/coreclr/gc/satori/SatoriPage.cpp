@@ -103,21 +103,22 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 
     // make sure offset of m_cardGroups is 128.
     _ASSERTE(offsetof(SatoriPage, m_cardGroups) == 128);
-    static_assert(offsetof(SatoriPage, m_dirtyWatermarks) + sizeof(uint8_t*) <= 128,
+    static_assert(offsetof(SatoriPage, m_seenFreeBitmap) + sizeof(size_t*) <= 128,
         "the header fields must end before the card groups.");
 
     result->m_regionMap = (uint8_t*)(address + 128 + cardGroupSize);
 
-    // The free bitmap is one cache line per 1Gb. The bitmaps and the watermarks need 2.25 bytes per granule
+    // The free bitmap is one cache line per 1Gb. The bitmaps and the watermarks need 2.375 bytes per granule
     // on top of the region map, and the card table that covers itself has room for that at any page size.
     _ASSERTE(regionCount % 64 == 0);
     result->m_freeBitmap = (size_t*)ALIGN_UP((size_t)result->m_regionMap + regionCount, 64);
     result->m_warmBitmap = result->m_freeBitmap + regionCount / 64;
     result->m_commitWatermarks = (uint8_t*)(result->m_warmBitmap + regionCount / 64);
     result->m_dirtyWatermarks = result->m_commitWatermarks + regionCount;
+    result->m_seenFreeBitmap = (size_t*)(result->m_dirtyWatermarks + regionCount);
 
     // make sure the first useful card word is beyond the header.
-    _ASSERTE(result->Start() + cardTableStart >= (size_t)(result->m_dirtyWatermarks) + regionCount);
+    _ASSERTE(result->Start() + cardTableStart >= (size_t)(result->m_seenFreeBitmap + regionCount / 64));
 
     // Everything after the card table is free. If the commit granularity made us commit more than the card table,
     // that part is committed and clean.
@@ -463,6 +464,76 @@ void SatoriPage::Release()
 {
     m_heap->DecBytesCommitted(m_initialCommit - Start());
     GCToOSInterface::VirtualRelease(this, m_end - Start());
+}
+
+size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree)
+{
+    size_t end = GranuleCount();
+    size_t granule = max(from, FirstGranule());
+    while (granule < end)
+    {
+        size_t word = granule / 64;
+        size_t candidates = VolatileLoad(&m_freeBitmap[word]);
+        if (onlyIfSeenFree)
+        {
+            candidates &= m_seenFreeBitmap[word];
+        }
+
+        // only the granules that are not before the one we were asked for
+        candidates &= ~(size_t)0 << (granule % 64);
+        while (candidates)
+        {
+            DWORD bit;
+            BitScanForward64(&bit, candidates);
+            size_t candidate = word * 64 + bit;
+
+            // The watermark of a free granule is stable, but the granule may be claimed any moment. This is only a hint,
+            // TryTrimGranule looks at the watermark again when the granule is ours.
+            if (m_commitWatermarks[candidate] != 0)
+            {
+                return candidate;
+            }
+
+            candidates &= candidates - 1;
+        }
+
+        granule = (word + 1) * 64;
+    }
+
+    return SIZE_MAX;
+}
+
+bool SatoriPage::TryTrimGranule(size_t granule)
+{
+    if (!TryClaimGranuleAt(granule))
+    {
+        return false;
+    }
+
+    // The granule is ours. What is committed is what the watermarks say, and no region is looking at the memory.
+    bool trimmed = false;
+    size_t committedBytes = (size_t)m_commitWatermarks[granule] << Satori::WATERMARK_UNIT_BITS;
+    if (committedBytes != 0 && GCToOSInterface::VirtualDecommit((void*)GranuleStart(granule), committedBytes))
+    {
+        m_heap->DecBytesCommitted(committedBytes);
+
+        // what is committed next time is zero, and no part of it is warm.
+        m_commitWatermarks[granule] = 0;
+        m_dirtyWatermarks[granule] = 0;
+        Interlocked::And(&m_warmBitmap[granule / 64], ~((size_t)1 << (granule % 64)));
+        trimmed = true;
+    }
+
+    PublishFreeGranules(granule, 1);
+    return trimmed;
+}
+
+void SatoriPage::RememberFreeGranules()
+{
+    for (size_t word = 0; word < GranuleCount() / 64; word++)
+    {
+        m_seenFreeBitmap[word] = VolatileLoad(&m_freeBitmap[word]);
+    }
 }
 
 // TEMP-TRACE
