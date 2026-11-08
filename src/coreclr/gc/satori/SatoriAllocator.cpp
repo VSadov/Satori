@@ -61,19 +61,23 @@ volatile size_t g_recommit120Bytes;
 volatile size_t g_addWaitEpisodes;
 volatile size_t g_addWaitTicks;
 volatile size_t g_addWaitMaxTicks;
-volatile size_t g_addsOverlapped;
-volatile size_t g_addValveUses;
 volatile size_t g_addCount;
 volatile size_t g_addTicks;
 volatile size_t g_addMaxTicks;
 thread_local int64_t t_addWaitedTicks;
-// Milestone 2b step 2 experiment: SATORI_PREADD_PAGES=n adds n regular pages at the first request for a region,
-// to see what the growth phase costs without the page adds. 0 - none, or done.
-static volatile int32_t g_preAddPages;
-// How long an add holds the token, from claiming the add to EndRegularPageAdd. SATORI_ADD_NOYIELD=1: waiters spin and do not yield the processor.
-static thread_local int64_t t_addTokenTs;
-static thread_local int64_t t_addHoldTicks;
-static volatile int32_t g_addNoYield;
+// The waiters of a page add: the calls that got the page-add lock after an add completed, and looked for regions again.
+// The delay is from the page being published to the call getting its region. A convoy is the waiters of one add: its length is the longest delay.
+volatile size_t g_lockRetries;
+volatile size_t g_convoyWaiters;
+volatile size_t g_convoyTicks;
+volatile size_t g_convoyMaxTicks;
+volatile size_t g_convoyEpochs;
+volatile size_t g_convoyEpochMaxSumTicks;
+static volatile size_t g_convoyEpochTs;
+static volatile size_t g_convoyEpochMax;
+static volatile size_t g_pagePublishTs;
+static thread_local size_t t_retryTs;
+static volatile size_t s_convoyHist[20];
 // More experiments of step 2. SATORI_COMMIT_STEP_KB: memory for allocation is committed in steps of this size, if it is bigger than
 // the commit granularity. SATORI_CLAIM_TOPDOWN=1: regular regions are claimed from the top of a page, SATORI_CLAIM_NOHINT=1: from the first page.
 static size_t g_commitStep;
@@ -388,16 +392,6 @@ static void TraceInit(SatoriAllocator* allocator)
 {
     char dir[MAX_PATH];
     char preAdd[16];
-    if (GetEnvironmentVariableA("SATORI_PREADD_PAGES", preAdd, sizeof(preAdd)) != 0)
-    {
-        g_preAddPages = atoi(preAdd);
-    }
-
-    if (GetEnvironmentVariableA("SATORI_ADD_NOYIELD", preAdd, sizeof(preAdd)) != 0)
-    {
-        g_addNoYield = atoi(preAdd);
-    }
-
     if (GetEnvironmentVariableA("SATORI_COMMIT_STEP_KB", preAdd, sizeof(preAdd)) != 0)
     {
         g_commitStep = max(SatoriUtil::CommitGranularity(), (size_t)atoi(preAdd) * 1024);
@@ -510,14 +504,22 @@ static void TraceRaiseMax(volatile size_t* target, size_t value)
     }
 }
 
-// A wait for a page add in flight has ended.
-void TraceNoteAddWaitEnd(int64_t waitStart)
+// Enters the page-add lock. A wait is an enter that found the lock held, and its time is the time that the enter took.
+static void TraceEnterPageAddLock(SatoriLock* lock)
 {
-    if (!g_traceOn || waitStart == 0)
+    if (!g_traceOn)
+    {
+        lock->Enter();
+        return;
+    }
+
+    if (lock->TryEnterOneShot())
     {
         return;
     }
 
+    int64_t waitStart = SatoriUtil::GetTimeStamp();
+    lock->Enter();
     int64_t ticks = max((int64_t)0, SatoriUtil::GetTimeStamp() - waitStart);
     Interlocked::Increment(&g_addWaitEpisodes);
     Interlocked::ExchangeAdd64(&g_addWaitTicks, (size_t)ticks);
@@ -534,9 +536,46 @@ void TraceNoteAddWaitEnd(int64_t waitStart)
     }
 }
 
-static void TraceTokenTaken()
+// A call got the page-add lock after an add completed, and is to look for regions again.
+static void TraceNoteLockRetry()
 {
-    t_addTokenTs = SatoriUtil::GetTimeStamp();
+    if (g_traceOn)
+    {
+        Interlocked::Increment(&g_lockRetries);
+        t_retryTs = g_pagePublishTs;
+    }
+}
+
+// A call that looked again after an add has its region, or has failed. The convoy of an add is its waiters, and the delay of its last one is the length.
+static void TraceNoteRetryClaimed()
+{
+    if (!g_traceOn || t_retryTs == 0)
+    {
+        return;
+    }
+
+    size_t published = t_retryTs;
+    t_retryTs = 0;
+    size_t ticks = (size_t)max((int64_t)0, SatoriUtil::GetTimeStamp() - (int64_t)published);
+    Interlocked::Increment(&g_convoyWaiters);
+    Interlocked::ExchangeAdd64(&g_convoyTicks, ticks);
+    TraceRaiseMax(&g_convoyMaxTicks, ticks);
+    Interlocked::Increment(&s_convoyHist[TraceUsBucket(TraceTicksToUs((int64_t)ticks))]);
+
+    // The waiters of the add that was published at `published`. When they are of another add, the one before is complete.
+    size_t epoch = g_convoyEpochTs;
+    if (epoch != published && Interlocked::CompareExchange(&g_convoyEpochTs, published, epoch) == epoch)
+    {
+        size_t finished = g_convoyEpochMax;
+        g_convoyEpochMax = 0;
+        if (epoch != 0)
+        {
+            Interlocked::Increment(&g_convoyEpochs);
+            Interlocked::ExchangeAdd64(&g_convoyEpochMaxSumTicks, finished);
+        }
+    }
+
+    TraceRaiseMax(&g_convoyEpochMax, ticks);
 }
 
 static void TraceNoteOsCall(TraceOsShard* shards, size_t bytes, int64_t ticks)
@@ -576,21 +615,6 @@ bool TraceVirtualDecommit(void* address, size_t size)
     return result;
 }
 
-static void TraceTokenReleased()
-{
-    t_addHoldTicks = SatoriUtil::GetTimeStamp() - t_addTokenTs;
-}
-
-// A wait for a page add in flight has ended because the valve opened, and we are to add a page.
-void TraceNoteValveUse(int64_t waitStart)
-{
-    if (g_traceOn)
-    {
-        Interlocked::Increment(&g_addValveUses);
-        TraceNoteAddWaitEnd(waitStart);
-    }
-}
-
 // The page is published, so others can find it. The time since the decision is the duration of the add.
 static void TraceNoteAddPublished(TracePageAddCtx& c)
 {
@@ -600,6 +624,7 @@ static void TraceNoteAddPublished(TracePageAddCtx& c)
     }
 
     c.publishedTs = SatoriUtil::GetTimeStamp();
+    g_pagePublishTs = (size_t)c.publishedTs;
     int64_t ticks = max((int64_t)0, c.publishedTs - c.decisionTs);
     Interlocked::Increment(&g_addCount);
     Interlocked::ExchangeAdd64(&g_addTicks, (size_t)ticks);
@@ -672,51 +697,20 @@ void SatoriAllocator::TraceBeforeAdd(TracePageAddCtx& c, size_t regionSize)
     m_heap->Recycler()->TraceGetState(c.gcState, c.condemned, c.defSweep, c.relocated);
 }
 
-// A regular page add is about to start. A second add in flight is a valve use, which the old counters call a timeout.
+// A regular page add is about to start, under the lock. The decision to add is stamped here, after the wait for the lock, so that the duration
+// of an add is the time that it holds the lock. What the call has waited for the lock is in the line of the add.
 void SatoriAllocator::TraceRegularAdd(TracePageAddCtx& c)
 {
-    c.inFlight = m_pageAddsInFlight;
-    c.waitedTicks = t_addWaitedTicks;
-    if (c.inFlight > 1)
-    {
-        c.timedOut = true;
-        Interlocked::Increment(&g_addsOverlapped);
-    }
-}
-
-// The first request for a region adds the pages that SATORI_PREADD_PAGES asks for, one add at a time like any other add.
-// The free granules of a new page are available to claims as soon as the page is published.
-void SatoriAllocator::TracePreAddPages()
-{
-    int pages = g_preAddPages;
-    if (pages <= 0 || Interlocked::CompareExchange(&g_preAddPages, 0, pages) != pages)
+    if (!g_traceOn)
     {
         return;
     }
 
-    for (int i = 0; i < pages; )
-    {
-        int64_t waitStart = 0;
-        if (!BeginRegularPageAdd(VolatileLoad(&m_pageAddsCompleted), &waitStart))
-        {
-            continue;
-        }
-
-        SatoriPage* page = nullptr;
-        if (m_heap->TryAddRegularPage(page) && page)
-        {
-            i++;
-        }
-        else
-        {
-            i = pages;
-        }
-
-        EndRegularPageAdd();
-    }
+    c.decisionTs = SatoriUtil::GetTimeStamp();
+    c.waitedTicks = t_addWaitedTicks;
 }
 
-// We did add a page. The new page is not in the snapshot.
+// We did add a page, and released the lock. The new page is not in the snapshot.
 void SatoriAllocator::TraceAfterAdd(TracePageAddCtx& c, SatoriPage* page, size_t regionSize, bool low, SatoriRegionRequester requester)
 {
     if (!g_traceOn)
@@ -729,7 +723,7 @@ void SatoriAllocator::TraceAfterAdd(TracePageAddCtx& c, SatoriPage* page, size_t
 
     bool gcActive = c.gcState != 0 || c.defSweep != 0;
     int cls;
-    if (c.out > 0 || c.timedOut)
+    if (c.out > 0)
     {
         cls = 0;
     }
@@ -751,15 +745,11 @@ void SatoriAllocator::TraceAfterAdd(TracePageAddCtx& c, SatoriPage* page, size_t
     }
 
     Interlocked::Increment(&s_traceAdds[cls]);
-    if (c.timedOut)
-    {
-        Interlocked::Increment(&g_timedOutAdds);
-    }
 
     size_t pages = 0;
     m_heap->ForEachPage([&](SatoriPage*) { pages++; });
 
-    const char* why = c.out > 0 ? (c.timedOut ? "out+timeout" : "out") : (c.timedOut ? "timeout" : "-");
+    const char* why = c.out > 0 ? "out" : "-";
     char tag = s_traceRequesterTags[(int)requester];
     double waitUs = c.missed ? TraceTicksToUs(c.decisionTs - c.firstMissTs) : 0;
 
@@ -768,7 +758,7 @@ void SatoriAllocator::TraceAfterAdd(TracePageAddCtx& c, SatoriPage* page, size_t
         "[pageadd] t=%.3f tid=%lu tag=%c reqKB=%zu low=%d large=%d cls=%s why=%s sawOut=%d passes=%d waitUs=%.0f "
         "out=%zu trim=%zu preCount=%zu gc=%d cgen=%d defsweep=%zu relocq=%zu "
         "free=%zu n2=%zu n46=%zu nbig=%zu freeMB=%.1f freeCommMB=%.1f maxregKB=%zu maxrunKB=%zu runs=%zu "
-        "singleGE=%zu runsGE=%zu runsGEc=%zu trunc=%d pages=%zu committedMB=%.1f commBeforeMB=%.1f peakBeforeMB=%.1f inflight=%d waitedUs=%.0f addUs=%.0f holdUs=%.0f\n",
+        "singleGE=%zu runsGE=%zu runsGEc=%zu trunc=%d pages=%zu committedMB=%.1f commBeforeMB=%.1f peakBeforeMB=%.1f waitedUs=%.0f addUs=%.0f\n",
         TraceTicksToUs(c.decisionTs - s_traceStartTs) / 1000.0, (unsigned long)GetCurrentThreadId(), tag,
         regionSize >> 10, (int)low, (int)(regionSize >= Satori::PAGE_SIZE_GRANULARITY / 2), s_traceClassNames[cls], why,
         (int)(c.sawOut || c.out > 0), c.passes, waitUs,
@@ -777,7 +767,7 @@ void SatoriAllocator::TraceAfterAdd(TracePageAddCtx& c, SatoriPage* page, size_t
         s.maxRegion >> 10, s.maxRun >> 10, s.runs,
         s.singleGE, s.runsGE, s.runsGECommitted, (int)s.truncated, pages, (double)m_heap->GetBytesCommitted() / (1 << 20),
         (double)c.commitBefore / (1 << 20), (double)c.peakBefore / (1 << 20),
-        c.inFlight, TraceTicksToUs(c.waitedTicks), c.publishedTs ? TraceTicksToUs(c.publishedTs - c.decisionTs) : 0.0, TraceTicksToUs(t_addHoldTicks));
+        TraceTicksToUs(c.waitedTicks), c.publishedTs ? TraceTicksToUs(c.publishedTs - c.decisionTs) : 0.0);
     TraceWrite(buf, len);
 }
 
@@ -875,20 +865,31 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
 
     char waitHist[256];
     char addHist[256];
+    char convoyHist[256];
     int waitPos = 0;
     int addPos = 0;
+    int convoyPos = 0;
     for (int k = 0; k < 20; k++)
     {
         waitPos += snprintf(waitHist + waitPos, sizeof(waitHist) - waitPos, k ? ",%zu" : "%zu", s_addWaitHist[k]);
         addPos += snprintf(addHist + addPos, sizeof(addHist) - addPos, k ? ",%zu" : "%zu", s_addHist[k]);
+        convoyPos += snprintf(convoyHist + convoyPos, sizeof(convoyHist) - convoyPos, k ? ",%zu" : "%zu", s_convoyHist[k]);
     }
 
+    // waits: the enters of the page-add lock that found it held, retries: the calls that got it after an add completed and looked again.
+    // The convoy of an add is its waiters, and its length is the longest delay from the page being published to a waiter having its region.
+    size_t openEpoch = g_convoyEpochMax != 0 ? 1 : 0;
+    size_t epochs = g_convoyEpochs + openEpoch;
+    double convoyMeanUs = epochs ? TraceTicksToUs((int64_t)(g_convoyEpochMaxSumTicks + g_convoyEpochMax)) / (double)epochs : 0.0;
     len = snprintf(buf, sizeof(buf),
-        "[addstats] t=%.3f ev=%s waits=%zu waitMs=%.3f waitMaxUs=%.0f valve=%zu overlapped=%zu adds=%zu addMs=%.3f addMaxUs=%.0f waitHist=%s addHist=%s\n",
+        "[addstats] t=%.3f ev=%s waits=%zu waitMs=%.3f waitMaxUs=%.0f retries=%zu adds=%zu addMs=%.3f addMaxUs=%.0f "
+        "convoys=%zu convoyMeanUs=%.0f convoyMaxUs=%.0f waiters=%zu waiterMeanUs=%.0f waitHist=%s addHist=%s convoyHist=%s\n",
         TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, ev,
         g_addWaitEpisodes, TraceTicksToUs((int64_t)g_addWaitTicks) / 1000.0, TraceTicksToUs((int64_t)g_addWaitMaxTicks),
-        g_addValveUses, g_addsOverlapped, g_addCount, TraceTicksToUs((int64_t)g_addTicks) / 1000.0, TraceTicksToUs((int64_t)g_addMaxTicks),
-        waitHist, addHist);
+        g_lockRetries, g_addCount, TraceTicksToUs((int64_t)g_addTicks) / 1000.0, TraceTicksToUs((int64_t)g_addMaxTicks),
+        epochs, convoyMeanUs, TraceTicksToUs((int64_t)g_convoyMaxTicks), g_convoyWaiters,
+        g_convoyWaiters ? TraceTicksToUs((int64_t)g_convoyTicks) / (double)g_convoyWaiters : 0.0,
+        waitHist, addHist, convoyHist);
     TraceWrite(buf, len);
 
     char getHist[256];
@@ -1044,7 +1045,7 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     m_regularRegion = nullptr;
     m_regularAllocLock.Initialize();
 
-    m_pageAddsInFlight = 0;
+    m_pageAddLock.Initialize();
     m_pageAddsCompleted = 0;
 
     // As if the event was on before. If it is on from the start, there is nothing to catch up.
@@ -1091,6 +1092,7 @@ SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize, bool low, Satori
     int64_t getRegionTicks = SatoriUtil::GetTimeStamp() - start; // TEMP-TRACE
     SatoriTrace::CountTime(SatoriTrace::s_counters.getRegionTicks, getRegionTicks);
     TraceNoteGetRegion(getRegionTicks); // TEMP-TRACE
+    TraceNoteRetryClaimed(); // TEMP-TRACE
     if (traceState) TraceWriteState(false, "tick"); // TEMP-TRACE
     return region;
 }
@@ -1102,18 +1104,16 @@ SatoriRegion* SatoriAllocator::GetRegionImpl(size_t regionSize, bool low, Satori
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
     size_t granules = regionSize >> Satori::REGION_BITS;
-    // when we have started waiting for an add of a page, if we are waiting. (see BeginRegularPageAdd)
-    int64_t pageAddWaitStart = 0;
     TracePageAddCtx traceCtx = {}; // TEMP-TRACE
     t_traceContention = 0; // TEMP-TRACE
     t_addWaitedTicks = 0; // TEMP-TRACE
-    if (g_preAddPages) TracePreAddPages(); // TEMP-TRACE
+    t_retryTs = 0; // TEMP-TRACE
 
     SatoriRegion* region;
     bool outOfMemory;
 
 tryAgain:
-    // Pages added after this are not seen by the search for regions below. (see BeginRegularPageAdd)
+    // The regular page adds that complete after this are not seen by the search for regions below. (see the add of a page)
     int32_t pageAddsCompleted = VolatileLoad(&m_pageAddsCompleted);
     if (granules == 1 && !low && m_regionCacheCap != 0)
     {
@@ -1143,16 +1143,23 @@ tryAgain:
     // page, if needed.
     if (regionSize < Satori::PAGE_SIZE_GRANULARITY / 2)
     {
-        // Reserving a regular-sized Page.
-        // We will often come here on multiple threads and we do not want all threads to reserve a page.
-        // If someone else is adding a page, we wait for that, as the page will have regions for all of us.
-        if (!BeginRegularPageAdd(pageAddsCompleted, &pageAddWaitStart))
+        // Adding a regular-sized Page.
+        // We will often come here on multiple threads and we do not want all threads to add a page.
+        // A page has regions for all of them, and an add takes as long for one thread as it does for many.
+        // A thread that adds a page while another add is in flight gets a region no sooner than by waiting,
+        // and the page that it adds is not needed. So the adds are one at a time, under a lock.
+        // A thread that gets the lock after another one has added a page finds that the count of completed adds
+        // is not the one that it saw before it looked for regions, and looks again.
+        TraceBeforeAdd(traceCtx, regionSize); // TEMP-TRACE
+        TraceEnterPageAddLock(&m_pageAddLock); // TEMP-TRACE (m_pageAddLock.Enter())
+        if (VolatileLoad(&m_pageAddsCompleted) != pageAddsCompleted)
         {
+            TraceNoteLockRetry(); // TEMP-TRACE
+            m_pageAddLock.Leave();
             goto tryAgain;
         }
 
         SatoriPage* page = nullptr;
-        TraceBeforeAdd(traceCtx, regionSize); // TEMP-TRACE
         TraceRegularAdd(traceCtx); // TEMP-TRACE
         if (m_heap->TryAddRegularPage(page))
         {
@@ -1163,7 +1170,10 @@ tryAgain:
 
                 // The page is ours. Claim from it right away, before the others take what we need.
                 region = TryClaimRegionInPage(page, granules, low, outOfMemory);
-                EndRegularPageAdd();
+
+                // The free granules of the page can be claimed, and we have ours. The waiters look for theirs when they see the change.
+                Interlocked::Increment(&m_pageAddsCompleted);
+                m_pageAddLock.Leave();
                 TraceAfterAdd(traceCtx, page, regionSize, low, requester); // TEMP-TRACE
                 if (region || outOfMemory)
                 {
@@ -1174,11 +1184,12 @@ tryAgain:
             }
 
             // Someone added a page, but not us. There could be more regions.
-            EndRegularPageAdd();
+            Interlocked::Increment(&m_pageAddsCompleted);
+            m_pageAddLock.Leave();
             goto tryAgain;
         }
 
-        EndRegularPageAdd();
+        m_pageAddLock.Leave();
     }
     else
     {
@@ -1196,101 +1207,6 @@ tryAgain:
 
     // most likely OOM
     return nullptr;
-}
-
-// Called when there is no region to take and a regular page has to be added.
-// Returns true if the caller is to add a page, and then call EndRegularPageAdd.
-// Returns false if the caller is to look for regions again.
-//
-// A page has room for all the threads that may be waiting for regions, and an add takes as long for one thread as it does
-// for many. A thread that adds a page while another add is in flight does not get a region sooner than by waiting.
-// It only adds a page that nobody needs. So while an add is in flight, we wait for an add to complete and look again.
-//
-// pageAddsCompleted is the value of m_pageAddsCompleted from before the caller has looked for regions.
-// If it has changed, an add has completed and its regions may not have been seen.
-bool SatoriAllocator::BeginRegularPageAdd(int32_t pageAddsCompleted, int64_t* waitStart)
-{
-    int spins = 1;
-    while (true)
-    {
-        int32_t addsInFlight = VolatileLoad(&m_pageAddsInFlight);
-        if (addsInFlight == 0)
-        {
-            if (Interlocked::CompareExchange(&m_pageAddsInFlight, 1, 0) != 0)
-            {
-                continue;
-            }
-
-            if (VolatileLoad(&m_pageAddsCompleted) == pageAddsCompleted)
-            {
-                TraceTokenTaken(); // TEMP-TRACE
-                return true;
-            }
-
-            // An add has completed since the caller looked for regions. It is not our turn to add.
-            Interlocked::Decrement(&m_pageAddsInFlight);
-            TraceNoteAddWaitEnd(*waitStart); // TEMP-TRACE
-            *waitStart = 0;
-            return false;
-        }
-
-        if (VolatileLoad(&m_pageAddsCompleted) != pageAddsCompleted)
-        {
-            TraceNoteAddWaitEnd(*waitStart); // TEMP-TRACE
-            *waitStart = 0;
-            return false;
-        }
-
-        int64_t now = SatoriUtil::GetTimeStamp();
-        if (*waitStart == 0)
-        {
-            *waitStart = now;
-        }
-
-        int64_t waited = now - *waitStart;
-        int64_t ticksPerUsec = SatoriUtil::TimeStampTicksPerUsec();
-        if (waited > Satori::PAGE_ADD_VALVE_MSEC * 1000 * ticksPerUsec &&
-            addsInFlight == 1 &&
-            Interlocked::CompareExchange(&m_pageAddsInFlight, 2, 1) == 1)
-        {
-            // Nothing has completed for long, the adder may have been descheduled. One more add, but no more than that.
-            TraceNoteValveUse(*waitStart); // TEMP-TRACE
-            TraceTokenTaken(); // TEMP-TRACE
-            *waitStart = 0;
-            return true;
-        }
-
-        // Poll with short spins first, as an add that is about to complete is common. The adder may need our
-        // processor, so yield between polls after that.
-        if (waited < Satori::PAGE_ADD_SPIN_USEC * ticksPerUsec)
-        {
-            for (int i = 0; i < spins; i++)
-            {
-                YieldProcessor();
-            }
-
-            spins = min(spins * 2, 32);
-        }
-        else if (g_addNoYield) // TEMP-TRACE
-        {
-            for (int i = 0; i < 32; i++) YieldProcessor(); // TEMP-TRACE
-        }
-        else
-        {
-            GCToOSInterface::YieldThread(0);
-        }
-    }
-}
-
-void SatoriAllocator::EndRegularPageAdd()
-{
-    _ASSERTE(m_pageAddsInFlight == 1 || m_pageAddsInFlight == 2);
-
-    // The regions of the added page, if any, are in the queues by now. The waiters look for them when they see the change.
-    // The count changes before the add stops being in flight, so whoever finds no add in flight sees the change.
-    Interlocked::Increment(&m_pageAddsCompleted);
-    Interlocked::Decrement(&m_pageAddsInFlight);
-    TraceTokenReleased(); // TEMP-TRACE
 }
 
 // Claims free granules for a region of the given number of granules, in the pages that we have.

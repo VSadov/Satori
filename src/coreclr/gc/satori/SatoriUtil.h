@@ -76,13 +76,6 @@ namespace Satori
     const static int INDEX_GRANULARITY = 1 << INDEX_GRANULARITY_BITS;
     const static int INDEX_LENGTH = REGION_SIZE_GRANULARITY / INDEX_GRANULARITY;
 
-    // A thread that needs a page while another thread is adding one waits for the add to complete. (see SatoriAllocator::BeginRegularPageAdd)
-    // It spins for this long, and then yields the processor between polls.
-    static const int PAGE_ADD_SPIN_USEC = 50;
-
-    // If no add completes for this long, the thread that adds may have been descheduled. One more thread may add a page then.
-    static const int PAGE_ADD_VALVE_MSEC = 15;
-
     // object starts are aligned to this
     static const size_t OBJECT_ALIGNMENT = sizeof(size_t);
 

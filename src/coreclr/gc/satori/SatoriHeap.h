@@ -219,6 +219,8 @@ private:
     size_t m_nextPageIndex;
     // pages are placed below this map index, where the process can map memory.
     size_t m_maxPageIndex;
+    // Takes the map lock to commit more of the map. A thread that adds a regular page holds the page-add lock
+    // of the allocator then, and nothing may take that lock while holding this one.
     SatoriLock m_mapLock;
 
     size_t m_committedBytes;

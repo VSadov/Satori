@@ -159,11 +159,14 @@ private:
     DECLSPEC_ALIGN(64)
     volatile size_t m_regionCacheCount;
 
-    // Adds of regular pages: one in flight at a time, or two if the adder is slow to finish. (see BeginRegularPageAdd)
+    // Regular pages are added by one thread at a time, see GetRegionImpl.
+    // Lock order: the locks above, this lock, then the locks of the queues and the map lock of the heap (SatoriHeap::CommitMoreMap).
+    // Nothing takes this lock while holding any of the locks that come after it.
     DECLSPEC_ALIGN(64)
-    volatile int32_t m_pageAddsInFlight;
+    SatoriLock m_pageAddLock;
 
-    // Changes when an add completes, after the regions of the added page are available.
+    // The number of the regular page adds that have completed. It changes while m_pageAddLock is held,
+    // after the added page can be claimed from.
     volatile int32_t m_pageAddsCompleted;
 
     int SmallAllocatedBytesCounterIndex();
@@ -186,8 +189,6 @@ private:
     void TryGetRegularRegion(SatoriRegion*& region, size_t size);
     SatoriRegion* GetRegionCore(size_t regionSize, bool low, SatoriRegionRequester requester);
     SatoriRegion* GetRegionImpl(size_t regionSize, bool low, SatoriRegionRequester requester);
-    bool BeginRegularPageAdd(int32_t pageAddsCompleted, int64_t* waitStart);
-    void EndRegularPageAdd();
     SatoriRegion* TryClaimRegion(size_t granules, bool low, bool& outOfMemory);
     SatoriRegion* TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, bool& outOfMemory);
     bool TryCacheRegion(SatoriRegion* region, bool recentlyUsed);
@@ -200,7 +201,6 @@ private:
     void TraceMiss(TracePageAddCtx& c);
     void TraceBeforeAdd(TracePageAddCtx& c, size_t regionSize);
     void TraceRegularAdd(TracePageAddCtx& c);
-    void TracePreAddPages();
     void TraceAfterAdd(TracePageAddCtx& c, SatoriPage* page, size_t regionSize, bool low, SatoriRegionRequester requester);
     void TraceWriteState(bool isFinal, const char* ev);
     // TEMP-TRACE-END
