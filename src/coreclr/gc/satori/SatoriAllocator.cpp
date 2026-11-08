@@ -618,7 +618,8 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     m_regularRegion = nullptr;
     m_regularAllocLock.Initialize();
 
-    m_singePageAdders = 0;
+    m_pageAddsInFlight = 0;
+    m_pageAddsCompleted = 0;
 
     // As if the event was on before. If it is on from the start, there is nothing to catch up.
     // If it is off, the first check will notice that.
@@ -673,8 +674,8 @@ SatoriRegion* SatoriAllocator::GetRegionImpl(size_t regionSize, bool low, Satori
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
     size_t granules = regionSize >> Satori::REGION_BITS;
-    int64_t newPageDeadline = 0;
-    int newPageSpin = 0;
+    // when we have started waiting for an add of a page, if we are waiting. (see BeginRegularPageAdd)
+    int64_t pageAddWaitStart = 0;
     TracePageAddCtx traceCtx = {}; // TEMP-TRACE
     t_traceContention = 0; // TEMP-TRACE
 
@@ -682,6 +683,8 @@ SatoriRegion* SatoriAllocator::GetRegionImpl(size_t regionSize, bool low, Satori
     bool outOfMemory;
 
 tryAgain:
+    // Pages added after this are not seen by the search for regions below. (see BeginRegularPageAdd)
+    int32_t pageAddsCompleted = VolatileLoad(&m_pageAddsCompleted);
     if (granules == 1 && !low && m_regionCacheCap != 0)
     {
         region = m_regionCache->TryPop();
@@ -712,32 +715,10 @@ tryAgain:
     {
         // Reserving a regular-sized Page.
         // We will often come here on multiple threads and we do not want all threads to reserve a page.
-        // If someone else is reserving, we will allow 1 msec of retrying before reserving a page eagerly.
-        if (newPageDeadline == 0)
+        // If someone else is adding a page, we wait for that, as the page will have regions for all of us.
+        if (!BeginRegularPageAdd(pageAddsCompleted, &pageAddWaitStart))
         {
-            newPageDeadline = SatoriUtil::GetTimeStamp() + SatoriUtil::GetTimeStampFrequency() / 1000;
-        }
-
-        if (m_singePageAdders != 0 ||
-            Interlocked::CompareExchange(&m_singePageAdders, 1, 0) != 0)
-        {
-            // someone is adding.
-            if (SatoriUtil::GetTimeStamp() - newPageDeadline > 0)
-            {
-                // timed out
-                traceCtx.timedOut = true; // TEMP-TRACE
-                Interlocked::Increment(&m_singePageAdders);
-            }
-            else
-            {
-                newPageSpin = newPageSpin * 2 + 1;
-                for (int i = 0; i < newPageSpin; i++)
-                {
-                    YieldProcessor();
-                }
-
-                goto tryAgain;
-            }
+            goto tryAgain;
         }
 
         SatoriPage* page = nullptr;
@@ -750,7 +731,7 @@ tryAgain:
 
                 // The page is ours. Claim from it right away, before the others take what we need.
                 region = TryClaimRegionInPage(page, granules, low, outOfMemory);
-                Interlocked::Decrement(&m_singePageAdders);
+                EndRegularPageAdd();
                 TraceAfterAdd(traceCtx, page, regionSize, low, requester); // TEMP-TRACE
                 if (region || outOfMemory)
                 {
@@ -761,11 +742,11 @@ tryAgain:
             }
 
             // Someone added a page, but not us. There could be more regions.
-            Interlocked::Decrement(&m_singePageAdders);
+            EndRegularPageAdd();
             goto tryAgain;
         }
 
-        Interlocked::Decrement(&m_singePageAdders);
+        EndRegularPageAdd();
     }
     else
     {
@@ -783,6 +764,91 @@ tryAgain:
 
     // most likely OOM
     return nullptr;
+}
+
+// Called when there is no region to take and a regular page has to be added.
+// Returns true if the caller is to add a page, and then call EndRegularPageAdd.
+// Returns false if the caller is to look for regions again.
+//
+// A page has room for all the threads that may be waiting for regions, and an add takes as long for one thread as it does
+// for many. A thread that adds a page while another add is in flight does not get a region sooner than by waiting.
+// It only adds a page that nobody needs. So while an add is in flight, we wait for an add to complete and look again.
+//
+// pageAddsCompleted is the value of m_pageAddsCompleted from before the caller has looked for regions.
+// If it has changed, an add has completed and its regions may not have been seen.
+bool SatoriAllocator::BeginRegularPageAdd(int32_t pageAddsCompleted, int64_t* waitStart)
+{
+    int spins = 1;
+    while (true)
+    {
+        int32_t addsInFlight = VolatileLoad(&m_pageAddsInFlight);
+        if (addsInFlight == 0)
+        {
+            if (Interlocked::CompareExchange(&m_pageAddsInFlight, 1, 0) != 0)
+            {
+                continue;
+            }
+
+            if (VolatileLoad(&m_pageAddsCompleted) == pageAddsCompleted)
+            {
+                return true;
+            }
+
+            // An add has completed since the caller looked for regions. It is not our turn to add.
+            Interlocked::Decrement(&m_pageAddsInFlight);
+            *waitStart = 0;
+            return false;
+        }
+
+        if (VolatileLoad(&m_pageAddsCompleted) != pageAddsCompleted)
+        {
+            *waitStart = 0;
+            return false;
+        }
+
+        int64_t now = SatoriUtil::GetTimeStamp();
+        if (*waitStart == 0)
+        {
+            *waitStart = now;
+        }
+
+        int64_t waited = now - *waitStart;
+        int64_t ticksPerUsec = SatoriUtil::TimeStampTicksPerUsec();
+        if (waited > Satori::PAGE_ADD_VALVE_MSEC * 1000 * ticksPerUsec &&
+            addsInFlight == 1 &&
+            Interlocked::CompareExchange(&m_pageAddsInFlight, 2, 1) == 1)
+        {
+            // Nothing has completed for long, the adder may have been descheduled. One more add, but no more than that.
+            *waitStart = 0;
+            return true;
+        }
+
+        // Poll with short spins first, as an add that is about to complete is common. The adder may need our
+        // processor, so yield between polls after that.
+        if (waited < Satori::PAGE_ADD_SPIN_USEC * ticksPerUsec)
+        {
+            for (int i = 0; i < spins; i++)
+            {
+                YieldProcessor();
+            }
+
+            spins = min(spins * 2, 32);
+        }
+        else
+        {
+            GCToOSInterface::YieldThread(0);
+        }
+    }
+}
+
+void SatoriAllocator::EndRegularPageAdd()
+{
+    _ASSERTE(m_pageAddsInFlight == 1 || m_pageAddsInFlight == 2);
+
+    // The regions of the added page, if any, are in the queues by now. The waiters look for them when they see the change.
+    // The count changes before the add stops being in flight, so whoever finds no add in flight sees the change.
+    Interlocked::Increment(&m_pageAddsCompleted);
+    Interlocked::Decrement(&m_pageAddsInFlight);
 }
 
 // Claims free granules for a region of the given number of granules, in the pages that we have.

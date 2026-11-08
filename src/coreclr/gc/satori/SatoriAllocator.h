@@ -159,8 +159,12 @@ private:
     DECLSPEC_ALIGN(64)
     volatile size_t m_regionCacheCount;
 
+    // Adds of regular pages: one in flight at a time, or two if the adder is slow to finish. (see BeginRegularPageAdd)
     DECLSPEC_ALIGN(64)
-    volatile int32_t m_singePageAdders;
+    volatile int32_t m_pageAddsInFlight;
+
+    // Changes when an add completes, after the regions of the added page are available.
+    volatile int32_t m_pageAddsCompleted;
 
     int SmallAllocatedBytesCounterIndex();
     void PublishAllocatedBytes(SatoriAllocationContext* context, AllocationTickKind kind, SatoriObject* obj, size_t size);
@@ -182,6 +186,8 @@ private:
     void TryGetRegularRegion(SatoriRegion*& region, size_t size);
     SatoriRegion* GetRegionCore(size_t regionSize, bool low, SatoriRegionRequester requester);
     SatoriRegion* GetRegionImpl(size_t regionSize, bool low, SatoriRegionRequester requester);
+    bool BeginRegularPageAdd(int32_t pageAddsCompleted, int64_t* waitStart);
+    void EndRegularPageAdd();
     SatoriRegion* TryClaimRegion(size_t granules, bool low, bool& outOfMemory);
     SatoriRegion* TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, bool& outOfMemory);
     bool TryCacheRegion(SatoriRegion* region, bool recentlyUsed);
