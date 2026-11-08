@@ -698,6 +698,26 @@ SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count)
         }
     }
 
+#if _DEBUG
+    // The region does not zero what is above its used part when it allocates, so it had better be zero.
+    for (size_t granule = first; granule < first + count; granule++)
+    {
+        size_t granuleStart = GranuleStart(granule);
+        size_t* p = (size_t*)(granuleStart + ((size_t)m_dirtyWatermarks[granule] << Satori::WATERMARK_UNIT_BITS));
+        size_t* end = (size_t*)(granuleStart + ((size_t)m_commitWatermarks[granule] << Satori::WATERMARK_UNIT_BITS));
+        for (; p < end; p++)
+        {
+            if (*p != 0)
+            {
+                minipal_log_print_error("Satori: page %p, granule %zu: nonzero memory at %p, above the dirty watermark of %u units\n",
+                    (void*)this, granule, (void*)p, (unsigned)m_dirtyWatermarks[granule]);
+                _ASSERTE(!"nonzero memory above the dirty watermark");
+                break;
+            }
+        }
+    }
+#endif
+
     // Fill the gaps in the commit, the object that needed the run would commit them anyway.
     // This is not a thing that a single granule needs.
     size_t failedAt = SIZE_MAX;
