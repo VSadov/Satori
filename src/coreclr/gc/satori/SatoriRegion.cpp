@@ -1031,7 +1031,8 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     // in rare cases the object does not cross into the last granule.
     // (when the allocation is huge only because of parseability padding).
     // in such case pad it in front.
-    if (chunkEnd < End() - Satori::REGION_SIZE_GRANULARITY)
+    // NB: an object that ends exactly where the last granule starts does not cross into it either.
+    if (chunkEnd <= End() - Satori::REGION_SIZE_GRANULARITY)
     {
         chunkStart += Satori::MIN_FREE_SIZE;
         chunkEnd += Satori::MIN_FREE_SIZE;
