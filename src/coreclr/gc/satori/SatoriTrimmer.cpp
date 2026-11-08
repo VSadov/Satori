@@ -55,6 +55,12 @@ SatoriTrimmer::SatoriTrimmer(SatoriHeap* heap)
     }
 }
 
+// A commit coarser than a region cannot be sparse, so then there is nothing to decommit.
+static bool CanDecommitGranules()
+{
+    return SatoriUtil::CommitGranularity() <= Satori::REGION_SIZE_GRANULARITY;
+}
+
 void SatoriTrimmer::Pause(int msec)
 {
     m_paused = true;
@@ -109,7 +115,7 @@ void SatoriTrimmer::Loop()
         roundStart = SatoriUtil::GetTimeStamp();
         leftWork = false;
 
-        if (!SatoriUtil::IsGranuleTrimmingEnabled())
+        if (!CanDecommitGranules())
         {
             continue;
         }
@@ -175,7 +181,7 @@ void SatoriTrimmer::TrimNow()
 {
     _ASSERTE(m_heap->Recycler()->IsBlockingPhase());
 
-    if (!SatoriUtil::IsGranuleTrimmingEnabled())
+    if (!CanDecommitGranules())
     {
         return;
     }
