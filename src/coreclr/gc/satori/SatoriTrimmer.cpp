@@ -123,7 +123,7 @@ void SatoriTrimmer::Loop()
                      granule != SIZE_MAX;
                      granule = page->NextGranuleToTrim(granule + 1, /* onlyIfSeenFree */ true))
                 {
-                    if (page->TryTrimGranule(granule))
+                    if (page->TryTrimGranule(granule, /* onlyIfSeenFree */ true))
                     {
                         // limit the decommit rate to 1 granule/10 msec.
                         Pause(10);
@@ -172,7 +172,7 @@ void SatoriTrimmer::TrimNow()
                  granule != SIZE_MAX;
                  granule = page->NextGranuleToTrim(granule + 1, /* onlyIfSeenFree */ false))
             {
-                page->TryTrimGranule(granule);
+                page->TryTrimGranule(granule, /* onlyIfSeenFree */ false);
             }
 
             page->RememberFreeGranules();

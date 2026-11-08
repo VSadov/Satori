@@ -92,8 +92,10 @@ public:
     // that were also free when the trimmer last looked at this page. Returns SIZE_MAX if there is none.
     size_t NextGranuleToTrim(size_t from, bool onlyIfSeenFree);
     // Claims the granule, decommits what its last owners left committed, and gives it back as free and cold.
+    // When asked, only if the granule is still one that was seen free: the caller may have found it before it was claimed
+    // and freed again, and then the claim takes the new free bit.
     // Returns true if it decommitted anything.
-    bool TryTrimGranule(size_t granule);
+    bool TryTrimGranule(size_t granule, bool onlyIfSeenFree);
     // Remembers which granules are free now, for the next time.
     void RememberFreeGranules();
 
@@ -213,6 +215,7 @@ public:
 private:
     size_t FindRun(size_t count, bool fromTop);
     bool TryClearRun(size_t first, size_t count);
+    void ForgetSeenFree(size_t first, size_t count);
 
     union
     {
@@ -269,9 +272,18 @@ private:
             // The watermarks are written by the thread that frees the granule, before it sets the free bit,
             // and read by the thread that claims the granule, after it clears the bit.
             uint8_t* m_dirtyWatermarks;
-            // 1 bit per granule. The granules that were free when the trimmer last looked at the page.
-            // Only the trimmer uses it (and a GC that trims on request, while the trimmer is stopped).
+            // 1 bit per granule. The granules that were free when the trimmer last looked at the page, and were not freed since.
+            // FreeRegion clears the bits of the granules that it frees, before it sets their free bits.
+            // Only the trimmer sets bits (and a GC that trims on request, while the trimmer is stopped).
             size_t* m_seenFreeBitmap;
+#if _DEBUG
+            // Checked builds only. The trimmer asserts that it never decommits a granule that was freed after the last look at its page.
+            // 1 stamp per granule: when FreeRegion freed it (0 if it was never used). The stamps and the one below come from one counter.
+            // A granule that the last look saw as free was freed before the look, because the look takes its stamp after the copy.
+            size_t* m_freeStamps;
+            // The stamp of the last look at the page.
+            size_t m_snapshotStamp;
+#endif
 
             // computed size,
             // 2 byte per card group (4 per region granule)

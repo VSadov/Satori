@@ -103,8 +103,13 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 
     // make sure offset of m_cardGroups is 128.
     _ASSERTE(offsetof(SatoriPage, m_cardGroups) == 128);
+#if _DEBUG
+    static_assert(offsetof(SatoriPage, m_snapshotStamp) + sizeof(size_t) <= 128,
+        "the header fields must end before the card groups.");
+#else
     static_assert(offsetof(SatoriPage, m_seenFreeBitmap) + sizeof(size_t*) <= 128,
         "the header fields must end before the card groups.");
+#endif
 
     result->m_regionMap = (uint8_t*)(address + 128 + cardGroupSize);
 
@@ -119,6 +124,18 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 
     // make sure the first useful card word is beyond the header.
     _ASSERTE(result->Start() + cardTableStart >= (size_t)(result->m_seenFreeBitmap + regionCount / 64));
+
+#if _DEBUG
+    // The stamps do not fit into the page, they are for Checked builds only.
+    result->m_freeStamps = new (nothrow) size_t[regionCount]();
+    if (result->m_freeStamps == nullptr)
+    {
+        heap->DecBytesCommitted(commitSize);
+        GCToOSInterface::VirtualRelease(result, pageSize);
+        status = InitStatus::CommitFailed;
+        return nullptr;
+    }
+#endif
 
     // Everything after the card table is free. If the commit granularity made us commit more than the card table,
     // that part is committed and clean.
@@ -180,6 +197,11 @@ static size_t BitRange(size_t lowBit, size_t width)
     return ones << lowBit;
 }
 
+#if _DEBUG
+// The counter that the stamps of the trimmer's check come from, see m_freeStamps.
+static volatile size_t s_freeClock;
+#endif
+
 // Turns the granules of a region that nobody uses any more into free granules.
 // Nothing is decommitted or written into the freed memory. What the next owner needs to know about it,
 // how much is committed and how much of that may be dirty, is recorded in the watermarks.
@@ -205,6 +227,11 @@ void SatoriPage::FreeRegion(SatoriRegion* region)
     size_t first = (start - Start()) >> Satori::REGION_BITS;
     size_t count = (end - start) >> Satori::REGION_BITS;
 
+#if _DEBUG
+    // before the seen bits are cleared and the free bits set, see TryTrimGranule
+    size_t freeStamp = Interlocked::Increment(&s_freeClock);
+#endif
+
     for (size_t granule = first; granule < first + count; granule++)
     {
         size_t granuleStart = GranuleStart(granule);
@@ -222,6 +249,9 @@ void SatoriPage::FreeRegion(SatoriRegion* region)
 
         m_commitWatermarks[granule] = (uint8_t)committedUnits;
         m_dirtyWatermarks[granule] = (uint8_t)dirtyUnits;
+#if _DEBUG
+        m_freeStamps[granule] = freeStamp;
+#endif
 
         // the other granules in the word may be changing, thus interlocked.
         size_t bit = BitRange(granule % 64, 1);
@@ -234,6 +264,10 @@ void SatoriPage::FreeRegion(SatoriRegion* region)
             Interlocked::And(&m_warmBitmap[granule / 64], ~bit);
         }
     }
+
+    // These granules are not the ones that the trimmer saw free. The trimmer reads a free bit before it reads the seen bit,
+    // and the interlocked operation that sets the free bits below is a release for this one.
+    ForgetSeenFree(first, count);
 
     OnRegionFreed(region);
 
@@ -462,8 +496,20 @@ size_t SatoriPage::TryClaimRun(size_t count, bool fromTop, size_t& rollbacks)
 // Gives back a page that was not published. The only thing committed in it is the card table.
 void SatoriPage::Release()
 {
+#if _DEBUG
+    delete[] m_freeStamps;
+#endif
     m_heap->DecBytesCommitted(m_initialCommit - Start());
     GCToOSInterface::VirtualRelease(this, m_end - Start());
+}
+
+// Clears the seen bits of the granules, see FreeRegion.
+void SatoriPage::ForgetSeenFree(size_t first, size_t count)
+{
+    for (size_t word = first / 64; word <= (first + count - 1) / 64; word++)
+    {
+        Interlocked::And(&m_seenFreeBitmap[word], ~RunBitsInWord(first, count, word));
+    }
 }
 
 size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree)
@@ -476,7 +522,8 @@ size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree)
         size_t candidates = VolatileLoad(&m_freeBitmap[word]);
         if (onlyIfSeenFree)
         {
-            candidates &= m_seenFreeBitmap[word];
+            // after the free bits: see FreeRegion
+            candidates &= VolatileLoad(&m_seenFreeBitmap[word]);
         }
 
         // only the granules that are not before the one we were asked for
@@ -503,12 +550,29 @@ size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree)
     return SIZE_MAX;
 }
 
-bool SatoriPage::TryTrimGranule(size_t granule)
+bool SatoriPage::TryTrimGranule(size_t granule, bool onlyIfSeenFree)
 {
     if (!TryClaimGranuleAt(granule))
     {
         return false;
     }
+
+    // The granule could have been claimed and freed again after the caller found it, and then our claim took the new free bit.
+    // FreeRegion clears the seen bit before it sets the free bit, so a granule that is seen now was not freed since it was seen.
+    if (onlyIfSeenFree && ((VolatileLoad(&m_seenFreeBitmap[granule / 64]) >> (granule % 64)) & 1) == 0)
+    {
+        PublishFreeGranules(granule, 1);
+        return false;
+    }
+
+#if _DEBUG
+    if (onlyIfSeenFree && m_freeStamps[granule] >= m_snapshotStamp)
+    {
+        minipal_log_print_error("Satori: page %p, granule %zu: the trimmer took a granule that was freed (stamp %zu) after the last look at its page (stamp %zu)\n",
+            (void*)this, granule, m_freeStamps[granule], m_snapshotStamp);
+        _ASSERTE(!"the trimmer took a granule that was freed after the last look at its page");
+    }
+#endif
 
     // The granule is ours. What is committed is what the watermarks say, and no region is looking at the memory.
     bool trimmed = false;
@@ -532,8 +596,13 @@ void SatoriPage::RememberFreeGranules()
 {
     for (size_t word = 0; word < GranuleCount() / 64; word++)
     {
-        m_seenFreeBitmap[word] = VolatileLoad(&m_freeBitmap[word]);
+        VolatileStore(&m_seenFreeBitmap[word], VolatileLoad(&m_freeBitmap[word]));
     }
+
+#if _DEBUG
+    // After the copy: a granule that the copy saw as free was freed before this stamp.
+    m_snapshotStamp = Interlocked::Increment(&s_freeClock);
+#endif
 }
 
 // TEMP-TRACE
