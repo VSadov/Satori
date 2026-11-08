@@ -164,6 +164,8 @@ public:
     INT_CONFIG   (Gen1Target,                "gcGen1Target",              NULL,                                -1,                 "Specifies target for Gen1 GC (in terms of % of the last known size)")                    \
     INT_CONFIG   (ReusableTarget,            "gcReusableTarget",          NULL,                                -1,                 "Specifies how much free space may be held in reusable regions (in terms of % of expected gen1 allocation)") \
     INT_CONFIG   (TrackBackoff,              "gcTrackBackoff",            NULL,                                -1,                 "Specifies max number of regions a thread allocates untracked after unproductive escape tracking (hex). 0 - disabled, -1 - default") \
+    /* TEMP-TRACE: experimental bitmap free space */                                                                                                                                                                         \
+    INT_CONFIG   (RegionCacheCap,            "gcRegionCacheCap",          NULL,                                -1,                 "TEMP-TRACE: max number of free 2Mb regions that the allocator caches in front of the free granules (hex). 0 - no cache, -1 - default") \
 
 // This class is responsible for retreiving configuration information
 // for how the GC should operate.

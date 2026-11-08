@@ -137,6 +137,19 @@ private:
     size_t m_lastPreciseAllocatedBytes;
 
 private:
+    // A small cache of free 2 MB regions in front of the free granules. Regular requests take from the cache first,
+    // and the regions that are freed go there, while the cache is below its cap. That keeps the reuse of the regions
+    // that were used recently, and the allocation of a region a pop from a queue.
+    // The cached regions are formatted, have valid headers and are members of the queue, so a header may be read
+    // only under the lock of the queue. (the queue is of the Allocator kind)
+    SatoriShardedRegionQueue* m_regionCache;
+
+    // How many regions the cache may have. The racing threads can get the count a bit over it. 0 - no cache.
+    size_t m_regionCacheCap;
+
+    DECLSPEC_ALIGN(64)
+    volatile size_t m_regionCacheCount;
+
     DECLSPEC_ALIGN(64)
     volatile int32_t m_singePageAdders;
 
@@ -161,6 +174,7 @@ private:
     SatoriRegion* GetRegionCore(size_t regionSize, bool low);
     SatoriRegion* TryClaimRegion(size_t granules, bool low, bool& outOfMemory);
     SatoriRegion* TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, bool& outOfMemory);
+    bool TryCacheRegion(SatoriRegion* region, bool recentlyUsed);
     void FreeToBitmap(SatoriRegion* region);
     bool AddMoreWorkChunks();
 };

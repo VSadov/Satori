@@ -88,6 +88,14 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
 
     m_runClaimLock.Initialize();
 
+    m_regionCache = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::Allocator, 4);
+    m_regionCacheCount = 0;
+    // TEMP-TRACE: the cap defaults to a couple of regions for every CPU that this process can use, and can be set to 0.
+    int64_t configuredCap = GCConfig::GetRegionCacheCap();
+    m_regionCacheCap = configuredCap >= 0 ?
+        (size_t)configuredCap :
+        max((size_t)4, 2 * (size_t)GCToEEInterface::GetCurrentProcessCpuCount());
+
     m_largeRegion = nullptr;
     m_largeAllocLock.Initialize();
 
@@ -128,8 +136,8 @@ SatoriRegion* SatoriAllocator::GetRegionLow(size_t regionSize)
 }
 
 // Gets a region of the given size from the free granules of the pages, and adds a page if there are none.
-// A regular request takes the lowest free granules, the ones that are committed in full first.
-// A request for a long-lived region takes the highest ones.
+// A regular request first takes a region from the cache, and then claims the lowest free granules,
+// the ones that are committed in full first. A request for a long-lived region takes the highest ones.
 SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize, bool low)
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
@@ -137,9 +145,22 @@ SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize, bool low)
     int64_t newPageDeadline = 0;
     int newPageSpin = 0;
 
+    SatoriRegion* region;
+    bool outOfMemory;
+
 tryAgain:
-    bool outOfMemory = false;
-    SatoriRegion* region = TryClaimRegion(granules, low, outOfMemory);
+    if (granules == 1 && !low && m_regionCacheCap != 0)
+    {
+        region = m_regionCache->TryPop();
+        if (region)
+        {
+            Interlocked::Decrement(&m_regionCacheCount);
+            return region;
+        }
+    }
+
+    outOfMemory = false;
+    region = TryClaimRegion(granules, low, outOfMemory);
     if (region || outOfMemory)
     {
         return region;
@@ -315,15 +336,44 @@ SatoriRegion* SatoriAllocator::TryClaimRegionInPage(SatoriPage* page, size_t gra
 void SatoriAllocator::AddRegion(SatoriRegion* region)
 {
     _ASSERTE(region->Generation() == -1);
-    FreeToBitmap(region);
+    if (!TryCacheRegion(region, /* recentlyUsed */ false))
+    {
+        FreeToBitmap(region);
+    }
 }
 
-// same as AddRegion, for recently used regions
+// same as AddRegion, but this is for recently used regions
 void SatoriAllocator::ReturnRegion(SatoriRegion* region)
 {
     _ASSERTE(region->IsAttachedToAllocatingOwner() == false);
     _ASSERTE(region->Generation() == -1);
-    FreeToBitmap(region);
+    if (!TryCacheRegion(region, /* recentlyUsed */ true))
+    {
+        FreeToBitmap(region);
+    }
+}
+
+// Puts a 2 MB region in the cache, if the cache is not full. The regions that are used most recently go to the front.
+bool SatoriAllocator::TryCacheRegion(SatoriRegion* region, bool recentlyUsed)
+{
+    if (region->Size() != Satori::REGION_SIZE_GRANULARITY ||
+        m_regionCacheCount >= m_regionCacheCap)
+    {
+        return false;
+    }
+
+    // The count is ahead of the queue, so a pop never takes the count below 0.
+    Interlocked::Increment(&m_regionCacheCount);
+    if (recentlyUsed)
+    {
+        m_regionCache->Push(region);
+    }
+    else
+    {
+        m_regionCache->Enqueue(region);
+    }
+
+    return true;
 }
 
 // Frees the region into the free granules of its page.
