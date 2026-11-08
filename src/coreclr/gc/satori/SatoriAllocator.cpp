@@ -81,6 +81,24 @@ static volatile int32_t g_commitDoubling;
 static volatile int32_t g_claimTopDown;
 static volatile int32_t g_claimNoHint;
 
+// Step 5 of Milestone 2b: what the regular region requests (TryGetRegularRegion) take. (see [nbrstats])
+static volatile size_t g_nbrReqs;
+static volatile size_t g_nbrWithNext;
+static volatile size_t g_nbrNextNoQueue;
+static volatile size_t g_nbrNextReusable;
+static volatile size_t g_nbrNextOther;
+static volatile size_t g_nbrReusableTaken;
+static volatile size_t g_nbrReusableHit;
+static volatile size_t g_nbrGetRegion;
+
+static void TraceCount(volatile size_t* counter)
+{
+    if (g_traceOn)
+    {
+        Interlocked::Increment(counter);
+    }
+}
+
 // Where the memory for allocation is committed up to, when allocation needs more than a region has committed.
 // SATORI_COMMIT_STEP_KB: in steps of that size. SATORI_COMMIT_DOUBLING=1: each step is as much as the region has committed already, up to 2 MB.
 size_t TraceCommitTo(size_t regionStart, size_t committed, size_t ensureCommitted)
@@ -897,6 +915,14 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
         os[0][0], (double)os[0][1] / (1 << 20), TraceTicksToUs((int64_t)os[0][2]) / 1000.0, TraceTicksToUs((int64_t)os[0][3]),
         os[1][0], (double)os[1][1] / (1 << 20), TraceTicksToUs((int64_t)os[1][2]) / 1000.0, TraceTicksToUs((int64_t)os[1][3]),
         commitHist, decommitHist);
+    TraceWrite(buf, len);
+
+    len = snprintf(buf, sizeof(buf),
+        "[nbrstats] t=%.3f ev=%s reqs=%zu withNext=%zu nextNoQueue=%zu nextReusable=%zu nextOther=%zu reusableTaken=%zu "
+        "reusableHit=%zu adjTried=%zu adjClaimed=%zu getRegion=%zu\n",
+        TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, ev,
+        g_nbrReqs, g_nbrWithNext, g_nbrNextNoQueue, g_nbrNextReusable, g_nbrNextOther, g_nbrReusableTaken,
+        g_nbrReusableHit, SatoriTrace::s_counters.adjacentTries, SatoriTrace::s_counters.adjacentClaims, g_nbrGetRegion);
     TraceWrite(buf, len);
 }
 
@@ -2296,6 +2322,7 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
 void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region, size_t size)
 {
     size_t minFree = size + Satori::MIN_FREE_SIZE;
+    TraceCount(&g_nbrReqs); // TEMP-TRACE
 
     // opportunistically try get the next region, if available
     SatoriPage* page = nullptr;
@@ -2309,12 +2336,17 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region, size_t size)
         SatoriRegion* next = region->NextInPage();
         if (next)
         {
+            TraceCount(&g_nbrWithNext); // TEMP-TRACE
             SatoriQueue<SatoriRegion>* nextContainingQueue = next->ContainingQueue();
+            if (!nextContainingQueue) TraceCount(&g_nbrNextNoQueue); // TEMP-TRACE
+            else if (nextContainingQueue->Kind() == QueueKind::RecyclerReusable) TraceCount(&g_nbrNextReusable); // TEMP-TRACE
+            else TraceCount(&g_nbrNextOther); // TEMP-TRACE
             if (nextContainingQueue &&
                 nextContainingQueue->Kind() == QueueKind::RecyclerReusable &&
                 next->CanFitAllocation(minFree) &&
                 nextContainingQueue->TryRemove(next))
             {
+                TraceCount(&g_nbrReusableTaken); // TEMP-TRACE
                 region = next;
                 _ASSERTE(region->Occupancy() < Satori::REGION_SIZE_GRANULARITY);
                 return;
@@ -2323,6 +2355,7 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region, size_t size)
     }
 
     region = m_heap->Recycler()->TryGetReusable(minFree);
+    if (region) TraceCount(&g_nbrReusableHit); // TEMP-TRACE
 
     if (region == nullptr)
     {
@@ -2345,6 +2378,7 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region, size_t size)
         }
 
         region = GetRegion(Satori::REGION_SIZE_GRANULARITY, SatoriRegionRequester::Regular);
+        TraceCount(&g_nbrGetRegion); // TEMP-TRACE
         _ASSERTE(region == nullptr || region->NothingMarked());
     }
 }
