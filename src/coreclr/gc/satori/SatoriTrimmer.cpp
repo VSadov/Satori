@@ -76,14 +76,24 @@ void SatoriTrimmer::LoopFn(void* inst)
 void SatoriTrimmer::Loop()
 {
     int64_t lastGen2 = m_heap->Recycler()->GetCollectionCount(2);
+    int64_t roundStart = 0;
+    const int64_t roundInterval = SatoriUtil::GetTimeStampFrequency() * 5;
+
+    // The last round saw granules that are free and committed, and could not trim them, since they were not free on the round before.
+    // The next round can, if they stay free.
+    bool leftWork = false;
+
     while (true)
     {
-        // limit the re-trim rate to once per 5 sec.
-        // we would also require that gen2 gc happened since the last round.
+        // A round is due after a gen2 that came since the last round started, since that is when memory is freed in bulk,
+        // or when the last round left work for this one. Without the second condition the memory that the last gen2 freed
+        // would be seen once and never decommitted, in a process that stops allocating and has no more gen2.
+        // The rounds are at least 5 sec apart.
         while (true)
         {
             int64_t newGen2 = m_heap->Recycler()->GetCollectionCount(2);
-            if (lastGen2 != newGen2)
+            int64_t waitTicks = roundStart + roundInterval - SatoriUtil::GetTimeStamp();
+            if (waitTicks <= 0 && (leftWork || lastGen2 != newGen2))
             {
                 lastGen2 = newGen2;
                 break;
@@ -91,9 +101,13 @@ void SatoriTrimmer::Loop()
 
             // Idle throttling must not revoke a GC's run permission. Only a GC-requested stop
             // needs another SetOkToRun before the trimmer can continue.
-            Pause(5000);
+            int waitMsec = waitTicks <= 0 ? 5000 : (int)min(waitTicks * 1000 / SatoriUtil::GetTimeStampFrequency() + 1, (int64_t)5000);
+            Pause(waitMsec);
             StopAndWait();
         }
+
+        roundStart = SatoriUtil::GetTimeStamp();
+        leftWork = false;
 
         if (!SatoriUtil::IsGranuleTrimmingEnabled())
         {
@@ -145,6 +159,12 @@ void SatoriTrimmer::Loop()
                 }
 
                 page->RememberFreeGranules();
+
+                // what this round saw, and the next one can trim
+                if (page->NextGranuleToTrim(0, /* onlyIfSeenFree */ true) != SIZE_MAX)
+                {
+                    leftWork = true;
+                }
             }
         );
     }
