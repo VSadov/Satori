@@ -193,8 +193,12 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
                 // therefore the read will happen after the object is obtained.
                 // Also the object must be published before other thread could see it, and publishing is a release.
                 // Thus an ordinary write is ok even for weak memory cases.
-                m_pageMap[i] = newPage;
+                //
+                // That is not enough for the page itself. Free granules of a page can be claimed by anyone who finds
+                // the page in the map, and that must see the page as it was initialized. The map entry is the last write,
+                // and it is a release. (readers use VolatileLoad, see ForEachPageFrom)
                 s_pageByteMap[i] = 1;
+                VolatileStore(&m_pageMap[i], newPage);
 
                 // ensure the next is advanced to at least i + 1
                 while ((nextPageIndex = m_nextPageIndex) < i + 1 &&
@@ -276,13 +280,17 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize, bool low, SatoriRegion*& re
                     return nullptr;
                 }
 
-                // mark the map, before an object can be allocated in the new page and
-                // may be seen in a GC barrier
-                for (size_t j = 0; j < mapMarkCount; j++)
+                // Mark the map, before an object can be allocated in the new page and may be seen in a GC barrier.
+                // Others find the page at its first entry, and then take granules from all of it. Thus the first entry
+                // is the last write, and it is a release, so that the rest of the map is there when the page is found.
+                for (size_t j = mapMarkCount - 1; j > 0; j--)
                 {
                     m_pageMap[i + j] = newPage;
                     s_pageByteMap[i + j] = 1;
                 }
+
+                s_pageByteMap[i] = 1;
+                VolatileStore(&m_pageMap[i], newPage);
 
                 size_t usedMapLength;
                 // ensure the m_usedMapLength is advanced to at least i + mapMarkCount

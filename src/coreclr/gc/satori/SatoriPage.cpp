@@ -753,8 +753,28 @@ SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count)
                     return false;
                 }
 
-                GCToOSInterface::VirtualDecommit((void*)gapStart, gapEnd - gapStart);
-                m_heap->DecBytesCommitted(gapEnd - gapStart);
+                if (GCToOSInterface::VirtualDecommit((void*)gapStart, gapEnd - gapStart))
+                {
+                    m_heap->DecBytesCommitted(gapEnd - gapStart);
+                    return true;
+                }
+
+                // It stays committed, and it is still zero, nothing has written into it. The granules go back as they are,
+                // except that the watermarks must tell the next owner about this commit, and the heap keeps counting it.
+                for (size_t granule = (gapStart - Start()) >> Satori::REGION_BITS; GranuleStart(granule) < gapEnd; granule++)
+                {
+                    size_t granuleStart = GranuleStart(granule);
+                    size_t units = (min(gapEnd, granuleStart + Satori::REGION_SIZE_GRANULARITY) - granuleStart) >> Satori::WATERMARK_UNIT_BITS;
+                    if (units > m_commitWatermarks[granule])
+                    {
+                        m_commitWatermarks[granule] = (uint8_t)units;
+                        if (units == Satori::WATERMARK_UNITS_PER_GRANULE)
+                        {
+                            Interlocked::Or(&m_warmBitmap[granule / 64], (size_t)1 << (granule % 64));
+                        }
+                    }
+                }
+
                 return true;
             }
         );
@@ -769,14 +789,18 @@ SatoriRegion* SatoriPage::RegionForAddressChecked(size_t address)
 {
     _ASSERTE(address >= Start() && address < End());
     size_t mapIndex = (address - Start()) >> Satori::REGION_BITS;
-    while (RegionMap()[mapIndex] > 1)
+
+    // Regions are freed meanwhile, and that zeroes the map. A byte is read once, and the byte that ends the search
+    // is the one that decides. Reading it again could find zero where there was a continuation, and shift by a negative count.
+    uint8_t mapValue;
+    while ((mapValue = VolatileLoad(&RegionMap()[mapIndex])) > 1)
     {
-        mapIndex -= ((size_t)1 << (RegionMap()[mapIndex] - 2));
+        mapIndex -= ((size_t)1 << (mapValue - 2));
     }
 
-    if (VolatileLoad(&RegionMap()[mapIndex]) != 1)
+    if (mapValue != 1)
     {
-        // there is no region here yet.
+        // there is no region here.
         return nullptr;
     }
 
@@ -807,13 +831,16 @@ SatoriRegion* SatoriPage::NextInPage(SatoriRegion* region)
 SatoriRegion* SatoriPage::RegionForCardGroup(size_t group)
 {
     size_t mapIndex = group * Satori::BYTES_PER_CARD_GROUP / Satori::REGION_SIZE_GRANULARITY;
-    while (RegionMap()[mapIndex] > 1)
+
+    // a byte is read once, see RegionForAddressChecked
+    uint8_t mapValue;
+    while ((mapValue = VolatileLoad(&RegionMap()[mapIndex])) > 1)
     {
-        mapIndex -= ((size_t)1 << (RegionMap()[mapIndex] - 2));
+        mapIndex -= ((size_t)1 << (mapValue - 2));
     }
 
     // card groups are never set for free granules.
-    _ASSERTE(RegionMap()[mapIndex] == 1);
+    _ASSERTE(mapValue == 1);
     return (SatoriRegion*)((mapIndex << Satori::REGION_BITS) + Start());
 }
 

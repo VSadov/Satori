@@ -133,7 +133,8 @@ public:
     template <typename F>
     bool ForEachPageFrom(size_t startHint, F lambda)
     {
-        size_t usedLength = m_usedMapLength;
+        // acquire: a page that we find is initialized, and all the map entries of a large page are there. (see AddLargePage)
+        size_t usedLength = VolatileLoad(&m_usedMapLength);
         if (usedLength <= 1)
         {
             return false;
@@ -145,7 +146,7 @@ public:
         for (size_t i = 0; i < span; i++)
         {
             size_t mapIndex = 1 + (start + i) % span;
-            SatoriPage* page = m_pageMap[mapIndex];
+            SatoriPage* page = VolatileLoad(&m_pageMap[mapIndex]);
             if (page && IsFirstMapEntryOfPage(page, mapIndex))
             {
                 if (lambda(page))
