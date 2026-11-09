@@ -655,6 +655,108 @@ namespace SatoriTestHooks
         return got && countRight && lockFree;
     }
 
+    // ---- Step 5: the minimum free age ----
+
+    // Gets a region of one granule, commits it in full and frees it (in the conservative mode, parks it).
+    // Returns the page and the granule that the region had.
+    static bool FreeOneWarmGranule(SatoriHeap* heap, SatoriPage*& page, size_t& granule)
+    {
+        SatoriAllocator* allocator = heap->Allocator();
+        SatoriRegion* region = allocator->GetRegion(Satori::REGION_SIZE_GRANULARITY);
+        if (region == nullptr)
+        {
+            return false;
+        }
+
+        region->TryCommit();
+        page = region->ContainingPage();
+        granule = (region->Start() - page->Start()) >> Satori::REGION_BITS;
+        allocator->AddRegion(region);
+        return true;
+    }
+
+    // The trimmer takes a free granule only after a look of its has seen the granule free, and that was at least the minimum free age ago.
+    // A free starts the age over, and the first look that sees the granule free starts it. A trim on request (TrimNow) does not look at it.
+    static bool SelfTestAge(SatoriHeap* heap)
+    {
+        size_t minAge = SatoriUtil::TrimMinFreeAgeSeconds();
+        SatoriPage* page;
+        size_t granule;
+        if (minAge == 0 || !FreeOneWarmGranule(heap, page, granule))
+        {
+            Report("age", "FAIL", minAge == 0 ? "the minimum free age is off, the test needs it on" : "the test could not get a region");
+            return false;
+        }
+
+        size_t count;
+
+        // freed: it has no age, and no look has seen it
+        bool freed = page->NextGranuleToTrim(granule, false) == granule && page->SeenSince(granule) == 0 && !page->IsSeenFree(granule);
+
+        // The look starts the age. The granule is too young: the search of the trimmer does not find it, unless it asks for the work that is
+        // left, and the claim of the trimmer, if it got that far, gives the granule back.
+        page->RememberFreeGranules();
+        bool looked = page->SeenSince(granule) != 0 && page->IsSeenFree(granule);
+        bool youngSkipped = page->NextGranuleToTrim(granule, true) != granule;
+        bool youngIsWork = page->NextGranuleToTrim(granule, true, true) == granule;
+        bool youngRefused = !page->TryTrimRun(granule, 1, true, count) && page->NextGranuleToTrim(granule, false) == granule;
+
+        // old enough: the trimmer takes it
+        page->BackdateSeenSince(granule, (uint32_t)minAge + 1);
+        bool oldFound = page->NextGranuleToTrim(granule, true) == granule;
+        bool oldTaken = page->TryTrimRun(granule, 1, true, count) && page->NextGranuleToTrim(granule, false) != granule;
+
+        // a trim on request takes a granule that is too young
+        bool onRequest = false;
+        SatoriPage* page2;
+        size_t granule2;
+        if (FreeOneWarmGranule(heap, page2, granule2))
+        {
+            page2->RememberFreeGranules();
+            onRequest = page2->NextGranuleToTrim(granule2, true) != granule2 &&
+                page2->TryTrimRun(granule2, 1, false, count) &&
+                page2->NextGranuleToTrim(granule2, false) != granule2;
+        }
+
+        bool pass = freed && looked && youngSkipped && youngIsWork && youngRefused && oldFound && oldTaken && onRequest;
+        char details[260];
+        snprintf(details, sizeof(details), "minimum age %d s; freed has no age: %d, the look starts it: %d, too young is skipped: %d, is work left: %d, is refused: %d, old is found: %d, is taken: %d, a trim on request takes a young one: %d",
+            (int)minAge, (int)freed, (int)looked, (int)youngSkipped, (int)youngIsWork, (int)youngRefused, (int)oldFound, (int)oldTaken, (int)onRequest);
+        Report("age", pass ? "PASS" : "FAIL", details);
+        return pass;
+    }
+
+    // A parked region (the conservative mode) is not free, so no look sees it and it has no age. The drain frees it, and the first look
+    // after that starts its age.
+    static bool SelfTestAgeParked(SatoriHeap* heap)
+    {
+        SatoriPage* page;
+        size_t granule;
+        if (!FreeOneWarmGranule(heap, page, granule))
+        {
+            Report("ageparked", "FAIL", "the test could not get a region");
+            return false;
+        }
+
+        bool parked = page->NextGranuleToTrim(granule, false) != granule;
+        page->RememberFreeGranules();
+        bool parkedNotSeen = page->SeenSince(granule) == 0 && !page->IsSeenFree(granule);
+
+        heap->Allocator()->DrainParkedRegions();
+        bool drainedFree = page->NextGranuleToTrim(granule, false) == granule;
+        bool drainedNoAge = page->SeenSince(granule) == 0 && !page->IsSeenFree(granule);
+
+        page->RememberFreeGranules();
+        bool aging = page->SeenSince(granule) != 0 && page->IsSeenFree(granule);
+
+        bool pass = parked && parkedNotSeen && drainedFree && drainedNoAge && aging;
+        char details[200];
+        snprintf(details, sizeof(details), "parked is not free: %d, a look does not see it: %d, the drain frees it: %d, with no age: %d, the next look starts the age: %d",
+            (int)parked, (int)parkedNotSeen, (int)drainedFree, (int)drainedNoAge, (int)aging);
+        Report("ageparked", pass ? "PASS" : "FAIL", details);
+        return pass;
+    }
+
     // The names of the self-tests in SATORI_TEST_SELF are separated by commas.
     static bool Wants(const char* name)
     {
@@ -723,6 +825,33 @@ namespace SatoriTestHooks
                 pass &= !Wants("cacheexit1") || SelfTestCacheExit(heap, 1);
                 pass &= !Wants("cacheexit2") || SelfTestCacheExit(heap, 2);
                 pass &= !Wants("cacheexit3") || SelfTestCacheExit(heap, 3);
+            }
+        }
+
+        // the minimum free age: the precise mode, so that a free is a free, and no cache. The parked regions need the conservative mode.
+        if (Wants("age"))
+        {
+            if (conservative || !noCache)
+            {
+                Report("age", "FAIL", "the self-test needs the precise mode and DOTNET_gcRegionCacheCap=0");
+                pass = false;
+            }
+            else
+            {
+                pass &= SelfTestAge(heap);
+            }
+        }
+
+        if (Wants("ageparked"))
+        {
+            if (!conservative || !noCache)
+            {
+                Report("ageparked", "FAIL", "the self-test needs DOTNET_gcConservative=1 and DOTNET_gcRegionCacheCap=0");
+                pass = false;
+            }
+            else
+            {
+                pass &= SelfTestAgeParked(heap);
             }
         }
 

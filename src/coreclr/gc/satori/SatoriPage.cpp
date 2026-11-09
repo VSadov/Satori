@@ -780,6 +780,28 @@ void SatoriPage::NoteFormatted(size_t first, size_t count)
         Interlocked::Increment((volatile int32_t*)&counts[granule]);
     }
 }
+
+// TEST-HOOK
+uint32_t SatoriPage::SeenSince(size_t granule)
+{
+    _ASSERTE(granule < GranuleCount());
+    return VolatileLoad(&m_seenSince[granule]);
+}
+
+// TEST-HOOK
+bool SatoriPage::IsSeenFree(size_t granule)
+{
+    _ASSERTE(granule < GranuleCount());
+    return (VolatileLoad(&m_seenFreeBitmap[granule / 64]) >> (granule % 64)) & 1;
+}
+
+// TEST-HOOK
+void SatoriPage::BackdateSeenSince(size_t granule, uint32_t seconds)
+{
+    _ASSERTE(granule < GranuleCount());
+    _ASSERTE(m_seenSince[granule] != 0);
+    VolatileStore(&m_seenSince[granule], m_seenSince[granule] - seconds);
+}
 #endif
 
 // TEMP-TRACE

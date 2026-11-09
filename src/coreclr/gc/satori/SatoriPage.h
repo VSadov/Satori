@@ -125,6 +125,10 @@ public:
     // TEST-HOOK: the number of times that the granule was formatted as a part of a region, and a note that the granules are.
     uint32_t FormatCount(size_t granule);
     void NoteFormatted(size_t first, size_t count);
+    // TEST-HOOK: the free age stamp of the granule (see m_seenSince), whether it is seen free, and a way to make the stamp older.
+    uint32_t SeenSince(size_t granule);
+    bool IsSeenFree(size_t granule);
+    void BackdateSeenSince(size_t granule, uint32_t seconds);
 #endif
 
     // TEMP-TRACE: prints a character per granule, see SatoriHeap::PrintTrace.
