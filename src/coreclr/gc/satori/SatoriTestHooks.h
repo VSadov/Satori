@@ -46,6 +46,7 @@ class SatoriRegion;
 //   SATORI_TEST_ASSERT_FREE_OUTSIDE_DRAIN=1
 //                                   in the conservative mode FreeRegion may run only in the drain of the parked regions
 //   SATORI_TEST_PAUSE_FREE_MS=n     a free of a region into the bitmap pauses for n ms before it starts
+//   SATORI_TEST_PAUSE_TRIMMER_MS=n  the trimmer pauses for n ms after it claims a run of granules and before it publishes the run again
 namespace SatoriTestHooks
 {
     // Reads the environment. Called once, when the allocator is initialized.
@@ -54,6 +55,7 @@ namespace SatoriTestHooks
     extern bool s_checkReformat;
     extern bool s_assertFreeOutsideDrain;
     extern int s_pauseFreeMs;
+    extern int s_pauseTrimmerMs;
 
     // The marker of a self-test is held between its map lookup and its header reads.
     extern thread_local bool t_holdMarker;
@@ -81,6 +83,9 @@ namespace SatoriTestHooks
 
     // FreeRegion starts.
     void OnFreeRegion();
+
+    // The trimmer has claimed a run of granules and is about to publish it again.
+    void OnTrimRunClaimed();
 
     // Runs the self-tests that the environment asks for, once.
     void RunSelfTests(SatoriHeap* heap);

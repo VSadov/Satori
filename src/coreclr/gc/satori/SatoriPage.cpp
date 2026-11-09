@@ -673,6 +673,10 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
         TraceTrimSkippedForReader(claimed); // TEMP-TRACE
     }
 
+#if _DEBUG
+    SatoriTestHooks::OnTrimRunClaimed(); // TEST-HOOK
+#endif
+
     PublishFreeGranules(first, claimed);
     for (size_t i = 0; i < claimed; i++)
     {

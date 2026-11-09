@@ -52,6 +52,7 @@ namespace SatoriTestHooks
     bool s_checkReformat;
     bool s_assertFreeOutsideDrain;
     int s_pauseFreeMs;
+    int s_pauseTrimmerMs;
     thread_local bool t_holdMarker;
     thread_local bool t_inParkDrain;
 
@@ -81,6 +82,7 @@ namespace SatoriTestHooks
         s_checkReformat = EnvInt("SATORI_TEST_REFORMAT_ASSERT") != 0;
         s_assertFreeOutsideDrain = EnvInt("SATORI_TEST_ASSERT_FREE_OUTSIDE_DRAIN") != 0;
         s_pauseFreeMs = EnvInt("SATORI_TEST_PAUSE_FREE_MS");
+        s_pauseTrimmerMs = EnvInt("SATORI_TEST_PAUSE_TRIMMER_MS");
         int holdMs = EnvInt("SATORI_TEST_HOLD_MARKER_MS");
         if (holdMs > 0)
         {
@@ -199,6 +201,14 @@ namespace SatoriTestHooks
         if (s_assertFreeOutsideDrain && SatoriUtil::IsConservativeMode() && !t_inParkDrain)
         {
             _ASSERTE(!"FreeRegion runs in the conservative mode outside the drain of the parked regions");
+        }
+    }
+
+    void OnTrimRunClaimed()
+    {
+        if (s_pauseTrimmerMs)
+        {
+            GCToOSInterface::Sleep(s_pauseTrimmerMs);
         }
     }
 
