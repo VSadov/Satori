@@ -86,8 +86,8 @@ void SatoriTrimmer::Loop()
     int64_t roundStart = 0;
     const int64_t roundInterval = SatoriUtil::GetTimeStampFrequency() * 5;
 
-    // The last round saw granules that are free and committed, and could not trim them, since they were not free on the round before.
-    // The next round can, if they stay free.
+    // The last round saw granules that are free and committed, and could not trim them, since they were not free on the round before,
+    // or have not been free for the minimum free age. A later round can, if they stay free.
     bool leftWork = false;
 
     // The GCs of any generation that the trimmer has seen, and when it saw the last new one.
@@ -164,8 +164,8 @@ void SatoriTrimmer::Loop()
 
                 int64_t lastGen1 = m_heap->Recycler()->GetCollectionCount(1);
 
-                // Only the granules that were free on the previous round too, so that memory that a busy process
-                // is about to take again is not decommitted. Adjacent granules are decommitted together.
+                // Only the granules that were free on the previous round too, and have been free for the minimum free age, so that memory
+                // that a busy process is about to take again is not decommitted. Adjacent granules are decommitted together.
                 size_t granule = page->NextGranuleToTrim(0, /* onlyIfSeenFree */ true);
                 while (granule != SIZE_MAX)
                 {
@@ -195,8 +195,8 @@ void SatoriTrimmer::Loop()
 
                 page->RememberFreeGranules();
 
-                // what this round saw, and the next one can trim
-                if (page->NextGranuleToTrim(0, /* onlyIfSeenFree */ true) != SIZE_MAX)
+                // what this round saw, and a later round can trim, when the granules are old enough
+                if (page->NextGranuleToTrim(0, /* onlyIfSeenFree */ true, /* ignoreAge */ true) != SIZE_MAX)
                 {
                     leftWork = true;
                 }

@@ -95,17 +95,19 @@ public:
     // that it does not own without being registered, see EnterUnownedHeaderRead.
     //
     // Finds the first free granule that has anything committed, not before `from`. When asked, only among the granules
-    // that were also free when the trimmer last looked at this page. Returns SIZE_MAX if there is none.
-    size_t NextGranuleToTrim(size_t from, bool onlyIfSeenFree);
+    // that were also free when the trimmer last looked at this page, and that have been free for the minimum free age
+    // (TRIM_MIN_FREE_AGE_SEC), unless `ignoreAge` says that the granules that are too young count too (to see if there is work left).
+    // Returns SIZE_MAX if there is none.
+    size_t NextGranuleToTrim(size_t from, bool onlyIfSeenFree, bool ignoreAge = false);
     // Claims the granule `first`, which NextGranuleToTrim found, and the free granules after it that have anything committed,
     // up to `maxCount` granules together. Decommits them with one call and gives them back as free and cold.
-    // When asked, only the granules that are still ones that were seen free: the caller may have found them before they were claimed
-    // and freed again, and then the claim takes the new free bit.
+    // When asked, only the granules that are still ones that were seen free, and old enough: the caller may have found them before
+    // they were claimed and freed again, and then the claim takes the new free bit.
     // `count` is the number of granules that the run covered (at least 1), the caller goes on after them.
     // Returns true if it decommitted anything. It decommits nothing, and gives the granules back, if a thread is registered as a reader
     // of an unowned header.
     bool TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, size_t& count);
-    // Remembers which granules are free now, for the next time.
+    // Remembers which granules are free now, for the next time, and since when they are.
     void RememberFreeGranules();
 
     // A thread that reads the header of a region that it does not own (the region that follows its own, see TryGetRegularRegion)
@@ -246,6 +248,7 @@ private:
     bool TryClearRun(size_t first, size_t count);
     void ForgetSeenFree(size_t first, size_t count);
     bool IsTrimCandidate(size_t granule, bool onlyIfSeenFree);
+    bool IsOldEnoughToTrim(size_t granule);
 
     union
     {
@@ -308,15 +311,19 @@ private:
             // FreeRegion clears the bits of the granules that it frees, before it sets their free bits.
             // Only the trimmer sets bits (and a GC that trims on request, while the trimmer is stopped).
             size_t* m_seenFreeBitmap;
+            // 1 stamp per granule, in seconds of the trimmer's clock (SatoriUtil::TrimClockSeconds): when a look of the trimmer first saw
+            // the granule free, 0 if no look has since it was freed. FreeRegion clears the stamps of the granules that it frees,
+            // before it clears their seen bits. It does not fit into the page, like the stamps below.
+            uint32_t* m_seenSince;
 #if _DEBUG
             // Checked builds only. The trimmer asserts that it never decommits a granule that was freed after the last look at its page.
             // 1 stamp per granule: when FreeRegion freed it (0 if it was never used). The stamps and the one below come from one counter.
             // A granule that the last look saw as free was freed before the look, because the look takes its stamp after the copy.
+            // TEST-HOOK: the array also has the count of how many times each granule was formatted as a part of a region,
+            // after the stamps, 4 bytes per granule. (see FormatCount)
             size_t* m_freeStamps;
             // The stamp of the last look at the page.
             size_t m_snapshotStamp;
-            // TEST-HOOK: how many times each granule was formatted as a part of a region. Outside the page, for the self-tests.
-            uint32_t* m_formatCounts;
 #endif
 
             // computed size,
