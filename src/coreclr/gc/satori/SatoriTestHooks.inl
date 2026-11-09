@@ -401,6 +401,270 @@ namespace SatoriTestHooks
         return pass;
     }
 
+    // ---- Step 3: the fallbacks when a commit fails ----
+
+    // The claimer that a test holds after it has found a warm granule.
+    static volatile bool s_claimerPaused;
+    static volatile bool s_releaseClaimer;
+    static volatile bool s_claimerDone;
+    static SatoriPage* s_pausedPage;
+    static size_t s_pausedGranule;
+    static SatoriRegion* s_claimerResult;
+    static int s_claimerRequestKind;
+
+    volatile int32_t s_failFormatCommits;
+    volatile int32_t s_failPageCommits;
+    thread_local bool t_claimMiss;
+    thread_local bool t_pauseWarmClaim;
+
+    static bool ConsumeFailure(volatile int32_t& counter)
+    {
+        while (true)
+        {
+            int32_t n = counter;
+            if (n == 0)
+            {
+                return false;
+            }
+
+            if (n < 0 || Interlocked::CompareExchange(&counter, n - 1, n) == n)
+            {
+                return true;
+            }
+        }
+    }
+
+    bool FailFormatCommit()
+    {
+        return ConsumeFailure(s_failFormatCommits);
+    }
+
+    bool FailPageCommit()
+    {
+        return ConsumeFailure(s_failPageCommits);
+    }
+
+    void OnWarmGranuleFound(SatoriPage* page, size_t granule)
+    {
+        if (!t_pauseWarmClaim)
+        {
+            return;
+        }
+
+        t_pauseWarmClaim = false;
+        s_pausedPage = page;
+        s_pausedGranule = granule;
+        s_claimerPaused = true;
+        WaitUntil(s_releaseClaimer, 10000);
+    }
+
+    // A thread that gets a region of the given kind: 0 - a long-lived region of one granule.
+    static void ClaimerThreadFn(void*)
+    {
+        t_pauseWarmClaim = true;
+        s_claimerResult = s_heap->Allocator()->GetRegionLow(Satori::REGION_SIZE_GRANULARITY);
+        s_claimerDone = true;
+    }
+
+    static void ReportCommit(const char* name, bool pass, SatoriRegion* region, int32_t commitsLeft, const char* what)
+    {
+        char details[200];
+        snprintf(details, sizeof(details), "%s; region %p; commits left of the failing ones: %d", what, (void*)region, (int)commitsLeft);
+        Report(name, pass ? "PASS" : "FAIL", details);
+    }
+
+    // The warm region that a free of a region leaves: committed in full, and free.
+    static SatoriRegion* FreeWarm(SatoriHeap* heap, size_t granules)
+    {
+        SatoriAllocator* allocator = heap->Allocator();
+        SatoriRegion* region = allocator->GetRegion(granules << Satori::REGION_BITS);
+        if (region != nullptr)
+        {
+            region->TryCommit();
+            allocator->AddRegion(region);
+        }
+
+        return region;
+    }
+
+    // A request for a long-lived region claims the highest free granule, which is never used, and cannot be committed. A warm granule is free.
+    // The request must get the warm one, and must not try to commit again.
+    static bool SelfTestWarmLow(SatoriHeap* heap)
+    {
+        SatoriAllocator* allocator = heap->Allocator();
+        SatoriRegion* warm = FreeWarm(heap, 1);
+        if (warm == nullptr)
+        {
+            Report("warmlow", "FAIL", "the test could not get a region");
+            return false;
+        }
+
+        size_t warmStart = warm->Start();
+        s_failFormatCommits = 2;
+        SatoriRegion* region = allocator->GetRegionLow(Satori::REGION_SIZE_GRANULARITY);
+        int32_t left = s_failFormatCommits;
+        s_failFormatCommits = 0;
+        bool pass = region != nullptr && region->Start() == warmStart && left == 1;
+        ReportCommit("warmlow", pass, region, left, pass ? "the request got the warm region" : "the request did not get the warm region");
+        return pass;
+    }
+
+    // The same for a run: the lowest free run of two granules is cold (its first granule is trimmed, the second was never used),
+    // and the run above it is warm.
+    static bool SelfTestWarmRun(SatoriHeap* heap)
+    {
+        SatoriAllocator* allocator = heap->Allocator();
+        SatoriRegion* cold = allocator->GetRegion(2 * Satori::REGION_SIZE_GRANULARITY);
+        SatoriRegion* warm = cold != nullptr ? FreeWarm(heap, 2) : nullptr;
+        if (cold == nullptr || warm == nullptr || warm->Start() != cold->End())
+        {
+            Report("warmrun", "FAIL", "the test could not get two runs next to each other");
+            return false;
+        }
+
+        SatoriPage* page = cold->ContainingPage();
+        size_t coldFirst = (cold->Start() - page->Start()) >> Satori::REGION_BITS;
+        size_t warmStart = warm->Start();
+        allocator->AddRegion(cold);
+        size_t count;
+        bool trimmed = page->TryTrimRun(coldFirst, 1, /* onlyIfSeenFree */ false, count);
+
+        s_failFormatCommits = 2;
+        SatoriRegion* region = allocator->GetRegion(2 * Satori::REGION_SIZE_GRANULARITY);
+        int32_t left = s_failFormatCommits;
+        s_failFormatCommits = 0;
+        bool pass = trimmed && region != nullptr && region->Start() == warmStart && left == 1;
+        ReportCommit("warmrun", pass, region, left, trimmed ? "the cold run was trimmed" : "the cold run could not be trimmed");
+        return pass;
+    }
+
+    // The trimmer takes a granule between a claimer's look at its warm bit and its claim. The claimer that retries for a warm granule
+    // gets the granule cold, and must give it back and go on. With a warm granule below it, that is the one to take. Without, the request fails.
+    static bool SelfTestRaceTrim(SatoriHeap* heap, bool withOtherWarm)
+    {
+        const char* name = withOtherWarm ? "racetrim" : "racetrim-none";
+        SatoriAllocator* allocator = heap->Allocator();
+        // both regions are claimed before either is freed, otherwise the second claim takes the granule of the first one again
+        SatoriRegion* lower = withOtherWarm ? allocator->GetRegion(Satori::REGION_SIZE_GRANULARITY) : nullptr;
+        SatoriRegion* upper = allocator->GetRegion(Satori::REGION_SIZE_GRANULARITY);
+        if (upper == nullptr || (withOtherWarm && lower == nullptr))
+        {
+            Report(name, "FAIL", "the test could not get a region");
+            return false;
+        }
+
+        if (lower != nullptr)
+        {
+            lower->TryCommit();
+            allocator->AddRegion(lower);
+        }
+
+        upper->TryCommit();
+        allocator->AddRegion(upper);
+
+        // the claimer takes the highest warm granule first
+        _ASSERTE(lower == nullptr || lower->Start() < upper->Start());
+        SatoriPage* page = upper->ContainingPage();
+        size_t upperGranule = (upper->Start() - page->Start()) >> Satori::REGION_BITS;
+        size_t lowerStart = lower != nullptr ? lower->Start() : 0;
+
+        s_claimerPaused = false;
+        s_releaseClaimer = false;
+        s_claimerDone = false;
+        s_claimerResult = nullptr;
+        s_failFormatCommits = 2;
+        if (!GCToEEInterface::CreateThread(ClaimerThreadFn, nullptr, false, "Satori Test Claimer"))
+        {
+            Report(name, "FAIL", "the test could not start its claimer");
+            return false;
+        }
+
+        // the claimer finds the granule of the upper region warm, and is held. The trimmer takes the granule.
+        bool paused = WaitUntil(s_claimerPaused, 5000);
+        bool trimmed = false;
+        if (paused)
+        {
+            size_t count;
+            trimmed = page->TryTrimRun(upperGranule, 1, /* onlyIfSeenFree */ false, count);
+        }
+
+        s_releaseClaimer = true;
+        bool done = WaitUntil(s_claimerDone, 10000);
+        int32_t left = s_failFormatCommits;
+        s_failFormatCommits = 0;
+
+        bool right = withOtherWarm ? (s_claimerResult != nullptr && s_claimerResult->Start() == lowerStart) : (s_claimerResult == nullptr);
+        bool pass = paused && trimmed && done && right && left == 1 && s_pausedGranule == upperGranule;
+        char what[120];
+        snprintf(what, sizeof(what), "the claimer was held on the upper granule: %d, the trimmer took it: %d, done: %d", (int)(paused && s_pausedGranule == upperGranule), (int)trimmed, (int)done);
+        ReportCommit(name, pass, s_claimerResult, left, what);
+        return pass;
+    }
+
+    // A request for a long-lived region fails in the three ways that the review found, and there is a region in the cache.
+    // The request must get it. Then the cache count is right and the page-add lock is free.
+    static bool SelfTestCacheExit(SatoriHeap* heap, int exit)
+    {
+        char name[16];
+        snprintf(name, sizeof(name), "cacheexit%d", exit);
+        SatoriAllocator* allocator = heap->Allocator();
+        allocator->DrainRegionCache();
+        SatoriRegion* cached = allocator->GetRegion(Satori::REGION_SIZE_GRANULARITY);
+        if (cached == nullptr)
+        {
+            Report(name, "FAIL", "the test could not get a region");
+            return false;
+        }
+
+        allocator->AddRegion(cached);
+        if (!allocator->TestCacheCountIs(1))
+        {
+            Report(name, "FAIL", "the region did not go to the cache");
+            return false;
+        }
+
+        switch (exit)
+        {
+        case 1:
+            // the claim in the pages that we have fails to format
+            s_failFormatCommits = -1;
+            break;
+        case 2:
+            // nothing is free in the pages that we have, the added page is fine, and what is claimed in it fails to format
+            t_claimMiss = true;
+            s_failFormatCommits = -1;
+            break;
+        default:
+            // nothing is free in the pages that we have, and the page cannot be added
+            t_claimMiss = true;
+            s_failPageCommits = -1;
+            break;
+        }
+
+        SatoriRegion* region = allocator->GetRegionLow(Satori::REGION_SIZE_GRANULARITY);
+        s_failFormatCommits = 0;
+        s_failPageCommits = 0;
+        t_claimMiss = false;
+
+        bool got = region == cached;
+        bool countRight = allocator->TestCacheCountIs(0);
+        bool lockFree = allocator->TestPageAddLockIsFree();
+        char what[120];
+        snprintf(what, sizeof(what), "got the cached region: %d, the cache count is right: %d, the page-add lock is free: %d", (int)got, (int)countRight, (int)lockFree);
+        ReportCommit(name, got && countRight && lockFree, region, 0, what);
+        return got && countRight && lockFree;
+    }
+
+    // The names of the self-tests in SATORI_TEST_SELF are separated by commas.
+    static bool Wants(const char* name)
+    {
+        char key[48];
+        snprintf(key, sizeof(key), ",%s,", name);
+        char list[160];
+        snprintf(list, sizeof(list), ",%s,", s_selfTests);
+        return strstr(list, key) != nullptr;
+    }
+
     void RunSelfTests(SatoriHeap* heap)
     {
         static volatile int32_t s_started;
@@ -410,21 +674,56 @@ namespace SatoriTestHooks
         }
 
         s_heap = heap;
-        if (!SatoriUtil::IsConservativeMode() || GCConfig::GetRegionCacheCap() != 0)
-        {
-            Report("setup", "FAIL", "the self-tests need DOTNET_gcConservative=1 and DOTNET_gcRegionCacheCap=0");
-            return;
-        }
-
+        bool conservative = SatoriUtil::IsConservativeMode();
+        bool noCache = GCConfig::GetRegionCacheCap() == 0;
         bool pass = true;
-        if (strstr(s_selfTests, "reuse"))
+
+        // the quarantine of the freed regions: the conservative mode, and the freed regions are not cached
+        if (Wants("reuse") || Wants("absorb"))
         {
-            pass &= SelfTestReuse(heap);
+            if (!conservative || !noCache)
+            {
+                Report("reuse/absorb", "FAIL", "the self-tests need DOTNET_gcConservative=1 and DOTNET_gcRegionCacheCap=0");
+                pass = false;
+            }
+            else
+            {
+                pass &= !Wants("reuse") || SelfTestReuse(heap);
+                pass &= !Wants("absorb") || SelfTestAbsorb(heap);
+            }
         }
 
-        if (strstr(s_selfTests, "absorb"))
+        // the fallbacks to a region that is committed in full: the precise mode, so that a free is a free, and no cache
+        if (Wants("warmlow") || Wants("warmrun") || Wants("racetrim") || Wants("racetrim-none"))
         {
-            pass &= SelfTestAbsorb(heap);
+            if (conservative || !noCache)
+            {
+                Report("warm", "FAIL", "the self-tests need the precise mode and DOTNET_gcRegionCacheCap=0");
+                pass = false;
+            }
+            else
+            {
+                pass &= !Wants("warmlow") || SelfTestWarmLow(heap);
+                pass &= !Wants("warmrun") || SelfTestWarmRun(heap);
+                pass &= !Wants("racetrim") || SelfTestRaceTrim(heap, true);
+                pass &= !Wants("racetrim-none") || SelfTestRaceTrim(heap, false);
+            }
+        }
+
+        // the fallbacks to the cache: a cache
+        if (Wants("cacheexit1") || Wants("cacheexit2") || Wants("cacheexit3"))
+        {
+            if (conservative || noCache)
+            {
+                Report("cacheexit", "FAIL", "the self-tests need the precise mode and a cache (not DOTNET_gcRegionCacheCap=0)");
+                pass = false;
+            }
+            else
+            {
+                pass &= !Wants("cacheexit1") || SelfTestCacheExit(heap, 1);
+                pass &= !Wants("cacheexit2") || SelfTestCacheExit(heap, 2);
+                pass &= !Wants("cacheexit3") || SelfTestCacheExit(heap, 3);
+            }
         }
 
         _ASSERTE(pass);

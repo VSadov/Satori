@@ -1281,6 +1281,13 @@ tryAgain:
 // Returns nullptr if there is nothing free, or if what we claimed cannot be committed. (outOfMemory)
 SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& outOfMemory)
 {
+#if _DEBUG
+    if (SatoriTestHooks::t_claimMiss) // TEST-HOOK
+    {
+        return nullptr;
+    }
+#endif
+
     int64_t start = SatoriTrace::s_enabled ? SatoriUtil::GetTimeStamp() : 0;
     SatoriRegion* result = nullptr;
     size_t retries = 0;
@@ -1549,6 +1556,26 @@ void SatoriAllocator::DrainRegionCache()
         FreeToBitmap(region);
     }
 }
+
+#if _DEBUG
+// TEST-HOOK
+bool SatoriAllocator::TestCacheCountIs(size_t count)
+{
+    return m_regionCacheCount == count && m_regionCache->Count() == count;
+}
+
+// TEST-HOOK
+bool SatoriAllocator::TestPageAddLockIsFree()
+{
+    if (!m_pageAddLock.TryEnter())
+    {
+        return false;
+    }
+
+    m_pageAddLock.Leave();
+    return true;
+}
+#endif
 
 // TEMP-TRACE: what the allocator of regions has counted, and the layout of the pages.
 void SatoriAllocator::PrintTrace()

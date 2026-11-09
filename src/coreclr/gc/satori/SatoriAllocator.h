@@ -84,6 +84,13 @@ public:
     void DeactivateSharedRegion(SatoriRegion* region, bool promoteAllRegions);
     void DeactivateSharedRegions(bool promoteAllRegions);
 
+#if _DEBUG
+    // TEST-HOOK: for the self-tests, see SatoriTestHooks. The cache has this many regions, as its count and as its queue.
+    bool TestCacheCountIs(size_t count);
+    // The lock of the page adds is free.
+    bool TestPageAddLockIsFree();
+#endif
+
 private:
     // Bytes allocated by threads, as published by the threads. (see PublishAllocatedBytes)
     // Each counter is on its own cache line.

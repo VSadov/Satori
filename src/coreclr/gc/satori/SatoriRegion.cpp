@@ -49,6 +49,7 @@
 #include "SatoriPage.inl"
 #include "SatoriQueue.h"
 #include "SatoriPageAddTrace.h" // TEMP-TRACE
+#include "SatoriTestHooks.h" // TEST-HOOK
 #include "SatoriPrefetchQueue.h"
 #include "SatoriWorkChunk.h"
 
@@ -187,6 +188,13 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     if (committed < minCommitted)
     {
         size_t toCommit = minCommitted - committed;
+#if _DEBUG
+        if (SatoriTestHooks::FailFormatCommit()) // TEST-HOOK
+        {
+            return nullptr;
+        }
+#endif
+
         if (!TraceVirtualCommit((void*)committed, toCommit)) // TEMP-TRACE
         {
             // OOM

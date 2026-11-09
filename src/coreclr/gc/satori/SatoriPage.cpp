@@ -65,7 +65,11 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
         pageSize :
         ALIGN_UP(cardTableSize, SatoriUtil::CommitGranularity());
 
-    if (!TraceVirtualCommit((void*)address, commitSize)) // TEMP-TRACE
+    if (
+#if _DEBUG
+        SatoriTestHooks::FailPageCommit() || // TEST-HOOK
+#endif
+        !TraceVirtualCommit((void*)address, commitSize)) // TEMP-TRACE
     {
         GCToOSInterface::VirtualRelease(result, pageSize);
         status = InitStatus::CommitFailed;
@@ -327,6 +331,13 @@ size_t SatoriPage::TryClaimGranule(bool warmOnly, bool fromTop, size_t& retries)
             {
                 BitScanForward64(&bit, candidates);
             }
+
+#if _DEBUG
+            if (warmOnly)
+            {
+                SatoriTestHooks::OnWarmGranuleFound(this, word * 64 + bit); // TEST-HOOK
+            }
+#endif
 
             size_t seen = Interlocked::CompareExchange(&m_freeBitmap[word], freeBits & ~((size_t)1 << bit), freeBits);
             if (seen == freeBits)
@@ -1047,6 +1058,14 @@ SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count)
     bool committedGaps = ForEachCommitGap(this, first, count, committed, m_commitWatermarks,
         [&](size_t gapStart, size_t gapEnd)
         {
+#if _DEBUG
+            if (SatoriTestHooks::FailFormatCommit()) // TEST-HOOK
+            {
+                failedAt = gapStart;
+                return false;
+            }
+#endif
+
             if (!TraceVirtualCommit((void*)gapStart, gapEnd - gapStart)) // TEMP-TRACE
             {
                 failedAt = gapStart;

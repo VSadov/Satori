@@ -47,6 +47,11 @@ class SatoriRegion;
 //                                   in the conservative mode FreeRegion may run only in the drain of the parked regions
 //   SATORI_TEST_PAUSE_FREE_MS=n     a free of a region into the bitmap pauses for n ms before it starts
 //   SATORI_TEST_PAUSE_TRIMMER_MS=n  the trimmer pauses for n ms after it claims a run of granules and before it publishes the run again
+//
+// The self-tests of the commit failures run in the precise mode, with DOTNET_gcRegionCacheCap=0 for the ones that need the freed regions
+// to be free granules, and without it for the ones that need a region in the cache:
+//   SATORI_TEST_SELF=warmlow,warmrun,racetrim,racetrim-none   (the fallback to a region that is committed in full)
+//   SATORI_TEST_SELF=cacheexit1,cacheexit2,cacheexit3         (the fallback to the cache)
 namespace SatoriTestHooks
 {
     // Reads the environment. Called once, when the allocator is initialized.
@@ -56,6 +61,19 @@ namespace SatoriTestHooks
     extern bool s_assertFreeOutsideDrain;
     extern int s_pauseFreeMs;
     extern int s_pauseTrimmerMs;
+
+    // The commits that a region needs when it is formatted fail: the next n of them when positive, all of them when -1. (see FailFormatCommit)
+    extern volatile int32_t s_failFormatCommits;
+    // The same for the commits that a page add needs.
+    extern volatile int32_t s_failPageCommits;
+    bool FailFormatCommit();
+    bool FailPageCommit();
+
+    // The thread finds no free granule in the pages that it has, so a request has to add a page. (see SatoriAllocator::TryClaimRegion)
+    extern thread_local bool t_claimMiss;
+    // The thread is held once, after it has found a warm granule and before it claims it. (see SatoriPage::TryClaimGranule)
+    extern thread_local bool t_pauseWarmClaim;
+    void OnWarmGranuleFound(SatoriPage* page, size_t granule);
 
     // The marker of a self-test is held between its map lookup and its header reads.
     extern thread_local bool t_holdMarker;
