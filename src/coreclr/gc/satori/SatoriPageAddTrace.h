@@ -85,6 +85,9 @@ extern thread_local int64_t t_addWaitedTicks;
 // Step 2 of Milestone 2b: the commits and decommits that the GC asks the OS for, and the time they take. (see [osstats])
 bool TraceVirtualCommit(void* address, size_t size);
 bool TraceVirtualDecommit(void* address, size_t size);
+
+// Step 2 of Milestone 2c: how long a blocking GC of a Checked build waits for the trimmer to stop before it verifies the granules. (see [verifywait])
+void TraceVerifyWait(int64_t startTicks);
 // Where memory for allocation is committed up to. (SATORI_COMMIT_STEP_KB, SATORI_COMMIT_DOUBLING)
 size_t TraceCommitTo(size_t regionStart, size_t committed, size_t ensureCommitted);
 

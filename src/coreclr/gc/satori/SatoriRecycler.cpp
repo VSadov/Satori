@@ -1648,6 +1648,15 @@ void SatoriRecycler::BlockingCollectImpl()
     Relocate();
     Update();
 
+#if _DEBUG
+    // The GC asked the trimmer to stop when it started, but only the conservative mode waits for it to stop. In the precise mode
+    // the trimmer can be between claiming a run of granules and publishing it, and the verification below would report the claimed granules.
+    // The stop was requested before the GC's work, so the trimmer is not going to start anything else before the verification.
+    int64_t verifyWaitStart = SatoriTrace::s_enabled ? SatoriUtil::GetTimeStamp() : 0; // TEMP-TRACE
+    m_trimmer->WaitForStop();
+    TraceVerifyWait(verifyWaitStart); // TEMP-TRACE
+#endif
+
     // The conservative mode parks the regions that are freed, see SatoriAllocator::FreeToBitmap. This is where they are freed.
     // Marking is complete and the EE is stopped, so no marker can be looking at the header of a region that it found earlier,
     // and what is freed here can be claimed only after the EE restarts. Every blocking GC passes here.

@@ -111,6 +111,29 @@ static size_t g_drainCount;
 static size_t g_drainTicks;
 static size_t g_drainMaxTicks;
 
+// Step 2 of Milestone 2c: the time that a blocking GC of a Checked build waits for the trimmer. (see [verifywait])
+static size_t g_verifyWaits;
+static size_t g_verifyWaitsOver1Ms;
+static size_t g_verifyWaitTicks;
+static size_t g_verifyWaitMaxTicks;
+
+void TraceVerifyWait(int64_t startTicks)
+{
+    if (!SatoriTrace::s_enabled)
+    {
+        return;
+    }
+
+    size_t ticks = (size_t)(SatoriUtil::GetTimeStamp() - startTicks);
+    g_verifyWaits++;
+    g_verifyWaitTicks += ticks;
+    g_verifyWaitMaxTicks = max(g_verifyWaitMaxTicks, ticks);
+    if (ticks * 1000 > (size_t)SatoriUtil::GetTimeStampFrequency())
+    {
+        g_verifyWaitsOver1Ms++;
+    }
+}
+
 static void TraceCount(volatile size_t* counter)
 {
     if (g_traceOn)
@@ -992,6 +1015,15 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
             g_parkRegions, (double)g_parkBytes / (1 << 20), g_parkMaxCycleRegions, (double)g_parkMaxCycleBytes / (1 << 20),
             (double)g_parkMaxSharePermille / 10.0, g_drainCount,
             TraceTicksToUs((int64_t)g_drainTicks) / 1000.0, TraceTicksToUs((int64_t)g_drainMaxTicks) / 1000.0);
+        TraceWrite(buf, len);
+    }
+
+    if (g_verifyWaits)
+    {
+        len = snprintf(buf, sizeof(buf),
+            "[verifywait] t=%.3f ev=%s waits=%zu over1ms=%zu totalMs=%.3f maxMs=%.3f\n",
+            TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, ev,
+            g_verifyWaits, g_verifyWaitsOver1Ms, TraceTicksToUs((int64_t)g_verifyWaitTicks) / 1000.0, TraceTicksToUs((int64_t)g_verifyWaitMaxTicks) / 1000.0);
         TraceWrite(buf, len);
     }
 }
