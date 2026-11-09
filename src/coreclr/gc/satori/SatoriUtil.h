@@ -840,6 +840,27 @@ public:
         return max(Satori::WATERMARK_UNIT, ALIGN_UP(GCToOSInterface::GetPageSize(), Satori::WATERMARK_UNIT));
     }
 
+    // Where the memory for allocation is committed up to, when allocation needs memory up to `ensureCommitted` and the region
+    // that starts at `regionStart` has `committed` of it committed.
+    // The step is what the region has committed already, rounded down to a power of 2, and not less than the commit granularity
+    // and not more than a regular region. A region that is filled a little at a time is then committed in about 7 calls
+    // instead of 64, and the threads that fill their regions at the same time make fewer calls into the OS.
+    // (a commit call costs more when many threads make it at once)
+    // Regions are aligned to 2 MB, so the target is never past the end of the region.
+    // Every step is a multiple of the commit granularity, so the commit of a region stays a whole number of watermark units.
+    static size_t CommitTarget(size_t regionStart, size_t committed, size_t ensureCommitted)
+    {
+        _ASSERTE(committed >= regionStart);
+        size_t step = CommitGranularity();
+        size_t have = committed - regionStart;
+        if (have)
+        {
+            step = max(step, min(RoundDownPwr2(have), (size_t)Satori::REGION_SIZE_GRANULARITY));
+        }
+
+        return ALIGN_UP(ensureCommitted, step);
+    }
+
 private:
     // the rate of the inline hardware counter, in Hz. 0 if we are not using it.
     static int64_t s_timeStampFrequency;

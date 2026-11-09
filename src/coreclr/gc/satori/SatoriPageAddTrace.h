@@ -88,8 +88,6 @@ bool TraceVirtualDecommit(void* address, size_t size);
 
 // Step 2 of Milestone 2c: how long a blocking GC of a Checked build waits for the trimmer to stop before it verifies the granules. (see [verifywait])
 void TraceVerifyWait(int64_t startTicks);
-// Where memory for allocation is committed up to. (SATORI_COMMIT_STEP_KB, SATORI_COMMIT_DOUBLING)
-size_t TraceCommitTo(size_t regionStart, size_t committed, size_t ensureCommitted);
 
 // Step 2 of Milestone 2b: where the time of the growth phase goes.
 // The GetRegion calls and the time in them, and the time that a blocking GC waits for the world to stop.
