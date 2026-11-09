@@ -1198,9 +1198,14 @@ tryAgain:
 
     outOfMemory = false;
     region = TryClaimRegion(granules, low, outOfMemory);
-    if (region || outOfMemory)
+    if (region)
     {
         return region;
+    }
+
+    if (outOfMemory)
+    {
+        goto failed;
     }
 
     TraceMiss(traceCtx); // TEMP-TRACE
@@ -1243,9 +1248,14 @@ tryAgain:
                 Interlocked::Increment(&m_pageAddsCompleted);
                 m_pageAddLock.Leave();
                 TraceAfterAdd(traceCtx, page, regionSize, low, requester); // TEMP-TRACE
-                if (region || outOfMemory)
+                if (region)
                 {
                     return region;
+                }
+
+                if (outOfMemory)
+                {
+                    goto failed;
                 }
 
                 goto tryAgain;
@@ -1273,8 +1283,97 @@ tryAgain:
         }
     }
 
-    // most likely OOM
+    // Most likely out of memory, and the page-add lock is not held here. A request for one granule can still get a region
+    // from the cache: it is formatted, and needs no commit. A long-lived region has not tried the cache before, and the regular one only did at the start.
+failed:
+    if (granules == 1)
+    {
+        region = TryGetCachedRegion();
+        if (region)
+        {
+            return region;
+        }
+    }
+
     return nullptr;
+}
+
+// A region from the cache. It is formatted, so it needs no commit.
+SatoriRegion* SatoriAllocator::TryGetCachedRegion()
+{
+    SatoriRegion* region = m_regionCache->TryPop();
+    if (region)
+    {
+        Interlocked::Decrement(&m_regionCacheCount);
+        SatoriTrace::Count(SatoriTrace::s_counters.cacheHits);
+    }
+
+    return region;
+}
+
+// The region that a claim got could not be committed, but that does not mean that nothing can be had: a region that is committed in full
+// needs no commit. Looks for one in the order of the claims. The candidate that failed went back to its page as it was and is not warm.
+// A granule or a run that is not committed in full after its claim goes back, and the search goes on: the trimmer can decommit a granule between
+// the look at its warm bit and the claim, and then the trimmer has cleared the bit, so the granule is not found again.
+SatoriRegion* SatoriAllocator::TryClaimWarmRegion(size_t granules, bool low)
+{
+    SatoriRegion* result = nullptr;
+    if (granules > 1)
+    {
+        SatoriPage* claimedPage = nullptr;
+        size_t first = SIZE_MAX;
+        size_t rollbacks = 0;
+
+        m_runClaimLock.Enter();
+        m_heap->ForEachPageFrom(0,
+            [&](SatoriPage* page)
+            {
+                while ((first = page->TryClaimRun(granules, /* fromTop */ low, rollbacks, /* warmOnly */ true)) != SIZE_MAX)
+                {
+                    if (page->IsCommittedInFull(first, granules))
+                    {
+                        claimedPage = page;
+                        return true;
+                    }
+
+                    page->PublishFreeGranules(first, granules);
+                }
+
+                return false;
+            }
+        );
+        m_runClaimLock.Leave();
+
+        if (claimedPage)
+        {
+            result = claimedPage->FormatClaimed(first, granules);
+        }
+    }
+    else
+    {
+        size_t retries = 0;
+        size_t startHint = low ? 0 : ProcessorHint();
+        m_heap->ForEachPageFrom(startHint,
+            [&](SatoriPage* page)
+            {
+                size_t granule;
+                while ((granule = page->TryClaimGranule(/* warmOnly */ true, /* fromTop */ low || g_claimTopDown, retries)) != SIZE_MAX)
+                {
+                    if (page->IsCommittedInFull(granule, 1))
+                    {
+                        result = page->FormatClaimed(granule, 1);
+                        return result != nullptr;
+                    }
+
+                    page->PublishFreeGranules(granule, 1);
+                }
+
+                return false;
+            }
+        );
+    }
+
+    return result;
 }
 
 // Claims free granules for a region of the given number of granules, in the pages that we have.
@@ -1350,6 +1449,14 @@ SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& o
                 }
             );
         }
+    }
+
+    if (outOfMemory)
+    {
+        // What was claimed first could not be committed, and a claim that fails to format ends the search above.
+        // A region that is committed in full needs no commit, and there may be one.
+        result = TryClaimWarmRegion(granules, low);
+        outOfMemory = (result == nullptr);
     }
 
     TraceClaim(result, granules, retries, rollbacks, start);

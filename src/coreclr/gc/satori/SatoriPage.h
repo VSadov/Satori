@@ -78,8 +78,12 @@ public:
     // Claims a run of free granules, the lowest (or the highest) one that fits. Returns its first granule or SIZE_MAX.
     // The threads that claim runs must not run this on the same page at the same time, but other threads
     // may claim single granules meanwhile. If one takes a granule from the run, the claim is rolled back and tried again,
-    // and counted in `rollbacks`.
-    size_t TryClaimRun(size_t count, bool fromTop, size_t& rollbacks);
+    // and counted in `rollbacks`. When asked, only among the runs of warm granules.
+    size_t TryClaimRun(size_t count, bool fromTop, size_t& rollbacks, bool warmOnly = false);
+    // The granules are claimed and all of them are committed in full. The commit of a claimed granule does not change.
+    // A granule that was warm when it was looked at may not be after it is claimed: the trimmer can claim it, decommit it
+    // and publish it as free between the look and the claim.
+    bool IsCommittedInFull(size_t first, size_t count);
     // Formats claimed granules as a region. If that is not possible, gives the granules back and returns nullptr.
     SatoriRegion* FormatClaimed(size_t first, size_t count);
 
@@ -237,7 +241,8 @@ public:
     void ForEachRegion(F lambda);
 
 private:
-    size_t FindRun(size_t count, bool fromTop);
+    size_t FindRun(size_t count, bool fromTop, bool warmOnly);
+    size_t FreeWord(size_t word, bool warmOnly);
     bool TryClearRun(size_t first, size_t count);
     void ForgetSeenFree(size_t first, size_t count);
     bool IsTrimCandidate(size_t granule, bool onlyIfSeenFree);

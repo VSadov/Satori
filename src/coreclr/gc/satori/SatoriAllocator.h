@@ -206,6 +206,8 @@ private:
     SatoriRegion* GetRegionImpl(size_t regionSize, bool low, SatoriRegionRequester requester);
     SatoriRegion* TryClaimRegion(size_t granules, bool low, bool& outOfMemory);
     SatoriRegion* TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, bool& outOfMemory);
+    SatoriRegion* TryClaimWarmRegion(size_t granules, bool low);
+    SatoriRegion* TryGetCachedRegion();
     bool TryCacheRegion(SatoriRegion* region, bool recentlyUsed);
     void FreeToBitmap(SatoriRegion* region);
     void ParkRegion(SatoriRegion* region);

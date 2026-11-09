@@ -375,9 +375,18 @@ bool SatoriPage::TryClaimGranuleAt(size_t granule)
     return false;
 }
 
+// The free bits of a word, and when asked, only the free granules that are committed in full.
+// The warm bit of a granule is written before its free bit is set, so a free granule has its warm bit.
+size_t SatoriPage::FreeWord(size_t word, bool warmOnly)
+{
+    size_t bits = VolatileLoad(&m_freeBitmap[word]);
+    return warmOnly ? bits & VolatileLoad(&m_warmBitmap[word]) : bits;
+}
+
 // Finds the first granule of a run of free granules that is the lowest (or the highest) among the runs that fit.
+// When asked, only among the runs of free granules that are committed in full.
 // The free bits are read as they are, claimers of single granules could change them meanwhile.
-size_t SatoriPage::FindRun(size_t count, bool fromTop)
+size_t SatoriPage::FindRun(size_t count, bool fromTop, bool warmOnly)
 {
     _ASSERTE(count > 1);
 
@@ -390,7 +399,7 @@ size_t SatoriPage::FindRun(size_t count, bool fromTop)
         size_t granule = first;
         while (granule < end)
         {
-            size_t word = VolatileLoad(&m_freeBitmap[granule / 64]);
+            size_t word = FreeWord(granule / 64, warmOnly);
             size_t bit = granule % 64;
             if (bit == 0 && word == 0)
             {
@@ -423,7 +432,7 @@ size_t SatoriPage::FindRun(size_t count, bool fromTop)
         while (granule > first)
         {
             size_t current = granule - 1;
-            size_t word = VolatileLoad(&m_freeBitmap[current / 64]);
+            size_t word = FreeWord(current / 64, warmOnly);
             size_t bit = current % 64;
             if (bit == 63 && word == 0)
             {
@@ -495,13 +504,13 @@ bool SatoriPage::TryClearRun(size_t first, size_t count)
     return true;
 }
 
-size_t SatoriPage::TryClaimRun(size_t count, bool fromTop, size_t& rollbacks)
+size_t SatoriPage::TryClaimRun(size_t count, bool fromTop, size_t& rollbacks, bool warmOnly)
 {
     // Every failed attempt means that somebody claimed a granule of the run that we found. That is rare,
     // and it is not worth looking for long on this page if it keeps happening.
     for (int attempt = 0; attempt < 4; attempt++)
     {
-        size_t first = FindRun(count, fromTop);
+        size_t first = FindRun(count, fromTop, warmOnly);
         if (first == SIZE_MAX || TryClearRun(first, count))
         {
             return first;
@@ -511,6 +520,19 @@ size_t SatoriPage::TryClaimRun(size_t count, bool fromTop, size_t& rollbacks)
     }
 
     return SIZE_MAX;
+}
+
+bool SatoriPage::IsCommittedInFull(size_t first, size_t count)
+{
+    for (size_t granule = first; granule < first + count; granule++)
+    {
+        if (m_commitWatermarks[granule] != Satori::WATERMARK_UNITS_PER_GRANULE)
+        {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 // Gives back a page that was not published. The only thing committed in it is the card table.
