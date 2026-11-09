@@ -44,6 +44,7 @@
 #include "SatoriPrefetchQueue.h"
 #include "SatoriAllocationContext.h"
 #include "SatoriFinalizationQueue.h"
+#include "SatoriTestHooks.h" // TEST-HOOK
 #include "../gcscan.h"
 
 //#pragma optimize("", off)
@@ -2074,6 +2075,14 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         // (the gen is read before the end. A reused region gets its gen last, see SetGenerationRelease)
         if (isConservative)
         {
+#if _DEBUG
+            SatoriTestHooks::MarkerLookup lookup;
+            if (SatoriTestHooks::BeginMarkerLookup(lookup, markContext->m_heap, containingRegion, location)) // TEST-HOOK
+            {
+                return;
+            }
+#endif
+
             if (containingRegion->GenerationAcquire() < 0 || location >= containingRegion->End())
             {
                 return;
@@ -2085,6 +2094,13 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
             {
                 return;
             }
+
+#if _DEBUG
+            if (SatoriTestHooks::EndMarkerLookup(lookup)) // TEST-HOOK
+            {
+                return;
+            }
+#endif
         }
 
         // Concurrent FindObject is unsafe in active regions. While ref may be in a real obj,
@@ -2131,6 +2147,22 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         }
     }
 };
+
+#if _DEBUG
+// TEST-HOOK: a marker of the concurrent mark looks at the location as at an interior pointer, as the marker of a stack does.
+// It marks nothing: the marker of a self-test stops after its revalidation. (see SatoriTestHooks)
+void SatoriRecycler::TestMarkConservativeConcurrent(size_t location)
+{
+    MarkContext markContext(this);
+    ScanContext sc;
+    sc.promotion = TRUE;
+    sc._unused1 = &markContext;
+
+    size_t slot = location;
+    MarkFnConcurrent<true>((PTR_PTR_Object)&slot, &sc, GC_CALL_INTERIOR);
+    _ASSERTE(markContext.m_WorkChunk == nullptr);
+}
+#endif
 
 bool SatoriRecycler::MarkDemotedAndDrainQueuesConcurrent(int64_t deadline)
 {

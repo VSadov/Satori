@@ -68,6 +68,11 @@ public:
     // be concurrent before the toggle's process-wide fence completes.
     static const int BARRIER_STATE_SWITCHING = 3;
 
+#if _DEBUG
+    // TEST-HOOK: see SatoriTestHooks
+    void TestMarkConservativeConcurrent(size_t location);
+#endif
+
     void Initialize(SatoriHeap* heap);
 
     void AddEphemeralRegion(SatoriRegion* region);

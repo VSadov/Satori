@@ -48,6 +48,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "SatoriPageAddTrace.h"
+#include "SatoriTestHooks.h" // TEST-HOOK
 
 bool g_traceOn;
 volatile size_t g_trimOut;
@@ -1013,6 +1014,9 @@ static size_t ProcessorHint()
 
 void SatoriAllocator::Initialize(SatoriHeap* heap)
 {
+#if _DEBUG
+    SatoriTestHooks::Init(); // TEST-HOOK
+#endif
     m_heap = heap;
     TraceInit(this); // TEMP-TRACE
 
@@ -1388,6 +1392,10 @@ bool SatoriAllocator::TryCacheRegion(SatoriRegion* region, bool recentlyUsed)
 // Frees the region into the free granules of its page.
 void SatoriAllocator::FreeToBitmap(SatoriRegion* region)
 {
+#if _DEBUG
+    SatoriTestHooks::OnFreeToBitmap(); // TEST-HOOK
+#endif
+
     if (SatoriTrace::s_enabled)
     {
         SatoriTrace::Count(SatoriTrace::s_counters.freesToBitmap);

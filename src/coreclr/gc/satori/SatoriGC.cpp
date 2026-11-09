@@ -39,6 +39,7 @@
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
 #include "SatoriRegion.inl"
+#include "SatoriTestHooks.h" // TEST-HOOK
 #include "../gceventstatus.h"
 #include "../gcscan.h"
 
@@ -265,6 +266,11 @@ uint64_t SatoriGC::GetTotalAllocatedBytesPrecise()
 
 HRESULT SatoriGC::GarbageCollect(int generation, bool low_memory_p, int mode)
 {
+#if _DEBUG
+    // TEST-HOOK: the self-tests run at the first GC of a process that asks for them, before the GC starts.
+    SatoriTestHooks::RunSelfTests(m_heap);
+#endif
+
     // we do either Gen1 or Gen2 for now.
     generation = (generation < 0) ? 2 : min(generation, 2);
     generation = max(1, generation);
@@ -980,3 +986,7 @@ void SatoriGC::NullBridgeObjectsWeakRefs(size_t length, void* unreachableObjectH
     assert(false);
 #endif
 }
+
+#if _DEBUG
+#include "SatoriTestHooks.inl" // TEST-HOOK
+#endif

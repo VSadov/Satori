@@ -36,6 +36,7 @@
 #include "SatoriRegion.inl"
 #include "SatoriRegionQueue.h"
 #include "SatoriPageAddTrace.h" // TEMP-TRACE
+#include "SatoriTestHooks.h" // TEST-HOOK
 #include <minipal/log.h>
 
 SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap, InitStatus& status)
@@ -105,7 +106,7 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     // make sure offset of m_cardGroups is 128.
     _ASSERTE(offsetof(SatoriPage, m_cardGroups) == 128);
 #if _DEBUG
-    static_assert(offsetof(SatoriPage, m_snapshotStamp) + sizeof(size_t) <= 128,
+    static_assert(offsetof(SatoriPage, m_formatCounts) + sizeof(uint32_t*) <= 128,
         "the header fields must end before the card groups.");
 #else
     static_assert(offsetof(SatoriPage, m_seenFreeBitmap) + sizeof(size_t*) <= 128,
@@ -129,8 +130,11 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 #if _DEBUG
     // The stamps do not fit into the page, they are for Checked builds only.
     result->m_freeStamps = new (nothrow) size_t[regionCount]();
-    if (result->m_freeStamps == nullptr)
+    result->m_formatCounts = new (nothrow) uint32_t[regionCount](); // TEST-HOOK
+    if (result->m_freeStamps == nullptr || result->m_formatCounts == nullptr)
     {
+        delete[] result->m_freeStamps;
+        delete[] result->m_formatCounts;
         heap->DecBytesCommitted(commitSize);
         GCToOSInterface::VirtualRelease(result, pageSize);
         status = InitStatus::CommitFailed;
@@ -208,6 +212,10 @@ static volatile size_t s_freeClock;
 // how much is committed and how much of that may be dirty, is recorded in the watermarks.
 void SatoriPage::FreeRegion(SatoriRegion* region)
 {
+#if _DEBUG
+    SatoriTestHooks::OnFreeRegion(); // TEST-HOOK
+#endif
+
     _ASSERTE(region->ContainingPage() == this);
     _ASSERTE(region->Generation() == -1);
     _ASSERTE(region->ContainingQueue() == nullptr);
@@ -499,6 +507,7 @@ void SatoriPage::Release()
 {
 #if _DEBUG
     delete[] m_freeStamps;
+    delete[] m_formatCounts;
 #endif
     m_heap->DecBytesCommitted(m_initialCommit - Start());
     GCToOSInterface::VirtualRelease(this, m_end - Start());
@@ -682,6 +691,22 @@ void SatoriPage::AssertHeaderIsReadable(size_t granule)
     // records the commit of the region, and a region has its header committed. The trimmer does not decommit while we are registered.
     bool isFree = (VolatileLoad(&m_freeBitmap[granule / 64]) >> (granule % 64)) & 1;
     _ASSERTE(!isFree || m_commitWatermarks[granule] != 0);
+}
+
+// TEST-HOOK
+uint32_t SatoriPage::FormatCount(size_t granule)
+{
+    _ASSERTE(granule < GranuleCount());
+    return VolatileLoad(&m_formatCounts[granule]);
+}
+
+// TEST-HOOK
+void SatoriPage::NoteFormatted(size_t first, size_t count)
+{
+    for (size_t granule = first; granule < first + count; granule++)
+    {
+        Interlocked::Increment((volatile int32_t*)&m_formatCounts[granule]);
+    }
 }
 #endif
 

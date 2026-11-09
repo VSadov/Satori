@@ -115,6 +115,10 @@ public:
 #if _DEBUG
     // A registered thread is about to read the header of the region that starts at the granule.
     void AssertHeaderIsReadable(size_t granule);
+
+    // TEST-HOOK: the number of times that the granule was formatted as a part of a region, and a note that the granules are.
+    uint32_t FormatCount(size_t granule);
+    void NoteFormatted(size_t first, size_t count);
 #endif
 
     // TEMP-TRACE: prints a character per granule, see SatoriHeap::PrintTrace.
@@ -306,6 +310,8 @@ private:
             size_t* m_freeStamps;
             // The stamp of the last look at the page.
             size_t m_snapshotStamp;
+            // TEST-HOOK: how many times each granule was formatted as a part of a region. Outside the page, for the self-tests.
+            uint32_t* m_formatCounts;
 #endif
 
             // computed size,

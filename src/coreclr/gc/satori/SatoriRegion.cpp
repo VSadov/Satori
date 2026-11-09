@@ -224,6 +224,11 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     result->m_escapeFunc = nullptr;
     result->m_generation = -1;
 
+#if _DEBUG
+    // TEST-HOOK
+    containingPage->NoteFormatted((address - containingPage->Start()) >> Satori::REGION_BITS, regionSize >> Satori::REGION_BITS);
+#endif
+
     result->m_containingPage->OnRegionInitialized(result);
     return result;
 }
