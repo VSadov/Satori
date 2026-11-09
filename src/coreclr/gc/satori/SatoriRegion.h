@@ -456,6 +456,9 @@ private:
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
     void UndoSplitCore(size_t regionSize, size_t nextStart, size_t nextCommitted, size_t nextUsed);
 
+    // The conservative mode, see InitializeAt.
+    static NOINLINE void ClearHeaderKeepingGeneration(SatoriRegion* region, size_t address, size_t zeroUpTo);
+
     template <bool isConservative>
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 

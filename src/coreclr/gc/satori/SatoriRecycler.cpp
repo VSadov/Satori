@@ -1648,6 +1648,15 @@ void SatoriRecycler::BlockingCollectImpl()
     Relocate();
     Update();
 
+    // The conservative mode parks the regions that are freed, see SatoriAllocator::FreeToBitmap. This is where they are freed.
+    // Marking is complete and the EE is stopped, so no marker can be looking at the header of a region that it found earlier,
+    // and what is freed here can be claimed only after the EE restarts. Every blocking GC passes here.
+    // This is before the verification and before the trim on request: the freed granules are free for both.
+    if (SatoriUtil::IsConservativeMode())
+    {
+        m_heap->Allocator()->DrainParkedRegions();
+    }
+
 #if _DEBUG
     // Every drain is done and the world is stopped, so nothing is being claimed or freed.
     size_t granuleProblems = m_heap->VerifyGranules(/* report */ true);

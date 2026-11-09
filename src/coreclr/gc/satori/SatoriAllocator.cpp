@@ -96,6 +96,21 @@ static volatile size_t g_nbrReusableTaken;
 static volatile size_t g_nbrReusableHit;
 static volatile size_t g_nbrGetRegion;
 
+// Step 1 of Milestone 2c: the conservative mode parks the regions that it frees until the drain after the GC. (see [parkstats])
+// What was parked since the last drain: regions, their size and what they have committed.
+static size_t g_parkCycleRegions;
+static size_t g_parkCycleBytes;
+static size_t g_parkCycleCommitted;
+static size_t g_parkRegions;
+static size_t g_parkBytes;
+static size_t g_parkMaxCycleRegions;
+static size_t g_parkMaxCycleBytes;
+// the biggest share of the heap commit that a drain has freed, in thousandths
+static size_t g_parkMaxSharePermille;
+static size_t g_drainCount;
+static size_t g_drainTicks;
+static size_t g_drainMaxTicks;
+
 static void TraceCount(volatile size_t* counter)
 {
     if (g_traceOn)
@@ -967,6 +982,18 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
         g_trimRunHist[0], g_trimRunHist[1], g_trimRunHist[2], g_trimRunHist[3], g_trimRunHist[4], g_trimRunHist[5],
         g_trimSkippedForReader, g_trimSkippedGranules);
     TraceWrite(buf, len);
+
+    if (SatoriUtil::IsConservativeMode())
+    {
+        len = snprintf(buf, sizeof(buf),
+            "[parkstats] t=%.3f ev=%s parkedRegions=%zu parkedMB=%.1f maxCycleRegions=%zu maxCycleMB=%.1f maxSharePct=%.1f "
+            "drains=%zu drainMsTotal=%.3f drainMsMax=%.3f\n",
+            TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, ev,
+            g_parkRegions, (double)g_parkBytes / (1 << 20), g_parkMaxCycleRegions, (double)g_parkMaxCycleBytes / (1 << 20),
+            (double)g_parkMaxSharePermille / 10.0, g_drainCount,
+            TraceTicksToUs((int64_t)g_drainTicks) / 1000.0, TraceTicksToUs((int64_t)g_drainMaxTicks) / 1000.0);
+        TraceWrite(buf, len);
+    }
 }
 
 void SatoriAllocator::TraceStateAtGen2End()
@@ -1042,6 +1069,11 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     m_regionCacheCap = configuredCap >= 0 ?
         (size_t)configuredCap :
         max((size_t)4, 2 * (size_t)GCToEEInterface::GetCurrentProcessCpuCount());
+
+    // The conservative mode parks the regions that are freed until the drain after a GC, see FreeToBitmap.
+    m_parkedRegions = SatoriUtil::IsConservativeMode() ?
+        SatoriRegionQueue::AllocAligned(QueueKind::Parked) :
+        nullptr;
 
     m_largeRegion = nullptr;
     m_largeAllocLock.Initialize();
@@ -1390,6 +1422,7 @@ bool SatoriAllocator::TryCacheRegion(SatoriRegion* region, bool recentlyUsed)
 }
 
 // Frees the region into the free granules of its page.
+// In the conservative mode the region is parked instead, see ParkRegion.
 void SatoriAllocator::FreeToBitmap(SatoriRegion* region)
 {
 #if _DEBUG
@@ -1402,7 +1435,78 @@ void SatoriAllocator::FreeToBitmap(SatoriRegion* region)
         SatoriTrace::Count(SatoriTrace::s_counters.freesToBitmapGranules, region->Size() >> Satori::REGION_BITS);
     }
 
+    if (SatoriUtil::IsConservativeMode())
+    {
+        ParkRegion(region);
+        return;
+    }
+
     region->ContainingPage()->FreeRegion(region);
+}
+
+// The conservative mode. A concurrent marker finds the region of a candidate pointer in the region map, and then reads its header.
+// If the region is freed in between, its granules could be claimed and formatted again at the same address, or become a part of a bigger
+// run that is claimed and decommitted, (the finalization queue does that when it grows) while the marker is still reading.
+// So every free is parked: the region keeps its granules, its region map bytes and its committed header, and nothing can claim it.
+// The GC frees the parked regions after it has marked, when no marker can be running. (see DrainParkedRegions)
+// The cost is that what is freed cannot be used before the next GC. Only the conservative mode pays it.
+NOINLINE void SatoriAllocator::ParkRegion(SatoriRegion* region)
+{
+    _ASSERTE(SatoriUtil::IsConservativeMode());
+    _ASSERTE(region->Generation() == -1);
+
+    SatoriTrace::Count(g_parkCycleRegions); // TEMP-TRACE
+    SatoriTrace::Count(g_parkCycleBytes, region->Size()); // TEMP-TRACE
+    SatoriTrace::Count(g_parkCycleCommitted, region->CommittedEnd() - region->Start()); // TEMP-TRACE
+
+    m_parkedRegions->Enqueue(region);
+}
+
+// Frees the regions that were parked. Called by a GC after Update, with the EE stopped, when every concurrent marker is done:
+// no marker has a region that it found earlier, and the regions that this frees can be claimed again only after the EE restarts.
+void SatoriAllocator::DrainParkedRegions()
+{
+    _ASSERTE(SatoriUtil::IsConservativeMode());
+
+    int64_t start = 0; // TEMP-TRACE
+    if (SatoriTrace::s_enabled) // TEMP-TRACE
+    { // TEMP-TRACE
+        start = SatoriUtil::GetTimeStamp(); // TEMP-TRACE
+        size_t regions = g_parkCycleRegions; // TEMP-TRACE
+        size_t bytes = g_parkCycleBytes; // TEMP-TRACE
+        size_t committed = g_parkCycleCommitted; // TEMP-TRACE
+        g_parkCycleRegions = g_parkCycleBytes = g_parkCycleCommitted = 0; // TEMP-TRACE
+        g_parkRegions += regions; // TEMP-TRACE
+        g_parkBytes += bytes; // TEMP-TRACE
+        g_parkMaxCycleRegions = max(g_parkMaxCycleRegions, regions); // TEMP-TRACE
+        g_parkMaxCycleBytes = max(g_parkMaxCycleBytes, bytes); // TEMP-TRACE
+        size_t heapCommit = m_heap->GetBytesCommitted(); // TEMP-TRACE
+        if (heapCommit) // TEMP-TRACE
+        { // TEMP-TRACE
+            g_parkMaxSharePermille = max(g_parkMaxSharePermille, committed * 1000 / heapCommit); // TEMP-TRACE
+        } // TEMP-TRACE
+    } // TEMP-TRACE
+
+#if _DEBUG
+    SatoriTestHooks::t_inParkDrain = true; // TEST-HOOK
+#endif
+
+    while (SatoriRegion* region = m_parkedRegions->TryPop())
+    {
+        region->ContainingPage()->FreeRegion(region);
+    }
+
+#if _DEBUG
+    SatoriTestHooks::t_inParkDrain = false; // TEST-HOOK
+#endif
+
+    if (SatoriTrace::s_enabled) // TEMP-TRACE
+    { // TEMP-TRACE
+        size_t ticks = (size_t)(SatoriUtil::GetTimeStamp() - start); // TEMP-TRACE
+        g_drainCount++; // TEMP-TRACE
+        g_drainTicks += ticks; // TEMP-TRACE
+        g_drainMaxTicks = max(g_drainMaxTicks, ticks); // TEMP-TRACE
+    } // TEMP-TRACE
 }
 
 void SatoriAllocator::DrainRegionCache()
