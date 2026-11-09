@@ -3276,12 +3276,17 @@ void CallCatchFunclet(OBJECTREF throwable, BYTE* pHandlerIP, REGDISPLAY* pvRegDi
 #if defined(HOST_AMD64) && defined(HOST_WINDOWS)
     size_t targetSSP = exInfo->m_frameIter.m_crawl.GetRegisterSet()->SSP;
     // Verify the SSP points to the slot that matches the ControlPC of the frame containing the catch funclet.
+#ifdef FEATURE_INTERPRETER
     // But don't check in case the target is in the interpreter loop, because the ControlPC doesn't match the shadow stack entry
     // in that case. The shadow stack contains the return address of the DispatchManagedException call, but the ControlPC is the
     // value captured to the exception context before the DispatchManagedException call.
     _ASSERTE(targetSSP == 0 ||
         (pHandlerIP != NULL) && (exInfo->m_frameIter.m_crawl.GetCodeManager() == ExecutionManager::GetInterpreterCodeManager()) ||
         (*(size_t*)(targetSSP-8) == exInfo->m_frameIter.m_crawl.GetRegisterSet()->ControlPC));
+#else
+    _ASSERTE(targetSSP == 0 ||
+        (*(size_t*)(targetSSP-8) == exInfo->m_frameIter.m_crawl.GetRegisterSet()->ControlPC));
+#endif // FEATURE_INTERPRETER
 #else
     size_t targetSSP = 0;
 #endif
