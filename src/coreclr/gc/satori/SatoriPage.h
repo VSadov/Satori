@@ -116,6 +116,8 @@ public:
     // after it claims a granule, and does not decommit while there is one. A thread that registers after that look reads the region map
     // after the region was removed from it (the map is cleared before the free bit is set), and does not read the header.
     // So the header that the map has found is committed for as long as the thread is registered.
+    // The two sides are a store followed by a load each (the registration and then the map, the claim and then the registrations),
+    // and each needs a full fence between the two, see EnterUnownedHeaderRead and TryTrimRun.
     void EnterUnownedHeaderRead();
     void LeaveUnownedHeaderRead();
 #if _DEBUG
@@ -253,6 +255,7 @@ private:
     void ForgetSeenFree(size_t first, size_t count);
     bool IsTrimCandidate(size_t granule, bool onlyIfSeenFree);
     bool IsOldEnoughToTrim(size_t granule);
+    volatile int32_t* UnownedHeaderReaders();
 
     union
     {
@@ -270,8 +273,8 @@ private:
         {
             int8_t m_cardState;
             uint8_t m_scanTicket;
-            // The number of registered readers of unowned headers, see EnterUnownedHeaderRead.
-            volatile int32_t m_unownedHeaderReaders;
+            // The count of the registered readers of unowned headers is not in this line: the GC writes the two fields above for every scan,
+            // and the claim path reads most of the ones below. It has a line of its own, see UnownedHeaderReaders.
             size_t m_end;
             size_t m_initialCommit;
             size_t m_firstRegion;

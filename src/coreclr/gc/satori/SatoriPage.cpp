@@ -128,8 +128,10 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     result->m_dirtyWatermarks = result->m_commitWatermarks + regionCount;
     result->m_seenFreeBitmap = (size_t*)(result->m_dirtyWatermarks + regionCount);
 
-    // make sure the first useful card word is beyond the header.
-    _ASSERTE(result->Start() + cardTableStart >= (size_t)(result->m_seenFreeBitmap + regionCount / 64));
+    // make sure the first useful card word is beyond the header, and that the line of the reader count (the last 64 bytes before it,
+    // see UnownedHeaderReaders) is not used by the bitmaps. The card words before the first useful one cover the card table itself, nothing uses them.
+    _ASSERTE((size_t)(result->m_seenFreeBitmap + regionCount / 64) <= result->Start() + cardTableStart - 64);
+    _ASSERTE(*result->UnownedHeaderReaders() == 0);
 
     // The stamps of the minimum free age do not fit into the page.
     result->m_seenSince = new (nothrow) uint32_t[regionCount]();
@@ -698,9 +700,13 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
     // before the region of a granule was freed may still be about to read its header, see EnterUnownedHeaderRead. This look comes after the claims,
     // a thread that registers after it finds the regions gone from the map. If there is a reader, the granules go back as they were, and are trimmed
     // when the trimmer comes again.
+    // The claims are stores (the interlocked clears of the free bits), and the look is a load: a full fence orders the one before the other, the way
+    // that the fence in EnterUnownedHeaderRead does for a reader. Without it the load could be satisfied before the claims are visible, and the trimmer
+    // would miss a reader that registered, and has read a region map that still had the region, after that. The count is read with an acquire, so that
+    // the decommit below is not ordered before it, and so that what a reader that left did (its reads of the header, before its release) is done.
     MemoryBarrier();
     bool trimmed = false;
-    if (VolatileLoad(&m_unownedHeaderReaders) == 0)
+    if (VolatileLoad(UnownedHeaderReaders()) == 0)
     {
         size_t committedBytes = 0;
         size_t decommitEnd = 0;
@@ -756,7 +762,7 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
 #if _DEBUG
 void SatoriPage::AssertHeaderIsReadable(size_t granule)
 {
-    _ASSERTE(VolatileLoad(&m_unownedHeaderReaders) > 0);
+    _ASSERTE(VolatileLoad(UnownedHeaderReaders()) > 0);
 
     // A region that was freed after the reader found it makes its granule free, with a commit that its header gives it: FreeRegion
     // records the commit of the region, and a region has its header committed. The trimmer does not decommit while we are registered.
@@ -1257,6 +1263,9 @@ SatoriRegion* SatoriPage::NextInPage(SatoriRegion* region)
     }
 
     size_t mapIndex = (address - Start()) >> Satori::REGION_BITS;
+
+    // An acquire load of the map byte, so that the loads of the header that the caller does when the map has a region are not satisfied before
+    // it (see EnterUnownedHeaderRead: the registration, the full fence, this load, and then the reads of the header, in this order).
     if (VolatileLoad(&RegionMap()[mapIndex]) != 1)
     {
         // there is no region here yet.

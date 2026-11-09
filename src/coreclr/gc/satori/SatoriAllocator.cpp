@@ -2528,14 +2528,19 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
 //    of the header. The trimmer does not decommit while a thread is registered with the page.
 //  - A region is removed from the map before its granules are marked free, and the trimmer claims only free granules, and looks
 //    at the registrations after it claims. So if the map has a region at `next` after we registered, then either the region is
-//    still there, or it was freed and the trimmer sees us and leaves the memory committed.
+//    still there, or it was freed and the trimmer sees us and leaves the memory committed. Each side has a full fence between its store
+//    and its load (see EnterUnownedHeaderRead and TryTrimRun), and the map is read with an acquire (see NextInPage).
 //  - The header of a region that was freed holds what it held, and FreeRegion asserts that its queue is null, so the read finds no queue.
 //    A region that was freed and is in use again by somebody else is a region, whatever it is used for, and its queue is what it is.
 //    The removal checks the queue under its lock.
 // The free granule after the region, which the caller claims, has no header. It is a bit operation, and reads no memory of the granule.
 // Other readers get to headers through the region map too (conservative marking, interior pointers, the card groups).
-// They run only on regions that are live: in the precise mode a reference is to a live object, a card group is set only for a live region,
-// and in the conservative mode the trimmer is stopped while the GC marks (see DrainDeferredSweepQueueConcurrent).
+// They run only on regions that are live: in the precise mode a reference is to a live object, and a card group is set only for a live region.
+// In the conservative mode a marker can follow a candidate pointer to a region that is not live any more, so a region that is freed is not freed
+// at once: it is parked, with its granules, its region map bytes and its committed header, until the drain of the next GC, which runs after
+// its marking is done (see FreeToBitmap and DrainParkedRegions). Stopping the trimmer while the GC marks (see DrainDeferredSweepQueueConcurrent)
+// was not enough for that: the granules of a freed region could be claimed and formatted again at the same address under a marker, or be a part
+// of a run that the finalization queue claims and decommits with TryDecommit, and that is not the trimmer.
 static SatoriRegion* TryTakeReusableNext(SatoriPage* page, SatoriRegion* region, size_t minFree)
 {
     SatoriRegion* result = nullptr;

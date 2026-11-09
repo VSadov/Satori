@@ -71,20 +71,35 @@ inline SatoriHeap* SatoriPage::Heap()
     return m_heap;
 }
 
+// The count of the registered readers of unowned headers, see EnterUnownedHeaderRead. It has a cache line of its own: the last 64 bytes
+// before the first useful card word, in the part of the page that the card table has for covering itself. Every thread that takes the next
+// region of its own writes it twice, when it registers and when it leaves. It is not in the header, where the line has the card state and
+// the scan ticket (the GC writes them for every scan) and most of the fields that every claim reads (m_end, m_heap, m_regionMap).
+// It is not next to the bitmaps either: FreeRegion and the trimmer write the seen bits. The line in front of it is not used,
+// so that a neighbor that the hardware pairs with it is no one's. It is 0 from the start, as is all the committed memory of the card table.
+inline volatile int32_t* SatoriPage::UnownedHeaderReaders()
+{
+    return (volatile int32_t*)(Start() + m_cardTableStart - 64);
+}
+
 inline void SatoriPage::EnterUnownedHeaderRead()
 {
-    Interlocked::Increment(&m_unownedHeaderReaders);
+    Interlocked::Increment(UnownedHeaderReaders());
 
-    // The caller reads the region map after this, and the trimmer looks at the count after it claims a granule.
-    // Each of the two sides must see the other's write: either the caller sees that the region is gone from the map,
-    // or the trimmer sees the caller.
+    // The registration is a store, and the caller's next step is a load: the region map, in NextInPage. The trimmer does the reverse:
+    // it claims the granules (stores) and then looks at the count (a load). Whichever side comes second must see the store of the other:
+    // either the caller sees that the region is gone from the map, or the trimmer sees the caller. That holds only if both sides
+    // have a full fence between their store and their load, since an acquire or a release does not order a store before a later load.
+    // This is the fence of our side (the one of the trimmer is in TryTrimRun). Where the interlocked increment is a full fence already, as
+    // on x64, this one adds nothing. On ARM64 it is what makes the registration visible before the map is read, and it cannot be tested on x64.
     MemoryBarrier();
 }
 
 inline void SatoriPage::LeaveUnownedHeaderRead()
 {
-    // a release: the reads of the header are done before the trimmer can see that we are gone.
-    Interlocked::Decrement(&m_unownedHeaderReaders);
+    // A release: the reads of the header are done before the trimmer can see that we are gone. No fence after it is needed,
+    // nothing that we do next depends on the trimmer.
+    Interlocked::Decrement(UnownedHeaderReaders());
 }
 
 // order is unimportant, but we want to read it only once when we read it, thus volatile.
