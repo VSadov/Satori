@@ -51,6 +51,9 @@ class SatoriRegion;
 //                                   the trimmer pauses for n ms in its drain of the regions, so that GCs start in the middle of it
 //   SATORI_TEST_SELF=containing     (conservative, DOTNET_gcTrim=0) a stale interior pointer into a free region, as the ETW heap walk
 //                                   of a conservative stack gives it to GetContainingObject
+//   SATORI_TEST_SELF=locktimeout    the timed enter of SatoriLock: a timeout, and the handoff of a wake that a waiter held when it gave up
+//   SATORI_TEST_PAGE_ADD_LOCK_TIMEOUT_MS=n
+//                                   the timeout of the page-add lock (6 ms otherwise); 0 adds without the lock whenever it is held
 //
 // The self-tests of the commit failures run in the precise mode, with DOTNET_gcRegionCacheCap=0 for the ones that need the freed regions
 // to be free granules, and without it for the ones that need a region in the cache:
@@ -66,6 +69,9 @@ namespace SatoriTestHooks
     extern int s_pauseFreeMs;
     extern int s_pauseTrimmerMs;
     extern int s_pauseTrimmerDrainMs;
+    // The timeout of the page-add lock in ms, instead of the 6 ms of Release builds, when not -1. 0 gives up at once when the lock is held,
+    // so that the add without the lock runs whenever adds contend. (SATORI_TEST_PAGE_ADD_LOCK_TIMEOUT_MS)
+    extern int s_pageAddLockTimeoutMs;
 
     // The commits that a region needs when it is formatted fail: the next n of them when positive, all of them when -1. (see FailFormatCommit)
     extern volatile int32_t s_failFormatCommits;

@@ -54,6 +54,7 @@ namespace SatoriTestHooks
     int s_pauseFreeMs;
     int s_pauseTrimmerMs;
     int s_pauseTrimmerDrainMs;
+    int s_pageAddLockTimeoutMs = -1;
     thread_local bool t_holdMarker;
     thread_local bool t_inParkDrain;
     thread_local bool t_lockGiveUpAfterWake;
@@ -86,6 +87,9 @@ namespace SatoriTestHooks
         s_pauseFreeMs = EnvInt("SATORI_TEST_PAUSE_FREE_MS");
         s_pauseTrimmerMs = EnvInt("SATORI_TEST_PAUSE_TRIMMER_MS");
         s_pauseTrimmerDrainMs = EnvInt("SATORI_TEST_PAUSE_TRIMMER_DRAIN_MS");
+        char timeoutBuf[16];
+        DWORD timeoutLen = GetEnvironmentVariableA("SATORI_TEST_PAGE_ADD_LOCK_TIMEOUT_MS", timeoutBuf, sizeof(timeoutBuf));
+        s_pageAddLockTimeoutMs = (timeoutLen == 0 || timeoutLen >= sizeof(timeoutBuf)) ? -1 : atoi(timeoutBuf);
         int holdMs = EnvInt("SATORI_TEST_HOLD_MARKER_MS");
         if (holdMs > 0)
         {
@@ -829,6 +833,130 @@ namespace SatoriTestHooks
         return pass;
     }
 
+    // ---- Milestone 3, step 3: the timed enter of SatoriLock ----
+
+    static SatoriLock* s_testLock;
+    static volatile bool s_plainDone;
+    static volatile bool s_plainGot;
+    static volatile int64_t s_plainTicks;
+    static volatile bool s_w1Done;
+    static volatile bool s_w1Got;
+    static volatile bool s_w2Done;
+    static volatile int32_t s_lockFinished;
+    static volatile int32_t s_lockFirst;
+
+    static uint32_t TestLockWaiters()
+    {
+        return (s_testLock->TestState() & 0x7FFFFFFCu) >> 2;
+    }
+
+    static bool WaitForTestLockWaiters(uint32_t count)
+    {
+        int64_t deadline = SatoriUtil::GetTimeStamp() + 5 * SatoriUtil::GetTimeStampFrequency();
+        while (TestLockWaiters() < count)
+        {
+            if (SatoriUtil::GetTimeStamp() > deadline)
+            {
+                return false;
+            }
+
+            GCToOSInterface::YieldThread(0);
+        }
+
+        return true;
+    }
+
+    static void LockPlainFn(void*)
+    {
+        int64_t start = SatoriUtil::GetTimeStamp();
+        bool got = s_testLock->TryEnterFor(20);
+        s_plainTicks = SatoriUtil::GetTimeStamp() - start;
+        if (got)
+        {
+            s_testLock->Leave();
+        }
+
+        s_plainGot = got;
+        s_plainDone = true;
+    }
+
+    // gives up right after its wake, holding it
+    static void LockW1Fn(void*)
+    {
+        t_lockGiveUpAfterWake = true;
+        bool got = s_testLock->TryEnterFor(10000);
+        if (got)
+        {
+            s_testLock->Leave();
+        }
+
+        s_w1Got = got;
+        Interlocked::CompareExchange(&s_lockFirst, 1, 0);
+        s_w1Done = true;
+    }
+
+    // waits for as long as it takes: it has the lock only if somebody wakes it
+    static void LockW2Fn(void*)
+    {
+        s_testLock->Enter();
+        s_testLock->Leave();
+        Interlocked::CompareExchange(&s_lockFirst, 2, 0);
+        s_w2Done = true;
+    }
+
+    // The lock is held. A timed enter of 20 ms gives up, and leaves no waiter behind.
+    // Then two waiters, W1 with a timed enter that gives up right after it is woken (holding the wake), and W2 with an enter
+    // that waits for as long as it takes. The lock is left: whichever of them is woken, W2 must get the lock, W1 must report that it did not,
+    // and the lock must be left free with no waiter and no wake outstanding. When W1 is woken first, only its handoff of the wake can wake W2.
+    static bool SelfTestLockTimeout()
+    {
+        s_testLock = new (nothrow) SatoriLock();
+        if (s_testLock == nullptr)
+        {
+            Report("locktimeout", "FAIL", "no memory");
+            return false;
+        }
+
+        s_testLock->Initialize();
+
+        s_testLock->Enter();
+        s_plainDone = false;
+        bool started = GCToEEInterface::CreateThread(LockPlainFn, nullptr, false, "Satori Test Lock");
+        bool plainDone = started && WaitUntil(s_plainDone, 10000);
+        s_testLock->Leave();
+        double plainMs = (double)s_plainTicks * 1000.0 / SatoriUtil::GetTimeStampFrequency();
+        bool plainOk = plainDone && !s_plainGot && plainMs >= 19.0 && s_testLock->TestState() == 0;
+
+        int rounds = 10;
+        int handoffs = 0;
+        bool handoffOk = true;
+        for (int i = 0; i < rounds && handoffOk; i++)
+        {
+            s_w1Done = s_w2Done = s_w1Got = false;
+            s_lockFirst = 0;
+            s_testLock->Enter();
+            bool ok = GCToEEInterface::CreateThread(LockW1Fn, nullptr, false, "Satori Test Lock W1") && WaitForTestLockWaiters(1);
+            ok = ok && GCToEEInterface::CreateThread(LockW2Fn, nullptr, false, "Satori Test Lock W2") && WaitForTestLockWaiters(2);
+            GCToOSInterface::Sleep(5);
+            s_testLock->Leave();
+            ok = ok && WaitUntil(s_w1Done, 5000) && WaitUntil(s_w2Done, 5000);
+            ok = ok && !s_w1Got && s_testLock->TestState() == 0;
+            if (ok && s_lockFirst == 1)
+            {
+                handoffs++;
+            }
+
+            handoffOk = ok;
+        }
+
+        bool pass = plainOk && handoffOk;
+        char details[260];
+        snprintf(details, sizeof(details), "the timed enter of 20 ms gave up: %d after %.1f ms, no waiter left: %d; the rounds with two waiters: %s, in %d of %d the waiter that held the wake handed it on",
+            (int)(plainDone && !s_plainGot), plainMs, (int)(s_testLock->TestState() == 0), handoffOk ? "ok" : "FAILED", handoffs, rounds);
+        Report("locktimeout", pass ? "PASS" : "FAIL", details);
+        return pass;
+    }
+
     // The names of the self-tests in SATORI_TEST_SELF are separated by commas.
     static bool Wants(const char* name)
     {
@@ -941,6 +1069,12 @@ namespace SatoriTestHooks
             {
                 pass &= SelfTestContaining(heap);
             }
+        }
+
+        // the timed enter of the lock: any mode
+        if (Wants("locktimeout"))
+        {
+            pass &= SelfTestLockTimeout();
         }
 
         _ASSERTE(pass);
