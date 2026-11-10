@@ -971,11 +971,11 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
 
     len = snprintf(buf, sizeof(buf),
         "[trimstats] t=%.3f ev=%s roundsGen2=%zu roundsIdle=%zu calls=%zu granules=%zu MB=%.1f "
-        "runHist=%zu,%zu,%zu,%zu,%zu,%zu skippedForReader=%zu skippedGranules=%zu\n",
+        "runHist=%zu,%zu,%zu,%zu,%zu,%zu skippedForReader=%zu skippedGranules=%zu pageNativeBytes=%zu\n",
         TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, ev,
         g_trimRoundsGen2, g_trimRoundsIdle, g_trimCalls, g_trimCallGranules, (double)g_trimCallBytes / (1 << 20),
         g_trimRunHist[0], g_trimRunHist[1], g_trimRunHist[2], g_trimRunHist[3], g_trimRunHist[4], g_trimRunHist[5],
-        g_trimSkippedForReader, g_trimSkippedGranules);
+        g_trimSkippedForReader, g_trimSkippedGranules, SatoriPage::TraceNativeBytes());
     TraceWrite(buf, len);
 
 #if _DEBUG

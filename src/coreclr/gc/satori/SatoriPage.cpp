@@ -39,6 +39,15 @@
 #include "SatoriTestHooks.h" // TEST-HOOK
 #include <minipal/log.h>
 
+// TEMP-TRACE: the bytes that the pages have allocated on the native heap. Release builds allocate none; Checked builds have
+// their debug array (m_freeStamps).
+static volatile size_t s_traceNativeBytes;
+
+size_t SatoriPage::TraceNativeBytes()
+{
+    return s_traceNativeBytes;
+}
+
 SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap, InitStatus& status)
 {
     _ASSERTE(pageSize % Satori::PAGE_SIZE_GRANULARITY == 0);
@@ -113,13 +122,13 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     static_assert(offsetof(SatoriPage, m_snapshotStamp) + sizeof(size_t) <= 128,
         "the header fields must end before the card groups.");
 #else
-    static_assert(offsetof(SatoriPage, m_seenSince) + sizeof(uint32_t*) <= 128,
+    static_assert(offsetof(SatoriPage, m_seenFreeBitmap) + sizeof(size_t*) <= 128,
         "the header fields must end before the card groups.");
 #endif
 
     result->m_regionMap = (uint8_t*)(address + 128 + cardGroupSize);
 
-    // The free bitmap is one cache line per 1Gb. The bitmaps and the watermarks need 2.375 bytes per granule
+    // The free bitmap is one cache line per 1Gb. The bitmaps and the watermarks need 2.5 bytes per granule
     // on top of the region map, and the card table that covers itself has room for that at any page size.
     _ASSERTE(regionCount % 64 == 0);
     result->m_freeBitmap = (size_t*)ALIGN_UP((size_t)result->m_regionMap + regionCount, 64);
@@ -130,18 +139,9 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 
     // make sure the first useful card word is beyond the header, and that the line of the reader count (the last 64 bytes before it,
     // see UnownedHeaderReaders) is not used by the bitmaps. The card words before the first useful one cover the card table itself, nothing uses them.
-    _ASSERTE((size_t)(result->m_seenFreeBitmap + regionCount / 64) <= result->Start() + cardTableStart - 64);
+    // In a 1Gb page the two age snapshots after the seen bitmap end exactly there.
+    _ASSERTE((size_t)(result->AgedBitmap() + regionCount / 64) <= result->Start() + cardTableStart - 64);
     _ASSERTE(*result->UnownedHeaderReaders() == 0);
-
-    // The stamps of the minimum free age do not fit into the page.
-    result->m_seenSince = new (nothrow) uint32_t[regionCount]();
-    if (result->m_seenSince == nullptr)
-    {
-        heap->DecBytesCommitted(commitSize);
-        GCToOSInterface::VirtualRelease(result, pageSize);
-        status = InitStatus::CommitFailed;
-        return nullptr;
-    }
 
 #if _DEBUG
     // The stamps do not fit into the page, they are for Checked builds only.
@@ -151,12 +151,13 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     result->m_freeStamps = new (nothrow) size_t[regionCount * 2]();
     if (result->m_freeStamps == nullptr)
     {
-        delete[] result->m_seenSince;
         heap->DecBytesCommitted(commitSize);
         GCToOSInterface::VirtualRelease(result, pageSize);
         status = InitStatus::CommitFailed;
         return nullptr;
     }
+
+    Interlocked::ExchangeAdd64((int64_t*)&s_traceNativeBytes, (int64_t)(regionCount * 2 * sizeof(size_t))); // TEMP-TRACE
 #endif
 
     // Everything after the card table is free. If the commit granularity made us commit more than the card table,
@@ -551,7 +552,6 @@ bool SatoriPage::IsCommittedInFull(size_t first, size_t count)
 // Gives back a page that was not published. The only thing committed in it is the card table.
 void SatoriPage::Release()
 {
-    delete[] m_seenSince;
 #if _DEBUG
     delete[] m_freeStamps;
 #endif
@@ -560,34 +560,36 @@ void SatoriPage::Release()
 }
 
 // Clears the seen bits of the granules, see FreeRegion.
+// The age snapshots are not touched here: the next look sees the granules free for the first time, and clears them in the snapshots
+// before it sets their seen bits (see RememberFreeGranules). Until then no seen bit lets the trimmer take them.
 void SatoriPage::ForgetSeenFree(size_t first, size_t count)
 {
-    // The stamps go first. A trimmer that still sees a seen bit sees the old stamp or the 0, and takes the granule or not,
-    // as it would have a moment earlier. One that sees no seen bit takes nothing.
-    for (size_t granule = first; granule < first + count; granule++)
-    {
-        VolatileStore(&m_seenSince[granule], (uint32_t)0);
-    }
-
     for (size_t word = first / 64; word <= (first + count - 1) / 64; word++)
     {
         Interlocked::And(&m_seenFreeBitmap[word], ~RunBitsInWord(first, count, word));
     }
 }
 
-// The granule has been free for the minimum free age, counted from the first look of the trimmer that saw it free.
-// Meaningful only for a granule that is seen free: a granule that no look has seen since it was freed has no stamp, and no age yet.
+size_t* SatoriPage::AgingBitmap()
+{
+    return m_seenFreeBitmap + GranuleCount() / 64;
+}
+
+size_t* SatoriPage::AgedBitmap()
+{
+    return m_seenFreeBitmap + 2 * (GranuleCount() / 64);
+}
+
+// The granule has been seen free for the minimum free age: it is in the "aged" snapshot, see RotateAges.
+// Meaningful only for a granule that is seen free.
 bool SatoriPage::IsOldEnoughToTrim(size_t granule)
 {
-    size_t minAge = SatoriUtil::TrimMinFreeAgeSeconds();
-    if (minAge == 0)
+    if (SatoriUtil::TrimMinFreeAgeSeconds() == 0)
     {
         return true;
     }
 
-    // after the seen bit, see FreeRegion. The clock may differ a little between cores, a negative age is not an old one.
-    uint32_t since = VolatileLoad(&m_seenSince[granule]);
-    return since != 0 && (int32_t)(SatoriUtil::TrimClockSeconds() - since) >= (int32_t)minAge;
+    return (VolatileLoad(&AgedBitmap()[granule / 64]) >> (granule % 64)) & 1;
 }
 
 // The granule is free and has anything committed. When asked, it was also free when the trimmer last looked at the page,
@@ -668,7 +670,7 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
 
         // The granule could have been claimed and freed again after it was found, and then our claim took the new free bit.
         // FreeRegion clears the seen bit before it sets the free bit, so a granule that is seen now was not freed since it was seen,
-        // and its stamp, which FreeRegion clears before the seen bit, says since when it is free.
+        // and its bit in the "aged" snapshot, which the look that first saw it free cleared, says if it is old enough (see RotateAges).
         // The watermark is stable now that the granule is ours. A granule that has nothing committed is not worth a run.
         if ((onlyIfSeenFree && (((VolatileLoad(&m_seenFreeBitmap[granule / 64]) >> (granule % 64)) & 1) == 0 || !IsOldEnoughToTrim(granule))) ||
             m_commitWatermarks[granule] == 0)
@@ -795,13 +797,6 @@ void SatoriPage::NoteFormatted(size_t first, size_t count)
 }
 
 // TEST-HOOK
-uint32_t SatoriPage::SeenSince(size_t granule)
-{
-    _ASSERTE(granule < GranuleCount());
-    return VolatileLoad(&m_seenSince[granule]);
-}
-
-// TEST-HOOK
 bool SatoriPage::IsSeenFree(size_t granule)
 {
     _ASSERTE(granule < GranuleCount());
@@ -809,12 +804,17 @@ bool SatoriPage::IsSeenFree(size_t granule)
 }
 
 // TEST-HOOK
-void SatoriPage::BackdateSeenSince(size_t granule, uint32_t seconds)
+bool SatoriPage::IsAging(size_t granule)
 {
     _ASSERTE(granule < GranuleCount());
-    _ASSERTE(m_seenSince[granule] != 0);
-    VolatileStore(&m_seenSince[granule], m_seenSince[granule] - seconds);
-    FirstLooks()[granule] -= seconds;
+    return (VolatileLoad(&AgingBitmap()[granule / 64]) >> (granule % 64)) & 1;
+}
+
+// TEST-HOOK
+bool SatoriPage::IsAged(size_t granule)
+{
+    _ASSERTE(granule < GranuleCount());
+    return (VolatileLoad(&AgedBitmap()[granule / 64]) >> (granule % 64)) & 1;
 }
 
 // TEST-HOOK: the time of the first look of the trimmer that saw each granule free, after the format counts.
@@ -887,27 +887,33 @@ void SatoriPage::TraceCollect(TraceSnap& s, size_t request)
 
 void SatoriPage::RememberFreeGranules()
 {
-    // The granules that this look sees free for the first time get its time. A granule that was seen before and is still free keeps
-    // the time of the look that saw it first. The time is taken before the bits are read: a granule that is freed again
-    // while this runs gets a stamp that is a little too old, never a newer one.
+    // The granules that this look sees free for the first time (free, and not seen by the last look, or freed since: FreeRegion clears
+    // the seen bit) start their age: they leave both snapshots, before their seen bits are set. Only the trimmer writes the snapshots
+    // (and a GC that trims on request, while the trimmer is stopped), so the stores need not be interlocked.
+#if _DEBUG
     uint32_t now = SatoriUtil::TrimClockSeconds();
+#endif
+    size_t* aging = AgingBitmap();
+    size_t* aged = AgedBitmap();
     for (size_t word = 0; word < GranuleCount() / 64; word++)
     {
         size_t freeBits = VolatileLoad(&m_freeBitmap[word]);
         size_t fresh = freeBits & ~VolatileLoad(&m_seenFreeBitmap[word]);
-        while (fresh)
+        if (fresh)
         {
-            DWORD bit;
-            BitScanForward64(&bit, fresh);
-            VolatileStore(&m_seenSince[word * 64 + bit], now);
+            VolatileStore(&aging[word], aging[word] & ~fresh);
+            VolatileStore(&aged[word], aged[word] & ~fresh);
 #if _DEBUG
             // TEST-HOOK: the time of the first look, kept for the check of the age at a trim (see TryTrimRun)
-            FirstLooks()[word * 64 + bit] = now;
+            for (size_t bits = fresh; bits; bits &= bits - 1)
+            {
+                DWORD bit;
+                BitScanForward64(&bit, bits);
+                FirstLooks()[word * 64 + bit] = now;
+            }
 #endif
-            fresh &= fresh - 1;
         }
 
-        // after the stamps: a trimmer that sees a seen bit sees its stamp
         VolatileStore(&m_seenFreeBitmap[word], freeBits);
     }
 
@@ -915,6 +921,17 @@ void SatoriPage::RememberFreeGranules()
     // After the copy: a granule that the copy saw as free was freed before this stamp.
     m_snapshotStamp = Interlocked::Increment(&s_freeClock);
 #endif
+}
+
+void SatoriPage::RotateAges()
+{
+    size_t* aging = AgingBitmap();
+    size_t* aged = AgedBitmap();
+    for (size_t word = 0; word < GranuleCount() / 64; word++)
+    {
+        VolatileStore(&aged[word], aging[word]);
+        VolatileStore(&aging[word], VolatileLoad(&m_seenFreeBitmap[word]));
+    }
 }
 
 // TEMP-TRACE

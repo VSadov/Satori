@@ -73,7 +73,8 @@ namespace Satori
     static const size_t TRIM_RUN_GRANULES = 32;
 
     // The trimmer decommits a free granule only after it has been free for this long, in seconds, counted from the first look of
-    // the trimmer that saw it free. Memory that a gen2 frees and that the allocation takes again in the next cycle would otherwise
+    // the trimmer that saw it free (and at most twice this, see SatoriTrimmer::MaybeRotateAges). Memory that a gen2 frees and that the allocation
+    // takes again in the next cycle would otherwise
     // be decommitted and committed again every cycle. This is the default of DOTNET_gcTrimMinFreeAge (1E in hex), see TrimMinFreeAgeSeconds.
     static const size_t TRIM_MIN_FREE_AGE_SEC = 30;
 
@@ -698,16 +699,15 @@ public:
 
     // How long in seconds a granule has to be free before the trimmer decommits it. DOTNET_gcTrimMinFreeAge, parsed as hex like the other GC
     // settings: DOTNET_gcTrimMinFreeAge=1E is 30 seconds, which is the default (TRIM_MIN_FREE_AGE_SEC, in effect when the setting is not given).
-    // 0 turns the minimum off. The age is counted from the first look of the trimmer that saw the granule free.
+    // 0 turns the minimum off. The age is counted from the first look of the trimmer that saw the granule free, and is known
+    // within a factor of two: a granule is decommitted between this and twice this after that look (see SatoriTrimmer::MaybeRotateAges).
     static size_t TrimMinFreeAgeSeconds()
     {
         int64_t age = GCConfig::GetTrimMinFreeAge();
-
-        // the age is compared as a signed 32 bit difference, see SatoriPage::IsOldEnoughToTrim
         return age < 0 ? Satori::TRIM_MIN_FREE_AGE_SEC : (size_t)min(age, (int64_t)INT32_MAX);
     }
 
-    // The clock that the free ages of the trimmer are counted on, in seconds. Never 0.
+    // TEST-HOOK: the clock of the check of the age at a trim in Checked builds, in seconds. Never 0.
     static uint32_t TrimClockSeconds()
     {
         return (uint32_t)(GetTimeStamp() / GetTimeStampFrequency()) + 1;

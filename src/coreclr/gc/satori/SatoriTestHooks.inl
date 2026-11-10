@@ -711,8 +711,9 @@ namespace SatoriTestHooks
         return true;
     }
 
-    // The trimmer takes a free granule only after a look of its has seen the granule free, and that was at least the minimum free age ago.
-    // A free starts the age over, and the first look that sees the granule free starts it. A trim on request (TrimNow) does not look at it.
+    // The trimmer takes a free granule for its age only after a look of its has seen the granule free, and two rotations of the age
+    // snapshots since then (see SatoriTrimmer::MaybeRotateAges). The look that first sees a granule free starts its age.
+    // A trim on request (TrimNow) does not look at it. The rotations are made here without waiting, so the check of the age at the trim is off.
     static bool SelfTestAge(SatoriHeap* heap)
     {
         size_t minAge = SatoriUtil::TrimMinFreeAgeSeconds();
@@ -724,22 +725,27 @@ namespace SatoriTestHooks
             return false;
         }
 
+        t_skipAgeCheck = true;
         size_t count;
 
-        // freed: it has no age, and no look has seen it
-        bool freed = page->NextGranuleToTrim(granule, false) == granule && page->SeenSince(granule) == 0 && !page->IsSeenFree(granule);
+        // freed: no look has seen it, so the trimmer does not find it for its age
+        bool freed = page->NextGranuleToTrim(granule, false) == granule && !page->IsSeenFree(granule) && page->NextGranuleToTrim(granule, true) != granule;
 
-        // The look starts the age. The granule is too young: the search of the trimmer does not find it, unless it asks for the work that is
-        // left, and the claim of the trimmer, if it got that far, gives the granule back.
+        // The look starts the age: the granule is in neither snapshot. It is too young: the search of the trimmer does not find it,
+        // unless it asks for the work that is left, and the claim of the trimmer, if it got that far, gives the granule back.
         page->RememberFreeGranules();
-        bool looked = page->SeenSince(granule) != 0 && page->IsSeenFree(granule);
+        bool looked = page->IsSeenFree(granule) && !page->IsAging(granule) && !page->IsAged(granule);
         bool youngSkipped = page->NextGranuleToTrim(granule, true) != granule;
         bool youngIsWork = page->NextGranuleToTrim(granule, true, true) == granule;
         bool youngRefused = !page->TryTrimRun(granule, 1, true, count) && page->NextGranuleToTrim(granule, false) == granule;
 
-        // old enough: the trimmer takes it
-        page->BackdateSeenSince(granule, (uint32_t)minAge + 1);
-        bool oldFound = page->NextGranuleToTrim(granule, true) == granule;
+        // one rotation: aging, still too young
+        page->RotateAges();
+        bool oneRotation = page->IsAging(granule) && !page->IsAged(granule) && page->NextGranuleToTrim(granule, true) != granule;
+
+        // two rotations: aged, old enough, the trimmer takes it
+        page->RotateAges();
+        bool oldFound = page->IsAged(granule) && page->NextGranuleToTrim(granule, true) == granule;
         bool oldTaken = page->TryTrimRun(granule, 1, true, count) && page->NextGranuleToTrim(granule, false) != granule;
 
         // a trim on request takes a granule that is too young
@@ -754,10 +760,11 @@ namespace SatoriTestHooks
                 page2->NextGranuleToTrim(granule2, false) != granule2;
         }
 
-        bool pass = freed && looked && youngSkipped && youngIsWork && youngRefused && oldFound && oldTaken && onRequest;
-        char details[260];
-        snprintf(details, sizeof(details), "minimum age %d s; freed has no age: %d, the look starts it: %d, too young is skipped: %d, is work left: %d, is refused: %d, old is found: %d, is taken: %d, a trim on request takes a young one: %d",
-            (int)minAge, (int)freed, (int)looked, (int)youngSkipped, (int)youngIsWork, (int)youngRefused, (int)oldFound, (int)oldTaken, (int)onRequest);
+        t_skipAgeCheck = false;
+        bool pass = freed && looked && youngSkipped && youngIsWork && youngRefused && oneRotation && oldFound && oldTaken && onRequest;
+        char details[300];
+        snprintf(details, sizeof(details), "minimum age %d s; freed has no age: %d, the look starts it: %d, too young is skipped: %d, is work left: %d, is refused: %d, after one rotation still young: %d, after two old is found: %d, is taken: %d, a trim on request takes a young one: %d",
+            (int)minAge, (int)freed, (int)looked, (int)youngSkipped, (int)youngIsWork, (int)youngRefused, (int)oneRotation, (int)oldFound, (int)oldTaken, (int)onRequest);
         Report("age", pass ? "PASS" : "FAIL", details);
         return pass;
     }
@@ -776,14 +783,14 @@ namespace SatoriTestHooks
 
         bool parked = page->NextGranuleToTrim(granule, false) != granule;
         page->RememberFreeGranules();
-        bool parkedNotSeen = page->SeenSince(granule) == 0 && !page->IsSeenFree(granule);
+        bool parkedNotSeen = !page->IsSeenFree(granule);
 
         heap->Allocator()->DrainParkedRegions();
         bool drainedFree = page->NextGranuleToTrim(granule, false) == granule;
-        bool drainedNoAge = page->SeenSince(granule) == 0 && !page->IsSeenFree(granule);
+        bool drainedNoAge = !page->IsSeenFree(granule);
 
         page->RememberFreeGranules();
-        bool aging = page->SeenSince(granule) != 0 && page->IsSeenFree(granule);
+        bool aging = page->IsSeenFree(granule) && !page->IsAging(granule) && !page->IsAged(granule);
 
         bool pass = parked && parkedNotSeen && drainedFree && drainedNoAge && aging;
         char details[200];

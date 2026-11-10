@@ -43,6 +43,7 @@
 SatoriTrimmer::SatoriTrimmer(SatoriHeap* heap)
 {
     m_lastGen2Count = 0;
+    m_lastAgeRotation = SatoriUtil::GetTimeStamp();
     m_heap  = heap;
     m_state = TRIMMER_STATE_STOPPED;
 
@@ -133,7 +134,10 @@ void SatoriTrimmer::Loop()
 
             // Idle throttling must not revoke a GC's run permission. Only a GC-requested stop
             // needs another SetOkToRun before the trimmer can continue.
-            int waitMsec = waitTicks <= 0 ? 5000 : (int)min(waitTicks * 1000 / SatoriUtil::GetTimeStampFrequency() + 1, (int64_t)5000);
+            // The wait also ends in time for the next rotation of the age snapshots, so that their period is what it is meant to be.
+            int64_t untilRotation = MaybeRotateAges();
+            int64_t waitFor = min(waitTicks <= 0 ? untilRotation : min(waitTicks, untilRotation), roundInterval);
+            int waitMsec = (int)(waitFor * 1000 / SatoriUtil::GetTimeStampFrequency() + 1);
             Pause(waitMsec);
             StopAndWait();
         }
@@ -155,6 +159,7 @@ void SatoriTrimmer::Loop()
         // (the state is STOPPED, if a gen2 completed between the two reads of its count at the start), and in the conservative mode
         // a GC marks only while the trimmer is not active.
         StopAndWait();
+        MaybeRotateAges();
         m_heap->Allocator()->DrainRegionCache();
         if (SatoriUtil::IsConservativeMode())
         {
@@ -253,6 +258,40 @@ void SatoriTrimmer::TrimNow()
             page->RememberFreeGranules();
         }
     );
+}
+
+// The minimum free age (DOTNET_gcTrimMinFreeAge) without a stamp per granule. Every period E the pages rotate their two age snapshots
+// (SatoriPage::RotateAges): "aged" gets "aging", and "aging" gets the granules that the last look saw free. The trimmer takes a granule
+// for its age only if it is in "aged", that is it was seen free before the rotation before the last one: at least E ago.
+// It is first in "aged" one to two periods after the look that first saw it free, so with E = gcTrimMinFreeAge the effective
+// minimum age is between the setting and twice that. E is at least one round interval (5 s).
+// The check is one comparison of the clock, made by the trimmer when it runs. No rotation happens while the trimmer is stopped:
+// the snapshots then age by the time of the stop, which is the safe direction.
+// Returns the time until the next rotation, in ticks (INT64_MAX if the age is off).
+int64_t SatoriTrimmer::MaybeRotateAges()
+{
+    size_t minAge = SatoriUtil::TrimMinFreeAgeSeconds();
+    if (minAge == 0)
+    {
+        return INT64_MAX;
+    }
+
+    int64_t now = SatoriUtil::GetTimeStamp();
+    int64_t period = (int64_t)max(minAge, (size_t)5) * SatoriUtil::GetTimeStampFrequency();
+    if (now - m_lastAgeRotation < period)
+    {
+        return m_lastAgeRotation + period - now;
+    }
+
+    m_lastAgeRotation = now;
+    m_heap->ForEachPage(
+        [&](SatoriPage* page)
+        {
+            page->RotateAges();
+        }
+    );
+
+    return period;
 }
 
 // The conservative mode: frees the regions that are parked. A conservative marker may follow a stale pointer to the header of
