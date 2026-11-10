@@ -146,8 +146,9 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 #if _DEBUG
     // The stamps do not fit into the page, they are for Checked builds only.
     // TEST-HOOK: the array also has the count of how many times each granule was formatted as a part of a region,
-    // after the stamps, 4 bytes per granule (see FormatCount). regionCount is a multiple of 64.
-    result->m_freeStamps = new (nothrow) size_t[regionCount + regionCount / 2]();
+    // after the stamps, 4 bytes per granule (see FormatCount), and then the time of the first look of the trimmer that saw
+    // the granule free, 4 bytes per granule (see FirstLooks). regionCount is a multiple of 64.
+    result->m_freeStamps = new (nothrow) size_t[regionCount * 2]();
     if (result->m_freeStamps == nullptr)
     {
         delete[] result->m_seenSince;
@@ -684,6 +685,12 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
                 (void*)this, granule, m_freeStamps[granule], m_snapshotStamp);
             _ASSERTE(!"the trimmer took a granule that was freed after the last look at its page");
         }
+
+        // TEST-HOOK: a granule that is taken for its age has been seen free for at least the minimum free age.
+        if (onlyIfSeenFree)
+        {
+            SatoriTestHooks::OnTrimmedByAge(SatoriUtil::TrimClockSeconds() - FirstLooks()[granule]);
+        }
 #endif
 
         claimed++;
@@ -807,6 +814,13 @@ void SatoriPage::BackdateSeenSince(size_t granule, uint32_t seconds)
     _ASSERTE(granule < GranuleCount());
     _ASSERTE(m_seenSince[granule] != 0);
     VolatileStore(&m_seenSince[granule], m_seenSince[granule] - seconds);
+    FirstLooks()[granule] -= seconds;
+}
+
+// TEST-HOOK: the time of the first look of the trimmer that saw each granule free, after the format counts.
+uint32_t* SatoriPage::FirstLooks()
+{
+    return (uint32_t*)(m_freeStamps + GranuleCount()) + GranuleCount();
 }
 #endif
 
@@ -886,6 +900,10 @@ void SatoriPage::RememberFreeGranules()
             DWORD bit;
             BitScanForward64(&bit, fresh);
             VolatileStore(&m_seenSince[word * 64 + bit], now);
+#if _DEBUG
+            // TEST-HOOK: the time of the first look, kept for the check of the age at a trim (see TryTrimRun)
+            FirstLooks()[word * 64 + bit] = now;
+#endif
             fresh &= fresh - 1;
         }
 

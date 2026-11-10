@@ -110,6 +110,15 @@ namespace SatoriTestHooks
     // The trimmer has claimed a run of granules and is about to publish it again.
     void OnTrimRunClaimed();
 
+    // The trimmer takes a granule for its age, which is the time since the first look that saw it free.
+    // Asserts that it is at least the minimum free age (the clock is in whole seconds, one is allowed for that), and keeps the range.
+    // A self-test that makes a granule old without waiting sets t_skipAgeCheck.
+    void OnTrimmedByAge(uint32_t ageSeconds);
+    extern thread_local bool t_skipAgeCheck;
+    extern uint32_t s_trimAgeMin;
+    extern uint32_t s_trimAgeMax;
+    extern size_t s_trimAgeCount;
+
     // The trimmer is in its drain of the regions, between two regions. It holds no region.
     void OnTrimmerDrainRegion();
 

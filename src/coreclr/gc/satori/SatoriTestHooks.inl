@@ -223,6 +223,31 @@ namespace SatoriTestHooks
         }
     }
 
+    thread_local bool t_skipAgeCheck;
+    uint32_t s_trimAgeMin = UINT32_MAX;
+    uint32_t s_trimAgeMax;
+    size_t s_trimAgeCount;
+
+    // Only the trimmer takes granules for their age, so the range needs no interlocked updates.
+    void OnTrimmedByAge(uint32_t ageSeconds)
+    {
+        size_t minAge = SatoriUtil::TrimMinFreeAgeSeconds();
+        if (t_skipAgeCheck || minAge == 0)
+        {
+            return;
+        }
+
+        if ((size_t)ageSeconds + 1 < minAge)
+        {
+            minipal_log_print_error("Satori: the trimmer took a granule that was seen free %u s ago, the minimum free age is %zu s\n", ageSeconds, minAge);
+            _ASSERTE(!"the trimmer took a granule that is younger than the minimum free age");
+        }
+
+        s_trimAgeMin = min(s_trimAgeMin, ageSeconds);
+        s_trimAgeMax = max(s_trimAgeMax, ageSeconds);
+        s_trimAgeCount++;
+    }
+
     static void MarkerThreadFn(void*)
     {
         t_holdMarker = true;

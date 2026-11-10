@@ -256,6 +256,9 @@ private:
     bool IsTrimCandidate(size_t granule, bool onlyIfSeenFree);
     bool IsOldEnoughToTrim(size_t granule);
     volatile int32_t* UnownedHeaderReaders();
+#if _DEBUG
+    uint32_t* FirstLooks();
+#endif
 
     union
     {

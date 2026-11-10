@@ -978,6 +978,15 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
         g_trimSkippedForReader, g_trimSkippedGranules);
     TraceWrite(buf, len);
 
+#if _DEBUG
+    // TEST-HOOK: the ages, since the first look that saw them free, of the granules that the trimmer took for their age
+    len = snprintf(buf, sizeof(buf), "[trimages] t=%.3f ev=%s taken=%zu minS=%u maxS=%u minFreeAgeS=%zu\n",
+        TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, ev, SatoriTestHooks::s_trimAgeCount,
+        SatoriTestHooks::s_trimAgeCount ? SatoriTestHooks::s_trimAgeMin : 0, SatoriTestHooks::s_trimAgeMax,
+        SatoriUtil::TrimMinFreeAgeSeconds());
+    TraceWrite(buf, len);
+#endif
+
     if (SatoriUtil::IsConservativeMode())
     {
         len = snprintf(buf, sizeof(buf),
