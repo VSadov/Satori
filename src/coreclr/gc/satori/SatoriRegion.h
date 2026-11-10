@@ -68,6 +68,8 @@ public:
     void ZeroInitAndLink(SatoriRegion* prev);
 
     static size_t RegionSizeForAlloc(size_t allocSize);
+    // How much of a region of the given size, from its start, is always committed. (see InitializeAt)
+    static size_t MinCommitSize(size_t regionSize);
     // Where AllocateHuge places a huge object of the given size in a blank region of the given size, from the start of the region.
     static size_t HugeObjectOffset(size_t regionSize, size_t size);
     // How much of a region of the given size, from its start, a huge object of the given size needs committed.

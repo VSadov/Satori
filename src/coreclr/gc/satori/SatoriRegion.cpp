@@ -162,8 +162,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     used = max(address, used);
 
     // Cover the first commit granule when a huge allocation left a page-aligned tail.
-    size_t minCommitted = ALIGN_UP((size_t)&result->m_syncBlock + SatoriUtil::MinZeroInitSize(), SatoriUtil::CommitGranularity());
-    minCommitted = min(minCommitted, address + regionSize);
+    size_t minCommitted = address + MinCommitSize(regionSize);
     if (committed < minCommitted)
     {
         size_t toCommit = minCommitted - committed;
@@ -758,12 +757,21 @@ SatoriRegion* SatoriRegion::NextInPage()
     return m_containingPage->NextInPage(this);
 }
 
-// Decommits what the region has committed above the address, rounded up to the commit granularity.
+// What every region has committed from its start: the header, and the memory that its first allocations zero.
+// InitializeAt commits it, and nothing decommits it while the region is a region. (see TryDecommitAbove)
+// Regions are aligned to 2 MB, which the commit granularity divides, so this is the same from the start of any region.
+size_t SatoriRegion::MinCommitSize(size_t regionSize)
+{
+    return min(ALIGN_UP(offsetof(SatoriRegion, m_syncBlock) + SatoriUtil::MinZeroInitSize(), SatoriUtil::CommitGranularity()), regionSize);
+}
+
+// Decommits what the region has committed above the address, rounded up to the commit granularity,
+// but not what every region keeps committed. (see MinCommitSize)
 // The finalization queue does that with its region: a run can come committed beyond the array that the queue needs.
 bool SatoriRegion::TryDecommitAbove(size_t address)
 {
     _ASSERTE(address >= (size_t)&m_syncBlock && address <= End());
-    size_t decommitStart = ALIGN_UP(address, SatoriUtil::CommitGranularity());
+    size_t decommitStart = max(ALIGN_UP(address, SatoriUtil::CommitGranularity()), Start() + MinCommitSize(Size()));
     if (decommitStart >= m_committed)
     {
         return false;

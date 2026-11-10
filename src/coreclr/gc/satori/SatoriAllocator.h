@@ -195,8 +195,7 @@ private:
     size_t TryClaimInPage(SatoriPage* page, size_t granules, bool low);
     SatoriRegion* TryClaimWarmRegion(size_t granules, bool low, size_t commitSize);
     SatoriRegion* TryGetCachedRegion();
-    bool TryCacheRegion(SatoriRegion* region, bool recentlyUsed);
-    void CacheRegion(SatoriRegion* region, bool recentlyUsed);
+    bool TryCacheRegion(SatoriRegion* region);
     void FreeToBitmap(SatoriRegion* region);
     bool AddMoreWorkChunks();
 };

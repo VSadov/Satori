@@ -458,14 +458,14 @@ void SatoriAllocator::ReturnRegion(SatoriRegion* region)
 {
     _ASSERTE(region->IsAttachedToAllocatingOwner() == false);
     _ASSERTE(region->Generation() == -1);
-    if (!TryCacheRegion(region, /* recentlyUsed */ true))
+    if (!TryCacheRegion(region))
     {
         FreeToBitmap(region);
     }
 }
 
-// Puts a 2 MB region in the cache, if the cache is not full. The regions that are used most recently go to the front.
-bool SatoriAllocator::TryCacheRegion(SatoriRegion* region, bool recentlyUsed)
+// Puts a 2 MB region that its owner no longer uses at the front of the cache, if the cache is not full.
+bool SatoriAllocator::TryCacheRegion(SatoriRegion* region)
 {
     if (region->Size() != Satori::REGION_SIZE_GRANULARITY)
     {
@@ -477,28 +477,10 @@ bool SatoriAllocator::TryCacheRegion(SatoriRegion* region, bool recentlyUsed)
         return false;
     }
 
-    CacheRegion(region, recentlyUsed);
-    return true;
-}
-
-// Puts a 2 MB region in the cache, full or not. A cached region is used again as it is, without a claim or a format,
-// so nothing changes its granules, its region map bytes or its committed header while it is there.
-void SatoriAllocator::CacheRegion(SatoriRegion* region, bool recentlyUsed)
-{
-    _ASSERTE(region->Size() == Satori::REGION_SIZE_GRANULARITY);
-    _ASSERTE(region->IsAttachedToAllocatingOwner() == false);
-    _ASSERTE(region->Generation() == -1);
-
     // The count is ahead of the queue, so a pop never takes the count below 0.
     Interlocked::Increment(&m_regionCacheCount);
-    if (recentlyUsed)
-    {
-        m_regionCache->Push(region);
-    }
-    else
-    {
-        m_regionCache->Enqueue(region);
-    }
+    m_regionCache->Push(region);
+    return true;
 }
 
 // Frees the region into the free granules of its page.
@@ -512,7 +494,6 @@ void SatoriAllocator::CacheRegion(SatoriRegion* region, bool recentlyUsed)
 //  - The trimmer frees the regions from the cache only while no GC marks.
 // What can run while a thread scans a stack does not free a region. A claim commits what the first use of its region needs before it
 // publishes the region, and a claim that fails gives back granules that no thread has seen as a region. (see SatoriPage::FormatClaimed)
-// A refill of work chunks that cannot commit puts its region in the cache, where it keeps its address and its header. (see CacheRegion)
 // Checked builds assert that no region is freed into the free granules while a thread scans a stack. (see SatoriPage::FreeRegion)
 void SatoriAllocator::FreeToBitmap(SatoriRegion* region)
 {
@@ -2064,14 +2045,10 @@ bool SatoriAllocator::AddMoreWorkChunks()
         m_workChunks->PushChainToShard(m_workChunkRefillShard++, first, last);
     }
 
-    if (totalLength == 0)
-    {
-        // Could not commit anything. This can run while a thread scans a stack, so in the conservative mode the region could not be freed.
-        // It is formatted and blank, and goes to the cache, even if the cache is full. (see CacheRegion)
-        CacheRegion(region, /* recentlyUsed */ false);
-        return false;
-    }
-
+    // The commit above can fail, but every region has the start of its body committed, which holds several chunks.
+    // (see SatoriRegion::MinCommitSize) So there is no region to give back for want of memory, which in the conservative mode
+    // could not be freed here: this can run while a thread scans a stack.
+    _ASSERTE(totalLength > 0);
     return true;
 }
 
