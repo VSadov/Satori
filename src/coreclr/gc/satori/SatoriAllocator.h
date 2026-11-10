@@ -62,6 +62,7 @@ public:
     void ReturnRegion(SatoriRegion* region);
     // Gives the regions from the cache back to the free granules of their pages, where the trimmer can see them.
     void DrainRegionCache();
+    bool TryFreeOneParkedRegion();
     // The conservative mode only: frees the regions that were parked since the last drain, see FreeToBitmap.
     // A GC calls it when marking is complete, with the EE stopped, so no marker can be looking at a region.
     void DrainParkedRegions();

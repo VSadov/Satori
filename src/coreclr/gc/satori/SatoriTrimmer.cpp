@@ -151,10 +151,16 @@ void SatoriTrimmer::Loop()
 
         // Regions in the cache are not free granules, and the trimmer only decommits free granules.
         // The ones that nobody has taken by the next round will be decommitted then.
+        // The round starts with the permission to run. Without this call the first round could start while a GC is in progress
+        // (the state is STOPPED, if a gen2 completed between the two reads of its count at the start), and in the conservative mode
+        // a GC marks only while the trimmer is not active.
+        StopAndWait();
         m_heap->Allocator()->DrainRegionCache();
-#if _DEBUG
-        SatoriTestHooks::OnTrimmerDrainRegion(); // TEST-HOOK
-#endif
+        if (SatoriUtil::IsConservativeMode())
+        {
+            // The drain of the cache parks in the conservative mode. Nothing else would free what is parked before the next GC.
+            FreeParkedRegions();
+        }
 
         m_heap->ForEachPage(
             [&](SatoriPage* page)
@@ -225,6 +231,13 @@ void SatoriTrimmer::TrimNow()
     TraceTrimRound(); // TEMP-TRACE
 
     m_heap->Allocator()->DrainRegionCache();
+    if (SatoriUtil::IsConservativeMode())
+    {
+        // The GC's own drain of the parked regions has already run (see BlockingCollectImpl), and the drain of the cache above parks.
+        // The EE is stopped and the marking is done, as for the GC's drain.
+        m_heap->Allocator()->DrainParkedRegions();
+    }
+
     m_heap->ForEachPage(
         [&](SatoriPage* page)
         {
@@ -240,6 +253,34 @@ void SatoriTrimmer::TrimNow()
             page->RememberFreeGranules();
         }
     );
+}
+
+// The conservative mode: frees the regions that are parked. A conservative marker may follow a stale pointer to the header of
+// a region that it has looked up. The trimmer frees parked regions only between a return from StopAndWait and its next call:
+// a conservative GC does not mark until the trimmer has acknowledged its stop (in StopAndWait), and only the end of the GC
+// lets the trimmer run again (SetOkToRun). The state may become STOP_SUGGESTED at any moment in between, that is fine.
+// The state is checked before every region, and a region is popped only after the check, so nothing is held across an acknowledgement:
+// the queue can be long (a deferred sweep after a large gen2 parks thousands of regions), and a blocking GC waits for the
+// acknowledgement with the EE suspended.
+void SatoriTrimmer::FreeParkedRegions()
+{
+    SatoriAllocator* allocator = m_heap->Allocator();
+    while (true)
+    {
+#if _DEBUG
+        SatoriTestHooks::OnTrimmerDrainRegion(); // TEST-HOOK
+#endif
+
+        if (VolatileLoad(&m_state) != TRIMMER_STATE_RUNNING)
+        {
+            StopAndWait();
+        }
+
+        if (!allocator->TryFreeOneParkedRegion())
+        {
+            return;
+        }
+    }
 }
 
 void SatoriTrimmer::StopAndWait()
@@ -345,7 +386,9 @@ void SatoriTrimmer::WaitForStop()
     _ASSERTE(m_state <= TRIMMER_STATE_STOP_SUGGESTED);
 
     int cycles = 0;
-    while (m_state == TRIMMER_STATE_STOP_SUGGESTED)
+    // A conservative marker reads the region map after this. The load must be an acquire (a plain load is not one on arm64),
+    // so that the marker sees every free that the trimmer did before its acknowledgement.
+    while (VolatileLoad(&m_state) == TRIMMER_STATE_STOP_SUGGESTED)
     {
         if (m_paused)
         {
@@ -364,5 +407,6 @@ void SatoriTrimmer::WaitForStop()
 
 bool SatoriTrimmer::IsActive()
 {
-    return m_state > TRIMMER_STATE_STOPPED;
+    // an acquire, as in WaitForStop: a conservative marker that sees the trimmer inactive reads the region map after this.
+    return VolatileLoad(&m_state) > TRIMMER_STATE_STOPPED;
 }

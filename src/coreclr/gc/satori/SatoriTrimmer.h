@@ -63,6 +63,7 @@ private:
     static void LoopFn(void* inst);
     void Loop();
     void StopAndWait();
+    void FreeParkedRegions();
     void Pause(int msec);
     void Unpause();
 };

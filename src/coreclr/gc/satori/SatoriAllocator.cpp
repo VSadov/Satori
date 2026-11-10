@@ -107,6 +107,9 @@ static size_t g_parkMaxSharePermille;
 static size_t g_drainCount;
 static size_t g_drainTicks;
 static size_t g_drainMaxTicks;
+// Step 1 of Milestone 3: the parked regions that the trimmer frees, one at a time between its checks of the state.
+static size_t g_trimmerFreedParked;
+static size_t g_trimmerFreedParkedBytes;
 
 // Step 2 of Milestone 2c: the time that a blocking GC of a Checked build waits for the trimmer. (see [verifywait])
 static size_t g_verifyWaits;
@@ -979,11 +982,12 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
     {
         len = snprintf(buf, sizeof(buf),
             "[parkstats] t=%.3f ev=%s parkedRegions=%zu parkedMB=%.1f maxCycleRegions=%zu maxCycleMB=%.1f maxSharePct=%.1f "
-            "drains=%zu drainMsTotal=%.3f drainMsMax=%.3f\n",
+            "drains=%zu drainMsTotal=%.3f drainMsMax=%.3f trimmerFreed=%zu trimmerFreedMB=%.1f\n",
             TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, ev,
             g_parkRegions, (double)g_parkBytes / (1 << 20), g_parkMaxCycleRegions, (double)g_parkMaxCycleBytes / (1 << 20),
             (double)g_parkMaxSharePermille / 10.0, g_drainCount,
-            TraceTicksToUs((int64_t)g_drainTicks) / 1000.0, TraceTicksToUs((int64_t)g_drainMaxTicks) / 1000.0);
+            TraceTicksToUs((int64_t)g_drainTicks) / 1000.0, TraceTicksToUs((int64_t)g_drainMaxTicks) / 1000.0,
+            g_trimmerFreedParked, (double)g_trimmerFreedParkedBytes / (1 << 20));
         TraceWrite(buf, len);
     }
 
@@ -1564,7 +1568,9 @@ void SatoriAllocator::FreeToBitmap(SatoriRegion* region)
 // run that is claimed and decommitted, (the finalization queue does that when it grows) while the marker is still reading.
 // So every free is parked: the region keeps its granules, its region map bytes and its committed header, and nothing can claim it.
 // The GC frees the parked regions after it has marked, when no marker can be running. (see DrainParkedRegions)
-// The cost is that what is freed cannot be used before the next GC. Only the conservative mode pays it.
+// So does the trimmer, between its acknowledgement of a stop and the next one: a conservative GC does not mark before the trimmer
+// has acknowledged its stop, and only the end of the GC lets the trimmer run again. (see TryFreeOneParkedRegion)
+// The cost is that what is freed cannot be used before the next GC or the next round of the trimmer. Only the conservative mode pays it.
 NOINLINE void SatoriAllocator::ParkRegion(SatoriRegion* region)
 {
     _ASSERTE(SatoriUtil::IsConservativeMode());
@@ -1579,6 +1585,7 @@ NOINLINE void SatoriAllocator::ParkRegion(SatoriRegion* region)
 
 // Frees the regions that were parked. Called by a GC after Update, with the EE stopped, when every concurrent marker is done:
 // no marker has a region that it found earlier, and the regions that this frees can be claimed again only after the EE restarts.
+// A trim on request (SatoriTrimmer::TrimNow) calls it too, later in the same GC.
 void SatoriAllocator::DrainParkedRegions()
 {
     _ASSERTE(SatoriUtil::IsConservativeMode());
@@ -1631,6 +1638,34 @@ void SatoriAllocator::DrainRegionCache()
         Interlocked::Decrement(&m_regionCacheCount);
         FreeToBitmap(region);
     }
+}
+
+// Frees one parked region, if there is one. Called only by the trimmer, between its acknowledgement of a stop and the next one,
+// so no conservative marker is between its map lookup and its last use of a region. (see SatoriTrimmer::FreeParkedRegions)
+bool SatoriAllocator::TryFreeOneParkedRegion()
+{
+    _ASSERTE(SatoriUtil::IsConservativeMode());
+
+    SatoriRegion* region = m_parkedRegions->TryPop();
+    if (region == nullptr)
+    {
+        return false;
+    }
+
+    SatoriTrace::Count(g_trimmerFreedParked); // TEMP-TRACE
+    SatoriTrace::Count(g_trimmerFreedParkedBytes, region->Size()); // TEMP-TRACE
+
+#if _DEBUG
+    SatoriTestHooks::t_inParkDrain = true; // TEST-HOOK
+#endif
+
+    region->ContainingPage()->FreeRegion(region);
+
+#if _DEBUG
+    SatoriTestHooks::t_inParkDrain = false; // TEST-HOOK
+#endif
+
+    return true;
 }
 
 #if _DEBUG
@@ -2538,7 +2573,8 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
 // They run only on regions that are live: in the precise mode a reference is to a live object, and a card group is set only for a live region.
 // In the conservative mode a marker can follow a candidate pointer to a region that is not live any more, so a region that is freed is not freed
 // at once: it is parked, with its granules, its region map bytes and its committed header, until the drain of the next GC, which runs after
-// its marking is done (see FreeToBitmap and DrainParkedRegions). Stopping the trimmer while the GC marks (see DrainDeferredSweepQueueConcurrent)
+// its marking is done, or until the next round of the trimmer, which runs only while no GC marks (see FreeToBitmap, DrainParkedRegions
+// and TryFreeOneParkedRegion). Stopping the trimmer while the GC marks (see DrainDeferredSweepQueueConcurrent)
 // was not enough for that: the granules of a freed region could be claimed and formatted again at the same address under a marker, or be a part
 // of a run that the finalization queue claims and decommits with TryDecommit, and that is not the trimmer.
 static SatoriRegion* TryTakeReusableNext(SatoriPage* page, SatoriRegion* region, size_t minFree)

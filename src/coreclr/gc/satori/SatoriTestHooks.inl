@@ -817,14 +817,16 @@ namespace SatoriTestHooks
         s_heap = heap;
         bool conservative = SatoriUtil::IsConservativeMode();
         bool noCache = GCConfig::GetRegionCacheCap() == 0;
+        bool noTrimmer = !SatoriUtil::IsTrimmingEnabled();
         bool pass = true;
 
-        // the quarantine of the freed regions: the conservative mode, and the freed regions are not cached
+        // The quarantine of the freed regions: the conservative mode, and the freed regions are not cached.
+        // Their marker runs on an app thread, outside the handshake with the trimmer, which frees parked regions: no trimmer.
         if (Wants("reuse") || Wants("absorb"))
         {
-            if (!conservative || !noCache)
+            if (!conservative || !noCache || !noTrimmer)
             {
-                Report("reuse/absorb", "FAIL", "the self-tests need DOTNET_gcConservative=1 and DOTNET_gcRegionCacheCap=0");
+                Report("reuse/absorb", "FAIL", "the self-tests need DOTNET_gcConservative=1, DOTNET_gcRegionCacheCap=0 and DOTNET_gcTrim=0");
                 pass = false;
             }
             else
@@ -883,9 +885,9 @@ namespace SatoriTestHooks
 
         if (Wants("ageparked"))
         {
-            if (!conservative || !noCache)
+            if (!conservative || !noCache || !noTrimmer)
             {
-                Report("ageparked", "FAIL", "the self-test needs DOTNET_gcConservative=1 and DOTNET_gcRegionCacheCap=0");
+                Report("ageparked", "FAIL", "the self-test needs DOTNET_gcConservative=1, DOTNET_gcRegionCacheCap=0 and DOTNET_gcTrim=0");
                 pass = false;
             }
             else
@@ -897,7 +899,7 @@ namespace SatoriTestHooks
         // a stale pointer into a free region: the conservative mode, and no trimmer that could free the region while the test looks
         if (Wants("containing"))
         {
-            if (!conservative || SatoriUtil::IsTrimmingEnabled())
+            if (!conservative || !noTrimmer)
             {
                 Report("containing", "FAIL", "the self-test needs DOTNET_gcConservative=1 and DOTNET_gcTrim=0");
                 pass = false;

@@ -1793,6 +1793,9 @@ void SatoriRecycler::BlockingCollectImpl()
         UpdateGenerationOccupancies();
     }
 
+    // The handshake with the trimmer relies on no GC starting between m_gcState = GC_STATE_NONE above and this call: a GC that started
+    // before it would have its stop request undone here, and in the conservative mode it would mark while the trimmer frees regions.
+    // That holds because the EE is still suspended here and every GC starts from a thread in the cooperative mode.
     m_trimmer->SetOkToRun();
 
     m_gcNextTimeTarget = GetNowMillis() + SatoriUtil::GcRate();
