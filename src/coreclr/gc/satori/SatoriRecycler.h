@@ -71,6 +71,8 @@ public:
 #if _DEBUG
     // TEST-HOOK: see SatoriTestHooks
     void TestMarkConservativeConcurrent(size_t location);
+    // TEST-HOOK: a conservative marker runs only while the trimmer cannot free regions.
+    void AssertTrimmerInactiveForMarker();
 #endif
 
     void Initialize(SatoriHeap* heap);

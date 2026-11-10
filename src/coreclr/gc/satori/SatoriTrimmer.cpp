@@ -38,6 +38,7 @@
 #include "SatoriRegion.h"
 #include "SatoriRegion.inl"
 #include "SatoriPageAddTrace.h" // TEMP-TRACE
+#include "SatoriTestHooks.h" // TEST-HOOK
 
 SatoriTrimmer::SatoriTrimmer(SatoriHeap* heap)
 {
@@ -151,6 +152,9 @@ void SatoriTrimmer::Loop()
         // Regions in the cache are not free granules, and the trimmer only decommits free granules.
         // The ones that nobody has taken by the next round will be decommitted then.
         m_heap->Allocator()->DrainRegionCache();
+#if _DEBUG
+        SatoriTestHooks::OnTrimmerDrainRegion(); // TEST-HOOK
+#endif
 
         m_heap->ForEachPage(
             [&](SatoriPage* page)

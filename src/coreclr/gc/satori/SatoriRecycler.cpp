@@ -1978,6 +1978,13 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     MarkContext* markContext = (MarkContext*)sc->_unused1;
     SatoriObject* o = (SatoriObject*)location;
 
+#if _DEBUG
+    if (isConservative)
+    {
+        markContext->m_recycler->AssertTrimmerInactiveForMarker(); // TEST-HOOK
+    }
+#endif
+
     if (flags & GC_CALL_INTERIOR)
     {
         // byrefs may point to stack, use checked here
@@ -2025,6 +2032,13 @@ void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t
     }
 
     SatoriObject* o = (SatoriObject*)location;
+#if _DEBUG
+    if (isConservative)
+    {
+        ((MarkContext*)sc->_unused1)->m_recycler->AssertTrimmerInactiveForMarker(); // TEST-HOOK
+    }
+#endif
+
     if (flags & GC_CALL_INTERIOR)
     {
         MarkContext* markContext = (MarkContext*)sc->_unused1;
@@ -2075,6 +2089,13 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     SatoriRegion* containingRegion;
     MarkContext* markContext = (MarkContext*)sc->_unused1;
     SatoriObject* o = (SatoriObject*)location;
+
+#if _DEBUG
+    if (isConservative)
+    {
+        markContext->m_recycler->AssertTrimmerInactiveForMarker(); // TEST-HOOK
+    }
+#endif
 
     if (flags & GC_CALL_INTERIOR)
     {
@@ -2179,6 +2200,14 @@ void SatoriRecycler::TestMarkConservativeConcurrent(size_t location)
     size_t slot = location;
     MarkFnConcurrent<true>((PTR_PTR_Object)&slot, &sc, GC_CALL_INTERIOR);
     _ASSERTE(markContext.m_WorkChunk == nullptr);
+}
+
+// TEST-HOOK: a conservative marker may follow a stale pointer to the header of a region that is not in use any more.
+// That is safe only while the trimmer, which frees regions in the conservative mode, cannot run: between its acknowledgement
+// of the stop and SetOkToRun. The marker of a self-test runs on an app thread, outside the handshake, and is not checked.
+void SatoriRecycler::AssertTrimmerInactiveForMarker()
+{
+    _ASSERTE(SatoriTestHooks::t_holdMarker || !m_trimmer->IsActive());
 }
 #endif
 

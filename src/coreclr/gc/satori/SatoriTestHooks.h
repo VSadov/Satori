@@ -47,6 +47,10 @@ class SatoriRegion;
 //                                   in the conservative mode FreeRegion may run only in the drain of the parked regions
 //   SATORI_TEST_PAUSE_FREE_MS=n     a free of a region into the bitmap pauses for n ms before it starts
 //   SATORI_TEST_PAUSE_TRIMMER_MS=n  the trimmer pauses for n ms after it claims a run of granules and before it publishes the run again
+//   SATORI_TEST_PAUSE_TRIMMER_DRAIN_MS=n
+//                                   the trimmer pauses for n ms in its drain of the regions, so that GCs start in the middle of it
+//   SATORI_TEST_SELF=containing     (conservative, DOTNET_gcTrim=0) a stale interior pointer into a free region, as the ETW heap walk
+//                                   of a conservative stack gives it to GetContainingObject
 //
 // The self-tests of the commit failures run in the precise mode, with DOTNET_gcRegionCacheCap=0 for the ones that need the freed regions
 // to be free granules, and without it for the ones that need a region in the cache:
@@ -61,6 +65,7 @@ namespace SatoriTestHooks
     extern bool s_assertFreeOutsideDrain;
     extern int s_pauseFreeMs;
     extern int s_pauseTrimmerMs;
+    extern int s_pauseTrimmerDrainMs;
 
     // The commits that a region needs when it is formatted fail: the next n of them when positive, all of them when -1. (see FailFormatCommit)
     extern volatile int32_t s_failFormatCommits;
@@ -104,6 +109,9 @@ namespace SatoriTestHooks
 
     // The trimmer has claimed a run of granules and is about to publish it again.
     void OnTrimRunClaimed();
+
+    // The trimmer is in its drain of the regions, between two regions. It holds no region.
+    void OnTrimmerDrainRegion();
 
     // Runs the self-tests that the environment asks for, once.
     void RunSelfTests(SatoriHeap* heap);

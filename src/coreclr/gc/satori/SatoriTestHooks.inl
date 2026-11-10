@@ -53,6 +53,7 @@ namespace SatoriTestHooks
     bool s_assertFreeOutsideDrain;
     int s_pauseFreeMs;
     int s_pauseTrimmerMs;
+    int s_pauseTrimmerDrainMs;
     thread_local bool t_holdMarker;
     thread_local bool t_inParkDrain;
 
@@ -83,6 +84,7 @@ namespace SatoriTestHooks
         s_assertFreeOutsideDrain = EnvInt("SATORI_TEST_ASSERT_FREE_OUTSIDE_DRAIN") != 0;
         s_pauseFreeMs = EnvInt("SATORI_TEST_PAUSE_FREE_MS");
         s_pauseTrimmerMs = EnvInt("SATORI_TEST_PAUSE_TRIMMER_MS");
+        s_pauseTrimmerDrainMs = EnvInt("SATORI_TEST_PAUSE_TRIMMER_DRAIN_MS");
         int holdMs = EnvInt("SATORI_TEST_HOLD_MARKER_MS");
         if (holdMs > 0)
         {
@@ -209,6 +211,15 @@ namespace SatoriTestHooks
         if (s_pauseTrimmerMs)
         {
             GCToOSInterface::Sleep(s_pauseTrimmerMs);
+        }
+    }
+
+    // Not the trimmer's own pause: a GC that asks the trimmer to stop does not cut it short.
+    void OnTrimmerDrainRegion()
+    {
+        if (s_pauseTrimmerDrainMs)
+        {
+            GCToOSInterface::Sleep(s_pauseTrimmerDrainMs);
         }
     }
 
@@ -757,6 +768,34 @@ namespace SatoriTestHooks
         return pass;
     }
 
+    // A stale interior pointer into a region that is not in use (generation -1, still in the region map), as the ETW heap walk
+    // with conservative stack reporting gives it to GetContainingObject. Such a region has no objects to look for: the answer is null.
+    // The region is put in the cache, or parked if the cache is full: either way it keeps its region map bytes.
+    static bool SelfTestContaining(SatoriHeap* heap)
+    {
+        SatoriAllocator* allocator = heap->Allocator();
+        SatoriRegion* region = allocator->GetRegion(Satori::REGION_SIZE_GRANULARITY);
+        if (region == nullptr)
+        {
+            Report("containing", "FAIL", "the test could not get a region");
+            return false;
+        }
+
+        size_t location = region->Start() + Satori::REGION_SIZE_GRANULARITY / 2;
+        allocator->AddRegion(region);
+        bool inMap = heap->RegionForAddressChecked(location) == region && region->Generation() < 0;
+
+        Object* any = g_theGCHeap->GetContainingObject((void*)location, /* fCollectedGenOnly */ false);
+        Object* collected = g_theGCHeap->GetContainingObject((void*)location, /* fCollectedGenOnly */ true);
+
+        bool pass = inMap && any == nullptr && collected == nullptr;
+        char details[160];
+        snprintf(details, sizeof(details), "the free region is in the map: %d, no object for any generation: %d, for the collected ones: %d",
+            (int)inMap, (int)(any == nullptr), (int)(collected == nullptr));
+        Report("containing", pass ? "PASS" : "FAIL", details);
+        return pass;
+    }
+
     // The names of the self-tests in SATORI_TEST_SELF are separated by commas.
     static bool Wants(const char* name)
     {
@@ -852,6 +891,20 @@ namespace SatoriTestHooks
             else
             {
                 pass &= SelfTestAgeParked(heap);
+            }
+        }
+
+        // a stale pointer into a free region: the conservative mode, and no trimmer that could free the region while the test looks
+        if (Wants("containing"))
+        {
+            if (!conservative || SatoriUtil::IsTrimmingEnabled())
+            {
+                Report("containing", "FAIL", "the self-test needs DOTNET_gcConservative=1 and DOTNET_gcTrim=0");
+                pass = false;
+            }
+            else
+            {
+                pass &= SelfTestContaining(heap);
             }
         }
 
