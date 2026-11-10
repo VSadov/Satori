@@ -154,6 +154,15 @@ namespace Satori
     // the first region of a page follows the card table, so no region is closer than this to the beginning of its page.
     static const size_t MIN_REGION_OFFSET = PAGE_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;
 
+    // The cards of a granule are a slice of the card table of its page: 4 KB, at the granule's index times this from the start of the page.
+    // The slices of the granules of the card table itself hold the page's header, the metadata, and are always committed.
+    static const size_t CARD_SLICE_SIZE = REGION_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;
+
+    // The commit watermark of a free granule (see SatoriPage) is a count of WATERMARK_UNITs, and this bit, which says that the granule's
+    // slice of the card table is decommitted. The bit is set only with a count of 0: a granule that has memory committed has its cards.
+    static const uint8_t WATERMARK_NO_CARDS = 0x80;
+    static const uint8_t WATERMARK_UNITS_MASK = 0x7F;
+
     namespace CardState
     {
         static const int8_t EPHEMERAL = -128; // 0b10000000 only used in cards (not groups or higher)
@@ -864,6 +873,20 @@ public:
     static size_t HugeCommitGranularity()
     {
         return max(Satori::WATERMARK_UNIT, ALIGN_UP(GCToOSInterface::GetPageSize(), Satori::WATERMARK_UNIT));
+    }
+
+    // The card slices of free granules are decommitted only where the free granules themselves can be decommitted
+    // (see SatoriTrimmer's CanDecommitGranules). Otherwise the card table is committed in full, as the page is.
+    static bool CanDecommitCardSlices()
+    {
+        return CommitGranularity() <= Satori::REGION_SIZE_GRANULARITY;
+    }
+
+    // How many granules have their card slices in one OS page: 1 with 4 KB pages, 4 with 16 KB, 16 with 64 KB.
+    // Such slices are committed and decommitted together, see SatoriPage::DecommitCardSlices.
+    static size_t CardSliceGroupGranules()
+    {
+        return max((size_t)1, GCToOSInterface::GetPageSize() / Satori::CARD_SLICE_SIZE);
     }
 
     // Where the memory for allocation is committed up to, when allocation needs memory up to `ensureCommitted` and the region

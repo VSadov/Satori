@@ -485,6 +485,13 @@ namespace SatoriTestHooks
         return ConsumeFailure(s_failPageCommits);
     }
 
+    volatile int32_t s_failSliceCommits;
+
+    bool FailSliceCommit()
+    {
+        return ConsumeFailure(s_failSliceCommits);
+    }
+
     void OnWarmGranuleFound(SatoriPage* page, size_t granule)
     {
         if (!t_pauseWarmClaim)
@@ -694,6 +701,44 @@ namespace SatoriTestHooks
         snprintf(what, sizeof(what), "got the cached region: %d, the cache count is right: %d, the page-add lock is free: %d", (int)got, (int)countRight, (int)lockFree);
         ReportCommit(name, got && countRight && lockFree, region, 0, what);
         return got && countRight && lockFree;
+    }
+
+    // ---- Milestone 3, step 4: the card slices ----
+
+    // A request has to add a page (t_claimMiss), and the commit of the card slices of what it claims in the new page fails.
+    // The claim gives the granules back as they were, without their cards; the request ends as it does when a format commit fails
+    // (out of memory without a fallback, and this test runs without a cache). The page-add lock is free after it, and the next request,
+    // without the failure, gets a region. The GC that follows the self-tests (Checked) checks the granules and the committed counter.
+    static bool SelfTestSliceFail(SatoriHeap* heap)
+    {
+        SatoriAllocator* allocator = heap->Allocator();
+        t_claimMiss = true;
+        s_failSliceCommits = 1;
+        SatoriRegion* failed = allocator->GetRegionLow(Satori::REGION_SIZE_GRANULARITY);
+        bool consumed = s_failSliceCommits == 0;
+        s_failSliceCommits = 0;
+        t_claimMiss = false;
+        bool lockFree = allocator->TestPageAddLockIsFree();
+
+        SatoriRegion* region = allocator->GetRegion(Satori::REGION_SIZE_GRANULARITY);
+        bool next = region != nullptr;
+
+        if (failed != nullptr)
+        {
+            allocator->AddRegion(failed);
+        }
+
+        if (region != nullptr)
+        {
+            allocator->AddRegion(region);
+        }
+
+        bool pass = consumed && lockFree && next;
+        char details[200];
+        snprintf(details, sizeof(details), "the slice commit failed: %d, the request got a region anyway: %d, the page-add lock is free: %d, the next request got a region: %d",
+            (int)consumed, (int)(failed != nullptr), (int)lockFree, (int)next);
+        Report("slicefail", pass ? "PASS" : "FAIL", details);
+        return pass;
     }
 
     // ---- Step 5: the minimum free age ----
@@ -1075,6 +1120,20 @@ namespace SatoriTestHooks
         if (Wants("locktimeout"))
         {
             pass &= SelfTestLockTimeout();
+        }
+
+        // a failed commit of card slices: the precise mode, so that a free is a free, and no cache
+        if (Wants("slicefail"))
+        {
+            if (conservative || !noCache)
+            {
+                Report("slicefail", "FAIL", "the self-test needs the precise mode and DOTNET_gcRegionCacheCap=0");
+                pass = false;
+            }
+            else
+            {
+                pass &= SelfTestSliceFail(heap);
+            }
         }
 
         _ASSERTE(pass);

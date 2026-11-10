@@ -989,6 +989,16 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
         g_trimSkippedForReader, g_trimSkippedGranules, SatoriPage::TraceNativeBytes());
     TraceWrite(buf, len);
 
+    {
+        // Step 4 of Milestone 3: the card slices that claims committed and that the trimmer decommitted
+        size_t sliceCommits, sliceCommitBytes, sliceDecommits, sliceDecommitBytes;
+        SatoriPage::TraceCardSlices(sliceCommits, sliceCommitBytes, sliceDecommits, sliceDecommitBytes);
+        len = snprintf(buf, sizeof(buf), "[slicestats] t=%.3f ev=%s commits=%zu commitKB=%zu decommits=%zu decommitKB=%zu\n",
+            TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, ev,
+            sliceCommits, sliceCommitBytes >> 10, sliceDecommits, sliceDecommitBytes >> 10);
+        TraceWrite(buf, len);
+    }
+
 #if _DEBUG
     // TEST-HOOK: the ages, since the first look that saw them free, of the granules that the trimmer took for their age
     len = snprintf(buf, sizeof(buf), "[trimages] t=%.3f ev=%s taken=%zu minS=%u maxS=%u minFreeAgeS=%zu\n",

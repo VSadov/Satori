@@ -52,6 +52,7 @@ class SatoriRegion;
 //   SATORI_TEST_SELF=containing     (conservative, DOTNET_gcTrim=0) a stale interior pointer into a free region, as the ETW heap walk
 //                                   of a conservative stack gives it to GetContainingObject
 //   SATORI_TEST_SELF=locktimeout    the timed enter of SatoriLock: a timeout, and the handoff of a wake that a waiter held when it gave up
+//   SATORI_TEST_SELF=slicefail      (precise, DOTNET_gcRegionCacheCap=0) the commit of the card slices of a claim in a new page fails
 //   SATORI_TEST_PAGE_ADD_LOCK_TIMEOUT_MS=n
 //                                   the timeout of the page-add lock (6 ms otherwise); 0 adds without the lock whenever it is held
 //
@@ -79,6 +80,10 @@ namespace SatoriTestHooks
     extern volatile int32_t s_failPageCommits;
     bool FailFormatCommit();
     bool FailPageCommit();
+    // The commits of card slices (see SatoriPage::TryCommitCardSlices) fail, the next n of them, as s_failFormatCommits.
+    // A failed claim is out of memory unless a fallback (a warm region, the cache) has one.
+    extern volatile int32_t s_failSliceCommits;
+    bool FailSliceCommit();
 
     // The thread finds no free granule in the pages that it has, so a request has to add a page. (see SatoriAllocator::TryClaimRegion)
     extern thread_local bool t_claimMiss;

@@ -142,6 +142,12 @@ public:
     void PrintLayout();
     // TEMP-TRACE: the bytes that the pages have allocated on the native heap, in all.
     static size_t TraceNativeBytes();
+    // TEMP-TRACE: the commits and decommits of card slices, calls and bytes, in all.
+    static void TraceCardSlices(size_t& commits, size_t& commitBytes, size_t& decommits, size_t& decommitBytes);
+
+    // What of the card table is committed: the slices of the card table's own granules (the header and the metadata), and the slices
+    // of the granules that have their cards. (With OS pages larger than a slice the OS may have a little more, see DecommitCardSlices.)
+    size_t CardTableCommittedBytes();
     // TEMP-TRACE: adds the free granules of the page to the snapshot, and the runs that they make.
     void TraceCollect(struct TraceSnap& s, size_t request);
 
@@ -264,6 +270,9 @@ private:
     bool IsOldEnoughToTrim(size_t granule);
     size_t* AgingBitmap();
     size_t* AgedBitmap();
+    size_t PinnedCardSliceGranules();
+    bool TryCommitCardSlices(size_t first, size_t count);
+    void DecommitCardSlices(size_t first, size_t count);
     volatile int32_t* UnownedHeaderReaders();
 #if _DEBUG
     uint32_t* FirstLooks();
@@ -318,7 +327,9 @@ private:
             // 1 bit per granule. 1 means the granule is committed in full. Meaningful only while the granule is free.
             size_t* m_warmBitmap;
             // 1 byte per granule, meaningful only while the granule is free.
-            // How much of the granule from its start is committed, in WATERMARK_UNITs (0 - 64).
+            // How much of the granule from its start is committed, in WATERMARK_UNITs (0 - 64), and the bit WATERMARK_NO_CARDS, which
+            // says that the granule's slice of the card table is decommitted too (only with 0 units). A granule that is in use has its cards,
+            // whatever its byte says: the claim commits them (FormatClaimed), and the trimmer decommits them with the free granule's memory.
             uint8_t* m_commitWatermarks;
             // 1 byte per granule, meaningful only while the granule is free.
             // How much of the granule from its start may hold nonzero data, rounded up, in WATERMARK_UNITs (0 - 64).

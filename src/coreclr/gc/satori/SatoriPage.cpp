@@ -28,6 +28,7 @@
 
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
+#include "../gcenv.inl"
 
 #include "SatoriUtil.h"
 #include "SatoriPage.h"
@@ -70,9 +71,14 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     // we can't have sparse commit coarser than regions.
     // besides we would end up comitting the entire page anyways once the obj size
     // is aligned up and committed.
+    // Otherwise only the slices of the card table's own granules are committed: the header and the metadata, and the slices that share
+    // an OS page with them. The slices of the other granules are committed when the granules are claimed (see FormatClaimed).
+    size_t firstGranule = cardTableSize >> Satori::REGION_BITS;
+    size_t pinnedSliceGranules = ALIGN_UP(firstGranule, SatoriUtil::CardSliceGroupGranules());
     size_t commitSize = SatoriUtil::CommitGranularity() > Satori::REGION_SIZE_GRANULARITY ?
         pageSize :
-        ALIGN_UP(cardTableSize, SatoriUtil::CommitGranularity());
+        pinnedSliceGranules * Satori::CARD_SLICE_SIZE;
+    _ASSERTE(!SatoriUtil::CanDecommitCardSlices() || commitSize < cardTableSize);
 
     if (
 #if _DEBUG
@@ -100,13 +106,16 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     // initializing cards to EPHEMERAL is optional. 0 is ok too.
     // for huge pages it is not as useful and may get expensive.
     // also if the huge obj contains references, its region will go to gen2 anyways
+    // Only the committed cards are initialized here, the others when their granules are claimed (see TryCommitCardSlices).
     if (pageSize == Satori::PAGE_SIZE_GRANULARITY)
     {
+        size_t cardsCommitted = min(commitSize, cardTableSize);
+        size_t initialized = cardsCommitted > cardTableStart ? cardsCommitted - cardTableStart : 0;
 #if _DEBUG
         // in debug we initialize only half the cards, since it is optional...
-        memset(&result->m_cardTable[cardTableStart], Satori::CardState::EPHEMERAL, (cardTableSize - cardTableStart) / 2);
+        memset(&result->m_cardTable[cardTableStart], Satori::CardState::EPHEMERAL, initialized / 2);
 #else
-        memset(&result->m_cardTable[cardTableStart], Satori::CardState::EPHEMERAL, cardTableSize - cardTableStart);
+        memset(&result->m_cardTable[cardTableStart], Satori::CardState::EPHEMERAL, initialized);
 #endif
         // We leave card groups blank as we do not want to look at them when they may not even be covered by regions.
         // We maintain the invariant that groups are not set for allocator regions.
@@ -175,6 +184,12 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 
         size_t committedUnits = committedBytes >> Satori::WATERMARK_UNIT_BITS;
         result->m_commitWatermarks[granule] = (uint8_t)committedUnits;
+        if (SatoriUtil::CanDecommitCardSlices() && granule >= pinnedSliceGranules)
+        {
+            _ASSERTE(committedUnits == 0);
+            result->m_commitWatermarks[granule] = Satori::WATERMARK_NO_CARDS;
+        }
+
         if (committedUnits == Satori::WATERMARK_UNITS_PER_GRANULE)
         {
             result->m_warmBitmap[granule / 64] |= bit;
@@ -253,6 +268,9 @@ void SatoriPage::FreeRegion(SatoriRegion* region)
 
     size_t first = (start - Start()) >> Satori::REGION_BITS;
     size_t count = (end - start) >> Satori::REGION_BITS;
+
+    // A free granule's cards may be decommitted (see DecommitCardSlices): no scan of the cards may look at them.
+    _ASSERTE(CardGroupsAreWipedForRange(start, end));
 
 #if _DEBUG
     // before the seen bits are cleared and the free bits set, see TryTrimRun
@@ -549,13 +567,14 @@ bool SatoriPage::IsCommittedInFull(size_t first, size_t count)
     return true;
 }
 
-// Gives back a page that was not published. The only thing committed in it is the card table.
+// Gives back a page that was not published. The only thing committed in it is the card table: its header, and the slices that a claim
+// of the page's region (see SatoriHeap::AddLargePage) committed.
 void SatoriPage::Release()
 {
 #if _DEBUG
     delete[] m_freeStamps;
 #endif
-    m_heap->DecBytesCommitted(m_initialCommit - Start());
+    m_heap->DecBytesCommitted(CardTableCommittedBytes() + (m_initialCommit > m_firstRegion ? m_initialCommit - m_firstRegion : 0));
     GCToOSInterface::VirtualRelease(this, m_end - Start());
 }
 
@@ -578,6 +597,182 @@ size_t* SatoriPage::AgingBitmap()
 size_t* SatoriPage::AgedBitmap()
 {
     return m_seenFreeBitmap + 2 * (GranuleCount() / 64);
+}
+
+// TEMP-TRACE: the commits and decommits of card slices.
+static volatile size_t s_traceSliceCommits;
+static volatile size_t s_traceSliceCommitBytes;
+static volatile size_t s_traceSliceDecommits;
+static volatile size_t s_traceSliceDecommitBytes;
+
+void SatoriPage::TraceCardSlices(size_t& commits, size_t& commitBytes, size_t& decommits, size_t& decommitBytes)
+{
+    commits = s_traceSliceCommits;
+    commitBytes = s_traceSliceCommitBytes;
+    decommits = s_traceSliceDecommits;
+    decommitBytes = s_traceSliceDecommitBytes;
+}
+
+// The granules from 0 whose card slices are always committed: the card table's own granules, whose slices hold the header and the metadata,
+// and the granules whose slices share an OS page with those.
+size_t SatoriPage::PinnedCardSliceGranules()
+{
+    return ALIGN_UP(FirstGranule(), SatoriUtil::CardSliceGroupGranules());
+}
+
+size_t SatoriPage::CardTableCommittedBytes()
+{
+    if (!SatoriUtil::CanDecommitCardSlices())
+    {
+        return min(m_initialCommit, m_firstRegion) - Start();
+    }
+
+    size_t slices = PinnedCardSliceGranules();
+    for (size_t granule = slices; granule < GranuleCount(); granule++)
+    {
+        if ((m_commitWatermarks[granule] & Satori::WATERMARK_NO_CARDS) == 0)
+        {
+            slices++;
+        }
+    }
+
+    return slices * Satori::CARD_SLICE_SIZE;
+}
+
+// The claimer: commits the card slices of the claimed granules that do not have them, before the granules' memory is committed and
+// before the region is published, and clears their WATERMARK_NO_CARDS bits. The granules are ours.
+// A recommitted slice is zero, which is a valid state of cards (BLANK); it is set to EPHEMERAL, as the cards of a new page are, so that
+// the write barrier does not mark the cards of an ephemeral region (it marks a card only when it is BLANK).
+// With OS pages larger than a slice, the OS pages that cover the slices are committed (they may be committed already, for the
+// neighbors that share them), and only the slices of our granules are written.
+// Returns false if a commit failed. The slices that were committed stay so, and their bits say it.
+bool SatoriPage::TryCommitCardSlices(size_t first, size_t count)
+{
+    size_t osPage = GCToOSInterface::GetPageSize();
+    size_t granule = first;
+    while (granule < first + count)
+    {
+        if ((m_commitWatermarks[granule] & Satori::WATERMARK_NO_CARDS) == 0)
+        {
+            granule++;
+            continue;
+        }
+
+        size_t runEnd = granule + 1;
+        while (runEnd < first + count && (m_commitWatermarks[runEnd] & Satori::WATERMARK_NO_CARDS))
+        {
+            runEnd++;
+        }
+
+        size_t sliceStart = Start() + granule * Satori::CARD_SLICE_SIZE;
+        size_t sliceEnd = Start() + runEnd * Satori::CARD_SLICE_SIZE;
+        size_t commitStart = ALIGN_DOWN(sliceStart, osPage);
+        size_t commitEnd = ALIGN_UP(sliceEnd, osPage);
+        if (
+#if _DEBUG
+            SatoriTestHooks::FailSliceCommit() || // TEST-HOOK
+#endif
+            !TraceVirtualCommit((void*)commitStart, commitEnd - commitStart)) // TEMP-TRACE
+        {
+            return false;
+        }
+
+        m_heap->IncBytesCommitted(sliceEnd - sliceStart);
+        Interlocked::Increment(&s_traceSliceCommits); // TEMP-TRACE
+        Interlocked::ExchangeAdd64((int64_t*)&s_traceSliceCommitBytes, (int64_t)(sliceEnd - sliceStart)); // TEMP-TRACE
+
+        for (size_t g = granule; g < runEnd; g++)
+        {
+#if _DEBUG
+            // optional, so in debug only half of them, see InitializeAt
+            if (g % 2 == 0)
+#endif
+            {
+                memset((void*)(Start() + g * Satori::CARD_SLICE_SIZE), Satori::CardState::EPHEMERAL, Satori::CARD_SLICE_SIZE);
+            }
+
+            _ASSERTE(m_commitWatermarks[g] == Satori::WATERMARK_NO_CARDS);
+            m_commitWatermarks[g] = 0;
+        }
+
+        granule = runEnd;
+    }
+
+    return true;
+}
+
+// The trimmer: decommits the card slices of the granules of a run that it has claimed and whose memory it has just decommitted, and sets
+// their WATERMARK_NO_CARDS bits. Nobody reads or writes the cards of a free granule: its card groups are blank (every scan of the cards
+// asserts that a group that is not blank belongs to a region in use), and the write barrier marks cards only of objects.
+// With OS pages larger than a slice, an OS page is decommitted only when it covers the slices of granules of this run alone: the
+// granules that share it are all free and claimed by us. Granules at the edges of the run keep their slices, and so do the granules
+// that share an OS page with the header.
+void SatoriPage::DecommitCardSlices(size_t first, size_t count)
+{
+    size_t group = SatoriUtil::CardSliceGroupGranules();
+    size_t low = max(ALIGN_UP(first, group), PinnedCardSliceGranules());
+    size_t high = ALIGN_DOWN(first + count, group);
+    if (low >= high)
+    {
+        return;
+    }
+
+    size_t granule = low;
+    while (granule < high)
+    {
+        // runs of groups that have any slice to decommit
+        bool any = false;
+        for (size_t g = granule; g < granule + group; g++)
+        {
+            _ASSERTE((m_commitWatermarks[g] & Satori::WATERMARK_UNITS_MASK) == 0);
+            any |= (m_commitWatermarks[g] & Satori::WATERMARK_NO_CARDS) == 0;
+        }
+
+        if (!any)
+        {
+            granule += group;
+            continue;
+        }
+
+        size_t runEnd = granule + group;
+        while (runEnd < high)
+        {
+            bool next = false;
+            for (size_t g = runEnd; g < runEnd + group; g++)
+            {
+                next |= (m_commitWatermarks[g] & Satori::WATERMARK_NO_CARDS) == 0;
+            }
+
+            if (!next)
+            {
+                break;
+            }
+
+            runEnd += group;
+        }
+
+        size_t start = Start() + granule * Satori::CARD_SLICE_SIZE;
+        size_t end = Start() + runEnd * Satori::CARD_SLICE_SIZE;
+        if (TraceVirtualDecommit((void*)start, end - start)) // TEMP-TRACE
+        {
+            size_t had = 0;
+            for (size_t g = granule; g < runEnd; g++)
+            {
+                if ((m_commitWatermarks[g] & Satori::WATERMARK_NO_CARDS) == 0)
+                {
+                    had++;
+                }
+
+                m_commitWatermarks[g] = Satori::WATERMARK_NO_CARDS;
+            }
+
+            m_heap->DecBytesCommitted(had * Satori::CARD_SLICE_SIZE);
+            Interlocked::Increment(&s_traceSliceDecommits); // TEMP-TRACE
+            Interlocked::ExchangeAdd64((int64_t*)&s_traceSliceDecommitBytes, (int64_t)(had * Satori::CARD_SLICE_SIZE)); // TEMP-TRACE
+        }
+
+        granule = runEnd;
+    }
 }
 
 // The granule has been seen free for the minimum free age: it is in the "aged" snapshot, see RotateAges.
@@ -606,7 +801,7 @@ bool SatoriPage::IsTrimCandidate(size_t granule, bool onlyIfSeenFree)
         candidates &= VolatileLoad(&m_seenFreeBitmap[word]);
     }
 
-    return ((candidates >> (granule % 64)) & 1) && m_commitWatermarks[granule] != 0 && (!onlyIfSeenFree || IsOldEnoughToTrim(granule));
+    return ((candidates >> (granule % 64)) & 1) && (m_commitWatermarks[granule] & Satori::WATERMARK_UNITS_MASK) != 0 && (!onlyIfSeenFree || IsOldEnoughToTrim(granule));
 }
 
 size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree, bool ignoreAge)
@@ -632,7 +827,7 @@ size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree, bool igno
             size_t candidate = word * 64 + bit;
 
             // a hint, see IsTrimCandidate
-            if (m_commitWatermarks[candidate] != 0 && (!onlyIfSeenFree || ignoreAge || IsOldEnoughToTrim(candidate)))
+            if ((m_commitWatermarks[candidate] & Satori::WATERMARK_UNITS_MASK) != 0 && (!onlyIfSeenFree || ignoreAge || IsOldEnoughToTrim(candidate)))
             {
                 return candidate;
             }
@@ -673,7 +868,7 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
         // and its bit in the "aged" snapshot, which the look that first saw it free cleared, says if it is old enough (see RotateAges).
         // The watermark is stable now that the granule is ours. A granule that has nothing committed is not worth a run.
         if ((onlyIfSeenFree && (((VolatileLoad(&m_seenFreeBitmap[granule / 64]) >> (granule % 64)) & 1) == 0 || !IsOldEnoughToTrim(granule))) ||
-            m_commitWatermarks[granule] == 0)
+            (m_commitWatermarks[granule] & Satori::WATERMARK_UNITS_MASK) == 0)
         {
             PublishFreeGranules(granule, 1);
             TraceTrimDec(); // TEMP-TRACE
@@ -747,6 +942,12 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
                 Interlocked::And(&m_warmBitmap[word], ~RunBitsInWord(first, claimed, word));
             }
 
+            // then the cards of the granules, now that nothing of them is committed
+            if (SatoriUtil::CanDecommitCardSlices())
+            {
+                DecommitCardSlices(first, claimed);
+            }
+
             trimmed = true;
         }
     }
@@ -776,7 +977,7 @@ void SatoriPage::AssertHeaderIsReadable(size_t granule)
     // A region that was freed after the reader found it makes its granule free, with a commit that its header gives it: FreeRegion
     // records the commit of the region, and a region has its header committed. The trimmer does not decommit while we are registered.
     bool isFree = (VolatileLoad(&m_freeBitmap[granule / 64]) >> (granule % 64)) & 1;
-    _ASSERTE(!isFree || m_commitWatermarks[granule] != 0);
+    _ASSERTE(!isFree || (m_commitWatermarks[granule] & Satori::WATERMARK_UNITS_MASK) != 0);
 }
 
 // TEST-HOOK
@@ -851,7 +1052,7 @@ void SatoriPage::TraceCollect(TraceSnap& s, size_t request)
     {
         if ((VolatileLoad(&m_freeBitmap[granule / 64]) >> (granule % 64)) & 1)
         {
-            size_t committedBytes = (size_t)m_commitWatermarks[granule] << Satori::WATERMARK_UNIT_BITS;
+            size_t committedBytes = (size_t)(m_commitWatermarks[granule] & Satori::WATERMARK_UNITS_MASK) << Satori::WATERMARK_UNIT_BITS;
             s.regions++;
             s.n2++;
             s.freeBytes += Satori::REGION_SIZE_GRANULARITY;
@@ -1010,7 +1211,7 @@ size_t SatoriPage::VerifyGranules(size_t& committedBytes, bool report)
         }
     }
 
-    committedBytes += min(m_initialCommit, m_firstRegion) - Start();
+    committedBytes += CardTableCommittedBytes();
 
     // Every other granule is either free or covered by exactly one region.
     size_t granule = first;
@@ -1026,12 +1227,18 @@ size_t SatoriPage::VerifyGranules(size_t& committedBytes, bool report)
                 problems += GranuleProblem(this, granule, "a free granule is in the region map", report);
             }
 
-            size_t committedUnits = m_commitWatermarks[granule];
+            size_t committedUnits = m_commitWatermarks[granule] & Satori::WATERMARK_UNITS_MASK;
             size_t dirtyUnits = m_dirtyWatermarks[granule];
             bool isWarm = (m_warmBitmap[granule / 64] >> (granule % 64)) & 1;
             if (dirtyUnits > committedUnits || committedUnits > Satori::WATERMARK_UNITS_PER_GRANULE)
             {
                 problems += GranuleProblem(this, granule, "the watermarks of a free granule are not in order", report);
+            }
+
+            if ((m_commitWatermarks[granule] & Satori::WATERMARK_NO_CARDS) &&
+                (committedUnits != 0 || granule < PinnedCardSliceGranules() || !SatoriUtil::CanDecommitCardSlices()))
+            {
+                problems += GranuleProblem(this, granule, "a free granule has no cards, but has memory, or must have its cards", report);
             }
 
             if (isWarm != (committedUnits == Satori::WATERMARK_UNITS_PER_GRANULE))
@@ -1145,6 +1352,14 @@ SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count)
 {
     _ASSERTE(count > 0);
     size_t start = GranuleStart(first);
+
+    // The cards first: they must be there before the region's memory is, and before the region is published.
+    // After this no claimed granule has the WATERMARK_NO_CARDS bit, and the watermarks below are counts of units.
+    if (!TryCommitCardSlices(first, count))
+    {
+        PublishFreeGranules(first, count);
+        return nullptr;
+    }
 
     // The region is committed as a prefix, so it is the highest committed byte that matters.
     // Same for the dirty part, the rest of the committed part is zeroed.
