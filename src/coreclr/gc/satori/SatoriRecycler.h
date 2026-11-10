@@ -68,6 +68,11 @@ public:
     // be concurrent before the toggle's process-wide fence completes.
     static const int BARRIER_STATE_SWITCHING = 3;
 
+#if _DEBUG
+    // a conservative marker runs only while the trimmer cannot free regions.
+    void AssertTrimmerInactiveForMarker();
+#endif
+
     void Initialize(SatoriHeap* heap);
 
     void AddEphemeralRegion(SatoriRegion* region);
@@ -100,6 +105,8 @@ public:
 
     SatoriRegion* TryGetReusable(size_t minFree);
     SatoriRegion* TryGetReusableForLarge();
+    // Whether `queue` is a queue of reusable regions. Compares addresses only, so it can be given any pointer. (see TryTakeReusableNext)
+    bool IsReusableQueue(SatoriQueue<SatoriRegion>* queue);
 
     void RecordOccupancy(int generation, size_t size);
     void RecordDemotedOccupancy(ptrdiff_t demotedOccupancy);

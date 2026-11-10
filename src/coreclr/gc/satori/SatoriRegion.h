@@ -164,6 +164,10 @@ public:
     size_t Start();
     size_t End();
     size_t Size();
+    // The end of the committed prefix of the region.
+    size_t CommittedEnd();
+    // Everything from here to the end of the committed prefix is known to be zero.
+    size_t UsedEnd();
     bool IsLarge();
 
     SatoriObject* FirstObject();
@@ -451,6 +455,9 @@ private:
     bool CanSplitWithoutCommit(size_t size);
     void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
     void UndoSplitCore(size_t regionSize, size_t nextStart, size_t nextCommitted, size_t nextUsed);
+
+    // The conservative mode, see InitializeAt.
+    static NOINLINE void ClearHeaderKeepingGeneration(SatoriRegion* region, size_t address, size_t zeroUpTo);
 
     template <bool isConservative>
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);

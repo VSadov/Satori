@@ -53,7 +53,6 @@ public:
     };
 
     static SatoriPage* InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap, InitStatus& status);
-    SatoriRegion* InitialRegion();
 
     void OnRegionInitialized(SatoriRegion* region);
 
@@ -61,6 +60,96 @@ public:
     SatoriRegion* RegionForCardGroup(size_t group);
 
     SatoriRegion* NextInPage(SatoriRegion* region);
+
+    // The page is divided into granules of REGION_SIZE_GRANULARITY. The granule i starts at Start() + i * REGION_SIZE_GRANULARITY.
+    // The first granules hold the card table. The rest are covered by regions or are free.
+    size_t GranuleCount();
+    size_t FirstGranule();
+    size_t GranuleStart(size_t granule);
+
+    // Claiming free granules. The thread that claims a granule by clearing its free bit owns it,
+    // until it frees the granule, or gives it back.
+    //
+    // Claims the free granule that has the lowest (or the highest) address. When asked, only among the warm ones.
+    // Returns SIZE_MAX if there is none. `retries` counts the attempts to take a bit that were lost to other threads.
+    size_t TryClaimGranule(bool warmOnly, bool fromTop, size_t& retries);
+    // Claims the granule if it is free.
+    bool TryClaimGranuleAt(size_t granule);
+    // Claims a run of free granules, the lowest (or the highest) one that fits. Returns its first granule or SIZE_MAX.
+    // The threads that claim runs must not run this on the same page at the same time, but other threads
+    // may claim single granules meanwhile. If one takes a granule from the run, the claim is rolled back and tried again,
+    // and counted in `rollbacks`. When asked, only among the runs of warm granules.
+    size_t TryClaimRun(size_t count, bool fromTop, size_t& rollbacks, bool warmOnly = false);
+    // The granules are claimed and all of them are committed in full. The commit of a claimed granule does not change.
+    // A granule that was warm when it was looked at may not be after it is claimed: the trimmer can claim it, decommit it
+    // and publish it as free between the look and the claim.
+    bool IsCommittedInFull(size_t first, size_t count);
+    // Formats claimed granules as a region. If that is not possible, gives the granules back and returns nullptr.
+    SatoriRegion* FormatClaimed(size_t first, size_t count);
+
+    // Gives back a page that was not published.
+    void Release();
+
+    // Trimming. Only the trimmer decommits the memory of free granules, and only of the ones that it has claimed.
+    // A trimmed granule has nothing committed, not even its head, and that is safe because no thread reads the header of a region
+    // that it does not own without being registered, see EnterUnownedHeaderRead.
+    //
+    // Finds the first free granule that has anything committed, not before `from`. When asked, only among the granules
+    // that were also free when the trimmer last looked at this page, and that have been free for the minimum free age
+    // (one to two periods of RotateAges, see SatoriTrimmer::MaybeRotateAges), unless `ignoreAge` says that the granules that are too young count too (to see if there is work left).
+    // Returns SIZE_MAX if there is none.
+    size_t NextGranuleToTrim(size_t from, bool onlyIfSeenFree, bool ignoreAge = false);
+    // Claims the granule `first`, which NextGranuleToTrim found, and the free granules after it that have anything committed,
+    // up to `maxCount` granules together. Decommits them with one call and gives them back as free and cold.
+    // When asked, only the granules that are still ones that were seen free, and old enough: the caller may have found them before
+    // they were claimed and freed again, and then the claim takes the new free bit.
+    // `count` is the number of granules that the run covered (at least 1), the caller goes on after them.
+    // Returns true if it decommitted anything. It decommits nothing, and gives the granules back, if a thread is registered as a reader
+    // of an unowned header.
+    bool TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, size_t& count);
+    // Remembers which granules are free now, for the next time. A granule that this look sees free for the first time
+    // starts its age: it is in neither of the age snapshots (see RotateAges).
+    void RememberFreeGranules();
+    // The minimum free age. Called by the trimmer every period (SatoriTrimmer::MaybeRotateAges): the "aged" snapshot gets the "aging" one,
+    // and "aging" gets the granules that the last look saw free. A granule in "aged" was seen free at least one period ago,
+    // and a granule is first in "aged" one to two periods after the look that first saw it free.
+    void RotateAges();
+
+    // A thread that reads the header of a region that it does not own (the region that follows its own, see TryGetRegularRegion)
+    // registers with the page before it reads the region map for that region, and leaves after its last read of the header.
+    // The region can be freed meanwhile, and the trimmer decommits the granule of a free region. The trimmer looks at the registrations
+    // after it claims a granule, and does not decommit while there is one. A thread that registers after that look reads the region map
+    // after the region was removed from it (the map is cleared before the free bit is set), and does not read the header.
+    // So the header that the map has found is committed for as long as the thread is registered.
+    // The two sides are a store followed by a load each (the registration and then the map, the claim and then the registrations),
+    // and each needs a full fence between the two, see EnterUnownedHeaderRead and TryTrimRun.
+    // The granule of the freed region can also be claimed as a part of a run, for a bigger region. The memory of the old header is then
+    // the body of that region: it stays committed while a thread is registered (SatoriRegion::TryDecommit looks, as the trimmer does),
+    // but it can be written. So the reader uses what it read only after it checks it. (see TryTakeReusableNext)
+    void EnterUnownedHeaderRead();
+    void LeaveUnownedHeaderRead();
+    bool MayHaveUnownedHeaderReaders();
+#if _DEBUG
+    // A registered thread is about to read the header of the region that starts at the granule.
+    void AssertHeaderIsReadable(size_t granule);
+#endif
+
+    // What of the card table is committed: the slices of the card table's own granules (the header and the metadata), and the slices
+    // of the granules that have their cards. (With OS pages larger than a slice the OS may have a little more, see DecommitCardSlices.)
+    size_t CardTableCommittedBytes();
+
+#if _DEBUG
+    // Checks that the free bits, the watermarks, the region map and the regions agree with each other.
+    // Reports the problems and returns their number. The page must be quiet: no claims or frees.
+    // Adds up what the page has committed. (see SatoriHeap::VerifyGranules)
+    size_t VerifyGranules(size_t& committedBytes, bool report);
+#endif
+
+    // Makes the granules of a region that nobody uses any more free for others to claim.
+    void FreeRegion(SatoriRegion* region);
+    void OnRegionFreed(SatoriRegion* region);
+    // Sets the free bits of granules that are ready for the next owner.
+    void PublishFreeGranules(size_t first, size_t count);
 
     size_t Start();
     size_t End();
@@ -160,6 +249,19 @@ public:
     void ForEachRegion(F lambda);
 
 private:
+    size_t FindRun(size_t count, bool fromTop, bool warmOnly);
+    size_t FreeWord(size_t word, bool warmOnly);
+    bool TryClearRun(size_t first, size_t count);
+    void ForgetSeenFree(size_t first, size_t count);
+    bool IsTrimCandidate(size_t granule, bool onlyIfSeenFree);
+    bool IsOldEnoughToTrim(size_t granule);
+    size_t* AgingBitmap();
+    size_t* AgedBitmap();
+    size_t PinnedCardSliceGranules();
+    bool TryCommitCardSlices(size_t first, size_t count);
+    void DecommitCardSlices(size_t first, size_t count);
+    volatile int32_t* UnownedHeaderReaders();
+
     union
     {
         // 1bit  - 64  bytes
@@ -176,6 +278,8 @@ private:
         {
             int8_t m_cardState;
             uint8_t m_scanTicket;
+            // The count of the registered readers of unowned headers is not in this line: the GC writes the two fields above for every scan,
+            // and the claim path reads most of the ones below. It has a line of its own, see UnownedHeaderReaders.
             size_t m_end;
             size_t m_initialCommit;
             size_t m_firstRegion;
@@ -193,7 +297,45 @@ private:
             // computed size, located after card groups
             // 1byte per region
             // 512 bytes per 1Gb
+            // 0 - the granule is free, 1 - the granule is the start of a region,
+            // 2 and up - a continuation of a region, the distance to its start is 1 << (value - 2) granules.
             uint8_t* m_regionMap;
+
+            // Free space is tracked per granule, in the following computed sizes located after the region map.
+            // It all fits into the unused part of the card table that covers the card table itself.
+            //
+            // A granule is free if and only if its bit is set, and then its region map byte is 0.
+            // 1 bit per granule, 8 words (one cache line) per 1Gb.
+            // The thread that clears the bit owns the granule, until it sets the bit again.
+            size_t* m_freeBitmap;
+            // 1 bit per granule. 1 means the granule is committed in full. Meaningful only while the granule is free.
+            size_t* m_warmBitmap;
+            // 1 byte per granule, meaningful only while the granule is free.
+            // How much of the granule from its start is committed, in WATERMARK_UNITs (0 - 64), and the bit WATERMARK_NO_CARDS, which
+            // says that the granule's slice of the card table is decommitted too (only with 0 units). A granule that is in use has its cards,
+            // whatever its byte says: the claim commits them (FormatClaimed), and the trimmer decommits them with the free granule's memory.
+            uint8_t* m_commitWatermarks;
+            // 1 byte per granule, meaningful only while the granule is free.
+            // How much of the granule from its start may hold nonzero data, rounded up, in WATERMARK_UNITs (0 - 64).
+            // Never above the commit watermark. The rest of the committed part is zeroed.
+            // The watermarks are written by the thread that frees the granule, before it sets the free bit,
+            // and read by the thread that claims the granule, after it clears the bit.
+            uint8_t* m_dirtyWatermarks;
+            // 1 bit per granule. The granules that were free when the trimmer last looked at the page, and were not freed since.
+            // FreeRegion clears the bits of the granules that it frees, before it sets their free bits.
+            // Only the trimmer sets bits (and a GC that trims on request, while the trimmer is stopped).
+            // It is followed by two more bitmaps of 1 bit per granule, the snapshots of the minimum free age, "aging" and "aged"
+            // (see RotateAges and AgingBitmap). Only the trimmer writes them, and a GC that trims on request, while the trimmer is stopped.
+            // The bitmaps end where the line of the reader count starts (see UnownedHeaderReaders).
+            size_t* m_seenFreeBitmap;
+#if _DEBUG
+            // Checked builds only. The trimmer asserts that it never decommits a granule that was freed after the last look at its page.
+            // 1 stamp per granule: when FreeRegion freed it (0 if it was never used). The stamps and the one below come from one counter.
+            // A granule that the last look saw as free was freed before the look, because the look takes its stamp after the copy.
+            size_t* m_freeStamps;
+            // The stamp of the last look at the page.
+            size_t m_snapshotStamp;
+#endif
 
             // computed size,
             // 2 byte per card group (4 per region granule)

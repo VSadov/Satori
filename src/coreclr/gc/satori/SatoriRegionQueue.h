@@ -467,6 +467,13 @@ public:
         return m_shardMask + 1;
     }
 
+    // Whether `queue` is one of the shards of this queue. Compares addresses only, so it can be given any pointer.
+    bool IsShard(SatoriQueue<SatoriRegion>* queue)
+    {
+        size_t offset = (size_t)queue - (size_t)m_shards;
+        return offset < ShardCount() * sizeof(SatoriRegionQueue) && offset % sizeof(SatoriRegionQueue) == 0;
+    }
+
 private:
     size_t m_shardMask;
 

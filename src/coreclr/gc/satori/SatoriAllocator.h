@@ -34,6 +34,7 @@
 #include "SatoriRegionQueue.h"
 
 class SatoriHeap;
+class SatoriPage;
 class SatoriRegion;
 class SatoriObject;
 class SatoriAllocationContext;
@@ -57,6 +58,12 @@ public:
     SatoriRegion* GetRegionLow(size_t minSize);
     void AddRegion(SatoriRegion* region);
     void ReturnRegion(SatoriRegion* region);
+    // Gives the regions from the cache back to the free granules of their pages, where the trimmer can see them.
+    void DrainRegionCache();
+    bool TryFreeOneParkedRegion();
+    // The conservative mode only: frees the regions that were parked since the last drain, see FreeToBitmap.
+    // A GC calls it when marking is complete, with the EE stopped, so no marker can be looking at a region.
+    void DrainParkedRegions();
 
     size_t GetTotalAllocatedBytes();
     size_t GetTotalAllocatedBytesPrecise();
@@ -82,7 +89,6 @@ private:
     };
 
     SatoriHeap* m_heap;
-    SatoriShardedRegionQueue* m_queues[Satori::ALLOCATOR_BUCKET_COUNT];
     SatoriShardedWorkList* m_workChunks;
 
     SatoriRegion* m_regularRegion;
@@ -91,9 +97,6 @@ private:
     SatoriRegion* m_immortalRegion;
 
     int m_smallAllocatedBytesCounterCount;
-
-    // how many regular regions to carve at once when splitting a large free region. (see GetRegionCore)
-    int m_regionCarveBatch;
 
     // the allocation tick event was enabled when last checked. (see IsAllocationTickEnabled)
     volatile bool m_allocationTickWasEnabled;
@@ -110,14 +113,16 @@ private:
     DECLSPEC_ALIGN(64)
     SatoriLock m_pinnedAllocLock;
 
-    DECLSPEC_ALIGN(64)
-    SatoriLock m_lowRegionLock;
-
     // Work chunks are added by one thread at a time (see AddMoreWorkChunks), the others wait for it by polling.
     // Thus nobody may ask for a work chunk while holding what the refilling thread needs to get a region.
-    // Lock order: the allocation locks, this lock, m_lowRegionLock, the locks of the queues.
+    // Lock order: the allocation locks, this lock, m_runClaimLock.
     DECLSPEC_ALIGN(64)
     SatoriLock m_workChunkRefillLock;
+
+    // Serializes the threads that claim runs of granules for big regions. (see SatoriPage::TryClaimRun)
+    // Claims of single granules do not take it. Nothing else is locked while holding it.
+    DECLSPEC_ALIGN(64)
+    SatoriLock m_runClaimLock;
 
     // the shard to publish the next chain of fresh work chunks to. Protected by m_workChunkRefillLock.
     size_t m_workChunkRefillShard;
@@ -138,8 +143,39 @@ private:
     size_t m_lastPreciseAllocatedBytes;
 
 private:
+    // A small cache of free 2 MB regions in front of the free granules. Regular requests take from the cache first,
+    // and the regions that are freed go there, while the cache is below its cap. That keeps the reuse of the regions
+    // that were used recently, and the allocation of a region a pop from a queue.
+    // The cached regions are formatted, have valid headers and are members of the queue, so a header may be read
+    // only under the lock of the queue. (the queue is of the Allocator kind)
+    SatoriShardedRegionQueue* m_regionCache;
+
+    // How many regions the cache may have. The racing threads can get the count a bit over it. 0 - no cache.
+    size_t m_regionCacheCap;
+
+    // The conservative mode only (nullptr otherwise): the regions that were freed, and wait for the drain after a GC. (see FreeToBitmap)
+    // They are not free granules, so nothing can claim, absorb or decommit them, and their headers stay committed and readable
+    // by the markers that may have found them through the region map before they were freed.
+    SatoriRegionQueue* m_parkedRegions;
+
     DECLSPEC_ALIGN(64)
-    volatile int32_t m_singePageAdders;
+    volatile size_t m_regionCacheCount;
+
+    // Regular pages are added by one thread at a time, see GetRegionCore. A thread that waits for this lock longer than
+    // PAGE_ADD_LOCK_TIMEOUT_MS may add its page without it, one such thread at a time (m_pageAddEscapee).
+    // Lock order: the locks above, this lock, then the locks of the queues and the map lock of the heap (SatoriHeap::CommitMoreMap).
+    // Nothing takes this lock while holding any of the locks that come after it.
+    DECLSPEC_ALIGN(64)
+    SatoriLock m_pageAddLock;
+
+    // The number of the regular page adds that have completed, with the lock or without it (interlocked),
+    // after the added page can be claimed from.
+    volatile int32_t m_pageAddsCompleted;
+
+    // 1 while a thread adds a regular page without the page-add lock, after its wait for the lock has timed out.
+    // A slow add makes all its waiters time out at about the same time. Only the one that sets this adds a page;
+    // the others wait again, and the page of either add will do for them.
+    volatile int32_t m_pageAddEscapee;
 
     int SmallAllocatedBytesCounterIndex();
     void PublishAllocatedBytes(SatoriAllocationContext* context, AllocationTickKind kind, SatoriObject* obj, size_t size);
@@ -160,17 +196,15 @@ private:
 
     void TryGetRegularRegion(SatoriRegion*& region, size_t size);
     SatoriRegion* GetRegionCore(size_t regionSize, bool low);
-    SatoriRegion* TryGetRegionLow(size_t regionSize);
+    void LeavePageAdd(bool locked, bool escaped);
+    SatoriRegion* TryClaimRegion(size_t granules, bool low, bool& outOfMemory);
+    SatoriRegion* TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, bool& outOfMemory);
+    SatoriRegion* TryClaimWarmRegion(size_t granules, bool low);
+    SatoriRegion* TryGetCachedRegion();
+    bool TryCacheRegion(SatoriRegion* region, bool recentlyUsed);
+    void FreeToBitmap(SatoriRegion* region);
+    void ParkRegion(SatoriRegion* region);
     bool AddMoreWorkChunks();
-
-    static int SizeToBucket(size_t size)
-    {
-        _ASSERTE(size >= Satori::REGION_SIZE_GRANULARITY);
-
-        DWORD highestBit;
-        BitScanReverse64(&highestBit, size);
-        return min((int)highestBit - Satori::REGION_BITS, Satori::ALLOCATOR_BUCKET_COUNT - 1);
-    }
 };
 
 #endif

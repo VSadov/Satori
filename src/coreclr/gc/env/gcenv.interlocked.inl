@@ -234,6 +234,17 @@ FORCEINLINE void Interlocked::And(T volatile *destination, T value)
 #endif
 }
 
+template <>
+FORCEINLINE void Interlocked::And<size_t>(size_t volatile *destination, size_t value)
+{
+#ifdef _MSC_VER
+    _InterlockedAnd64((volatile long long*)destination, value);
+#else
+    __sync_and_and_fetch(destination, value);
+    InterlockedOperationBarrier();
+#endif
+}
+
 // Perform an atomic OR operation on the specified values values
 // Parameters:
 //  destination - the first operand and the destination
@@ -244,6 +255,17 @@ FORCEINLINE void Interlocked::Or(T volatile *destination, T value)
 #ifdef _MSC_VER
     static_assert(sizeof(long) == sizeof(T), "Size of long must be the same as size of T");
     _InterlockedOr((long*)destination, value);
+#else
+    __sync_or_and_fetch(destination, value);
+    InterlockedOperationBarrier();
+#endif
+}
+
+template <>
+FORCEINLINE void Interlocked::Or<size_t>(size_t volatile *destination, size_t value)
+{
+#ifdef _MSC_VER
+    _InterlockedOr64((volatile long long*)destination, value);
 #else
     __sync_or_and_fetch(destination, value);
     InterlockedOperationBarrier();

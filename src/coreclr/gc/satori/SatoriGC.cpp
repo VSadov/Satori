@@ -471,6 +471,10 @@ void SatoriGC::Shutdown()
 {
     m_shuttingDown = true;
     m_heap->Recycler()->ShutDown();
+
+#if _DEBUG
+    m_heap->VerifyGranulesBestEffort();
+#endif
 }
 
 size_t SatoriGC::GetLastGCStartTime(int generation)
@@ -563,6 +567,13 @@ Object* SatoriGC::GetContainingObject(void* pInteriorPtr, bool fCollectedGenOnly
 {
     SatoriRegion* region = m_heap->RegionForAddressChecked((size_t)pInteriorPtr);
     if (!region)
+    {
+        return nullptr;
+    }
+
+    // With conservative stack reporting the pointer may be stale, and point into a region that is not in use (in the cache, or parked).
+    // It has no objects to look for, as in SatoriRecycler::MarkFn<true>.
+    if (SatoriUtil::IsConservativeMode() && region->Generation() < 0)
     {
         return nullptr;
     }

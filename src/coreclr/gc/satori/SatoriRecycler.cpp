@@ -359,6 +359,11 @@ SatoriRegion* SatoriRecycler::TryGetReusableForLarge()
     return  reusable;
 }
 
+bool SatoriRecycler::IsReusableQueue(SatoriQueue<SatoriRegion>* queue)
+{
+    return m_reusableRegions->IsShard(queue) || m_reusableRegionsAlternate->IsShard(queue);
+}
+
 // NOTE: DrainReusableQueue implements the same routing as this, just batched.
 //       Changes here likely need to be mirrored there.
 void SatoriRecycler::PushToEphemeralQueues(SatoriRegion* region)
@@ -1643,6 +1648,28 @@ void SatoriRecycler::BlockingCollectImpl()
     Relocate();
     Update();
 
+#if _DEBUG
+    // The GC asked the trimmer to stop when it started, but only the conservative mode waits for it to stop. In the precise mode
+    // the trimmer can be between claiming a run of granules and publishing it, and the verification below would report the claimed granules.
+    // The stop was requested before the GC's work, so the trimmer is not going to start anything else before the verification.
+    m_trimmer->WaitForStop();
+#endif
+
+    // The conservative mode parks the regions that are freed, see SatoriAllocator::FreeToBitmap. This is where they are freed.
+    // Marking is complete and the EE is stopped, so no marker can be looking at the header of a region that it found earlier,
+    // and what is freed here can be claimed only after the EE restarts. Every blocking GC passes here.
+    // This is before the verification and before the trim on request: the freed granules are free for both.
+    if (SatoriUtil::IsConservativeMode())
+    {
+        m_heap->Allocator()->DrainParkedRegions();
+    }
+
+#if _DEBUG
+    // Every drain is done and the world is stopped, so nothing is being claimed or freed.
+    size_t granuleProblems = m_heap->VerifyGranules(/* report */ true);
+    _ASSERTE(granuleProblems == 0);
+#endif
+
     // All regions are swept and every drain is done. When asked, release as much memory as we can before the world restarts.
     // This counts as GC work, same as in the stock GC.
     if (m_forceTrim)
@@ -1762,6 +1789,9 @@ void SatoriRecycler::BlockingCollectImpl()
         UpdateGenerationOccupancies();
     }
 
+    // The handshake with the trimmer relies on no GC starting between m_gcState = GC_STATE_NONE above and this call: a GC that started
+    // before it would have its stop request undone here, and in the conservative mode it would mark while the trimmer frees regions.
+    // That holds because the EE is still suspended here and every GC starts from a thread in the cooperative mode.
     m_trimmer->SetOkToRun();
 
     m_gcNextTimeTarget = GetNowMillis() + SatoriUtil::GcRate();
@@ -1947,6 +1977,13 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
     MarkContext* markContext = (MarkContext*)sc->_unused1;
     SatoriObject* o = (SatoriObject*)location;
 
+#if _DEBUG
+    if (isConservative)
+    {
+        markContext->m_recycler->AssertTrimmerInactiveForMarker();
+    }
+#endif
+
     if (flags & GC_CALL_INTERIOR)
     {
         // byrefs may point to stack, use checked here
@@ -1994,6 +2031,13 @@ void SatoriRecycler::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t
     }
 
     SatoriObject* o = (SatoriObject*)location;
+#if _DEBUG
+    if (isConservative)
+    {
+        ((MarkContext*)sc->_unused1)->m_recycler->AssertTrimmerInactiveForMarker();
+    }
+#endif
+
     if (flags & GC_CALL_INTERIOR)
     {
         MarkContext* markContext = (MarkContext*)sc->_unused1;
@@ -2045,6 +2089,13 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     MarkContext* markContext = (MarkContext*)sc->_unused1;
     SatoriObject* o = (SatoriObject*)location;
 
+#if _DEBUG
+    if (isConservative)
+    {
+        markContext->m_recycler->AssertTrimmerInactiveForMarker();
+    }
+#endif
+
     if (flags & GC_CALL_INTERIOR)
     {
         // byrefs may point to stack, use checked here
@@ -2054,15 +2105,25 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
             return;
         }
 
-        // since this is concurrent, in a conservative case an allocation could have caused a split
-        // that shortened the found region and the region no longer contains the ref (which means the ref is not real).
-        // Note that the split could only happen before we are done with allocator queue (which is synchronising)
-        // and assign 0+ gen to the region.
-        // So check here in the opposite order - first that region is 0+ gen and then that the size is still right.
-        if (isConservative &&
-            (containingRegion->GenerationAcquire() < 0 || location >= containingRegion->End()))
+        // Since this is concurrent, in a conservative case the region that we have found could be freed meanwhile,
+        // and its granules claimed again, for a region of another size or as a part of a bigger one.
+        // Then the ref is not real, and what we read from the "header" may not even be a header.
+        // That is fine while we use what we read only to bail out. After the reads, we make sure that the region map
+        // still has the region where we found it, and only then go on to use the region.
+        // (the gen is read before the end. A reused region gets its gen last, see SetGenerationRelease)
+        if (isConservative)
         {
-            return;
+            if (containingRegion->GenerationAcquire() < 0 || location >= containingRegion->End())
+            {
+                return;
+            }
+
+            // the reads above must be done before we look at the map again.
+            MemoryBarrier();
+            if (markContext->m_heap->RegionForAddressChecked(location) != containingRegion)
+            {
+                return;
+            }
         }
 
         // Concurrent FindObject is unsafe in active regions. While ref may be in a real obj,
@@ -2109,6 +2170,16 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         }
     }
 };
+
+#if _DEBUG
+// A conservative marker may follow a stale pointer to the header of a region that is not in use any more.
+// That is safe only while the trimmer, which frees regions in the conservative mode, cannot run: between its acknowledgement
+// of the stop and SetOkToRun.
+void SatoriRecycler::AssertTrimmerInactiveForMarker()
+{
+    _ASSERTE(!m_trimmer->IsActive());
+}
+#endif
 
 bool SatoriRecycler::MarkDemotedAndDrainQueuesConcurrent(int64_t deadline)
 {

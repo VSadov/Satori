@@ -56,6 +56,9 @@ enum class QueueKind
     RecyclerDeferredSweep,
     RecyclerReusable,
     RecyclerDemoted,
+
+    // The conservative mode: the regions that were freed and wait for the drain after the GC. (see SatoriAllocator::FreeToBitmap)
+    Parked,
 };
 
 template <class T>

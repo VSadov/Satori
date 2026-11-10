@@ -63,18 +63,29 @@ namespace Satori
     const static int REGION_BITS = 21;
     const static size_t REGION_SIZE_GRANULARITY = 1 << REGION_BITS;
 
+    // How much of a free granule is committed, and how much of it may hold nonzero data, is tracked in units of this size.
+    // 64 units make a granule, whatever the commit granularity is. (see SatoriPage)
+    static const size_t WATERMARK_UNIT_BITS = 15;
+    static const size_t WATERMARK_UNIT = (size_t)1 << WATERMARK_UNIT_BITS;
+    static const size_t WATERMARK_UNITS_PER_GRANULE = REGION_SIZE_GRANULARITY / WATERMARK_UNIT;
+
+    // The trimmer decommits runs of adjacent free granules with one call, up to this many granules (64 MB).
+    static const size_t TRIM_RUN_GRANULES = 32;
+
+    // A thread waits this long for the page-add lock, then may add a page without it, one such thread at a time
+    // (see SatoriAllocator::GetRegionCore). The longest add measured was 3.7 ms. On Windows the wait ends on a tick of the system timer
+    // (15.6 ms by default).
+    static const int PAGE_ADD_LOCK_TIMEOUT_MS = 6;
+
+    // The trimmer decommits a free granule only after it has been free for this long, in seconds, counted from the first look of
+    // the trimmer that saw it free (and at most twice this, see SatoriTrimmer::MaybeRotateAges). Memory that a gen2 frees and that the allocation
+    // takes again in the next cycle would otherwise
+    // be decommitted and committed again every cycle. This is the default of DOTNET_gcTrimMinFreeAge (1E in hex), see TrimMinFreeAgeSeconds.
+    static const size_t TRIM_MIN_FREE_AGE_SEC = 30;
+
     const static int INDEX_GRANULARITY_BITS = 11;
     const static int INDEX_GRANULARITY = 1 << INDEX_GRANULARITY_BITS;
     const static int INDEX_LENGTH = REGION_SIZE_GRANULARITY / INDEX_GRANULARITY;
-
-    static const int ALLOCATOR_BUCKET_COUNT = PAGE_BITS - REGION_BITS;
-
-    // When a regular region is split off a large free region that is out of the queue meanwhile, a batch of regions
-    // is carved off its top for other threads. The batch is as large as the number of CPUs the process can use,
-    // up to this limit.
-    // The limit is low: bigger batches mostly speed up a cold start of many threads, and they showed
-    // a higher peak working set in long-running allocation-heavy processes.
-    static const int MAX_REGION_CARVE_BATCH = 8;
 
     // object starts are aligned to this
     static const size_t OBJECT_ALIGNMENT = sizeof(size_t);
@@ -143,6 +154,15 @@ namespace Satori
 
     // the first region of a page follows the card table, so no region is closer than this to the beginning of its page.
     static const size_t MIN_REGION_OFFSET = PAGE_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;
+
+    // The cards of a granule are a slice of the card table of its page: 4 KB, at the granule's index times this from the start of the page.
+    // The slices of the granules of the card table itself hold the page's header, the metadata, and are always committed.
+    static const size_t CARD_SLICE_SIZE = REGION_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;
+
+    // The commit watermark of a free granule (see SatoriPage) is a count of WATERMARK_UNITs, and this bit, which says that the granule's
+    // slice of the card table is decommitted. The bit is set only with a count of 0: a granule that has memory committed has its cards.
+    static const uint8_t WATERMARK_NO_CARDS = 0x80;
+    static const uint8_t WATERMARK_UNITS_MASK = 0x7F;
 
     namespace CardState
     {
@@ -691,6 +711,16 @@ public:
         return (GCConfig::GetPacingGC());
     }
 
+    // How long in seconds a granule has to be free before the trimmer decommits it. DOTNET_gcTrimMinFreeAge, parsed as hex like the other GC
+    // settings: DOTNET_gcTrimMinFreeAge=1E is 30 seconds, which is the default (TRIM_MIN_FREE_AGE_SEC, in effect when the setting is not given).
+    // 0 turns the minimum off. The age is counted from the first look of the trimmer that saw the granule free, and is known
+    // within a factor of two: a granule is decommitted between this and twice this after that look (see SatoriTrimmer::MaybeRotateAges).
+    static size_t TrimMinFreeAgeSeconds()
+    {
+        int64_t age = GCConfig::GetTrimMinFreeAge();
+        return age < 0 ? Satori::TRIM_MIN_FREE_AGE_SEC : (size_t)min(age, (int64_t)INT32_MAX);
+    }
+
     // DOTNET_gcTrackBackoff
     // After a thread's escape-tracked region ends without a productive thread-local GC,
     // the thread allocates the next 1, 2, 4 ... up to this many eligible regions untracked.
@@ -830,6 +860,49 @@ public:
         // result = Satori::PAGE_SIZE_GRANULARITY;
 
         return result;
+    }
+
+    // Commits for a huge object are rounded up to this. Every commit must be a whole number of watermark units,
+    // since that is what a freed region can tell about its granules. (see SatoriPage::FreeRegion)
+    // NB: not CommitGranularity(). Under THP that is a whole granule, which a huge object does not need.
+    static size_t HugeCommitGranularity()
+    {
+        return max(Satori::WATERMARK_UNIT, ALIGN_UP(GCToOSInterface::GetPageSize(), Satori::WATERMARK_UNIT));
+    }
+
+    // The card slices of free granules are decommitted only where the free granules themselves can be decommitted
+    // (see SatoriTrimmer's CanDecommitGranules). Otherwise the card table is committed in full, as the page is.
+    static bool CanDecommitCardSlices()
+    {
+        return CommitGranularity() <= Satori::REGION_SIZE_GRANULARITY;
+    }
+
+    // How many granules have their card slices in one OS page: 1 with 4 KB pages, 4 with 16 KB, 16 with 64 KB.
+    // Such slices are committed and decommitted together, see SatoriPage::DecommitCardSlices.
+    static size_t CardSliceGroupGranules()
+    {
+        return max((size_t)1, GCToOSInterface::GetPageSize() / Satori::CARD_SLICE_SIZE);
+    }
+
+    // Where the memory for allocation is committed up to, when allocation needs memory up to `ensureCommitted` and the region
+    // that starts at `regionStart` has `committed` of it committed.
+    // The step is what the region has committed already, rounded down to a power of 2, and not less than the commit granularity
+    // and not more than a regular region. A region that is filled a little at a time is then committed in about 7 calls
+    // instead of 64, and the threads that fill their regions at the same time make fewer calls into the OS.
+    // (a commit call costs more when many threads make it at once)
+    // Regions are aligned to 2 MB, so the target is never past the end of the region.
+    // Every step is a multiple of the commit granularity, so the commit of a region stays a whole number of watermark units.
+    static size_t CommitTarget(size_t regionStart, size_t committed, size_t ensureCommitted)
+    {
+        _ASSERTE(committed >= regionStart);
+        size_t step = CommitGranularity();
+        size_t have = committed - regionStart;
+        if (have)
+        {
+            step = max(step, min(RoundDownPwr2(have), (size_t)Satori::REGION_SIZE_GRANULARITY));
+        }
+
+        return ALIGN_UP(ensureCommitted, step);
     }
 
 private:

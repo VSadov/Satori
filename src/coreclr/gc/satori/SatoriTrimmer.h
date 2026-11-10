@@ -57,13 +57,15 @@ private:
     GCEvent*     m_event;
     SatoriGate*  m_sleepGate;
     size_t       m_lastGen2Count;
+    int64_t      m_lastAgeRotation;
     volatile int m_state;
     volatile bool m_paused;
 
     static void LoopFn(void* inst);
     void Loop();
-    bool TryTrimRegion(SatoriRegion* region, bool drainsAreDone);
     void StopAndWait();
+    void FreeParkedRegions();
+    int64_t MaybeRotateAges();
     void Pause(int msec);
     void Unpause();
 };

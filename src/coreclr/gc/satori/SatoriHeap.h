@@ -49,7 +49,9 @@ public:
     static SatoriHeap* Create();
 
     bool TryAddRegularPage(SatoriPage*& newPage);
-    SatoriPage* AddLargePage(size_t size);
+    // Adds a page for a region of the given size, and claims the region in it before the page is published.
+    // Returns the page, and the region in `region`, or nullptr if the page can't be added or the region can't be formatted.
+    SatoriPage* AddLargePage(size_t size, bool low, SatoriRegion*& region);
 
     SatoriAllocator* Allocator()
     {
@@ -126,6 +128,37 @@ public:
         }
     }
 
+    // Visits the pages in the order of the page map, starting with the first one at or after the start hint,
+    // and wrapping around. The lambda returns true to stop. Returns true if it did.
+    template <typename F>
+    bool ForEachPageFrom(size_t startHint, F lambda)
+    {
+        // acquire: a page that we find is initialized, and all the map entries of a large page are there. (see AddLargePage)
+        size_t usedLength = VolatileLoad(&m_usedMapLength);
+        if (usedLength <= 1)
+        {
+            return false;
+        }
+
+        // map index 0 is never used
+        size_t span = usedLength - 1;
+        size_t start = startHint % span;
+        for (size_t i = 0; i < span; i++)
+        {
+            size_t mapIndex = 1 + (start + i) % span;
+            SatoriPage* page = VolatileLoad(&m_pageMap[mapIndex]);
+            if (page && IsFirstMapEntryOfPage(page, mapIndex))
+            {
+                if (lambda(page))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     void IncBytesCommitted(size_t bytes)
     {
         Interlocked::ExchangeAdd64(&m_committedBytes, bytes);
@@ -142,6 +175,15 @@ public:
     {
         return m_committedBytes;
     }
+
+#if _DEBUG
+    // Checks that the free granules of all pages are consistent with the region maps and the regions,
+    // and that what the heap counts as committed is what the pages, the regions and the free granules have.
+    // Reports the problems and returns their number. The heap must be quiet: no allocations or frees.
+    size_t VerifyGranules(bool report);
+    // The same, for when other threads may be running. Only what does not go away is a problem.
+    void VerifyGranulesBestEffort();
+#endif
 
 private:
     // We need to cover the whole addressable space, but no need to handle inaccessible VA.
@@ -162,6 +204,8 @@ private:
     size_t m_nextPageIndex;
     // pages are placed below this map index, where the process can map memory.
     size_t m_maxPageIndex;
+    // Takes the map lock to commit more of the map. A thread that adds a regular page holds the page-add lock
+    // of the allocator then, and nothing may take that lock while holding this one.
     SatoriLock m_mapLock;
 
     size_t m_committedBytes;

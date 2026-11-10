@@ -151,6 +151,25 @@ struct SatoriLocalStayRuns
     }
 };
 
+// The conservative mode. A marker may read the header of a region that is being formatted again. The generation is -1 before the header
+// is cleared, and the clear leaves it alone, so the marker cannot see a generation that this region does not have yet.
+// The freed regions are parked, which keeps the markers away from them. This is the second line of defense.
+NOINLINE void SatoriRegion::ClearHeaderKeepingGeneration(SatoriRegion* region, size_t address, size_t zeroUpTo)
+{
+    size_t generationStart = (size_t)&region->m_generation;
+    size_t generationEnd = generationStart + sizeof(region->m_generation);
+
+    VolatileStore(&region->m_generation, -1);
+    if (zeroUpTo > address)
+    {
+        memset((void*)address, 0, min(zeroUpTo, generationStart) - address);
+        if (zeroUpTo > generationEnd)
+        {
+            memset((void*)generationEnd, 0, zeroUpTo - generationEnd);
+        }
+    }
+}
+
 SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used)
 {
     _ASSERTE(used <= committed);
@@ -195,7 +214,15 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
 
     // clear the header if was used before
     size_t zeroUpTo = min(used, (size_t)&result->m_syncBlock);
-    memset((void*)address, 0, zeroUpTo - address);
+    if (SatoriUtil::IsConservativeMode())
+    {
+        _ASSERTE(committed >= (size_t)&result->m_generation + sizeof(result->m_generation));
+        ClearHeaderKeepingGeneration(result, address, zeroUpTo);
+    }
+    else
+    {
+        memset((void*)address, 0, zeroUpTo - address);
+    }
 
     // consider the header dirty for the future zeroing.
     used = max((size_t)&result->m_syncBlock, used);
@@ -922,6 +949,13 @@ bool SatoriRegion::TryDecommit()
     size_t decommitSize = m_committed - decommitStart;
     if (decommitSize > 0)
     {
+        // The region may be a run of granules, and one of them the start of a region that was freed, whose header a thread
+        // that does not own it may still be reading. Such a thread is registered with the page. (see SatoriPage::EnterUnownedHeaderRead)
+        if (m_containingPage->MayHaveUnownedHeaderReaders())
+        {
+            return false;
+        }
+
         if (GCToOSInterface::VirtualDecommit((void*)decommitStart, decommitSize))
         {
             m_committed = decommitStart;
@@ -988,7 +1022,7 @@ size_t SatoriRegion::AllocateDirty(size_t size, size_t* dirtyStart, size_t* dirt
         size_t ensureCommitted = chunkEnd + Satori::MIN_FREE_SIZE;
         if (ensureCommitted > m_committed)
         {
-            size_t newComitted = ALIGN_UP(ensureCommitted, SatoriUtil::CommitGranularity());
+            size_t newComitted = SatoriUtil::CommitTarget((size_t)this, m_committed, ensureCommitted);
             size_t toCommit = newComitted - m_committed;
             if (!GCToOSInterface::VirtualCommit((void*)m_committed, toCommit))
             {
@@ -1046,7 +1080,7 @@ size_t SatoriRegion::AllocateHuge(size_t size, bool zeroInitialize)
     size_t ensureCommitted = chunkEnd + Satori::MIN_FREE_SIZE;
     if (ensureCommitted > m_committed)
     {
-        size_t newComitted = ALIGN_UP(ensureCommitted, GCToOSInterface::GetPageSize());
+        size_t newComitted = ALIGN_UP(ensureCommitted, SatoriUtil::HugeCommitGranularity());
         _ASSERTE(newComitted <= End());
         size_t toCommit = newComitted - m_committed;
         if (!GCToOSInterface::VirtualCommit((void*)m_committed, toCommit))

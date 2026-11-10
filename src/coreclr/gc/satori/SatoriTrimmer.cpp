@@ -31,6 +31,7 @@
 
 #include "SatoriUtil.h"
 #include "SatoriTrimmer.h"
+#include "SatoriAllocator.h"
 #include "SatoriHeap.h"
 #include "SatoriPage.h"
 #include "SatoriPage.inl"
@@ -40,6 +41,7 @@
 SatoriTrimmer::SatoriTrimmer(SatoriHeap* heap)
 {
     m_lastGen2Count = 0;
+    m_lastAgeRotation = SatoriUtil::GetTimeStamp();
     m_heap  = heap;
     m_state = TRIMMER_STATE_STOPPED;
 
@@ -52,6 +54,12 @@ SatoriTrimmer::SatoriTrimmer(SatoriHeap* heap)
     {
         GCToEEInterface::CreateThread(LoopFn, this, false, "Satori GC Trimmer Thread");
     }
+}
+
+// A commit coarser than a region cannot be sparse, so then there is nothing to decommit.
+static bool CanDecommitGranules()
+{
+    return SatoriUtil::CommitGranularity() <= Satori::REGION_SIZE_GRANULARITY;
 }
 
 void SatoriTrimmer::Pause(int msec)
@@ -75,14 +83,46 @@ void SatoriTrimmer::LoopFn(void* inst)
 void SatoriTrimmer::Loop()
 {
     int64_t lastGen2 = m_heap->Recycler()->GetCollectionCount(2);
+    int64_t roundStart = 0;
+    const int64_t roundInterval = SatoriUtil::GetTimeStampFrequency() * 5;
+
+    // The last round saw granules that are free and committed, and could not trim them, since they were not free on the round before,
+    // or have not been free for the minimum free age. A later round can, if they stay free.
+    bool leftWork = false;
+
+    // The GCs of any generation that the trimmer has seen, and when it saw the last new one.
+    // A process that has seen no GC for a round interval is idle.
+    int64_t lastGcCount = m_heap->Recycler()->GetCollectionCount(0);
+    int64_t lastGcSeenTs = SatoriUtil::GetTimeStamp();
+
     while (true)
     {
-        // limit the re-trim rate to once per 5 sec.
-        // we would also require that gen2 gc happened since the last round.
+        // A round is due after a gen2 that came since the last round started, since that is when memory is freed in bulk.
+        // A round is also due when the last round left work for this one, but only in an idle process: where GCs keep coming,
+        // the granules that this round would find are about to be taken again, and the gen2 gate is the one that counts.
+        // Without the second condition the memory that the last gen2 freed would be seen once and never decommitted,
+        // in a process that stops allocating and has no more gen2.
+        // The rounds are at least 5 sec apart.
         while (true)
         {
+            int64_t now = SatoriUtil::GetTimeStamp();
             int64_t newGen2 = m_heap->Recycler()->GetCollectionCount(2);
-            if (lastGen2 != newGen2)
+            int64_t gcCount = m_heap->Recycler()->GetCollectionCount(0);
+            if (gcCount != lastGcCount)
+            {
+                lastGcCount = gcCount;
+                lastGcSeenTs = now;
+            }
+
+            bool gen2Due = lastGen2 != newGen2;
+            int64_t dueTs = roundStart + roundInterval;
+            if (!gen2Due && leftWork)
+            {
+                dueTs = max(dueTs, lastGcSeenTs + roundInterval);
+            }
+
+            int64_t waitTicks = dueTs - now;
+            if (waitTicks <= 0 && (gen2Due || leftWork))
             {
                 lastGen2 = newGen2;
                 break;
@@ -90,8 +130,34 @@ void SatoriTrimmer::Loop()
 
             // Idle throttling must not revoke a GC's run permission. Only a GC-requested stop
             // needs another SetOkToRun before the trimmer can continue.
-            Pause(5000);
+            // The wait also ends in time for the next rotation of the age snapshots, so that their period is what it is meant to be.
+            int64_t untilRotation = MaybeRotateAges();
+            int64_t waitFor = min(waitTicks <= 0 ? untilRotation : min(waitTicks, untilRotation), roundInterval);
+            int waitMsec = (int)(waitFor * 1000 / SatoriUtil::GetTimeStampFrequency() + 1);
+            Pause(waitMsec);
             StopAndWait();
+        }
+
+        roundStart = SatoriUtil::GetTimeStamp();
+        leftWork = false;
+
+        if (!CanDecommitGranules())
+        {
+            continue;
+        }
+
+        // Regions in the cache are not free granules, and the trimmer only decommits free granules.
+        // The ones that nobody has taken by the next round will be decommitted then.
+        // The round starts with the permission to run. Without this call the first round could start while a GC is in progress
+        // (the state is STOPPED, if a gen2 completed between the two reads of its count at the start), and in the conservative mode
+        // a GC marks only while the trimmer is not active.
+        StopAndWait();
+        MaybeRotateAges();
+        m_heap->Allocator()->DrainRegionCache();
+        if (SatoriUtil::IsConservativeMode())
+        {
+            // The drain of the cache parks in the conservative mode. Nothing else would free what is parked before the next GC.
+            FreeParkedRegions();
         }
 
         m_heap->ForEachPage(
@@ -106,90 +172,141 @@ void SatoriTrimmer::Loop()
 
                 int64_t lastGen1 = m_heap->Recycler()->GetCollectionCount(1);
 
-                page->ForEachRegion(
-                    [&](SatoriRegion* region)
+                // Only the granules that were free on the previous round too, and have been free for the minimum free age, so that memory
+                // that a busy process is about to take again is not decommitted. Adjacent granules are decommitted together.
+                size_t granule = page->NextGranuleToTrim(0, /* onlyIfSeenFree */ true);
+                while (granule != SIZE_MAX)
+                {
+                    size_t count;
+                    if (page->TryTrimRun(granule, Satori::TRIM_RUN_GRANULES, /* onlyIfSeenFree */ true, count))
                     {
-                        if (TryTrimRegion(region, /* drainsAreDone */ false))
-                        {
-                            // limit the decommit/coalesce rate to 1 region/10 msec.
-                            Pause(10);
-                            if (m_state != TRIMMER_STATE_RUNNING)
-                            {
-                                StopAndWait();
-                            }
-                        }
-
-                        // also we will pause for 1 sec if there was a GC - to further reduce the churn
-                        // if the app is allocation-active.
-                        int64_t newGen1 = m_heap->Recycler()->GetCollectionCount(1);
-                        if (newGen1 != lastGen1)
-                        {
-                            lastGen1 = newGen1;
-                            Pause(1000);
-                        }
-
-                        if (m_state != TRIMMER_STATE_RUNNING)
-                        {
-                            StopAndWait();
-                        }
+                        // limit the decommit rate to 1 call/10 msec.
+                        Pause(10);
                     }
-                );
+
+                    // also we will pause for 1 sec if there was a GC - to further reduce the churn
+                    // if the app is allocation-active.
+                    int64_t newGen1 = m_heap->Recycler()->GetCollectionCount(1);
+                    if (newGen1 != lastGen1)
+                    {
+                        lastGen1 = newGen1;
+                        Pause(1000);
+                    }
+
+                    if (m_state != TRIMMER_STATE_RUNNING)
+                    {
+                        StopAndWait();
+                    }
+
+                    granule = page->NextGranuleToTrim(granule + count, /* onlyIfSeenFree */ true);
+                }
+
+                page->RememberFreeGranules();
+
+                // what this round saw, and a later round can trim, when the granules are old enough
+                if (page->NextGranuleToTrim(0, /* onlyIfSeenFree */ true, /* ignoreAge */ true) != SIZE_MAX)
+                {
+                    leftWork = true;
+                }
             }
         );
     }
 }
 
-// Coalesces a free region with the free region after it and decommits the result.
-// Returns true if it did anything.
-bool SatoriTrimmer::TryTrimRegion(SatoriRegion* region, bool drainsAreDone)
-{
-    SatoriQueue<SatoriRegion>* queue = region->ContainingQueue();
-    if (queue && queue->Kind() == QueueKind::Allocator)
-    {
-        if (region->CanDecommit() || region->CanCoalesceWithNext())
-        {
-            if (queue->TryRemove(region))
-            {
-                bool didSomeWork = region->TryCoalesceWithNext(drainsAreDone);
-                if (region->TryDecommit())
-                {
-                    m_heap->Allocator()->AddRegion(region);
-                    didSomeWork = true;
-                }
-                else
-                {
-                    m_heap->Allocator()->ReturnRegion(region);
-                }
-
-                return didSomeWork;
-            }
-        }
-    }
-
-    return false;
-}
-
-// Trims all free regions on the current thread, without any throttling.
-// This is for a blocking GC that was asked to release as much memory as it can.
-// The GC must be done with all its drains, so that coalescing is safe, see TryCoalesceWithNext.
+// Decommits all free granules, and the regions from the cache with them.
 void SatoriTrimmer::TrimNow()
 {
     _ASSERTE(m_heap->Recycler()->IsBlockingPhase());
 
+    if (!CanDecommitGranules())
+    {
+        return;
+    }
+
     // The trimmer was asked to stop when the GC started. Make sure it did, so that we do not run two things at once.
     WaitForStop();
+
+    m_heap->Allocator()->DrainRegionCache();
+    if (SatoriUtil::IsConservativeMode())
+    {
+        // The GC's own drain of the parked regions has already run (see BlockingCollectImpl), and the drain of the cache above parks.
+        // The EE is stopped and the marking is done, as for the GC's drain.
+        m_heap->Allocator()->DrainParkedRegions();
+    }
 
     m_heap->ForEachPage(
         [&](SatoriPage* page)
         {
-            page->ForEachRegion(
-                [&](SatoriRegion* region)
-                {
-                    TryTrimRegion(region, /* drainsAreDone */ true);
-                }
-            );
+            // the world is stopped, there is no use in waiting for the granules to stay free.
+            size_t granule = page->NextGranuleToTrim(0, /* onlyIfSeenFree */ false);
+            while (granule != SIZE_MAX)
+            {
+                size_t count;
+                page->TryTrimRun(granule, Satori::TRIM_RUN_GRANULES, /* onlyIfSeenFree */ false, count);
+                granule = page->NextGranuleToTrim(granule + count, /* onlyIfSeenFree */ false);
+            }
+
+            page->RememberFreeGranules();
         }
     );
+}
+
+// The minimum free age (DOTNET_gcTrimMinFreeAge) without a stamp per granule. Every period E the pages rotate their two age snapshots
+// (SatoriPage::RotateAges): "aged" gets "aging", and "aging" gets the granules that the last look saw free. The trimmer takes a granule
+// for its age only if it is in "aged", that is it was seen free before the rotation before the last one: at least E ago.
+// It is first in "aged" one to two periods after the look that first saw it free, so with E = gcTrimMinFreeAge the effective
+// minimum age is between the setting and twice that. E is at least one round interval (5 s).
+// The check is one comparison of the clock, made by the trimmer when it runs. No rotation happens while the trimmer is stopped:
+// the snapshots then age by the time of the stop, which is the safe direction.
+// Returns the time until the next rotation, in ticks (INT64_MAX if the age is off).
+int64_t SatoriTrimmer::MaybeRotateAges()
+{
+    size_t minAge = SatoriUtil::TrimMinFreeAgeSeconds();
+    if (minAge == 0)
+    {
+        return INT64_MAX;
+    }
+
+    int64_t now = SatoriUtil::GetTimeStamp();
+    int64_t period = (int64_t)max(minAge, (size_t)5) * SatoriUtil::GetTimeStampFrequency();
+    if (now - m_lastAgeRotation < period)
+    {
+        return m_lastAgeRotation + period - now;
+    }
+
+    m_lastAgeRotation = now;
+    m_heap->ForEachPage(
+        [&](SatoriPage* page)
+        {
+            page->RotateAges();
+        }
+    );
+
+    return period;
+}
+
+// The conservative mode: frees the regions that are parked. A conservative marker may follow a stale pointer to the header of
+// a region that it has looked up. The trimmer frees parked regions only between a return from StopAndWait and its next call:
+// a conservative GC does not mark until the trimmer has acknowledged its stop (in StopAndWait), and only the end of the GC
+// lets the trimmer run again (SetOkToRun). The state may become STOP_SUGGESTED at any moment in between, that is fine.
+// The state is checked before every region, and a region is popped only after the check, so nothing is held across an acknowledgement:
+// the queue can be long (a deferred sweep after a large gen2 parks thousands of regions), and a blocking GC waits for the
+// acknowledgement with the EE suspended.
+void SatoriTrimmer::FreeParkedRegions()
+{
+    SatoriAllocator* allocator = m_heap->Allocator();
+    while (true)
+    {
+        if (VolatileLoad(&m_state) != TRIMMER_STATE_RUNNING)
+        {
+            StopAndWait();
+        }
+
+        if (!allocator->TryFreeOneParkedRegion())
+        {
+            return;
+        }
+    }
 }
 
 void SatoriTrimmer::StopAndWait()
@@ -295,7 +412,9 @@ void SatoriTrimmer::WaitForStop()
     _ASSERTE(m_state <= TRIMMER_STATE_STOP_SUGGESTED);
 
     int cycles = 0;
-    while (m_state == TRIMMER_STATE_STOP_SUGGESTED)
+    // A conservative marker reads the region map after this. The load must be an acquire (a plain load is not one on arm64),
+    // so that the marker sees every free that the trimmer did before its acknowledgement.
+    while (VolatileLoad(&m_state) == TRIMMER_STATE_STOP_SUGGESTED)
     {
         if (m_paused)
         {
@@ -314,5 +433,6 @@ void SatoriTrimmer::WaitForStop()
 
 bool SatoriTrimmer::IsActive()
 {
-    return m_state > TRIMMER_STATE_STOPPED;
+    // an acquire, as in WaitForStop: a conservative marker that sees the trimmer inactive reads the region map after this.
+    return VolatileLoad(&m_state) > TRIMMER_STATE_STOPPED;
 }
