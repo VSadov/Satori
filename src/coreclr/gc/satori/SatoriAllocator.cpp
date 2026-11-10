@@ -217,24 +217,29 @@ tryAgain:
             if (page)
             {
                 // The page is ours. Claim from it right away, before the others take what we need.
-                region = TryClaimRegionInPage(page, granules, low, commitSize, outOfMemory);
+                // Only the claim is done under the lock, it is a few bit operations. The format commits what the region needs,
+                // which can be a huge object of hundreds of MB, and the waiters do not wait for that: a waiter that timed out
+                // could add a page of its own while this one has room.
+                size_t first = TryClaimInPage(page, granules, low);
 
                 // The free granules of the page can be claimed, and we have ours. The waiters look for theirs when they see the change.
                 // An add without the lock counts as well: the count is interlocked, and it changes before the escapee's mark is cleared.
                 Interlocked::Increment(&m_pageAddsCompleted);
                 LeavePageAdd(locked, escaped);
 
+                if (first == SIZE_MAX)
+                {
+                    goto tryAgain;
+                }
+
+                region = page->FormatClaimed(first, granules, commitSize);
                 if (region)
                 {
                     return region;
                 }
 
-                if (outOfMemory)
-                {
-                    goto failed;
-                }
-
-                goto tryAgain;
+                // Out of memory. The granules went back to the page.
+                goto failed;
             }
 
             // Someone added a page, but not us. There could be more regions.
@@ -433,30 +438,18 @@ SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, size_t 
     return result;
 }
 
-// The same as TryClaimRegion, but for one page.
-SatoriRegion* SatoriAllocator::TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, size_t commitSize, bool& outOfMemory)
+// Claims free granules for a region in one page, and nothing more: the caller formats them. (see the add of a page in GetRegionCore)
+size_t SatoriAllocator::TryClaimInPage(SatoriPage* page, size_t granules, bool low)
 {
-
-    size_t first;
     if (granules > 1)
     {
         m_runClaimLock.Enter();
-        first = page->TryClaimRun(granules, /* fromTop */ low);
+        size_t first = page->TryClaimRun(granules, /* fromTop */ low);
         m_runClaimLock.Leave();
-    }
-    else
-    {
-        first = page->TryClaimGranule(/* warmOnly */ false, /* fromTop */ low);
+        return first;
     }
 
-    SatoriRegion* result = nullptr;
-    if (first != SIZE_MAX)
-    {
-        result = page->FormatClaimed(first, granules, commitSize);
-        outOfMemory = (result == nullptr);
-    }
-
-    return result;
+    return page->TryClaimGranule(/* warmOnly */ false, /* fromTop */ low);
 }
 
 // Returns a region that its owner no longer uses: to the front of the cache, as the most recently used one, or to the free granules.

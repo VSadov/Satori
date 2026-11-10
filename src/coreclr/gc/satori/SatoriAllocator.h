@@ -192,7 +192,7 @@ private:
     SatoriRegion* GetRegionCore(size_t regionSize, bool low, size_t commitSize);
     void LeavePageAdd(bool locked, bool escaped);
     SatoriRegion* TryClaimRegion(size_t granules, bool low, size_t commitSize, bool& outOfMemory);
-    SatoriRegion* TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, size_t commitSize, bool& outOfMemory);
+    size_t TryClaimInPage(SatoriPage* page, size_t granules, bool low);
     SatoriRegion* TryClaimWarmRegion(size_t granules, bool low, size_t commitSize);
     SatoriRegion* TryGetCachedRegion();
     bool TryCacheRegion(SatoriRegion* region, bool recentlyUsed);
