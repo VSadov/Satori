@@ -56,10 +56,6 @@ enum class QueueKind
     RecyclerDeferredSweep,
     RecyclerReusable,
     RecyclerDemoted,
-
-    // The conservative mode: the regions that were returned while a thread may have scanned a stack, and wait for the drain after a GC.
-    // (see SatoriAllocator::ParkRegion)
-    Parked,
 };
 
 template <class T>

@@ -154,12 +154,6 @@ void SatoriTrimmer::Loop()
         StopAndWait();
         MaybeRotateAges();
         m_heap->Allocator()->DrainRegionCache();
-        if (SatoriUtil::IsConservativeMode())
-        {
-            // The regions that were returned while a thread may have scanned a stack are parked (see SatoriAllocator::ParkRegion).
-            // Nothing else would free them before the next GC.
-            FreeParkedRegions();
-        }
 
         m_heap->ForEachPage(
             [&](SatoriPage* page)
@@ -278,29 +272,6 @@ int64_t SatoriTrimmer::MaybeRotateAges()
     );
 
     return period;
-}
-
-// The conservative mode: frees the regions that are parked. A conservative marker may follow a stale pointer to the header of
-// a region that it has looked up. The trimmer frees parked regions only between a return from StopAndWait and its next call:
-// a conservative GC does not mark until the trimmer has acknowledged its stop (in StopAndWait), and only the end of the GC
-// lets the trimmer run again (SetOkToRun). The state may become STOP_SUGGESTED at any moment in between, that is fine.
-// The state is checked before every region, and a region is popped only after the check, so nothing is held across an acknowledgement:
-// a blocking GC waits for the acknowledgement with the EE suspended.
-void SatoriTrimmer::FreeParkedRegions()
-{
-    SatoriAllocator* allocator = m_heap->Allocator();
-    while (true)
-    {
-        if (VolatileLoad(&m_state) != TRIMMER_STATE_RUNNING)
-        {
-            StopAndWait();
-        }
-
-        if (!allocator->TryFreeOneParkedRegion())
-        {
-            return;
-        }
-    }
 }
 
 void SatoriTrimmer::StopAndWait()

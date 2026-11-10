@@ -571,7 +571,7 @@ Object* SatoriGC::GetContainingObject(void* pInteriorPtr, bool fCollectedGenOnly
         return nullptr;
     }
 
-    // With conservative stack reporting the pointer may be stale, and point into a region that is not in use (in the cache, or parked).
+    // With conservative stack reporting the pointer may be stale, and point into a region that is not in use (in the cache, for one).
     // It has no objects to look for, as in SatoriRecycler::MarkFn<true>.
     if (SatoriUtil::IsConservativeMode() && region->Generation() < 0)
     {

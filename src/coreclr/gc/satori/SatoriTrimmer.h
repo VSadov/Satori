@@ -64,7 +64,6 @@ private:
     static void LoopFn(void* inst);
     void Loop();
     void StopAndWait();
-    void FreeParkedRegions();
     int64_t MaybeRotateAges();
     void Pause(int msec);
     void Unpause();

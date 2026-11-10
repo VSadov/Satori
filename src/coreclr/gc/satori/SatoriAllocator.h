@@ -60,15 +60,9 @@ public:
     SatoriRegion* GetRegion(size_t minSize, size_t commitSize = 0);
     SatoriRegion* GetRegionLow(size_t minSize, size_t commitSize = 0);
     void ReturnRegion(SatoriRegion* region);
-    // For a region that could not be used because a commit failed, at a time when a thread may scan a stack. (see ParkRegion)
-    void ReturnUnusedRegion(SatoriRegion* region);
     // Gives the regions from the cache back to the free granules of their pages, where the trimmer can see them.
     // Only where no thread scans a stack: in the trimmer, or in a trim on request after the GC has marked.
     void DrainRegionCache();
-    bool TryFreeOneParkedRegion();
-    // The conservative mode only: frees the regions that were parked since the last drain, see ParkRegion.
-    // A GC calls it when marking is complete, with the EE stopped, so no marker can be looking at a region.
-    void DrainParkedRegions();
 
     size_t GetTotalAllocatedBytes();
     size_t GetTotalAllocatedBytesPrecise();
@@ -158,12 +152,6 @@ private:
     // How many regions the cache may have: a couple for every CPU that this process can use. The racing threads can get the count a bit over it.
     size_t m_regionCacheCap;
 
-    // The conservative mode only (nullptr otherwise): the regions that were returned while a thread may have scanned a stack,
-    // and wait for the drain after a GC. (see ParkRegion)
-    // They are not free granules, so nothing can claim, absorb or decommit them, and their headers stay committed and readable
-    // by the markers that may have found them through the region map before they were returned.
-    SatoriRegionQueue* m_parkedRegions;
-
     DECLSPEC_ALIGN(64)
     volatile size_t m_regionCacheCount;
 
@@ -210,7 +198,6 @@ private:
     bool TryCacheRegion(SatoriRegion* region, bool recentlyUsed);
     void CacheRegion(SatoriRegion* region, bool recentlyUsed);
     void FreeToBitmap(SatoriRegion* region);
-    void ParkRegion(SatoriRegion* region);
     bool AddMoreWorkChunks();
 };
 

@@ -109,7 +109,7 @@ public:
     bool IsReusableQueue(SatoriQueue<SatoriRegion>* queue);
 
     // Whether a thread is in a scan of stacks that looks candidate pointers up in the region map. Checked builds only.
-    // No region may be freed into the free granules meanwhile. (see SatoriAllocator::ParkRegion)
+    // No region may be freed into the free granules meanwhile. (see SatoriAllocator::FreeToBitmap)
 #if _DEBUG
     bool IsConservativeScanInProgress()
     {

@@ -94,11 +94,6 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     // The cap is a couple of regions for every CPU that this process can use.
     m_regionCacheCap = max((size_t)4, 2 * (size_t)GCToEEInterface::GetCurrentProcessCpuCount());
 
-    // The conservative mode parks the regions that are returned while a thread may scan a stack, see ParkRegion.
-    m_parkedRegions = SatoriUtil::IsConservativeMode() ?
-        SatoriRegionQueue::AllocAligned(QueueKind::Parked) :
-        nullptr;
-
     m_largeRegion = nullptr;
     m_largeAllocLock.Initialize();
 
@@ -465,7 +460,7 @@ SatoriRegion* SatoriAllocator::TryClaimRegionInPage(SatoriPage* page, size_t gra
 }
 
 // Returns a region that its owner no longer uses: to the front of the cache, as the most recently used one, or to the free granules.
-// In the conservative mode not while a thread scans a stack. (see ParkRegion)
+// In the conservative mode not while a thread scans a stack. (see FreeToBitmap)
 void SatoriAllocator::ReturnRegion(SatoriRegion* region)
 {
     _ASSERTE(region->IsAttachedToAllocatingOwner() == false);
@@ -514,65 +509,21 @@ void SatoriAllocator::CacheRegion(SatoriRegion* region, bool recentlyUsed)
 }
 
 // Frees the region into the free granules of its page.
-// In the conservative mode this must not happen while a thread scans a stack, see ParkRegion.
-void SatoriAllocator::FreeToBitmap(SatoriRegion* region)
-{
-    region->ContainingPage()->FreeRegion(region);
-}
-
-// Returns a region that the caller got, but could not use because a commit failed: a work chunk refill, a huge allocation,
-// or the growth of the finalization queue. That can happen while a thread scans a stack, so in the conservative mode the region
-// is not freed into the free granules: it goes to the cache, if the cache takes it, or it is parked. (see ParkRegion)
-void SatoriAllocator::ReturnUnusedRegion(SatoriRegion* region)
-{
-    _ASSERTE(region->IsAttachedToAllocatingOwner() == false);
-    _ASSERTE(region->Generation() == -1);
-    if (TryCacheRegion(region, /* recentlyUsed */ false))
-    {
-        return;
-    }
-
-    if (SatoriUtil::IsConservativeMode())
-    {
-        ParkRegion(region);
-    }
-    else
-    {
-        FreeToBitmap(region);
-    }
-}
-
+//
 // The conservative mode. A thread that scans a stack finds the region of a candidate pointer in the region map, and then reads its header.
 // If the region were freed in between, its granules could be claimed and formatted again at the same address, or become a part of a bigger
 // run that is claimed and decommitted, (the finalization queue does that when it grows) while the scan is still reading.
-// So no region is freed into the free granules while a thread may scan a stack. Most frees are ordered outside of the scans:
+// So no region is freed into the free granules while a thread may scan a stack. The frees are ordered outside of the scans:
 //  - The sweep after a GC is done before the next GC scans a stack. (see DrainDeferredSweepQueueConcurrent)
 //  - A GC frees regions in the phases that scan no stacks, with all the helpers out of the phase in between. (see RunWithHelp)
 //  - The trimmer frees the regions from the cache only while no GC marks.
-// The regions that can be returned while a thread scans a stack are cached or parked instead (see ReturnUnusedRegion): a cached region
-// keeps its address and its header, and a parked one keeps its granules, its region map bytes and its committed header. Nothing can claim either.
-// The GC frees the parked regions after it has marked, when no thread scans a stack. (see DrainParkedRegions)
-// So does the trimmer, between its acknowledgement of a stop and the next one: a conservative GC does not mark before the trimmer
-// has acknowledged its stop, and only the end of the GC lets the trimmer run again. (see TryFreeOneParkedRegion)
+// What can run while a thread scans a stack does not free a region. A claim commits what the first use of its region needs before it
+// publishes the region, and a claim that fails gives back granules that no thread has seen as a region. (see SatoriPage::FormatClaimed)
+// A refill of work chunks that cannot commit puts its region in the cache, where it keeps its address and its header. (see CacheRegion)
 // Checked builds assert that no region is freed into the free granules while a thread scans a stack. (see SatoriPage::FreeRegion)
-NOINLINE void SatoriAllocator::ParkRegion(SatoriRegion* region)
+void SatoriAllocator::FreeToBitmap(SatoriRegion* region)
 {
-    _ASSERTE(SatoriUtil::IsConservativeMode());
-    _ASSERTE(region->Generation() == -1);
-
-    m_parkedRegions->Enqueue(region);
-}
-
-// Frees the regions that were parked. Called by a GC after Update, with the EE stopped, when every concurrent marker is done:
-// no marker has a region that it found earlier, and the regions that this frees can be claimed again only after the EE restarts.
-void SatoriAllocator::DrainParkedRegions()
-{
-    _ASSERTE(SatoriUtil::IsConservativeMode());
-
-    while (SatoriRegion* region = m_parkedRegions->TryPop())
-    {
-        region->ContainingPage()->FreeRegion(region);
-    }
+    region->ContainingPage()->FreeRegion(region);
 }
 
 void SatoriAllocator::DrainRegionCache()
@@ -582,22 +533,6 @@ void SatoriAllocator::DrainRegionCache()
         Interlocked::Decrement(&m_regionCacheCount);
         FreeToBitmap(region);
     }
-}
-
-// Frees one parked region, if there is one. Called only by the trimmer, between its acknowledgement of a stop and the next one,
-// so no conservative marker is between its map lookup and its last use of a region. (see SatoriTrimmer::FreeParkedRegions)
-bool SatoriAllocator::TryFreeOneParkedRegion()
-{
-    _ASSERTE(SatoriUtil::IsConservativeMode());
-
-    SatoriRegion* region = m_parkedRegions->TryPop();
-    if (region == nullptr)
-    {
-        return false;
-    }
-
-    region->ContainingPage()->FreeRegion(region);
-    return true;
 }
 
 // Allocated bytes accounting.
@@ -1443,7 +1378,7 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
 // Other readers get to headers through the region map too (conservative marking, interior pointers, the card groups).
 // They run only on regions that are live: in the precise mode a reference is to a live object, and a card group is set only for a live region.
 // In the conservative mode a marker can follow a candidate pointer to a region that is not live any more, so no region is freed into the
-// free granules while a thread may scan a stack. (see ParkRegion)
+// free granules while a thread may scan a stack. (see FreeToBitmap)
 static SatoriRegion* TryTakeReusableNext(SatoriPage* page, SatoriRegion* region, size_t minFree)
 {
     SatoriRegion* result = nullptr;
