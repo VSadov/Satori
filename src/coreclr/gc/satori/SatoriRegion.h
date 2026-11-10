@@ -449,9 +449,6 @@ private:
     size_t ComputeTlgcAllocEnd(size_t minAllocSize, size_t allocBytes);
     size_t ParseableBitmapLimit();
 
-    // The conservative mode, see InitializeAt.
-    static NOINLINE void ClearHeaderKeepingGeneration(SatoriRegion* region, size_t address, size_t zeroUpTo);
-
     template <bool isConservative>
     static void MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags);
 

@@ -154,7 +154,7 @@ SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize, bool low)
 tryAgain:
     // The regular page adds that complete after this are not seen by the search for regions below. (see the add of a page)
     int32_t pageAddsCompleted = VolatileLoad(&m_pageAddsCompleted);
-    if (granules == 1 && !low && m_regionCacheCap != 0)
+    if (granules == 1 && !low)
     {
         region = m_regionCache->TryPop();
         if (region)

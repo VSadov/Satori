@@ -150,7 +150,7 @@ private:
     // only under the lock of the queue. (the queue is of the Allocator kind)
     SatoriShardedRegionQueue* m_regionCache;
 
-    // How many regions the cache may have. The racing threads can get the count a bit over it. 0 - no cache.
+    // How many regions the cache may have: a couple for every CPU that this process can use. The racing threads can get the count a bit over it.
     size_t m_regionCacheCap;
 
     // The conservative mode only (nullptr otherwise): the regions that were freed, and wait for the drain after a GC. (see FreeToBitmap)

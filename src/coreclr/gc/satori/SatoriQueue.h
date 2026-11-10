@@ -341,8 +341,8 @@ public:
     // NB: a racing popper may read m_next out of an item another thread has already
     //     claimed. That read is harmless - the CAS below will fail and retry - but it
     //     does require the item to stay mapped for the duration of the drain.
-    //     This is why the drain may only run in the blocking phase: outside of it the
-    //     trimmer could coalesce an already claimed region and decommit its header.
+    //     This is why the drain may only run in the blocking phase: outside of it a region that another thread
+    //     has claimed could be freed, and its memory claimed again as a part of a run and decommitted.
     template <bool prefetch = true>
     T* TryPopDrainOnly()
     {

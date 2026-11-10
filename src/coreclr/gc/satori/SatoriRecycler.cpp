@@ -2105,25 +2105,14 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
             return;
         }
 
-        // Since this is concurrent, in a conservative case the region that we have found could be freed meanwhile,
-        // and its granules claimed again, for a region of another size or as a part of a bigger one.
-        // Then the ref is not real, and what we read from the "header" may not even be a header.
-        // That is fine while we use what we read only to bail out. After the reads, we make sure that the region map
-        // still has the region where we found it, and only then go on to use the region.
-        // (the gen is read before the end. A reused region gets its gen last, see SetGenerationRelease)
-        if (isConservative)
+        // In the conservative mode the ref may be stale, and point into a region that is not in use: in the cache, parked,
+        // holding work chunks or the finalization queue, or not given out yet. Such a region has generation -1 and nothing to mark.
+        // The region that we have found stays what it is while we mark: regions are not split, and in the conservative mode
+        // a region that is freed is parked until the marking is done (see SatoriAllocator::ParkRegion).
+        // A region that is put to use gets its generation last, with a release (see SetGenerationRelease).
+        if (isConservative && containingRegion->GenerationAcquire() < 0)
         {
-            if (containingRegion->GenerationAcquire() < 0 || location >= containingRegion->End())
-            {
-                return;
-            }
-
-            // the reads above must be done before we look at the map again.
-            MemoryBarrier();
-            if (markContext->m_heap->RegionForAddressChecked(location) != containingRegion)
-            {
-                return;
-            }
+            return;
         }
 
         // Concurrent FindObject is unsafe in active regions. While ref may be in a real obj,

@@ -151,25 +151,6 @@ struct SatoriLocalStayRuns
     }
 };
 
-// The conservative mode. A marker may read the header of a region that is being formatted again. The generation is -1 before the header
-// is cleared, and the clear leaves it alone, so the marker cannot see a generation that this region does not have yet.
-// The freed regions are parked, which keeps the markers away from them. This is the second line of defense.
-NOINLINE void SatoriRegion::ClearHeaderKeepingGeneration(SatoriRegion* region, size_t address, size_t zeroUpTo)
-{
-    size_t generationStart = (size_t)&region->m_generation;
-    size_t generationEnd = generationStart + sizeof(region->m_generation);
-
-    VolatileStore(&region->m_generation, -1);
-    if (zeroUpTo > address)
-    {
-        memset((void*)address, 0, min(zeroUpTo, generationStart) - address);
-        if (zeroUpTo > generationEnd)
-        {
-            memset((void*)generationEnd, 0, zeroUpTo - generationEnd);
-        }
-    }
-}
-
 SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t address, size_t regionSize, size_t committed, size_t used)
 {
     _ASSERTE(used <= committed);
@@ -214,15 +195,7 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
 
     // clear the header if was used before
     size_t zeroUpTo = min(used, (size_t)&result->m_syncBlock);
-    if (SatoriUtil::IsConservativeMode())
-    {
-        _ASSERTE(committed >= (size_t)&result->m_generation + sizeof(result->m_generation));
-        ClearHeaderKeepingGeneration(result, address, zeroUpTo);
-    }
-    else
-    {
-        memset((void*)address, 0, zeroUpTo - address);
-    }
+    memset((void*)address, 0, zeroUpTo - address);
 
     // consider the header dirty for the future zeroing.
     used = max((size_t)&result->m_syncBlock, used);
