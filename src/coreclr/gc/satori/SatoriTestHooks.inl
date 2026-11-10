@@ -56,6 +56,7 @@ namespace SatoriTestHooks
     int s_pauseTrimmerDrainMs;
     thread_local bool t_holdMarker;
     thread_local bool t_inParkDrain;
+    thread_local bool t_lockGiveUpAfterWake;
 
     // how long a marker of a self-test waits for the test to let it go
     static int s_holdMarkerMs = 5000;

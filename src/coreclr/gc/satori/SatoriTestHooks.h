@@ -85,6 +85,10 @@ namespace SatoriTestHooks
     // The thread is draining the regions that were parked, see SatoriAllocator::DrainParkedRegions
     extern thread_local bool t_inParkDrain;
 
+    // A timed enter of a SatoriLock by this thread gives up right after its wait is woken, as if its time were up then,
+    // and makes no attempt to take the lock after that. (see SatoriLock::EnterSlow, and the self-test locktimeout)
+    extern thread_local bool t_lockGiveUpAfterWake;
+
     // What a conservative marker knows from before its reads. (see BeginMarkerLookup)
     struct MarkerLookup
     {

@@ -29,11 +29,17 @@
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
 #include "SatoriLock.h"
+#include "SatoriTestHooks.h" // TEST-HOOK
 
+// A timed enter (deadline != 0) gives up when its time is up: when it is about to register as a waiter (again), or when its timed
+// wait of the gate ends without a wake. Then it leaves as a waiter (see GiveUpWaiting), makes one more attempt to take the lock,
+// and reports what that got.
 NOINLINE
-bool SatoriLock::EnterSlow(bool noBlock)
+bool SatoriLock::EnterSlow(bool noBlock, int64_t deadline)
 {
     bool hasWaited = false;
+    // A waiter that is woken holds the wake (WaiterWoken) until it takes the lock or registers again, both of which clear it.
+    bool heldWake = false;
     // we will retry after waking up
     while (true)
     {
@@ -143,6 +149,12 @@ bool SatoriLock::EnterSlow(bool noBlock)
                 if (noBlock)
                     return false;
 
+                // A timed enter whose time is up does not register (again). A waiter that was woken is still counted, and holds the wake.
+                if (deadline != 0 && SatoriUtil::GetTimeStamp() - deadline >= 0)
+                {
+                    return GiveUpWaiting(/* registered */ hasWaited, heldWake);
+                }
+
                 // If waiter was awaken spuriously, it may acquire the lock before wake watchdog is set.
                 // If there are no more waiters for a long time, the watchdog could hang around for a while too.
                 // When a new waiter enters the system, it may look like we had no waiter progress for all that time.
@@ -162,7 +174,10 @@ bool SatoriLock::EnterSlow(bool noBlock)
                     newState = (newState - WaiterCountIncrement) & ~WaiterWoken;
 
                 if (Interlocked::CompareExchange(&_state, newState, oldState) == oldState)
+                {
+                    heldWake = false;
                     break;
+                }
             }
             else
             {
@@ -177,13 +192,83 @@ bool SatoriLock::EnterSlow(bool noBlock)
         // Now we wait.
         //
         _ASSERTE(_state >= WaiterCountIncrement);
-        _gate->Wait();
+        if (deadline != 0)
+        {
+            int64_t left = deadline - SatoriUtil::GetTimeStamp();
+            int timeoutMs = left > 0 ? (int)min(left * 1000 / SatoriUtil::GetTimeStampFrequency() + 1, (int64_t)INT32_MAX) : 0;
+            if (timeoutMs == 0 || !_gate->TimedWait(timeoutMs))
+            {
+                // timed out: still counted, and no wake was taken
+                return GiveUpWaiting(/* registered */ true, /* heldWake */ false);
+            }
+
+#if _DEBUG
+            if (SatoriTestHooks::t_lockGiveUpAfterWake)
+            {
+                // TEST-HOOK: as if the time were up right after the wake, before the lock is tried again
+                return GiveUpWaiting(/* registered */ true, /* heldWake */ true);
+            }
+#endif
+        }
+        else
+        {
+            _gate->Wait();
+        }
+
         _ASSERTE(_state >= WaiterCountIncrement);
 
         // this was either real or spurious wake.
         // either way try acquire again.
         hasWaited = true;
+        heldWake = true;
     }
+}
+
+// A timed enter gives up. A waiter that is registered leaves the count, with one interlocked operation that also clears WaiterWoken
+// if it held the wake. If it did, and the lock is free while other waiters are left, it wakes one of them, as a Leave would have:
+// otherwise nobody would wake them until the next Leave. (A waiter whose timed wait ended without a wake took none: a wake that
+// came after that is still in the gate, for another waiter to take.)
+// Then one attempt to take the lock, as a thread that does not wait would make. Returns what it got.
+NOINLINE
+bool SatoriLock::GiveUpWaiting(bool registered, bool heldWake)
+{
+    if (registered)
+    {
+        uint32_t newState;
+        int collisions = 0;
+        while (true)
+        {
+            uint32_t oldState = _state;
+            _ASSERTE((oldState & ~(WaiterWoken | YieldToWaiters | Locked)) >= WaiterCountIncrement);
+            newState = oldState - WaiterCountIncrement;
+            if (heldWake)
+            {
+                newState &= ~WaiterWoken;
+            }
+
+            if (Interlocked::CompareExchange(&_state, newState, oldState) == oldState)
+            {
+                break;
+            }
+
+            CollisionBackoff(++collisions);
+        }
+
+        if (heldWake && (newState & Locked) == 0 && (newState & ~(WaiterWoken | YieldToWaiters | Locked)) >= WaiterCountIncrement)
+        {
+            AwakeWaiterIfNeeded();
+        }
+    }
+
+#if _DEBUG
+    if (SatoriTestHooks::t_lockGiveUpAfterWake)
+    {
+        // TEST-HOOK: no attempt to take the lock, so that the waiters that are left are the only ones that can take it
+        return false;
+    }
+#endif
+
+    return TryEnterOneShot();
 }
 
 NOINLINE

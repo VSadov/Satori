@@ -160,6 +160,15 @@ public:
             EnterSlow(/*noBlock*/true);
     }
 
+    // Enters, or gives up after about `timeoutMs`. A waiter blocks on a timed wait of the gate, which on Windows ends on a tick
+    // of the system timer (15.6 ms by default), not exactly at the timeout. See EnterSlow for what a waiter that gives up does.
+    FORCEINLINE
+    bool TryEnterFor(int timeoutMs)
+    {
+        return TryEnterOneShot() ||
+            EnterSlow(/*noBlock*/false, SatoriUtil::GetTimeStamp() + (int64_t)timeoutMs * SatoriUtil::GetTimeStampFrequency() / 1000);
+    }
+
     FORCEINLINE
     void Enter()
     {
@@ -174,6 +183,14 @@ public:
     {
         return (_state & Locked) != 0;
     }
+
+#if _DEBUG
+    // TEST-HOOK: the state word, see the layout above.
+    uint32_t TestState()
+    {
+        return _state;
+    }
+#endif
 
     FORCEINLINE
     void Leave()
@@ -252,7 +269,10 @@ private:
     }
 
     NOINLINE
-    bool EnterSlow(bool noBlock = false);
+    bool EnterSlow(bool noBlock = false, int64_t deadline = 0);
+
+    NOINLINE
+    bool GiveUpWaiting(bool registered, bool heldWake);
 
     NOINLINE
     void AwakeWaiterIfNeeded();
