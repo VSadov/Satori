@@ -42,31 +42,11 @@ public:
     SatoriRegionQueue(QueueKind kind) :
         SatoriQueue<SatoriRegion>(kind) {}
 
-    SatoriRegion* TryPopWithSize(size_t regionSize, SatoriRegion* &putBack);
-    SatoriRegion* TryRemoveWithSize(
-        size_t regionSize,
-        SatoriRegion*& putBack,
-        size_t maxRegions = 64,
-        bool preferCommitted = false,
-        size_t maxRegionSize = SIZE_MAX,
-        bool requireCommitted = false,
-        size_t* outBestCandidateSize = nullptr,
-        bool* outBestCandidateNeedsCommit = nullptr);
     SatoriRegion* TryDequeueIfHasFreeSpaceInTopBucket();
     // Takes the first of the first maxScan regions that can serve an allocation of minFree bytes, if any.
     SatoriRegion* TryPopFitting(size_t minFree, size_t maxScan);
 
-    // The distance from the beginning of its page to the region that is the closest to it, among the first
-    // maxRegions regions that are at least regionSize big. SIZE_MAX if there are none.
-    size_t LowestOffset(size_t regionSize, size_t maxRegions = 64);
-    // Takes such region, unless it is further from the beginning of its page than maxOffset.
-    // (the queue could have changed since LowestOffset)
-    SatoriRegion* TryRemoveLowest(size_t regionSize, size_t maxOffset, size_t maxRegions = 64);
-
     static SatoriRegionQueue* AllocAligned(QueueKind kind);
-
-private:
-    SatoriRegion* FindLowest(size_t regionSize, size_t maxRegions, size_t& lowestOffset);
 };
 
 // A region queue partitioned into N (power of 2) SatoriRegionQueue shards to reduce contention.
@@ -257,119 +237,6 @@ public:
         }
     }
 
-    SatoriRegion* TryPopWithSize(size_t regionSize, SatoriRegion*& putBack)
-    {
-        _ASSERTE(putBack == nullptr);
-        return TryOnShards(
-            [&](SatoriRegionQueue* shard)
-            {
-                return shard->TryPopWithSize(regionSize, putBack);
-            }
-        );
-    }
-
-    SatoriRegion* TryRemoveWithSize(
-        size_t regionSize,
-        SatoriRegion*& putBack,
-        size_t maxRegions = 64,
-        bool preferCommitted = false,
-        bool requireCommitted = false)
-    {
-        _ASSERTE(putBack == nullptr);
-        size_t shardCount = ShardCount();
-        if (shardCount == 1)
-        {
-            return Shard(0)->TryRemoveWithSize(
-                regionSize,
-                putBack,
-                maxRegions,
-                preferCommitted,
-                /* maxRegionSize */ SIZE_MAX,
-                requireCommitted);
-        }
-
-        SatoriRegionQueue* bestShard = nullptr;
-        size_t bestSize = SIZE_MAX;
-        bool bestNeedsCommit = true;
-
-        SatoriRegion* result = TryOnShards(
-            [&](SatoriRegionQueue* shard) -> SatoriRegion*
-            {
-                size_t shardBestSize = SIZE_MAX;
-                bool shardBestNeedsCommit = true;
-                SatoriRegion* exact = shard->TryRemoveWithSize(
-                    regionSize,
-                    putBack,
-                    maxRegions,
-                    preferCommitted,
-                    /* maxRegionSize */ regionSize,
-                    requireCommitted,
-                    &shardBestSize,
-                    &shardBestNeedsCommit);
-                if (exact != nullptr)
-                {
-                    return exact;
-                }
-
-                if (shardBestSize < SIZE_MAX)
-                {
-                    if ((bestNeedsCommit && !shardBestNeedsCommit) ||
-                        (bestNeedsCommit == shardBestNeedsCommit && shardBestSize < bestSize))
-                    {
-                        bestShard = shard;
-                        bestSize = shardBestSize;
-                        bestNeedsCommit = shardBestNeedsCommit;
-                    }
-                }
-
-                return nullptr;
-            }
-        );
-        if (result != nullptr || bestShard == nullptr)
-        {
-            return result;
-        }
-
-        result = bestShard->TryRemoveWithSize(
-            regionSize,
-            putBack,
-            maxRegions,
-            preferCommitted,
-            /* maxRegionSize */ bestSize,
-            /* requireCommitted */ requireCommitted || (preferCommitted && !bestNeedsCommit));
-        if (result != nullptr)
-        {
-            return result;
-        }
-
-        if (!requireCommitted)
-        {
-            result = TryRemoveWithSize(
-                regionSize,
-                putBack,
-                maxRegions,
-                /* preferCommitted */ true,
-                /* requireCommitted */ true);
-            if (result != nullptr)
-            {
-                return result;
-            }
-        }
-
-        return TryOnShards(
-            [&](SatoriRegionQueue* shard)
-            {
-                return shard->TryRemoveWithSize(
-                    regionSize,
-                    putBack,
-                    maxRegions,
-                    preferCommitted,
-                    /* maxRegionSize */ SIZE_MAX,
-                    requireCommitted);
-            }
-        );
-    }
-
     SatoriRegion* TryDequeueIfHasFreeSpaceInTopBucket()
     {
         return TryOnShards(
@@ -378,37 +245,6 @@ public:
                 return shard->TryDequeueIfHasFreeSpaceInTopBucket();
             }
         );
-    }
-
-    // The distance from the beginning of its page to the region that is the closest to it, among the first
-    // maxRegions regions of each shard that are at least regionSize big. SIZE_MAX if there are none.
-    // The shard that has the region is returned in `shard`, for TryRemoveLowest.
-    size_t LowestOffset(size_t regionSize, size_t& shard, size_t maxRegions = 64)
-    {
-        size_t lowestOffset = SIZE_MAX;
-        size_t shardCount = ShardCount();
-        for (size_t i = 0; i < shardCount; i++)
-        {
-            size_t offset = Shard(i)->LowestOffset(regionSize, maxRegions);
-            if (offset < lowestOffset)
-            {
-                lowestOffset = offset;
-                shard = i;
-                if (offset <= Satori::MIN_REGION_OFFSET)
-                {
-                    // nothing can be closer.
-                    break;
-                }
-            }
-        }
-
-        return lowestOffset;
-    }
-
-    // Takes the region that LowestOffset has found, unless it is gone and the closest one is further than maxOffset.
-    SatoriRegion* TryRemoveLowest(size_t shard, size_t regionSize, size_t maxOffset, size_t maxRegions = 64)
-    {
-        return Shard(shard)->TryRemoveLowest(regionSize, maxOffset, maxRegions);
     }
 
     SatoriRegion* TryPopFitting(size_t minFree, size_t maxScan)

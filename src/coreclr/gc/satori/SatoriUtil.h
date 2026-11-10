@@ -152,9 +152,6 @@ namespace Satori
     static const int BYTES_PER_CARD_GROUP = REGION_SIZE_GRANULARITY / 2;
     static const int CARD_BYTES_IN_CARD_GROUP = Satori::BYTES_PER_CARD_GROUP / BYTES_PER_CARD_BYTE;
 
-    // the first region of a page follows the card table, so no region is closer than this to the beginning of its page.
-    static const size_t MIN_REGION_OFFSET = PAGE_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;
-
     // The cards of a granule are a slice of the card table of its page: 4 KB, at the granule's index times this from the start of the page.
     // The slices of the granules of the card table itself hold the page's header, the metadata, and are always committed.
     static const size_t CARD_SLICE_SIZE = REGION_SIZE_GRANULARITY / BYTES_PER_CARD_BYTE;

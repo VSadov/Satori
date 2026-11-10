@@ -268,8 +268,7 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize, bool low, SatoriRegion*& re
                 // The page is made for this region, claim it before others can see the page and take a granule of it.
                 // That also means that a failure to format the region can still release the entire reservation.
                 size_t granules = minSize >> Satori::REGION_BITS;
-                size_t rollbacks = 0;
-                size_t first = newPage->TryClaimRun(granules, low, rollbacks);
+                size_t first = newPage->TryClaimRun(granules, low);
                 _ASSERTE(first != SIZE_MAX);
                 if (first == SIZE_MAX || (region = newPage->FormatClaimed(first, granules)) == nullptr)
                 {

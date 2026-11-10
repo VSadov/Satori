@@ -36,12 +36,6 @@
 #include "SatoriPage.h"
 #include "SatoriWorkChunk.h"
 
-inline bool SatoriRegion::CanSplitWithoutCommit(size_t size)
-{
-    size_t minCommitted = ALIGN_UP(m_end - size + offsetof(SatoriRegion, m_syncBlock) + SatoriUtil::MinZeroInitSize(), SatoriUtil::CommitGranularity());
-    return m_committed >= min(minCommitted, m_end);
-}
-
 inline bool SatoriRegion::IsEscapeTracking()
 {
     _ASSERTE(!m_ownerThreadTag || m_generation == 0);

@@ -311,13 +311,12 @@ SatoriRegion* SatoriAllocator::TryClaimWarmRegion(size_t granules, bool low)
     {
         SatoriPage* claimedPage = nullptr;
         size_t first = SIZE_MAX;
-        size_t rollbacks = 0;
 
         m_runClaimLock.Enter();
         m_heap->ForEachPageFrom(0,
             [&](SatoriPage* page)
             {
-                while ((first = page->TryClaimRun(granules, /* fromTop */ low, rollbacks, /* warmOnly */ true)) != SIZE_MAX)
+                while ((first = page->TryClaimRun(granules, /* fromTop */ low, /* warmOnly */ true)) != SIZE_MAX)
                 {
                     if (page->IsCommittedInFull(first, granules))
                     {
@@ -340,13 +339,12 @@ SatoriRegion* SatoriAllocator::TryClaimWarmRegion(size_t granules, bool low)
     }
     else
     {
-        size_t retries = 0;
         size_t startHint = low ? 0 : ProcessorHint();
         m_heap->ForEachPageFrom(startHint,
             [&](SatoriPage* page)
             {
                 size_t granule;
-                while ((granule = page->TryClaimGranule(/* warmOnly */ true, /* fromTop */ low, retries)) != SIZE_MAX)
+                while ((granule = page->TryClaimGranule(/* warmOnly */ true, /* fromTop */ low)) != SIZE_MAX)
                 {
                     if (page->IsCommittedInFull(granule, 1))
                     {
@@ -370,8 +368,6 @@ SatoriRegion* SatoriAllocator::TryClaimWarmRegion(size_t granules, bool low)
 SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& outOfMemory)
 {
     SatoriRegion* result = nullptr;
-    size_t retries = 0;
-    size_t rollbacks = 0;
 
     if (granules > 1)
     {
@@ -383,7 +379,7 @@ SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& o
         m_heap->ForEachPageFrom(0,
             [&](SatoriPage* page)
             {
-                first = page->TryClaimRun(granules, /* fromTop */ low, rollbacks);
+                first = page->TryClaimRun(granules, /* fromTop */ low);
                 if (first == SIZE_MAX)
                 {
                     return false;
@@ -414,7 +410,7 @@ SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& o
             m_heap->ForEachPageFrom(startHint,
                 [&](SatoriPage* page)
                 {
-                    size_t granule = page->TryClaimGranule(warmOnly, /* fromTop */ low, retries);
+                    size_t granule = page->TryClaimGranule(warmOnly, /* fromTop */ low);
                     if (granule == SIZE_MAX)
                     {
                         return false;
@@ -442,19 +438,17 @@ SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& o
 // The same as TryClaimRegion, but for one page.
 SatoriRegion* SatoriAllocator::TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, bool& outOfMemory)
 {
-    size_t retries = 0;
-    size_t rollbacks = 0;
 
     size_t first;
     if (granules > 1)
     {
         m_runClaimLock.Enter();
-        first = page->TryClaimRun(granules, /* fromTop */ low, rollbacks);
+        first = page->TryClaimRun(granules, /* fromTop */ low);
         m_runClaimLock.Leave();
     }
     else
     {
-        first = page->TryClaimGranule(/* warmOnly */ false, /* fromTop */ low, retries);
+        first = page->TryClaimGranule(/* warmOnly */ false, /* fromTop */ low);
     }
 
     SatoriRegion* result = nullptr;

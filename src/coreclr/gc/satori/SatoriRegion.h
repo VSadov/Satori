@@ -62,12 +62,8 @@ public:
     bool RearmCardsForStillTenured();
     void ResetCardsForEphemeral();
 
-    SatoriRegion* TrySplit(size_t regionSize);
-    bool CanDecommit();
     bool TryDecommit();
     void TryCommit();
-    bool CanCoalesceWithNext();
-    bool TryCoalesceWithNext(bool drainsAreDone);
 
     void ZeroInitAndLink(SatoriRegion* prev);
 
@@ -452,9 +448,6 @@ private:
     size_t ComputeTlgcWindow();
     size_t ComputeTlgcAllocEnd(size_t minAllocSize, size_t allocBytes);
     size_t ParseableBitmapLimit();
-    bool CanSplitWithoutCommit(size_t size);
-    void SplitCore(size_t regionSize, size_t& newStart, size_t& newCommitted, size_t& newZeroInitedAfter);
-    void UndoSplitCore(size_t regionSize, size_t nextStart, size_t nextCommitted, size_t nextUsed);
 
     // The conservative mode, see InitializeAt.
     static NOINLINE void ClearHeaderKeepingGeneration(SatoriRegion* region, size_t address, size_t zeroUpTo);
@@ -515,7 +508,6 @@ private:
     bool IsEscapedOrPinned(SatoriObject* o);
 
     bool ValidateIndexEmpty();
-    bool Coalesce(SatoriRegion* next);
 
     template <bool updatePointers, bool individuallyPromoted, bool isEscapeTracking>
     bool Sweep();

@@ -71,15 +71,15 @@ public:
     // until it frees the granule, or gives it back.
     //
     // Claims the free granule that has the lowest (or the highest) address. When asked, only among the warm ones.
-    // Returns SIZE_MAX if there is none. `retries` counts the attempts to take a bit that were lost to other threads.
-    size_t TryClaimGranule(bool warmOnly, bool fromTop, size_t& retries);
+    // Returns SIZE_MAX if there is none.
+    size_t TryClaimGranule(bool warmOnly, bool fromTop);
     // Claims the granule if it is free.
     bool TryClaimGranuleAt(size_t granule);
     // Claims a run of free granules, the lowest (or the highest) one that fits. Returns its first granule or SIZE_MAX.
     // The threads that claim runs must not run this on the same page at the same time, but other threads
-    // may claim single granules meanwhile. If one takes a granule from the run, the claim is rolled back and tried again,
-    // and counted in `rollbacks`. When asked, only among the runs of warm granules.
-    size_t TryClaimRun(size_t count, bool fromTop, size_t& rollbacks, bool warmOnly = false);
+    // may claim single granules meanwhile. If one takes a granule from the run, the claim is rolled back and tried again.
+    // When asked, only among the runs of warm granules.
+    size_t TryClaimRun(size_t count, bool fromTop, bool warmOnly = false);
     // The granules are claimed and all of them are committed in full. The commit of a claimed granule does not change.
     // A granule that was warm when it was looked at may not be after it is claimed: the trimmer can claim it, decommit it
     // and publish it as free between the look and the claim.

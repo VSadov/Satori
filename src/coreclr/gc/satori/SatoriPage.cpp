@@ -314,8 +314,8 @@ void SatoriPage::PublishFreeGranules(size_t first, size_t count)
 }
 
 // Claims the granule that has the lowest (or the highest) address of the free ones. When asked, only among the warm ones.
-// Returns SIZE_MAX if there is none. Every failed attempt to take a bit is counted as a retry.
-size_t SatoriPage::TryClaimGranule(bool warmOnly, bool fromTop, size_t& retries)
+// Returns SIZE_MAX if there is none.
+size_t SatoriPage::TryClaimGranule(bool warmOnly, bool fromTop)
 {
     size_t wordCount = GranuleCount() / 64;
     for (size_t i = 0; i < wordCount; i++)
@@ -348,7 +348,6 @@ size_t SatoriPage::TryClaimGranule(bool warmOnly, bool fromTop, size_t& retries)
 
             // the word has changed. Whether our bit is still there is decided by the next round.
             freeBits = seen;
-            retries++;
         }
     }
 
@@ -505,7 +504,7 @@ bool SatoriPage::TryClearRun(size_t first, size_t count)
     return true;
 }
 
-size_t SatoriPage::TryClaimRun(size_t count, bool fromTop, size_t& rollbacks, bool warmOnly)
+size_t SatoriPage::TryClaimRun(size_t count, bool fromTop, bool warmOnly)
 {
     // Every failed attempt means that somebody claimed a granule of the run that we found. That is rare,
     // and it is not worth looking for long on this page if it keeps happening.
@@ -516,8 +515,6 @@ size_t SatoriPage::TryClaimRun(size_t count, bool fromTop, size_t& rollbacks, bo
         {
             return first;
         }
-
-        rollbacks++;
     }
 
     return SIZE_MAX;
