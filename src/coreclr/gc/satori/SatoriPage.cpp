@@ -1111,9 +1111,10 @@ static bool ForEachCommitGap(SatoriPage* page, size_t first, size_t count, size_
 // Formats claimed granules as a region.
 // The granules are ours, so what the last owners left in the watermarks is stable.
 // If that can't be done, gives the granules back as they were and returns nullptr.
-SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count)
+SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count, size_t commitSize)
 {
     _ASSERTE(count > 0);
+    _ASSERTE(commitSize <= (count << Satori::REGION_BITS) && commitSize % Satori::WATERMARK_UNIT == 0);
     size_t start = GranuleStart(first);
 
     // The cards first: they must be there before the region's memory is, and before the region is published.
@@ -1165,8 +1166,11 @@ SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count)
     }
 #endif
 
+    // What the caller asked for: the memory of a huge object, or of the array of the finalization queue. It is committed below
+    // with the gaps, before the region is published, so a commit that fails gives the granules back before anything can see the region.
+    committed = max(committed, start + commitSize);
+
     // Fill the gaps in the commit, the object that needed the run would commit them anyway.
-    // This is not a thing that a single granule needs.
     size_t failedAt = SIZE_MAX;
     bool committedGaps = ForEachCommitGap(this, first, count, committed, m_commitWatermarks,
         [&](size_t gapStart, size_t gapEnd)

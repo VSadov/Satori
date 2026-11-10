@@ -54,8 +54,11 @@ public:
     void Initialize(SatoriHeap* heap);
     Object* Alloc(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
-    SatoriRegion* GetRegion(size_t minSize);
-    SatoriRegion* GetRegionLow(size_t minSize);
+    // A region with at least commitSize bytes from its start committed, (a whole number of watermark units) for the memory that
+    // its first use needs. The claim commits that before it publishes the region, and a failed commit gives the claim back,
+    // so a region that a caller gets cannot fail its first use for want of memory and never has to be returned unused.
+    SatoriRegion* GetRegion(size_t minSize, size_t commitSize = 0);
+    SatoriRegion* GetRegionLow(size_t minSize, size_t commitSize = 0);
     void ReturnRegion(SatoriRegion* region);
     // For a region that could not be used because a commit failed, at a time when a thread may scan a stack. (see ParkRegion)
     void ReturnUnusedRegion(SatoriRegion* region);
@@ -198,13 +201,14 @@ private:
     SatoriObject* AllocImmortal(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     void TryGetRegularRegion(SatoriRegion*& region, size_t size);
-    SatoriRegion* GetRegionCore(size_t regionSize, bool low);
+    SatoriRegion* GetRegionCore(size_t regionSize, bool low, size_t commitSize);
     void LeavePageAdd(bool locked, bool escaped);
-    SatoriRegion* TryClaimRegion(size_t granules, bool low, bool& outOfMemory);
-    SatoriRegion* TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, bool& outOfMemory);
-    SatoriRegion* TryClaimWarmRegion(size_t granules, bool low);
+    SatoriRegion* TryClaimRegion(size_t granules, bool low, size_t commitSize, bool& outOfMemory);
+    SatoriRegion* TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, size_t commitSize, bool& outOfMemory);
+    SatoriRegion* TryClaimWarmRegion(size_t granules, bool low, size_t commitSize);
     SatoriRegion* TryGetCachedRegion();
     bool TryCacheRegion(SatoriRegion* region, bool recentlyUsed);
+    void CacheRegion(SatoriRegion* region, bool recentlyUsed);
     void FreeToBitmap(SatoriRegion* region);
     void ParkRegion(SatoriRegion* region);
     bool AddMoreWorkChunks();

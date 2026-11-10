@@ -127,23 +127,24 @@ void SatoriAllocator::Initialize(SatoriHeap* heap)
     m_lastPreciseAllocatedBytes = 0;
 }
 
-SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize)
+SatoriRegion* SatoriAllocator::GetRegion(size_t regionSize, size_t commitSize)
 {
-    return GetRegionCore(regionSize, /* low */ false);
+    return GetRegionCore(regionSize, /* low */ false, commitSize);
 }
 
 // Same as GetRegion, but for the regions that are long-lived and rarely freed, like the ones for immortal allocations,
 // work chunks or the finalization queue. Such regions are placed at the opposite end of a page from the regular ones,
 // at the highest free granules, so that they do not fragment the space that the regular regions fill.
-SatoriRegion* SatoriAllocator::GetRegionLow(size_t regionSize)
+SatoriRegion* SatoriAllocator::GetRegionLow(size_t regionSize, size_t commitSize)
 {
-    return GetRegionCore(regionSize, /* low */ true);
+    return GetRegionCore(regionSize, /* low */ true, commitSize);
 }
 
 // Gets a region of the given size from the free granules of the pages, and adds a page if there are none.
 // A regular request first takes a region from the cache, and then claims the lowest free granules,
 // the ones that are committed in full first. A request for a long-lived region takes the highest ones.
-SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize, bool low)
+// A request that needs memory committed (commitSize) does not take a region from the cache, which has whatever its last owner committed.
+SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize, bool low, size_t commitSize)
 {
     _ASSERTE(regionSize % Satori::REGION_SIZE_GRANULARITY == 0);
     size_t granules = regionSize >> Satori::REGION_BITS;
@@ -154,7 +155,7 @@ SatoriRegion* SatoriAllocator::GetRegionCore(size_t regionSize, bool low)
 tryAgain:
     // The regular page adds that complete after this are not seen by the search for regions below. (see the add of a page)
     int32_t pageAddsCompleted = VolatileLoad(&m_pageAddsCompleted);
-    if (granules == 1 && !low)
+    if (granules == 1 && !low && commitSize == 0)
     {
         region = m_regionCache->TryPop();
         if (region)
@@ -165,7 +166,7 @@ tryAgain:
     }
 
     outOfMemory = false;
-    region = TryClaimRegion(granules, low, outOfMemory);
+    region = TryClaimRegion(granules, low, commitSize, outOfMemory);
     if (region)
     {
         return region;
@@ -221,7 +222,7 @@ tryAgain:
             if (page)
             {
                 // The page is ours. Claim from it right away, before the others take what we need.
-                region = TryClaimRegionInPage(page, granules, low, outOfMemory);
+                region = TryClaimRegionInPage(page, granules, low, commitSize, outOfMemory);
 
                 // The free granules of the page can be claimed, and we have ours. The waiters look for theirs when they see the change.
                 // An add without the lock counts as well: the count is interlocked, and it changes before the escapee's mark is cleared.
@@ -252,7 +253,7 @@ tryAgain:
     else
     {
         // A region of half a page or more may need a larger page. It is claimed in the page before the page is published.
-        SatoriPage* page = m_heap->AddLargePage(regionSize, low, region);
+        SatoriPage* page = m_heap->AddLargePage(regionSize, low, region, commitSize);
         if (page)
         {
             _ASSERTE(region);
@@ -262,8 +263,9 @@ tryAgain:
 
     // Most likely out of memory, and the page-add lock is not held here. A request for one granule can still get a region
     // from the cache: it is formatted, and needs no commit. A long-lived region has not tried the cache before, and the regular one only did at the start.
+    // Not a request that needs memory committed.
 failed:
-    if (granules == 1)
+    if (granules == 1 && commitSize == 0)
     {
         region = TryGetCachedRegion();
         if (region)
@@ -304,7 +306,8 @@ SatoriRegion* SatoriAllocator::TryGetCachedRegion()
 // needs no commit. Looks for one in the order of the claims. The candidate that failed went back to its page as it was and is not warm.
 // A granule or a run that is not committed in full after its claim goes back, and the search goes on: the trimmer can decommit a granule between
 // the look at its warm bit and the claim, and then the trimmer has cleared the bit, so the granule is not found again.
-SatoriRegion* SatoriAllocator::TryClaimWarmRegion(size_t granules, bool low)
+// What is committed in full has what any commitSize asks for.
+SatoriRegion* SatoriAllocator::TryClaimWarmRegion(size_t granules, bool low, size_t commitSize)
 {
     SatoriRegion* result = nullptr;
     if (granules > 1)
@@ -334,7 +337,7 @@ SatoriRegion* SatoriAllocator::TryClaimWarmRegion(size_t granules, bool low)
 
         if (claimedPage)
         {
-            result = claimedPage->FormatClaimed(first, granules);
+            result = claimedPage->FormatClaimed(first, granules, commitSize);
         }
     }
     else
@@ -348,7 +351,7 @@ SatoriRegion* SatoriAllocator::TryClaimWarmRegion(size_t granules, bool low)
                 {
                     if (page->IsCommittedInFull(granule, 1))
                     {
-                        result = page->FormatClaimed(granule, 1);
+                        result = page->FormatClaimed(granule, 1, commitSize);
                         return result != nullptr;
                     }
 
@@ -365,7 +368,7 @@ SatoriRegion* SatoriAllocator::TryClaimWarmRegion(size_t granules, bool low)
 
 // Claims free granules for a region of the given number of granules, in the pages that we have.
 // Returns nullptr if there is nothing free, or if what we claimed cannot be committed. (outOfMemory)
-SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& outOfMemory)
+SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, size_t commitSize, bool& outOfMemory)
 {
     SatoriRegion* result = nullptr;
 
@@ -393,7 +396,7 @@ SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& o
 
         if (claimedPage)
         {
-            result = claimedPage->FormatClaimed(first, granules);
+            result = claimedPage->FormatClaimed(first, granules, commitSize);
             outOfMemory = (result == nullptr);
         }
     }
@@ -416,7 +419,7 @@ SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& o
                         return false;
                     }
 
-                    result = page->FormatClaimed(granule, 1);
+                    result = page->FormatClaimed(granule, 1, commitSize);
                     outOfMemory = (result == nullptr);
                     return true;
                 }
@@ -428,7 +431,7 @@ SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& o
     {
         // What was claimed first could not be committed, and a claim that fails to format ends the search above.
         // A region that is committed in full needs no commit, and there may be one.
-        result = TryClaimWarmRegion(granules, low);
+        result = TryClaimWarmRegion(granules, low, commitSize);
         outOfMemory = (result == nullptr);
     }
 
@@ -436,7 +439,7 @@ SatoriRegion* SatoriAllocator::TryClaimRegion(size_t granules, bool low, bool& o
 }
 
 // The same as TryClaimRegion, but for one page.
-SatoriRegion* SatoriAllocator::TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, bool& outOfMemory)
+SatoriRegion* SatoriAllocator::TryClaimRegionInPage(SatoriPage* page, size_t granules, bool low, size_t commitSize, bool& outOfMemory)
 {
 
     size_t first;
@@ -454,7 +457,7 @@ SatoriRegion* SatoriAllocator::TryClaimRegionInPage(SatoriPage* page, size_t gra
     SatoriRegion* result = nullptr;
     if (first != SIZE_MAX)
     {
-        result = page->FormatClaimed(first, granules);
+        result = page->FormatClaimed(first, granules, commitSize);
         outOfMemory = (result == nullptr);
     }
 
@@ -486,6 +489,18 @@ bool SatoriAllocator::TryCacheRegion(SatoriRegion* region, bool recentlyUsed)
         return false;
     }
 
+    CacheRegion(region, recentlyUsed);
+    return true;
+}
+
+// Puts a 2 MB region in the cache, full or not. A cached region is used again as it is, without a claim or a format,
+// so nothing changes its granules, its region map bytes or its committed header while it is there.
+void SatoriAllocator::CacheRegion(SatoriRegion* region, bool recentlyUsed)
+{
+    _ASSERTE(region->Size() == Satori::REGION_SIZE_GRANULARITY);
+    _ASSERTE(region->IsAttachedToAllocatingOwner() == false);
+    _ASSERTE(region->Generation() == -1);
+
     // The count is ahead of the queue, so a pop never takes the count below 0.
     Interlocked::Increment(&m_regionCacheCount);
     if (recentlyUsed)
@@ -496,8 +511,6 @@ bool SatoriAllocator::TryCacheRegion(SatoriRegion* region, bool recentlyUsed)
     {
         m_regionCache->Enqueue(region);
     }
-
-    return true;
 }
 
 // Frees the region into the free granules of its page.
@@ -1424,7 +1437,7 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
 //    A region that was freed and is in use again by somebody else is a region, whatever it is used for, and its queue is what it is.
 //    The removal checks the queue under its lock.
 //  - The granule of a freed region can also be claimed as a part of a run, for a bigger region (a huge object, the finalization queue).
-//    The old header is then the body of that region, and it can hold anything. It stays committed (SatoriRegion::TryDecommit looks at the
+//    The old header is then the body of that region, and it can hold anything. It stays committed (SatoriRegion::TryDecommitAbove looks at the
 //    registrations, as the trimmer does), and the queue that we read from it is used only if it is one of the reusable queues.
 // The free granule after the region, which the caller claims, has no header. It is a bit operation, and reads no memory of the granule.
 // Other readers get to headers through the region map too (conservative marking, interior pointers, the card groups).
@@ -1492,7 +1505,7 @@ void SatoriAllocator::TryGetRegularRegion(SatoriRegion*& region, size_t size)
             size_t granule = (nextStart - page->Start()) >> Satori::REGION_BITS;
             if (page->TryClaimGranuleAt(granule))
             {
-                region = page->FormatClaimed(granule, 1);
+                region = page->FormatClaimed(granule, 1, /* commitSize */ 0);
                 if (region)
                 {
                     _ASSERTE(region->NothingMarked());
@@ -1727,9 +1740,29 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
 
     size_t regionSize = SatoriRegion::RegionSizeForAlloc(size);
     _ASSERTE(regionSize > Satori::REGION_SIZE_GRANULARITY);
-    SatoriRegion* hugeRegion = GetRegion(regionSize);
+
+    // Nothing may fail once the region is published: in the conservative mode it could not be freed then, since this can run
+    // while a thread scans a stack. (see SatoriPage::FreeRegion) So the work chunk that tracks a finalizable object is taken first,
+    // and the claim commits the memory for the object before it publishes the region. (see SatoriPage::FormatClaimed)
+    SatoriWorkChunk* tracker = nullptr;
+    if (flags & GC_ALLOC_FINALIZE)
+    {
+        tracker = GetWorkChunk();
+        if (!tracker)
+        {
+            // OOM
+            return nullptr;
+        }
+    }
+
+    SatoriRegion* hugeRegion = GetRegion(regionSize, SatoriRegion::HugeCommitSize(regionSize, size));
     if (!hugeRegion)
     {
+        if (tracker)
+        {
+            ReturnWorkChunk(tracker);
+        }
+
         //OOM
         return nullptr;
     }
@@ -1737,12 +1770,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     _ASSERTE(hugeRegion->NothingMarked());
     bool zeroInitialize = !(flags & GC_ALLOC_ZEROING_OPTIONAL);
     SatoriObject* result = (SatoriObject*)hugeRegion->AllocateHuge(size, zeroInitialize);
-    if (!result)
-    {
-        ReturnUnusedRegion(hugeRegion);
-        // OOM
-        return nullptr;
-    }
+    _ASSERTE(result);
 
     result->CleanSyncBlockAndSetUnfinished();
     hugeRegion->SetIndicesForObject(result, hugeRegion->Start() + Satori::REGION_SIZE_GRANULARITY);
@@ -1755,13 +1783,7 @@ SatoriObject* SatoriAllocator::AllocHuge(SatoriAllocationContext* context, size_
     if (flags & GC_ALLOC_FINALIZE)
     {
         hugeRegion->SetHasFinalizables();
-        if (!hugeRegion->RegisterForFinalization(result))
-        {
-            result->CleanSyncBlock();
-            hugeRegion->MakeBlank();
-            ReturnUnusedRegion(hugeRegion);
-            return nullptr;
-        }
+        hugeRegion->RegisterForFinalization(result, tracker);
     }
 
     OnLargeOrPinnedAllocated(context, flags, result, size);
@@ -2116,8 +2138,9 @@ bool SatoriAllocator::AddMoreWorkChunks()
 
     if (totalLength == 0)
     {
-        // could not commit anything.
-        ReturnUnusedRegion(region);
+        // Could not commit anything. This can run while a thread scans a stack, so in the conservative mode the region could not be freed.
+        // It is formatted and blank, and goes to the cache, even if the cache is full. (see CacheRegion)
+        CacheRegion(region, /* recentlyUsed */ false);
         return false;
     }
 

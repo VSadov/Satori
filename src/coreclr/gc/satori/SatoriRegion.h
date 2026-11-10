@@ -62,12 +62,19 @@ public:
     bool RearmCardsForStillTenured();
     void ResetCardsForEphemeral();
 
-    bool TryDecommit();
+    bool TryDecommitAbove(size_t address);
     void TryCommit();
 
     void ZeroInitAndLink(SatoriRegion* prev);
 
     static size_t RegionSizeForAlloc(size_t allocSize);
+    // Where AllocateHuge places a huge object of the given size in a blank region of the given size, from the start of the region.
+    static size_t HugeObjectOffset(size_t regionSize, size_t size);
+    // How much of a region of the given size, from its start, a huge object of the given size needs committed.
+    // The claim of the region commits that much, so that AllocateHuge has nothing to commit. (see SatoriAllocator::AllocHuge)
+    static size_t HugeCommitSize(size_t regionSize, size_t size);
+    // How much of a blank region, from its start, its first allocation of the given size needs committed. (see AllocateDirty)
+    static size_t CommitSizeForAlloc(size_t allocSize);
 
     size_t GetAllocStart();
     size_t GetAllocRemaining();
@@ -237,6 +244,7 @@ public:
     void UnlockFinalizableTrackers();
 
     bool RegisterForFinalization(SatoriObject* finalizable);
+    void RegisterForFinalization(SatoriObject* finalizable, SatoriWorkChunk* tracker);
     bool HasFinalizables();
     bool& HasPendingFinalizables();
 

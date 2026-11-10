@@ -84,8 +84,9 @@ public:
     // A granule that was warm when it was looked at may not be after it is claimed: the trimmer can claim it, decommit it
     // and publish it as free between the look and the claim.
     bool IsCommittedInFull(size_t first, size_t count);
-    // Formats claimed granules as a region. If that is not possible, gives the granules back and returns nullptr.
-    SatoriRegion* FormatClaimed(size_t first, size_t count);
+    // Formats claimed granules as a region, with at least commitSize bytes from its start committed, (a whole number of watermark units)
+    // for the memory that its first use needs. If that is not possible, gives the granules back and returns nullptr.
+    SatoriRegion* FormatClaimed(size_t first, size_t count, size_t commitSize);
 
     // Gives back a page that was not published.
     void Release();
@@ -124,7 +125,7 @@ public:
     // The two sides are a store followed by a load each (the registration and then the map, the claim and then the registrations),
     // and each needs a full fence between the two, see EnterUnownedHeaderRead and TryTrimRun.
     // The granule of the freed region can also be claimed as a part of a run, for a bigger region. The memory of the old header is then
-    // the body of that region: it stays committed while a thread is registered (SatoriRegion::TryDecommit looks, as the trimmer does),
+    // the body of that region: it stays committed while a thread is registered (SatoriRegion::TryDecommitAbove looks, as the trimmer does),
     // but it can be written. So the reader uses what it read only after it checks it. (see TryTakeReusableNext)
     void EnterUnownedHeaderRead();
     void LeaveUnownedHeaderRead();

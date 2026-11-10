@@ -225,7 +225,7 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
 // also unlikely that we cross-use one if just comitted.
 // we scan ahead and claim, but do not move m_nextPageIndex
 // unless we claimed contiguously.
-SatoriPage* SatoriHeap::AddLargePage(size_t minSize, bool low, SatoriRegion*& region)
+SatoriPage* SatoriHeap::AddLargePage(size_t minSize, bool low, SatoriRegion*& region, size_t commitSize)
 {
     region = nullptr;
 
@@ -270,7 +270,7 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize, bool low, SatoriRegion*& re
                 size_t granules = minSize >> Satori::REGION_BITS;
                 size_t first = newPage->TryClaimRun(granules, low);
                 _ASSERTE(first != SIZE_MAX);
-                if (first == SIZE_MAX || (region = newPage->FormatClaimed(first, granules)) == nullptr)
+                if (first == SIZE_MAX || (region = newPage->FormatClaimed(first, granules, commitSize)) == nullptr)
                 {
                     newPage->Release();
                     return nullptr;
