@@ -108,6 +108,15 @@ public:
     // Whether `queue` is a queue of reusable regions. Compares addresses only, so it can be given any pointer. (see TryTakeReusableNext)
     bool IsReusableQueue(SatoriQueue<SatoriRegion>* queue);
 
+    // Whether a thread is in a scan of stacks that looks candidate pointers up in the region map. Checked builds only.
+    // No region may be freed into the free granules meanwhile. (see SatoriAllocator::ParkRegion)
+#if _DEBUG
+    bool IsConservativeScanInProgress()
+    {
+        return VolatileLoad(&m_conservativeScans) != 0;
+    }
+#endif
+
     void RecordOccupancy(int generation, size_t size);
     void RecordDemotedOccupancy(ptrdiff_t demotedOccupancy);
     void UpdateGenerationOccupancies();
@@ -243,6 +252,35 @@ private:
 
     volatile int m_ccStackMarkState;
     volatile int m_ccStackMarkingThreadsNum;
+
+#if _DEBUG
+    // The threads that scan stacks with a conservative marker now. (see IsConservativeScanInProgress)
+    volatile int32_t m_conservativeScans;
+#endif
+
+    // Counts a thread that scans stacks with a conservative marker while it is in scope, in Checked builds only.
+    class ConservativeScanScope
+    {
+    public:
+#if _DEBUG
+        ConservativeScanScope(SatoriRecycler* recycler) : m_recycler(recycler)
+        {
+            Interlocked::Increment(&recycler->m_conservativeScans);
+        }
+
+        ~ConservativeScanScope()
+        {
+            Interlocked::Decrement(&m_recycler->m_conservativeScans);
+        }
+
+    private:
+        SatoriRecycler* m_recycler;
+#else
+        ConservativeScanScope(SatoriRecycler*)
+        {
+        }
+#endif
+    };
 
     // threads filtering m_reusableRegions concurrently. prep waits for these to leave
     // before it may swap the queues.

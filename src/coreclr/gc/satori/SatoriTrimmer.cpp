@@ -156,7 +156,8 @@ void SatoriTrimmer::Loop()
         m_heap->Allocator()->DrainRegionCache();
         if (SatoriUtil::IsConservativeMode())
         {
-            // The drain of the cache parks in the conservative mode. Nothing else would free what is parked before the next GC.
+            // The regions that were returned while a thread may have scanned a stack are parked (see SatoriAllocator::ParkRegion).
+            // Nothing else would free them before the next GC.
             FreeParkedRegions();
         }
 
@@ -227,12 +228,6 @@ void SatoriTrimmer::TrimNow()
     WaitForStop();
 
     m_heap->Allocator()->DrainRegionCache();
-    if (SatoriUtil::IsConservativeMode())
-    {
-        // The GC's own drain of the parked regions has already run (see BlockingCollectImpl), and the drain of the cache above parks.
-        // The EE is stopped and the marking is done, as for the GC's drain.
-        m_heap->Allocator()->DrainParkedRegions();
-    }
 
     m_heap->ForEachPage(
         [&](SatoriPage* page)
@@ -290,8 +285,7 @@ int64_t SatoriTrimmer::MaybeRotateAges()
 // a conservative GC does not mark until the trimmer has acknowledged its stop (in StopAndWait), and only the end of the GC
 // lets the trimmer run again (SetOkToRun). The state may become STOP_SUGGESTED at any moment in between, that is fine.
 // The state is checked before every region, and a region is popped only after the check, so nothing is held across an acknowledgement:
-// the queue can be long (a deferred sweep after a large gen2 parks thousands of regions), and a blocking GC waits for the
-// acknowledgement with the EE suspended.
+// a blocking GC waits for the acknowledgement with the EE suspended.
 void SatoriTrimmer::FreeParkedRegions()
 {
     SatoriAllocator* allocator = m_heap->Allocator();

@@ -171,6 +171,9 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_ccStackMarkState = CC_MARK_STATE_NONE;
     m_ccStackMarkingThreadsNum = 0;
     m_reusableFilterThreadsNum = 0;
+#if _DEBUG
+    m_conservativeScans = 0;
+#endif
 
     m_isLowLatencyMode = SatoriUtil::IsLowLatencyMode();
 
@@ -1655,7 +1658,8 @@ void SatoriRecycler::BlockingCollectImpl()
     m_trimmer->WaitForStop();
 #endif
 
-    // The conservative mode parks the regions that are freed, see SatoriAllocator::FreeToBitmap. This is where they are freed.
+    // The conservative mode parks the regions that are returned while a thread may scan a stack, see SatoriAllocator::ParkRegion.
+    // This is where they are freed.
     // Marking is complete and the EE is stopped, so no marker can be looking at the header of a region that it found earlier,
     // and what is freed here can be claimed only after the EE restarts. Every blocking GC passes here.
     // This is before the verification and before the trim on request: the freed granules are free for both.
@@ -2108,7 +2112,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         // In the conservative mode the ref may be stale, and point into a region that is not in use: in the cache, parked,
         // holding work chunks or the finalization queue, or not given out yet. Such a region has generation -1 and nothing to mark.
         // The region that we have found stays what it is while we mark: regions are not split, and in the conservative mode
-        // a region that is freed is parked until the marking is done (see SatoriAllocator::ParkRegion).
+        // no region is freed into the free granules while a thread scans a stack (see SatoriAllocator::ParkRegion).
         // A region that is put to use gets its generation last, with a release (see SetGenerationRelease).
         if (isConservative && containingRegion->GenerationAcquire() < 0)
         {
@@ -2339,9 +2343,14 @@ void SatoriRecycler::MarkOwnStack(gc_alloc_context* aContext, MarkContext* markC
     sc._unused1 = markContext;
 
     if (SatoriUtil::IsConservativeMode())
+    {
+        ConservativeScanScope scan(this);
         GCToEEInterface::GcScanCurrentStackRoots(isBlockingPhase ? MarkFn<true> : MarkFnConcurrent<true>, &sc);
+    }
     else
+    {
         GCToEEInterface::GcScanCurrentStackRoots(isBlockingPhase ? MarkFn<false> : MarkFnConcurrent<false>, &sc);
+    }
 }
 
 void SatoriRecycler::MarkDemoted(SatoriRegion* curRegion, MarkContext* markContext)
@@ -2412,10 +2421,15 @@ void SatoriRecycler::MarkAllStacksFinalizationAndDemotedRoots()
     bool isBlockingPhase = IsBlockingPhase();
 
     if (SatoriUtil::IsConservativeMode())
+    {
+        ConservativeScanScope scan(this);
         //generations are meaningless here, so we pass -1
         GCToEEInterface::GcScanRoots(isBlockingPhase ? MarkFn<true> : MarkFnConcurrent<true>, -1, -1, &sc);
+    }
     else
+    {
         GCToEEInterface::GcScanRoots(isBlockingPhase ? MarkFn<false> : MarkFnConcurrent<false>, -1, -1, &sc);
+    }
 
     SatoriFinalizationQueue* fQueue = m_heap->FinalizationQueue();
     if (fQueue->TryUpdateScanTicket(this->GetRootScanTicket()) &&
@@ -4851,10 +4865,15 @@ void SatoriRecycler::UpdateRootsWorker()
         );
 
         if (SatoriUtil::IsConservativeMode())
+        {
+            ConservativeScanScope scan(this);
             //generations are meaningless here, so we pass -1
             GCToEEInterface::GcScanRoots(UpdateFn<true>, -1, -1, &sc);
+        }
         else
+        {
             GCToEEInterface::GcScanRoots(UpdateFn<false>, -1, -1, &sc);
+        }
 
         SatoriFinalizationQueue* fQueue = m_heap->FinalizationQueue();
         if (fQueue->TryUpdateScanTicket(this->GetRootScanTicket()) &&
@@ -5286,8 +5305,11 @@ bool SatoriRecycler::DrainDeferredSweepQueueConcurrent(int64_t deadline)
     // no work that we can claim, but we must wait for sweeping to finish and
     // in conservative mode we can't start marking while trimming may change regions,
     // let other threads do their things.
+    // The count is read with an acquire, as the state of the trimmer is (see SatoriTrimmer::IsActive): the sweep frees regions into
+    // the free granules, and a thread that sees it done may go on to scan stacks, which in the conservative mode looks up the region map.
+    // The thread must see every free that the sweep did, so that it cannot find a region that is gone. (see SatoriAllocator::ParkRegion)
     int cycles = 0;
-    while (m_deferredSweepCount ||
+    while (VolatileLoad(&m_deferredSweepCount) ||
         (SatoriUtil::IsConservativeMode() && m_trimmer->IsActive()))
     {
         // user threads should not wait, just say we have more work

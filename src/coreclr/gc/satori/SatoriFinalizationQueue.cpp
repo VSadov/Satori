@@ -126,7 +126,7 @@ void SatoriFinalizationQueue::TryResizeIfOverflowing()
             Entry* newData = (Entry*)newRegion->Allocate(allocSize, /*zeroInitialize*/false);
             if (!newData)
             {
-                m_heap->Allocator()->AddRegion(newRegion);
+                m_heap->Allocator()->ReturnUnusedRegion(newRegion);
                 return;
             }
 

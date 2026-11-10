@@ -249,6 +249,10 @@ void SatoriPage::FreeRegion(SatoriRegion* region)
     _ASSERTE(CardGroupsAreWipedForRange(start, end));
 
 #if _DEBUG
+    // In the conservative mode a thread that scans a stack may have found the region in the region map and still be reading its header.
+    // The frees that can happen while a thread scans a stack park the region instead. (see SatoriAllocator::ParkRegion)
+    _ASSERTE(!SatoriUtil::IsConservativeMode() || !m_heap->Recycler()->IsConservativeScanInProgress());
+
     // before the seen bits are cleared and the free bits set, see TryTrimRun
     size_t freeStamp = Interlocked::Increment(&s_freeClock);
 #endif
