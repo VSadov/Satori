@@ -175,13 +175,14 @@ private:
     DECLSPEC_ALIGN(64)
     volatile size_t m_regionCacheCount;
 
-    // Regular pages are added by one thread at a time, see GetRegionImpl.
+    // Regular pages are added by one thread at a time, see GetRegionImpl. A thread that waits for this lock longer than
+    // PAGE_ADD_LOCK_TIMEOUT_MS adds its page without it.
     // Lock order: the locks above, this lock, then the locks of the queues and the map lock of the heap (SatoriHeap::CommitMoreMap).
     // Nothing takes this lock while holding any of the locks that come after it.
     DECLSPEC_ALIGN(64)
     SatoriLock m_pageAddLock;
 
-    // The number of the regular page adds that have completed. It changes while m_pageAddLock is held,
+    // The number of the regular page adds that have completed, with the lock or without it (interlocked),
     // after the added page can be claimed from.
     volatile int32_t m_pageAddsCompleted;
 

@@ -72,6 +72,10 @@ namespace Satori
     // The trimmer decommits runs of adjacent free granules with one call, up to this many granules (64 MB).
     static const size_t TRIM_RUN_GRANULES = 32;
 
+    // A thread waits this long for the page-add lock, then adds a page without it (see SatoriAllocator::GetRegionImpl).
+    // The longest add measured was 3.7 ms. On Windows the wait ends on the next tick of the system timer (15.6 ms by default).
+    static const int PAGE_ADD_LOCK_TIMEOUT_MS = 6;
+
     // The trimmer decommits a free granule only after it has been free for this long, in seconds, counted from the first look of
     // the trimmer that saw it free (and at most twice this, see SatoriTrimmer::MaybeRotateAges). Memory that a gen2 frees and that the allocation
     // takes again in the next cycle would otherwise

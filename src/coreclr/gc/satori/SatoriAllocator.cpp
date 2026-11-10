@@ -60,6 +60,9 @@ volatile size_t g_trimRounds;
 volatile size_t g_decommitBytes;
 volatile size_t g_recommit120Bytes;
 volatile size_t g_addWaitEpisodes;
+// Step 3 of Milestone 3: the enters of the page-add lock that timed out, and the adds that were made without the lock.
+volatile size_t g_addLockTimeouts;
+volatile size_t g_unlockedAdds;
 volatile size_t g_addWaitTicks;
 volatile size_t g_addWaitMaxTicks;
 volatile size_t g_addCount;
@@ -515,24 +518,29 @@ static void TraceRaiseMax(volatile size_t* target, size_t value)
     }
 }
 
-// Enters the page-add lock. A wait is an enter that found the lock held, and its time is the time that the enter took.
-static void TraceEnterPageAddLock(SatoriLock* lock)
+// Enters the page-add lock, or gives up after the timeout (see GetRegionImpl). A wait is an enter that found the lock held,
+// and its time is the time that the enter took, whether it got the lock or not.
+static bool TraceEnterPageAddLock(SatoriLock* lock, int timeoutMs)
 {
     if (!g_traceOn)
     {
-        lock->Enter();
-        return;
+        return lock->TryEnterFor(timeoutMs);
     }
 
     if (lock->TryEnterOneShot())
     {
-        return;
+        return true;
     }
 
     int64_t waitStart = SatoriUtil::GetTimeStamp();
-    lock->Enter();
+    bool entered = lock->TryEnterFor(timeoutMs);
     int64_t ticks = max((int64_t)0, SatoriUtil::GetTimeStamp() - waitStart);
     Interlocked::Increment(&g_addWaitEpisodes);
+    if (!entered)
+    {
+        Interlocked::Increment(&g_addLockTimeouts);
+    }
+
     Interlocked::ExchangeAdd64(&g_addWaitTicks, (size_t)ticks);
     TraceRaiseMax(&g_addWaitMaxTicks, (size_t)ticks);
     Interlocked::Increment(&s_addWaitHist[TraceUsBucket(TraceTicksToUs(ticks))]);
@@ -541,10 +549,12 @@ static void TraceEnterPageAddLock(SatoriLock* lock)
     if (TraceTicksToUs(ticks) >= 1000.0)
     {
         char line[160];
-        int len = snprintf(line, sizeof(line), "[addwait] t=%.3f tid=%lu waitUs=%.0f\n",
-            TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, (unsigned long)GetCurrentThreadId(), TraceTicksToUs(ticks));
+        int len = snprintf(line, sizeof(line), "[addwait] t=%.3f tid=%lu waitUs=%.0f entered=%d\n",
+            TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, (unsigned long)GetCurrentThreadId(), TraceTicksToUs(ticks), (int)entered);
         TraceWrite(line, len);
     }
+
+    return entered;
 }
 
 // A call got the page-add lock after an add completed, and is to look for regions again.
@@ -893,11 +903,12 @@ void SatoriAllocator::TraceWriteState(bool isFinal, const char* ev)
     size_t epochs = g_convoyEpochs + openEpoch;
     double convoyMeanUs = epochs ? TraceTicksToUs((int64_t)(g_convoyEpochMaxSumTicks + g_convoyEpochMax)) / (double)epochs : 0.0;
     len = snprintf(buf, sizeof(buf),
-        "[addstats] t=%.3f ev=%s waits=%zu waitMs=%.3f waitMaxUs=%.0f retries=%zu adds=%zu addMs=%.3f addMaxUs=%.0f "
+        "[addstats] t=%.3f ev=%s waits=%zu waitMs=%.3f waitMaxUs=%.0f retries=%zu adds=%zu addMs=%.3f addMaxUs=%.0f lockTimeouts=%zu unlockedAdds=%zu "
         "convoys=%zu convoyMeanUs=%.0f convoyMaxUs=%.0f waiters=%zu waiterMeanUs=%.0f waitHist=%s addHist=%s convoyHist=%s\n",
         TraceTicksToUs(SatoriUtil::GetTimeStamp() - s_traceStartTs) / 1000.0, ev,
         g_addWaitEpisodes, TraceTicksToUs((int64_t)g_addWaitTicks) / 1000.0, TraceTicksToUs((int64_t)g_addWaitMaxTicks),
         g_lockRetries, g_addCount, TraceTicksToUs((int64_t)g_addTicks) / 1000.0, TraceTicksToUs((int64_t)g_addMaxTicks),
+        g_addLockTimeouts, g_unlockedAdds,
         epochs, convoyMeanUs, TraceTicksToUs((int64_t)g_convoyMaxTicks), g_convoyWaiters,
         g_convoyWaiters ? TraceTicksToUs((int64_t)g_convoyTicks) / (double)g_convoyWaiters : 0.0,
         waitHist, addHist, convoyHist);
@@ -1205,12 +1216,27 @@ tryAgain:
         // and the page that it adds is not needed. So the adds are one at a time, under a lock.
         // A thread that gets the lock after another one has added a page finds that the count of completed adds
         // is not the one that it saw before it looked for regions, and looks again.
+        // The wait for the lock is bounded (PAGE_ADD_LOCK_TIMEOUT_MS, on Windows rounded up to a tick of the system timer): a thread
+        // that waits that long, behind an add that takes unusually long or an adder that is not running, adds a page without the lock.
+        // It still looks again first if an add has completed meanwhile. The page-add lock is taken before m_mapLock (CommitMoreMap),
+        // never after it, and the add without the lock takes m_mapLock as usual.
         TraceBeforeAdd(traceCtx, regionSize); // TEMP-TRACE
-        TraceEnterPageAddLock(&m_pageAddLock); // TEMP-TRACE (m_pageAddLock.Enter())
+        int timeoutMs = Satori::PAGE_ADD_LOCK_TIMEOUT_MS;
+#if _DEBUG
+        if (SatoriTestHooks::s_pageAddLockTimeoutMs >= 0)
+        {
+            timeoutMs = SatoriTestHooks::s_pageAddLockTimeoutMs; // TEST-HOOK
+        }
+#endif
+        bool locked = TraceEnterPageAddLock(&m_pageAddLock, timeoutMs); // TEMP-TRACE (m_pageAddLock.TryEnterFor(timeoutMs))
         if (VolatileLoad(&m_pageAddsCompleted) != pageAddsCompleted)
         {
             TraceNoteLockRetry(); // TEMP-TRACE
-            m_pageAddLock.Leave();
+            if (locked)
+            {
+                m_pageAddLock.Leave();
+            }
+
             goto tryAgain;
         }
 
@@ -1222,13 +1248,22 @@ tryAgain:
             {
                 SatoriTrace::Count(SatoriTrace::s_counters.pageAdds[(int)requester]);
                 TraceNoteAddPublished(traceCtx); // TEMP-TRACE
+                if (!locked)
+                {
+                    TraceCount(&g_unlockedAdds); // TEMP-TRACE
+                }
 
                 // The page is ours. Claim from it right away, before the others take what we need.
                 region = TryClaimRegionInPage(page, granules, low, outOfMemory);
 
                 // The free granules of the page can be claimed, and we have ours. The waiters look for theirs when they see the change.
+                // An add without the lock counts as well: the count is interlocked.
                 Interlocked::Increment(&m_pageAddsCompleted);
-                m_pageAddLock.Leave();
+                if (locked)
+                {
+                    m_pageAddLock.Leave();
+                }
+
                 TraceAfterAdd(traceCtx, page, regionSize, low, requester); // TEMP-TRACE
                 if (region)
                 {
@@ -1245,11 +1280,18 @@ tryAgain:
 
             // Someone added a page, but not us. There could be more regions.
             Interlocked::Increment(&m_pageAddsCompleted);
-            m_pageAddLock.Leave();
+            if (locked)
+            {
+                m_pageAddLock.Leave();
+            }
+
             goto tryAgain;
         }
 
-        m_pageAddLock.Leave();
+        if (locked)
+        {
+            m_pageAddLock.Leave();
+        }
     }
     else
     {
