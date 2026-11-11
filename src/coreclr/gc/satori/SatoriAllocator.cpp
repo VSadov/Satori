@@ -2047,9 +2047,10 @@ bool SatoriAllocator::AddMoreWorkChunks()
 
     // The commit above can fail, but every region has the start of its body committed, which holds several chunks.
     // (see SatoriRegion::MinCommitSize) So there is no region to give back for want of memory, which in the conservative mode
-    // could not be freed here: this can run while a thread scans a stack.
+    // could not be freed here: this can run while a thread scans a stack. Were there no chunk, the caller would be told that
+    // there is no memory, rather than to look again and take another region.
     _ASSERTE(totalLength > 0);
-    return true;
+    return totalLength > 0;
 }
 
 void SatoriAllocator::ReturnWorkChunk(SatoriWorkChunk* chunk)

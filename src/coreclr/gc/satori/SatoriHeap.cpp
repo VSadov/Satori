@@ -348,22 +348,4 @@ size_t SatoriHeap::VerifyGranules(bool report)
 
     return problems;
 }
-
-void SatoriHeap::VerifyGranulesBestEffort()
-{
-    // Other threads may be claiming and freeing granules, and what we see in the middle of that is not a problem.
-    // A real one would not go away.
-    for (int attempt = 0; attempt < 5; attempt++)
-    {
-        if (VerifyGranules(/* report */ false) == 0)
-        {
-            return;
-        }
-
-        GCToOSInterface::YieldThread(0);
-    }
-
-    size_t problems = VerifyGranules(/* report */ true);
-    _ASSERTE(problems == 0);
-}
 #endif

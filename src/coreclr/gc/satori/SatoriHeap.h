@@ -182,8 +182,6 @@ public:
     // and that what the heap counts as committed is what the pages, the regions and the free granules have.
     // Reports the problems and returns their number. The heap must be quiet: no allocations or frees.
     size_t VerifyGranules(bool report);
-    // The same, for when other threads may be running. Only what does not go away is a problem.
-    void VerifyGranulesBestEffort();
 #endif
 
 private:
