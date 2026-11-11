@@ -1332,8 +1332,9 @@ SatoriRegion* SatoriPage::NextInPage(SatoriRegion* region)
     size_t mapIndex = (address - Start()) >> Satori::REGION_BITS;
 
     // An acquire load of the map byte, so that the loads of the header that the caller does when the map has a region are not satisfied before
-    // it. It is also what orders this load after the registration where the increment has no barrier after it (MSVC on ARM64),
-    // see EnterUnownedHeaderRead: the registration, then this load, and then the reads of the header, in this order.
+    // it. It is also what orders this load after the registration where the increment has no barrier after it (on ARM64, unless it is
+    // an ldaxr/stlxr loop compiled by GCC or Clang), see EnterUnownedHeaderRead: the registration, then this load, and then the reads
+    // of the header, in this order.
     if (VolatileLoad(&RegionMap()[mapIndex]) != 1)
     {
         // there is no region here yet.

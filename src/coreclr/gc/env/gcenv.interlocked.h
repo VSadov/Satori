@@ -6,6 +6,12 @@
 #ifndef __GCENV_INTERLOCKED_H__
 #define __GCENV_INTERLOCKED_H__
 
+#if defined(HOST_ARM64) && !defined(_MSC_VER) && !defined(__ARM_FEATURE_ATOMICS)
+// The compiler may not use the LSE atomics (ARMv8.1), but the processor may have them. The operations check at run time
+// and use them when it does, otherwise they are loops of exclusive loads and stores (see UseLseAtomics).
+#define INTERLOCKED_ARM64_LSE_DISPATCH
+#endif
+
 // Interlocked operations
 class Interlocked
 {
@@ -15,7 +21,31 @@ private:
     static void InterlockedOperationBarrier();
 #endif // !_MSC_VER
 
+#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+    static bool UseLseAtomics();
+
+    // One LSE instruction each, see gcenv.interlocked.inl. They return the value that the destination had.
+    // No suffix: both an acquire and a release. Acq, Rel and Unordered: as for the operations below.
+    template<typename T> static T LseFetchAdd(T volatile *destination, T value);
+    template<typename T> static T LseFetchAddRel(T volatile *destination, T value);
+    template<typename T> static T LseFetchClear(T volatile *destination, T bits);
+    template<typename T> static T LseFetchClearUnordered(T volatile *destination, T bits);
+    template<typename T> static T LseFetchOr(T volatile *destination, T bits);
+    template<typename T> static T LseFetchOrRel(T volatile *destination, T bits);
+    template<typename T> static T LseFetchOrUnordered(T volatile *destination, T bits);
+    template<typename T> static T LseSwap(T volatile *destination, T value);
+    template<typename T> static T LseCompareExchange(T volatile *destination, T exchange, T comparand);
+    template<typename T> static T LseCompareExchangeAcq(T volatile *destination, T exchange, T comparand);
+    template<typename T> static T LseCompareExchangeUnordered(T volatile *destination, T exchange, T comparand);
+#endif // INTERLOCKED_ARM64_LSE_DISPATCH
+
 public:
+
+#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+    // Whether the processor has the LSE atomics. Set when the module is loaded, see gcenv.unix.cpp. Until then the operations
+    // use the exclusive loads and stores, which is correct as well: the two kinds of operations are atomic with respect to each other.
+    static inline bool s_arm64LseAtomics = false;
+#endif // INTERLOCKED_ARM64_LSE_DISPATCH
 
     // Increment the value of the specified 32-bit variable as an atomic operation.
     // Parameters:
@@ -109,7 +139,8 @@ public:
     static T CompareExchangePointer(T volatile *destination, T exchange, std::nullptr_t comparand);
 
     // The operations above order both ways: a locked instruction on x86 and x64; on ARM64 an atomic that is both an acquire and a release,
-    // and with GCC and Clang a full barrier after it (see InterlockedOperationBarrier). The ones below order no more than their names say.
+    // and with GCC and Clang, when it is a loop of exclusive loads and stores rather than an LSE instruction, a full barrier after it
+    // (see InterlockedOperationBarrier). The ones below order no more than their names say.
     //   Acq:       what the thread does after the operation is ordered after the read of the destination.
     //   Rel:       what the thread did before the operation is ordered before the write of the destination.
     //   Unordered: atomic, and nothing more.
