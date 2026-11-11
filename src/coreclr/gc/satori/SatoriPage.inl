@@ -102,14 +102,6 @@ inline void SatoriPage::LeaveUnownedHeaderRead()
     Interlocked::Decrement(UnownedHeaderReaders());
 }
 
-// The side of the trimmer, for others that take memory from a region that a registered thread may have found: a full fence orders
-// what the caller has written (its claims, the region map) before the look at the count, as in TryTrimRun.
-inline bool SatoriPage::MayHaveUnownedHeaderReaders()
-{
-    MemoryBarrier();
-    return VolatileLoad(UnownedHeaderReaders()) != 0;
-}
-
 // order is unimportant, but we want to read it only once when we read it, thus volatile.
 inline volatile int8_t& SatoriPage::CardState()
 {

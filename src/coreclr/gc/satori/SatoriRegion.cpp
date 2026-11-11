@@ -777,12 +777,10 @@ bool SatoriRegion::TryDecommitAbove(size_t address)
         return false;
     }
 
-    // The region may be a run of granules, and one of them the start of a region that was freed, whose header a thread
-    // that does not own it may still be reading. Such a thread is registered with the page. (see SatoriPage::EnterUnownedHeaderRead)
-    if (m_containingPage->MayHaveUnownedHeaderReaders())
-    {
-        return false;
-    }
+    // The decommit stays inside the last granule, above its start, at a multiple of the commit granularity, so the start of every granule
+    // of the region stays committed. A granule start is where the header of a region that was freed could have been, and a thread may still
+    // be reading it. (see SatoriPage::EnterUnownedHeaderRead, and TryPopDrainOnly in SatoriQueue.h)
+    _ASSERTE(decommitStart > End() - Satori::REGION_SIZE_GRANULARITY);
 
     size_t decommitSize = m_committed - decommitStart;
     if (GCToOSInterface::VirtualDecommit((void*)decommitStart, decommitSize))

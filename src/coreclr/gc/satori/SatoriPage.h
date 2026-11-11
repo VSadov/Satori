@@ -125,11 +125,10 @@ public:
     // The two sides are a store followed by a load each (the registration and then the map, the claim and then the registrations),
     // and each needs a full fence between the two, see EnterUnownedHeaderRead and TryTrimRun.
     // The granule of the freed region can also be claimed as a part of a run, for a bigger region. The memory of the old header is then
-    // the body of that region: it stays committed while a thread is registered (SatoriRegion::TryDecommitAbove looks, as the trimmer does),
+    // the body of that region: it stays committed (a region in use decommits only above the start of its last granule, see SatoriRegion::TryDecommitAbove),
     // but it can be written. So the reader uses what it read only after it checks it. (see TryTakeReusableNext)
     void EnterUnownedHeaderRead();
     void LeaveUnownedHeaderRead();
-    bool MayHaveUnownedHeaderReaders();
 #if _DEBUG
     // A registered thread is about to read the header of the region that starts at the granule.
     void AssertHeaderIsReadable(size_t granule);

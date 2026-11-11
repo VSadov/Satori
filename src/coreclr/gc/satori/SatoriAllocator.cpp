@@ -1346,8 +1346,8 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
 //    A region that was freed and is in use again by somebody else is a region, whatever it is used for, and its queue is what it is.
 //    The removal checks the queue under its lock.
 //  - The granule of a freed region can also be claimed as a part of a run, for a bigger region (a huge object, the finalization queue).
-//    The old header is then the body of that region, and it can hold anything. It stays committed (SatoriRegion::TryDecommitAbove looks at the
-//    registrations, as the trimmer does), and the queue that we read from it is used only if it is one of the reusable queues.
+//    The old header is then the body of that region, and it can hold anything. It stays committed (a region in use decommits only above the start
+//    of its last granule, see SatoriRegion::TryDecommitAbove), and the queue that we read from it is used only if it is one of the reusable queues.
 // The free granule after the region, which the caller claims, has no header. It is a bit operation, and reads no memory of the granule.
 // Other readers get to headers through the region map too (conservative marking, interior pointers, the card groups).
 // They run only on regions that are live: in the precise mode a reference is to a live object, and a card group is set only for a live region.
