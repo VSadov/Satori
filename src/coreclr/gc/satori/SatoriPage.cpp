@@ -269,6 +269,8 @@ void SatoriPage::FreeRegion(SatoriRegion* region)
     size_t freeStamp = Interlocked::Increment(&s_freeClock);
 #endif
 
+    size_t runBits = 0;
+    size_t warmBits = 0;
     for (size_t granule = first; granule < first + count; granule++)
     {
         size_t granuleStart = GranuleStart(granule);
@@ -290,15 +292,35 @@ void SatoriPage::FreeRegion(SatoriRegion* region)
         m_freeStamps[granule] = freeStamp;
 #endif
 
-        // The other granules in the word may be changing, thus atomic. No order is needed: the set of the free bits below is the release for it.
         size_t bit = BitRange(granule % 64, 1);
+        runBits |= bit;
         if (committedUnits == Satori::WATERMARK_UNITS_PER_GRANULE)
         {
-            Interlocked::OrUnordered(&m_warmBitmap[granule / 64], bit);
+            warmBits |= bit;
         }
-        else
+
+        // The warm bits of a word are written once its granules are done.
+        if (granule % 64 == 63 || granule == first + count - 1)
         {
-            Interlocked::AndUnordered(&m_warmBitmap[granule / 64], ~bit);
+            // The other granules in the word may be changing, thus atomic. No order is needed: the set of the free bits below is the release for it.
+            // Only the owner of a granule writes its warm bit, and the granules are ours, so the bits that we read are the last ones written.
+            // A free that does not change the bits writes nothing.
+            size_t word = granule / 64;
+            size_t wasWarm = VolatileLoadWithoutBarrier(&m_warmBitmap[word]);
+            size_t toSet = warmBits & ~wasWarm;
+            size_t toClear = runBits & ~warmBits & wasWarm;
+            if (toSet != 0)
+            {
+                Interlocked::OrUnordered(&m_warmBitmap[word], toSet);
+            }
+
+            if (toClear != 0)
+            {
+                Interlocked::AndUnordered(&m_warmBitmap[word], ~toClear);
+            }
+
+            runBits = 0;
+            warmBits = 0;
         }
     }
 
