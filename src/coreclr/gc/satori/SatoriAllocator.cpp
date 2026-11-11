@@ -1343,8 +1343,9 @@ SatoriObject* SatoriAllocator::AllocRegularShared(SatoriAllocationContext* conte
 //    of the header. The trimmer does not decommit while a thread is registered with the page.
 //  - A region is removed from the map before its granules are marked free, and the trimmer claims only free granules, and looks
 //    at the registrations after it claims. So if the map has a region at `next` after we registered, then either the region is
-//    still there, or it was freed and the trimmer sees us and leaves the memory committed. Each side has a full fence between its store
-//    and its load (see EnterUnownedHeaderRead and TryTrimRun), and the map is read with an acquire (see NextInPage).
+//    still there, or it was freed and the trimmer sees us and leaves the memory committed. Our registration is ordered before our read
+//    of the map (see EnterUnownedHeaderRead). The claim of the trimmer is an acquire, so its look at the registrations
+//    is ordered after the free bit that it took (see TryTrimRun). The map is read with an acquire (see NextInPage).
 //  - The header of a region that was freed holds what it held, and FreeRegion asserts that its queue is null, so the read finds no queue.
 //    A region that was freed and is in use again by somebody else is a region, whatever it is used for, and its queue is what it is.
 //    The removal checks the queue under its lock.

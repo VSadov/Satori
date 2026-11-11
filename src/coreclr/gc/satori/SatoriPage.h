@@ -122,8 +122,10 @@ public:
     // after it claims a granule, and does not decommit while there is one. A thread that registers after that look reads the region map
     // after the region was removed from it (the map is cleared before the free bit is set), and does not read the header.
     // So the header that the map has found is committed for as long as the thread is registered.
-    // The two sides are a store followed by a load each (the registration and then the map, the claim and then the registrations),
-    // and each needs a full fence between the two, see EnterUnownedHeaderRead and TryTrimRun.
+    // The reader's side is a store followed by a load (the registration, and then the map), and the two must be ordered:
+    // the registration is a full interlocked increment, and the map is read with an acquire, see EnterUnownedHeaderRead.
+    // The trimmer's side is a load followed by a load (the free bit that its claim reads, and then the registrations).
+    // The claim is an acquire, and that is enough, see TryTrimRun.
     // The granule of the freed region can also be claimed as a part of a run, for a bigger region. The memory of the old header is then
     // the body of that region: it stays committed (a region in use decommits only above the start of its last granule, see SatoriRegion::TryDecommitAbove),
     // but it can be written. So the reader uses what it read only after it checks it. (see TryTakeReusableNext)

@@ -857,11 +857,12 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
     // before the region of a granule was freed may still be about to read its header, see EnterUnownedHeaderRead. This look comes after the claims,
     // a thread that registers after it finds the regions gone from the map. If there is a reader, the granules go back as they were, and are trimmed
     // when the trimmer comes again.
-    // The claims are stores (the interlocked clears of the free bits), and the look is a load: a full fence orders the one before the other, the way
-    // that the fence in EnterUnownedHeaderRead does for a reader. Without it the load could be satisfied before the claims are visible, and the trimmer
-    // would miss a reader that registered, and has read a region map that still had the region, after that. The count is read with an acquire, so that
-    // the decommit below is not ordered before it, and so that what a reader that left did (its reads of the header, before its release) is done.
-    MemoryBarrier();
+    // The look has to come after the claims have read the free bits. A free bit is set after the region map is cleared, and the set
+    // is a release (see PublishFreeGranules), so a thread that registers after the look reads the map after the clear and finds the region gone.
+    // A claim is an acquire, and that orders the look after it. No fence is needed on this side: it is a load after a load,
+    // and the readers do not read the free bits. The reader's side is the one that needs a store ordered before a load (see EnterUnownedHeaderRead).
+    // The count is read with an acquire, so that the decommit below is not ordered before it, and so that what a reader that left did
+    // (its reads of the header, before its release) is done.
     bool trimmed = false;
     if (VolatileLoad(UnownedHeaderReaders()) == 0)
     {
@@ -1297,7 +1298,8 @@ SatoriRegion* SatoriPage::NextInPage(SatoriRegion* region)
     size_t mapIndex = (address - Start()) >> Satori::REGION_BITS;
 
     // An acquire load of the map byte, so that the loads of the header that the caller does when the map has a region are not satisfied before
-    // it (see EnterUnownedHeaderRead: the registration, the full fence, this load, and then the reads of the header, in this order).
+    // it. It is also what orders this load after the registration where the increment has no barrier after it (MSVC on ARM64),
+    // see EnterUnownedHeaderRead: the registration, then this load, and then the reads of the header, in this order.
     if (VolatileLoad(&RegionMap()[mapIndex]) != 1)
     {
         // there is no region here yet.

@@ -85,15 +85,16 @@ inline volatile int32_t* SatoriPage::UnownedHeaderReaders()
 
 inline void SatoriPage::EnterUnownedHeaderRead()
 {
+    // The registration is a store, and the caller's next step is a load: the region map, in NextInPage.
+    // Either the trimmer's look at the count sees the registration, or the caller reads the map after that look
+    // and finds the region gone. That holds only if the registration is ordered before the read of the map,
+    // and an acquire or a release alone does not order a store before a later load. What does:
+    //  - x64: the locked instruction is a full fence.
+    //  - ARM64, GCC and Clang: a full barrier ends the operation (see InterlockedOperationBarrier).
+    //  - ARM64, MSVC: the intrinsic has no barrier after it (it is ldaddal, or an ldaxr/stlxr loop without LSE). Its store is a release,
+    //    the map is read with an acquire (see NextInPage), and a store-release is ordered before a later load-acquire.
+    // So this stays the full interlocked increment, and the map stays an acquire load: an acquire or a release here is not enough.
     Interlocked::Increment(UnownedHeaderReaders());
-
-    // The registration is a store, and the caller's next step is a load: the region map, in NextInPage. The trimmer does the reverse:
-    // it claims the granules (stores) and then looks at the count (a load). Whichever side comes second must see the store of the other:
-    // either the caller sees that the region is gone from the map, or the trimmer sees the caller. That holds only if both sides
-    // have a full fence between their store and their load, since an acquire or a release does not order a store before a later load.
-    // This is the fence of our side (the one of the trimmer is in TryTrimRun). Where the interlocked increment is a full fence already, as
-    // on x64, this one adds nothing. On ARM64 it is what makes the registration visible before the map is read, and it cannot be tested on x64.
-    MemoryBarrier();
 }
 
 inline void SatoriPage::LeaveUnownedHeaderRead()
