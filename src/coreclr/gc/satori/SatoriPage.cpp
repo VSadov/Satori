@@ -795,7 +795,10 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
     count = 1;
 
     size_t claimed = 0;
-    size_t limit = min(first + maxCount, GranuleCount());
+    // The run ends where a block of maxCount granules ends, so that adjacent runs meet at the boundaries of the groups of granules
+    // whose card slices share an OS page, and no group is split between two runs. (see DecommitCardSlices)
+    _ASSERTE(maxCount % SatoriUtil::CardSliceGroupGranules() == 0);
+    size_t limit = min(ALIGN_DOWN(first, maxCount) + maxCount, GranuleCount());
     for (size_t granule = first; granule < limit; granule++)
     {
         // The first granule is the one that the caller found. The others join if they are next to the run and look like they can.

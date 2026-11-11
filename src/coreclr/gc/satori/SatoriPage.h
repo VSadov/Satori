@@ -101,7 +101,7 @@ public:
     // Returns SIZE_MAX if there is none.
     size_t NextGranuleToTrim(size_t from, bool onlyIfSeenFree, bool ignoreAge = false);
     // Claims the granule `first`, which NextGranuleToTrim found, and the free granules after it that have anything committed,
-    // up to `maxCount` granules together. Decommits them with one call and gives them back as free and cold.
+    // up to the end of the block of `maxCount` granules that `first` is in. Decommits them with one call and gives them back as free and cold.
     // When asked, only the granules that are still ones that were seen free, and old enough: the caller may have found them before
     // they were claimed and freed again, and then the claim takes the new free bit.
     // `count` is the number of granules that the run covered (at least 1), the caller goes on after them.
