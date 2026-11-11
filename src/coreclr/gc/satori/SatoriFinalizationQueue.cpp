@@ -63,9 +63,9 @@ bool SatoriFinalizationQueue::Initialize(SatoriHeap* heap)
     size_t allocSize = size * sizeof(Entry);
     size_t regionSize = SatoriRegion::RegionSizeForAlloc(allocSize);
 
-    // The queue lives as long as the process, so place its region near the beginning of a page.
+    // The queue lives as long as the process, so place its region at the highest free granules of a page.
     // The claim commits the array before it publishes the region, and gives the granules back if it cannot.
-    SatoriRegion* region = m_heap->Allocator()->GetRegionLow(regionSize, SatoriRegion::CommitSizeForAlloc(allocSize));
+    SatoriRegion* region = m_heap->Allocator()->GetRegionLongLived(regionSize, SatoriRegion::CommitSizeForAlloc(allocSize));
     if (region == nullptr)
     {
         return false;
@@ -116,11 +116,11 @@ void SatoriFinalizationQueue::TryResizeIfOverflowing()
         size_t allocSize = size * sizeof(Entry);
         size_t regionSize = SatoriRegion::RegionSizeForAlloc(allocSize);
 
-        // The queue is long-lived, so place the new region near the beginning of a page.
-        // The old region is returned after the transfer and becomes a hole that other low requests can reuse.
+        // The queue is long-lived, so place the new region at the highest free granules of a page.
+        // The old region is returned after the transfer and becomes a hole that other long-lived requests can reuse.
         // This runs on GC threads, while other threads may scan their stacks, so in the conservative mode a region that is published
         // could not be freed here. The claim commits the array before it publishes the region, and gives the granules back if it cannot.
-        SatoriRegion* newRegion = m_heap->Allocator()->GetRegionLow(regionSize, SatoriRegion::CommitSizeForAlloc(allocSize));
+        SatoriRegion* newRegion = m_heap->Allocator()->GetRegionLongLived(regionSize, SatoriRegion::CommitSizeForAlloc(allocSize));
         if (newRegion)
         {
             // Nothing is left to commit, so this cannot fail.

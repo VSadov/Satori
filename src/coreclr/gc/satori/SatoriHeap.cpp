@@ -225,7 +225,7 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
 // also unlikely that we cross-use one if just comitted.
 // we scan ahead and claim, but do not move m_nextPageIndex
 // unless we claimed contiguously.
-SatoriPage* SatoriHeap::AddLargePage(size_t minSize, bool low, SatoriRegion*& region, size_t commitSize)
+SatoriPage* SatoriHeap::AddLargePage(size_t minSize, bool longLived, SatoriRegion*& region, size_t commitSize)
 {
     region = nullptr;
 
@@ -268,7 +268,7 @@ SatoriPage* SatoriHeap::AddLargePage(size_t minSize, bool low, SatoriRegion*& re
                 // The page is made for this region, claim it before others can see the page and take a granule of it.
                 // That also means that a failure to format the region can still release the entire reservation.
                 size_t granules = minSize >> Satori::REGION_BITS;
-                size_t first = newPage->TryClaimRun(granules, low);
+                size_t first = newPage->TryClaimRun(granules, longLived);
                 _ASSERTE(first != SIZE_MAX);
                 if (first == SIZE_MAX || (region = newPage->FormatClaimed(first, granules, commitSize)) == nullptr)
                 {

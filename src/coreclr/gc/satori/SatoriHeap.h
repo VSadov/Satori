@@ -52,7 +52,7 @@ public:
     // Adds a page for a region of the given size, and claims the region in it before the page is published.
     // Returns the page, and the region in `region`, or nullptr if the page can't be added or the region can't be formatted.
     // The region has at least commitSize bytes from its start committed. (see SatoriPage::FormatClaimed)
-    SatoriPage* AddLargePage(size_t size, bool low, SatoriRegion*& region, size_t commitSize);
+    SatoriPage* AddLargePage(size_t size, bool longLived, SatoriRegion*& region, size_t commitSize);
 
     SatoriAllocator* Allocator()
     {

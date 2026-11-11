@@ -58,7 +58,7 @@ public:
     // its first use needs. The claim commits that before it publishes the region, and a failed commit gives the claim back,
     // so a region that a caller gets cannot fail its first use for want of memory and never has to be returned unused.
     SatoriRegion* GetRegion(size_t minSize, size_t commitSize = 0);
-    SatoriRegion* GetRegionLow(size_t minSize, size_t commitSize = 0);
+    SatoriRegion* GetRegionLongLived(size_t minSize, size_t commitSize = 0);
     void ReturnRegion(SatoriRegion* region);
     // Gives the regions from the cache back to the free granules of their pages, where the trimmer can see them.
     // Only where no thread scans a stack: in the trimmer, or in a trim on request after the GC has marked.
@@ -189,11 +189,11 @@ private:
     SatoriObject* AllocImmortal(SatoriAllocationContext* context, size_t size, uint32_t flags);
 
     void TryGetRegularRegion(SatoriRegion*& region, size_t size);
-    SatoriRegion* GetRegionCore(size_t regionSize, bool low, size_t commitSize);
+    SatoriRegion* GetRegionCore(size_t regionSize, bool longLived, size_t commitSize);
     void LeavePageAdd(bool locked, bool escaped);
-    SatoriRegion* TryClaimRegion(size_t granules, bool low, size_t commitSize, bool& outOfMemory);
-    size_t TryClaimInPage(SatoriPage* page, size_t granules, bool low);
-    SatoriRegion* TryClaimWarmRegion(size_t granules, bool low, size_t commitSize);
+    SatoriRegion* TryClaimRegion(size_t granules, bool longLived, size_t commitSize, bool& outOfMemory);
+    size_t TryClaimInPage(SatoriPage* page, size_t granules, bool longLived);
+    SatoriRegion* TryClaimWarmRegion(size_t granules, bool longLived, size_t commitSize);
     SatoriRegion* TryGetCachedRegion();
     bool TryCacheRegion(SatoriRegion* region);
     void FreeToBitmap(SatoriRegion* region);
