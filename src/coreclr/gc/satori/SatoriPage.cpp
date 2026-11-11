@@ -916,14 +916,26 @@ void SatoriPage::RememberFreeGranules()
     for (size_t word = 0; word < GranuleCount() / 64; word++)
     {
         size_t freeBits = VolatileLoad(&m_freeBitmap[word]);
-        size_t fresh = freeBits & ~VolatileLoad(&m_seenFreeBitmap[word]);
-        if (fresh)
+        size_t seen = VolatileLoad(&m_seenFreeBitmap[word]);
+        while (true)
         {
-            VolatileStore(&aging[word], aging[word] & ~fresh);
-            VolatileStore(&aged[word], aged[word] & ~fresh);
-        }
+            size_t fresh = freeBits & ~seen;
+            if (fresh)
+            {
+                VolatileStore(&aging[word], aging[word] & ~fresh);
+                VolatileStore(&aged[word], aged[word] & ~fresh);
+            }
 
-        VolatileStore(&m_seenFreeBitmap[word], freeBits);
+            // A free clears the seen bits of its granules meanwhile (ForgetSeenFree). A plain store would set such a bit again,
+            // and the granule would keep the age that it had. If the word has changed, what the free cleared is fresh now.
+            size_t prev = Interlocked::CompareExchange(&m_seenFreeBitmap[word], freeBits, seen);
+            if (prev == seen)
+            {
+                break;
+            }
+
+            seen = prev;
+        }
     }
 
 #if _DEBUG
