@@ -350,4 +350,168 @@ FORCEINLINE T Interlocked::CompareExchangePointer(T volatile *destination, T exc
 #endif
 }
 
+template <typename T>
+FORCEINLINE T Interlocked::CompareExchangeAcq(T volatile *destination, T exchange, T comparand)
+{
+#ifdef _MSC_VER
+    static_assert(sizeof(long) == sizeof(T), "Size of long must be the same as size of T");
+#if defined(HOST_ARM64)
+    return (T)_InterlockedCompareExchange_acq((long*)destination, (long)exchange, (long)comparand);
+#else
+    return (T)_InterlockedCompareExchange((long*)destination, (long)exchange, (long)comparand);
+#endif
+#else
+    __atomic_compare_exchange_n(destination, &comparand, exchange, /* weak */ false, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE);
+    return comparand;
+#endif
+}
+
+template <>
+FORCEINLINE size_t Interlocked::CompareExchangeAcq<size_t>(size_t volatile *destination, size_t exchange, size_t comparand)
+{
+#ifdef _MSC_VER
+#if defined(HOST_ARM64)
+    return (size_t)_InterlockedCompareExchange64_acq((volatile long long*)destination, (long long)exchange, (long long)comparand);
+#else
+    return (size_t)_InterlockedCompareExchange64((volatile long long*)destination, (long long)exchange, (long long)comparand);
+#endif
+#else
+    __atomic_compare_exchange_n(destination, &comparand, exchange, /* weak */ false, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE);
+    return comparand;
+#endif
+}
+
+template <typename T>
+FORCEINLINE T Interlocked::CompareExchangeUnordered(T volatile *destination, T exchange, T comparand)
+{
+#ifdef _MSC_VER
+    static_assert(sizeof(long) == sizeof(T), "Size of long must be the same as size of T");
+#if defined(HOST_ARM64)
+    return (T)_InterlockedCompareExchange_nf((long*)destination, (long)exchange, (long)comparand);
+#else
+    return (T)_InterlockedCompareExchange((long*)destination, (long)exchange, (long)comparand);
+#endif
+#else
+    __atomic_compare_exchange_n(destination, &comparand, exchange, /* weak */ false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    return comparand;
+#endif
+}
+
+template <>
+FORCEINLINE size_t Interlocked::CompareExchangeUnordered<size_t>(size_t volatile *destination, size_t exchange, size_t comparand)
+{
+#ifdef _MSC_VER
+#if defined(HOST_ARM64)
+    return (size_t)_InterlockedCompareExchange64_nf((volatile long long*)destination, (long long)exchange, (long long)comparand);
+#else
+    return (size_t)_InterlockedCompareExchange64((volatile long long*)destination, (long long)exchange, (long long)comparand);
+#endif
+#else
+    __atomic_compare_exchange_n(destination, &comparand, exchange, /* weak */ false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    return comparand;
+#endif
+}
+
+template <typename T>
+FORCEINLINE T Interlocked::DecrementRel(T volatile *addend)
+{
+#ifdef _MSC_VER
+    static_assert(sizeof(long) == sizeof(T), "Size of long must be the same as size of T");
+#if defined(HOST_ARM64)
+    return (T)_InterlockedDecrement_rel((long*)addend);
+#else
+    return (T)_InterlockedDecrement((long*)addend);
+#endif
+#else
+    return __atomic_sub_fetch(addend, 1, __ATOMIC_RELEASE);
+#endif
+}
+
+template <typename T>
+FORCEINLINE void Interlocked::AndUnordered(T volatile *destination, T value)
+{
+#ifdef _MSC_VER
+    static_assert(sizeof(long) == sizeof(T), "Size of long must be the same as size of T");
+#if defined(HOST_ARM64)
+    _InterlockedAnd_nf((long*)destination, (long)value);
+#else
+    _InterlockedAnd((long*)destination, (long)value);
+#endif
+#else
+    __atomic_fetch_and(destination, value, __ATOMIC_RELAXED);
+#endif
+}
+
+template <>
+FORCEINLINE void Interlocked::AndUnordered<size_t>(size_t volatile *destination, size_t value)
+{
+#ifdef _MSC_VER
+#if defined(HOST_ARM64)
+    _InterlockedAnd64_nf((volatile long long*)destination, (long long)value);
+#else
+    _InterlockedAnd64((volatile long long*)destination, (long long)value);
+#endif
+#else
+    __atomic_fetch_and(destination, value, __ATOMIC_RELAXED);
+#endif
+}
+
+template <typename T>
+FORCEINLINE void Interlocked::OrRel(T volatile *destination, T value)
+{
+#ifdef _MSC_VER
+    static_assert(sizeof(long) == sizeof(T), "Size of long must be the same as size of T");
+#if defined(HOST_ARM64)
+    _InterlockedOr_rel((long*)destination, (long)value);
+#else
+    _InterlockedOr((long*)destination, (long)value);
+#endif
+#else
+    __atomic_fetch_or(destination, value, __ATOMIC_RELEASE);
+#endif
+}
+
+template <>
+FORCEINLINE void Interlocked::OrRel<size_t>(size_t volatile *destination, size_t value)
+{
+#ifdef _MSC_VER
+#if defined(HOST_ARM64)
+    _InterlockedOr64_rel((volatile long long*)destination, (long long)value);
+#else
+    _InterlockedOr64((volatile long long*)destination, (long long)value);
+#endif
+#else
+    __atomic_fetch_or(destination, value, __ATOMIC_RELEASE);
+#endif
+}
+
+template <typename T>
+FORCEINLINE void Interlocked::OrUnordered(T volatile *destination, T value)
+{
+#ifdef _MSC_VER
+    static_assert(sizeof(long) == sizeof(T), "Size of long must be the same as size of T");
+#if defined(HOST_ARM64)
+    _InterlockedOr_nf((long*)destination, (long)value);
+#else
+    _InterlockedOr((long*)destination, (long)value);
+#endif
+#else
+    __atomic_fetch_or(destination, value, __ATOMIC_RELAXED);
+#endif
+}
+
+template <>
+FORCEINLINE void Interlocked::OrUnordered<size_t>(size_t volatile *destination, size_t value)
+{
+#ifdef _MSC_VER
+#if defined(HOST_ARM64)
+    _InterlockedOr64_nf((volatile long long*)destination, (long long)value);
+#else
+    _InterlockedOr64((volatile long long*)destination, (long long)value);
+#endif
+#else
+    __atomic_fetch_or(destination, value, __ATOMIC_RELAXED);
+#endif
+}
+
 #endif // __GCENV_INTERLOCKED_INL__

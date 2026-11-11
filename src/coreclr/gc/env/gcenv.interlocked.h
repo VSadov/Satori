@@ -107,6 +107,37 @@ public:
 
     template <typename T>
     static T CompareExchangePointer(T volatile *destination, T exchange, std::nullptr_t comparand);
+
+    // The operations above order both ways: a locked instruction on x86 and x64; on ARM64 an atomic that is both an acquire and a release,
+    // and with GCC and Clang a full barrier after it (see InterlockedOperationBarrier). The ones below order no more than their names say.
+    //   Acq:       what the thread does after the operation is ordered after the read of the destination.
+    //   Rel:       what the thread did before the operation is ordered before the write of the destination.
+    //   Unordered: atomic, and nothing more.
+    // On x86 and x64 they are the same locked instructions as the ones above.
+
+    // Same as CompareExchange, but an acquire, whether the exchange happens or not.
+    template<typename T>
+    static T CompareExchangeAcq(T volatile *destination, T exchange, T comparand);
+
+    // Same as CompareExchange, but unordered.
+    template<typename T>
+    static T CompareExchangeUnordered(T volatile *destination, T exchange, T comparand);
+
+    // Same as Decrement, but a release.
+    template<typename T>
+    static T DecrementRel(T volatile *addend);
+
+    // Same as And, but unordered.
+    template<typename T>
+    static void AndUnordered(T volatile *destination, T value);
+
+    // Same as Or, but a release.
+    template<typename T>
+    static void OrRel(T volatile *destination, T value);
+
+    // Same as Or, but unordered.
+    template<typename T>
+    static void OrUnordered(T volatile *destination, T value);
 };
 
 #endif // __GCENV_INTERLOCKED_H__

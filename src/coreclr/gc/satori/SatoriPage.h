@@ -309,6 +309,7 @@ private:
             // A granule is free if and only if its bit is set, and then its region map byte is 0.
             // 1 bit per granule, 8 words (one cache line) per 1Gb.
             // The thread that clears the bit owns the granule, until it sets the bit again.
+            // The set is a release and the clear is an acquire, see PublishFreeGranules.
             size_t* m_freeBitmap;
             // 1 bit per granule. 1 means the granule is committed in full. Meaningful only while the granule is free.
             size_t* m_warmBitmap;

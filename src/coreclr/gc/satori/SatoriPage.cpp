@@ -265,6 +265,7 @@ void SatoriPage::FreeRegion(SatoriRegion* region)
     _ASSERTE(!SatoriUtil::IsConservativeMode() || !m_heap->Recycler()->IsConservativeScanInProgress());
 
     // before the seen bits are cleared and the free bits set, see TryTrimRun
+    // A full interlocked increment on purpose: the check needs the stamp ordered with the bit operations around it. Do not relax it.
     size_t freeStamp = Interlocked::Increment(&s_freeClock);
 #endif
 
@@ -289,15 +290,15 @@ void SatoriPage::FreeRegion(SatoriRegion* region)
         m_freeStamps[granule] = freeStamp;
 #endif
 
-        // the other granules in the word may be changing, thus interlocked.
+        // The other granules in the word may be changing, thus atomic. No order is needed: the set of the free bits below is the release for it.
         size_t bit = BitRange(granule % 64, 1);
         if (committedUnits == Satori::WATERMARK_UNITS_PER_GRANULE)
         {
-            Interlocked::Or(&m_warmBitmap[granule / 64], bit);
+            Interlocked::OrUnordered(&m_warmBitmap[granule / 64], bit);
         }
         else
         {
-            Interlocked::And(&m_warmBitmap[granule / 64], ~bit);
+            Interlocked::AndUnordered(&m_warmBitmap[granule / 64], ~bit);
         }
     }
 
@@ -315,6 +316,8 @@ void SatoriPage::FreeRegion(SatoriRegion* region)
 // Sets the free bits of the granules.
 // The granules must be ready for the next owner: the watermarks written and the region map bytes zero.
 // (A claim that did not format anything gives the granules back with the watermarks that it found.)
+// The set is a release: what the caller wrote about the granules is ordered before it, and a claim, which is an acquire, reads it after.
+// The trimmer's look at the readers of unowned headers relies on the same pair (see TryTrimRun). Neither may be weakened.
 void SatoriPage::PublishFreeGranules(size_t first, size_t count)
 {
     _ASSERTE(first >= FirstGranule() && first + count <= GranuleCount());
@@ -324,7 +327,7 @@ void SatoriPage::PublishFreeGranules(size_t first, size_t count)
         size_t highGranule = min(first + count, word * 64 + 64);
         size_t bits = BitRange(lowGranule - word * 64, highGranule - lowGranule);
         _ASSERTE((VolatileLoad(&m_freeBitmap[word]) & bits) == 0);
-        Interlocked::Or(&m_freeBitmap[word], bits);
+        Interlocked::OrRel(&m_freeBitmap[word], bits);
     }
 }
 
@@ -355,7 +358,8 @@ size_t SatoriPage::TryClaimGranule(bool warmOnly, bool fromTop)
                 BitScanForward64(&bit, candidates);
             }
 
-            size_t seen = Interlocked::CompareExchange(&m_freeBitmap[word], freeBits & ~((size_t)1 << bit), freeBits);
+            // an acquire: what the last owner wrote before it set the bit is read after this. (see PublishFreeGranules)
+            size_t seen = Interlocked::CompareExchangeAcq(&m_freeBitmap[word], freeBits & ~((size_t)1 << bit), freeBits);
             if (seen == freeBits)
             {
                 return word * 64 + bit;
@@ -378,7 +382,8 @@ bool SatoriPage::TryClaimGranuleAt(size_t granule)
     size_t freeBits = VolatileLoad(&m_freeBitmap[granule / 64]);
     while (freeBits & bit)
     {
-        size_t seen = Interlocked::CompareExchange(&m_freeBitmap[granule / 64], freeBits & ~bit, freeBits);
+        // an acquire: what the last owner wrote before it set the bit is read after this. (see PublishFreeGranules)
+        size_t seen = Interlocked::CompareExchangeAcq(&m_freeBitmap[granule / 64], freeBits & ~bit, freeBits);
         if (seen == freeBits)
         {
             return true;
@@ -498,15 +503,17 @@ bool SatoriPage::TryClearRun(size_t first, size_t count)
             if ((freeBits & runBits) != runBits)
             {
                 // Someone has taken a granule of the run. Put back what we have cleared.
+                // Unordered: nothing was written while the bits were ours.
                 for (size_t cleared = firstWord; cleared < word; cleared++)
                 {
-                    Interlocked::Or(&m_freeBitmap[cleared], RunBitsInWord(first, count, cleared));
+                    Interlocked::OrUnordered(&m_freeBitmap[cleared], RunBitsInWord(first, count, cleared));
                 }
 
                 return false;
             }
 
-            size_t seen = Interlocked::CompareExchange(&m_freeBitmap[word], freeBits & ~runBits, freeBits);
+            // an acquire: what the last owner wrote before it set the bit is read after this. (see PublishFreeGranules)
+            size_t seen = Interlocked::CompareExchangeAcq(&m_freeBitmap[word], freeBits & ~runBits, freeBits);
             if (seen == freeBits)
             {
                 break;
@@ -566,7 +573,8 @@ void SatoriPage::ForgetSeenFree(size_t first, size_t count)
 {
     for (size_t word = first / 64; word <= (first + count - 1) / 64; word++)
     {
-        Interlocked::And(&m_seenFreeBitmap[word], ~RunBitsInWord(first, count, word));
+        // atomic, no order: the free bits that are set after this are the release for it.
+        Interlocked::AndUnordered(&m_seenFreeBitmap[word], ~RunBitsInWord(first, count, word));
     }
 }
 
@@ -891,7 +899,8 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
 
             for (size_t word = first / 64; word <= (first + claimed - 1) / 64; word++)
             {
-                Interlocked::And(&m_warmBitmap[word], ~RunBitsInWord(first, claimed, word));
+                // atomic, no order: the free bits that are set after this are the release for it.
+                Interlocked::AndUnordered(&m_warmBitmap[word], ~RunBitsInWord(first, claimed, word));
             }
 
             // then the cards of the granules, now that nothing of them is committed
@@ -943,7 +952,8 @@ void SatoriPage::RememberFreeGranules()
 
             // A free clears the seen bits of its granules meanwhile (ForgetSeenFree). A plain store would set such a bit again,
             // and the granule would keep the age that it had. If the word has changed, what the free cleared is fresh now.
-            size_t prev = Interlocked::CompareExchange(&m_seenFreeBitmap[word], freeBits, seen);
+            // Only atomicity is needed: nothing is published through this word.
+            size_t prev = Interlocked::CompareExchangeUnordered(&m_seenFreeBitmap[word], freeBits, seen);
             if (prev == seen)
             {
                 break;
@@ -955,6 +965,7 @@ void SatoriPage::RememberFreeGranules()
 
 #if _DEBUG
     // After the copy: a granule that the copy saw as free was freed before this stamp.
+    // A full interlocked increment on purpose: the check needs the stamp ordered with the bit operations around it. Do not relax it.
     m_snapshotStamp = Interlocked::Increment(&s_freeClock);
 #endif
 }
@@ -1247,7 +1258,8 @@ SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count, size_t commi
                         m_commitWatermarks[granule] = (uint8_t)units;
                         if (units == Satori::WATERMARK_UNITS_PER_GRANULE)
                         {
-                            Interlocked::Or(&m_warmBitmap[granule / 64], (size_t)1 << (granule % 64));
+                            // atomic, no order: the free bits that are set after this are the release for it.
+                            Interlocked::OrUnordered(&m_warmBitmap[granule / 64], (size_t)1 << (granule % 64));
                         }
                     }
                 }

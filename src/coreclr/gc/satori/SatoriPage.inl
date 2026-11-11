@@ -101,7 +101,7 @@ inline void SatoriPage::LeaveUnownedHeaderRead()
 {
     // A release: the reads of the header are done before the trimmer can see that we are gone. No fence after it is needed,
     // nothing that we do next depends on the trimmer.
-    Interlocked::Decrement(UnownedHeaderReaders());
+    Interlocked::DecrementRel(UnownedHeaderReaders());
 }
 
 // order is unimportant, but we want to read it only once when we read it, thus volatile.
