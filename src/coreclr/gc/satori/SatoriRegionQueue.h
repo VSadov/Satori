@@ -333,9 +333,9 @@ private:
         if (GCToOSInterface::CanGetCurrentProcessorNumber())
         {
             value = GCToOSInterface::GetCurrentProcessorNumber();
-            // On SMT systems the OS schedules threads onto primary (even-numbered) logical
-            // processors first. Mixing with (value >> 1) keeps both consecutive logical
-            // processors and consecutive physical cores (2*c) bijective modulo any power of 2.
+            // Where the two logical processors of a core are numbered 2c and 2c+1 (Windows, some Linux systems), threads
+            // that are spread one per core can all have even numbers. Mixing with (value >> 1) keeps both consecutive
+            // logical processors and consecutive physical cores (2*c) bijective modulo any power of 2.
             value ^= value >> 1;
         }
         else

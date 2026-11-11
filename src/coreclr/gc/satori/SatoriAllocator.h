@@ -114,7 +114,7 @@ private:
 
     // Work chunks are added by one thread at a time (see AddMoreWorkChunks), the others wait for it by polling.
     // Thus nobody may ask for a work chunk while holding what the refilling thread needs to get a region.
-    // Lock order: the allocation locks, this lock, m_runClaimLock.
+    // Lock order: the allocation locks, this lock, m_pageAddLock, m_runClaimLock.
     DECLSPEC_ALIGN(64)
     SatoriLock m_workChunkRefillLock;
 
@@ -157,7 +157,8 @@ private:
 
     // Regular pages are added by one thread at a time, see GetRegionCore. A thread that waits for this lock longer than
     // PAGE_ADD_LOCK_TIMEOUT_MS may add its page without it, one such thread at a time (m_pageAddEscapee).
-    // Lock order: the locks above, this lock, then the locks of the queues and the map lock of the heap (SatoriHeap::CommitMoreMap).
+    // Lock order: the allocation locks and m_workChunkRefillLock, this lock, then m_runClaimLock (the thread that adds a page claims
+    // a run in it under this lock, see TryClaimInPage), the locks of the queues and the map lock of the heap (SatoriHeap::CommitMoreMap).
     // Nothing takes this lock while holding any of the locks that come after it.
     DECLSPEC_ALIGN(64)
     SatoriLock m_pageAddLock;

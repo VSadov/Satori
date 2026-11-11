@@ -75,8 +75,9 @@ inline SatoriHeap* SatoriPage::Heap()
 // before the first useful card word, in the part of the page that the card table has for covering itself. Every thread that takes the next
 // region of its own writes it twice, when it registers and when it leaves. It is not in the header, where the line has the card state and
 // the scan ticket (the GC writes them for every scan) and most of the fields that every claim reads (m_end, m_heap, m_regionMap).
-// It is not next to the bitmaps either: FreeRegion and the trimmer write the seen bits. The line in front of it is not used,
-// so that a neighbor that the hardware pairs with it is no one's. It is 0 from the start, as is all the committed memory of the card table.
+// It is not next to the bitmaps that FreeRegion writes (the seen bits) either. In a 1Gb page the line in front of it holds the "aged" snapshot,
+// which only the trimmer writes, once per rotation and when a look sees granules free for the first time; in bigger pages that line is not used.
+// It is 0 from the start, as is all the committed memory of the card table.
 inline volatile int32_t* SatoriPage::UnownedHeaderReaders()
 {
     return (volatile int32_t*)(Start() + m_cardTableStart - 64);

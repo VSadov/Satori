@@ -42,7 +42,6 @@
 #include "SatoriAllocationContext.h"
 #include "SatoriWorkChunk.h"
 #include "SatoriWorkList.h"
-#include <minipal/log.h>
 
 // Zeroes [start + sizeof(size_t), end - sizeof(size_t)), but only the part of it in [dirtyStart, dirtyEnd).
 // The rest is known to be zeroed already. (see SatoriRegion::AllocateDirty)
@@ -62,7 +61,11 @@ static size_t ProcessorHint()
 {
     if (GCToOSInterface::CanGetCurrentProcessorNumber())
     {
-        // on SMT systems consecutive processors are the logical processors of one core, mix them in
+        // Mixes in the upper bits (a Gray code), as the sharded queues do. (see CurrentShardIndex in SatoriRegionQueue.h)
+        // Where the two logical processors of a core are numbered 2c and 2c+1 (Windows, some Linux systems), threads
+        // that are spread one per core can all have even numbers, and the mix spreads those too.
+        // Where they are numbered half the processor count apart (other Linux systems), the mix is not needed.
+        // ForEachPageFrom takes the hint modulo the number of page map entries in use, so the spread is even only when that is a power of 2.
         uint32_t processor = GCToOSInterface::GetCurrentProcessorNumber();
         return processor ^ (processor >> 1);
     }
@@ -487,7 +490,7 @@ bool SatoriAllocator::TryCacheRegion(SatoriRegion* region)
 //
 // The conservative mode. A thread that scans a stack finds the region of a candidate pointer in the region map, and then reads its header.
 // If the region were freed in between, its granules could be claimed and formatted again at the same address, or become a part of a bigger
-// run that is claimed and decommitted, (the finalization queue does that when it grows) while the scan is still reading.
+// run, whose owner writes over the old header, (a huge object, the array of the finalization queue) while the scan is still reading.
 // So no region is freed into the free granules while a thread may scan a stack. The frees are ordered outside of the scans:
 //  - The sweep after a GC is done before the next GC scans a stack. (see DrainDeferredSweepQueueConcurrent)
 //  - A GC frees regions in the phases that scan no stacks, with all the helpers out of the phase in between. (see RunWithHelp)

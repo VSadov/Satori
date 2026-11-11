@@ -38,6 +38,17 @@
 #include "SatoriRegionQueue.h"
 #include <minipal/log.h>
 
+// The bitmaps and the watermarks of the granules come after the region map, and must end before the line of the reader count, the last
+// 64 bytes before the first useful card word. (see InitializeAt and UnownedHeaderReaders) The smallest page is the tightest fit:
+// no slack at 1Gb, and 192 bytes more for every 1Gb more. ALIGN_UP is a function, so the rounding of the free bitmap's offset is written out.
+static const size_t s_granulesInSmallestPage = Satori::PAGE_SIZE_GRANULARITY >> Satori::REGION_BITS;
+static const size_t s_freeBitmapOffset =
+    (128 + Satori::PAGE_SIZE_GRANULARITY / Satori::BYTES_PER_CARD_GROUP * 2 + s_granulesInSmallestPage + 63) & ~(size_t)63;
+static_assert(
+    s_freeBitmapOffset + 2 * s_granulesInSmallestPage + 5 * (s_granulesInSmallestPage / 8) <=
+        Satori::PAGE_SIZE_GRANULARITY / Satori::BYTES_PER_CARD_BYTE / Satori::BYTES_PER_CARD_BYTE - 64,
+    "the bitmaps and the watermarks of the granules must end before the line of the reader count.");
+
 SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap* heap, InitStatus& status)
 {
     _ASSERTE(pageSize % Satori::PAGE_SIZE_GRANULARITY == 0);
