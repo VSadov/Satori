@@ -100,7 +100,7 @@ typedef cpuset_t cpu_set_t;
 #include "globals.h"
 #include "cgroup.h"
 
-#if defined(INTERLOCKED_ARM64_LSE_DISPATCH) && (defined(__linux__) || defined(__FreeBSD__))
+#if defined(INTERLOCKED_ARM64_LSE_DETECTION) && (defined(__linux__) || defined(__FreeBSD__))
 #include <sys/auxv.h>
 #define HAVE_INTERLOCKED_LSE_DETECTION
 #endif

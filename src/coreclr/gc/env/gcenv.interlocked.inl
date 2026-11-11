@@ -20,15 +20,21 @@ FORCEINLINE void Interlocked::InterlockedOperationBarrier()
 }
 #endif // !_MSC_VER
 
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
 
 FORCEINLINE bool Interlocked::UseLseAtomics()
 {
+#ifdef INTERLOCKED_ARM64_LSE_DETECTION
     // Written once, when the module is loaded.
     return __atomic_load_n(&s_arm64LseAtomics, __ATOMIC_RELAXED);
+#else
+    // The build requires a processor that has them.
+    return true;
+#endif
 }
 
-// The LSE instructions are in inline assembly, since the compiler may not emit them; ".arch_extension lse" lets the assembler accept them.
+// The LSE instructions are in inline assembly, so that they are the same whether or not the compiler may emit them; ".arch_extension lse"
+// lets the assembler accept them where it may not.
 // "Q" is a memory operand addressed by a register alone, as the instructions need, and the "memory" clobber keeps the compiler from moving
 // other memory accesses across them. A full operation is an instruction with both an acquire and a release, and no barrier after it,
 // the way that the PAL does it (see Define_InterlockMethod).
@@ -96,7 +102,7 @@ INTERLOCKED_LSE_COMPARE_EXCHANGE(LseCompareExchangeUnordered, "cas")
 #undef INTERLOCKED_LSE_COMPARE_EXCHANGE_FOR_SIZE
 #undef INTERLOCKED_LSE_COMPARE_EXCHANGE
 
-#endif // INTERLOCKED_ARM64_LSE_DISPATCH
+#endif // INTERLOCKED_ARM64_LSE
 
 // Increment the value of the specified 32-bit variable as an atomic operation.
 // Parameters:
@@ -110,7 +116,7 @@ FORCEINLINE T Interlocked::Increment(T volatile *addend)
     static_assert(sizeof(long) == sizeof(T), "Size of long must be the same as size of T");
     return _InterlockedIncrement((long*)addend);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return (T)(LseFetchAdd(addend, (T)1) + 1);
@@ -128,7 +134,7 @@ FORCEINLINE size_t Interlocked::Increment(size_t volatile* addend)
 #ifdef _MSC_VER
     return (size_t)_InterlockedIncrement64((volatile long long*)addend);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseFetchAdd(addend, (size_t)1) + 1;
@@ -152,7 +158,7 @@ FORCEINLINE T Interlocked::Decrement(T volatile *addend)
     static_assert(sizeof(long) == sizeof(T), "Size of long must be the same as size of T");
     return _InterlockedDecrement((long*)addend);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return (T)(LseFetchAdd(addend, (T)-1) - 1);
@@ -170,7 +176,7 @@ FORCEINLINE size_t Interlocked::Decrement(size_t volatile* addend)
 #ifdef _MSC_VER
     return (size_t)_InterlockedDecrement64((volatile long long*)addend);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseFetchAdd(addend, (size_t)-1) - 1;
@@ -195,7 +201,7 @@ FORCEINLINE T Interlocked::Exchange(T volatile *destination, T value)
     static_assert(sizeof(long) == sizeof(T), "Size of long must be the same as size of T");
     return _InterlockedExchange((long*)destination, value);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseSwap(destination, value);
@@ -213,7 +219,7 @@ FORCEINLINE int8_t Interlocked::Exchange<int8_t>(int8_t volatile* destination, i
 #ifdef _MSC_VER
     return (int8_t)_InterlockedExchange8((char*)destination, value);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseSwap(destination, value);
@@ -240,7 +246,7 @@ FORCEINLINE T Interlocked::CompareExchange(T volatile *destination, T exchange, 
     static_assert(sizeof(long) == sizeof(T), "Size of long must be the same as size of T");
     return _InterlockedCompareExchange((long*)destination, exchange, comparand);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseCompareExchange(destination, exchange, comparand);
@@ -258,7 +264,7 @@ FORCEINLINE size_t Interlocked::CompareExchange<size_t>(size_t volatile * destin
 #ifdef _MSC_VER
     return _InterlockedCompareExchange64((volatile long long*)destination, exchange, comparand);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseCompareExchange(destination, exchange, comparand);
@@ -276,7 +282,7 @@ FORCEINLINE int8_t Interlocked::CompareExchange<int8_t>(int8_t volatile* destina
 #ifdef _MSC_VER
     return (int8_t)_InterlockedCompareExchange8((char*)destination, exchange, comparand);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseCompareExchange(destination, exchange, comparand);
@@ -294,7 +300,7 @@ FORCEINLINE uint8_t Interlocked::CompareExchange<uint8_t>(uint8_t volatile* dest
 #ifdef _MSC_VER
     return (uint8_t)_InterlockedCompareExchange8((char*)destination, exchange, comparand);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseCompareExchange(destination, exchange, comparand);
@@ -319,7 +325,7 @@ FORCEINLINE T Interlocked::ExchangeAdd(T volatile *addend, T value)
     static_assert(sizeof(long) == sizeof(T), "Size of long must be the same as size of T");
     return _InterlockedExchangeAdd((long*)addend, value);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseFetchAdd(addend, value);
@@ -338,7 +344,7 @@ FORCEINLINE T Interlocked::ExchangeAdd64(T volatile* addend, T value)
     static_assert(sizeof(int64_t) == sizeof(T), "Size of LONGLONG must be the same as size of T");
     return _InterlockedExchangeAdd64((int64_t*)addend, value);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseFetchAdd(addend, value);
@@ -362,7 +368,7 @@ FORCEINLINE T Interlocked::ExchangeAddPtr(T volatile* addend, T value)
     return _InterlockedExchangeAdd((long*)addend, value);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseFetchAdd(addend, value);
@@ -385,7 +391,7 @@ FORCEINLINE void Interlocked::And(T volatile *destination, T value)
     static_assert(sizeof(long) == sizeof(T), "Size of long must be the same as size of T");
     _InterlockedAnd((long*)destination, value);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         LseFetchClear(destination, (T)~value);
@@ -403,7 +409,7 @@ FORCEINLINE void Interlocked::And<size_t>(size_t volatile *destination, size_t v
 #ifdef _MSC_VER
     _InterlockedAnd64((volatile long long*)destination, value);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         LseFetchClear(destination, ~value);
@@ -426,7 +432,7 @@ FORCEINLINE void Interlocked::Or(T volatile *destination, T value)
     static_assert(sizeof(long) == sizeof(T), "Size of long must be the same as size of T");
     _InterlockedOr((long*)destination, value);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         LseFetchOr(destination, value);
@@ -444,7 +450,7 @@ FORCEINLINE void Interlocked::Or<size_t>(size_t volatile *destination, size_t va
 #ifdef _MSC_VER
     _InterlockedOr64((volatile long long*)destination, value);
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         LseFetchOr(destination, value);
@@ -472,7 +478,7 @@ FORCEINLINE T Interlocked::ExchangePointer(T volatile * destination, T value)
     return (T)(TADDR)_InterlockedExchange((long volatile *)(void* volatile *)destination, (long)(void*)value);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return (T)(TADDR)LseSwap((size_t volatile *)destination, (size_t)value);
@@ -494,7 +500,7 @@ FORCEINLINE T Interlocked::ExchangePointer(T volatile * destination, std::nullpt
     return (T)(TADDR)_InterlockedExchange((long volatile *)(void* volatile *)destination, (long)(void*)value);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return (T)(TADDR)LseSwap((size_t volatile *)destination, (size_t)0);
@@ -524,7 +530,7 @@ FORCEINLINE T Interlocked::CompareExchangePointer(T volatile *destination, T exc
     return (T)(TADDR)_InterlockedCompareExchange((long volatile *)(void* volatile *)destination, (long)(void*)exchange, (long)(void*)comparand);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return (T)(TADDR)LseCompareExchange((size_t volatile *)destination, (size_t)exchange, (size_t)comparand);
@@ -546,7 +552,7 @@ FORCEINLINE T Interlocked::CompareExchangePointer(T volatile *destination, T exc
     return (T)(TADDR)_InterlockedCompareExchange((long volatile *)(void* volatile *)destination, (long)(void*)exchange, (long)(void*)comparand);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return (T)(TADDR)LseCompareExchange((size_t volatile *)destination, (size_t)exchange, (size_t)0);
@@ -569,7 +575,7 @@ FORCEINLINE T Interlocked::CompareExchangeAcq(T volatile *destination, T exchang
     return (T)_InterlockedCompareExchange((long*)destination, (long)exchange, (long)comparand);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseCompareExchangeAcq(destination, exchange, comparand);
@@ -590,7 +596,7 @@ FORCEINLINE size_t Interlocked::CompareExchangeAcq<size_t>(size_t volatile *dest
     return (size_t)_InterlockedCompareExchange64((volatile long long*)destination, (long long)exchange, (long long)comparand);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseCompareExchangeAcq(destination, exchange, comparand);
@@ -612,7 +618,7 @@ FORCEINLINE T Interlocked::CompareExchangeUnordered(T volatile *destination, T e
     return (T)_InterlockedCompareExchange((long*)destination, (long)exchange, (long)comparand);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseCompareExchangeUnordered(destination, exchange, comparand);
@@ -633,7 +639,7 @@ FORCEINLINE size_t Interlocked::CompareExchangeUnordered<size_t>(size_t volatile
     return (size_t)_InterlockedCompareExchange64((volatile long long*)destination, (long long)exchange, (long long)comparand);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return LseCompareExchangeUnordered(destination, exchange, comparand);
@@ -655,7 +661,7 @@ FORCEINLINE T Interlocked::DecrementRel(T volatile *addend)
     return (T)_InterlockedDecrement((long*)addend);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         return (T)(LseFetchAddRel(addend, (T)-1) - 1);
@@ -676,7 +682,7 @@ FORCEINLINE void Interlocked::AndUnordered(T volatile *destination, T value)
     _InterlockedAnd((long*)destination, (long)value);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         LseFetchClearUnordered(destination, (T)~value);
@@ -697,7 +703,7 @@ FORCEINLINE void Interlocked::AndUnordered<size_t>(size_t volatile *destination,
     _InterlockedAnd64((volatile long long*)destination, (long long)value);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         LseFetchClearUnordered(destination, ~value);
@@ -719,7 +725,7 @@ FORCEINLINE void Interlocked::OrRel(T volatile *destination, T value)
     _InterlockedOr((long*)destination, (long)value);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         LseFetchOrRel(destination, value);
@@ -740,7 +746,7 @@ FORCEINLINE void Interlocked::OrRel<size_t>(size_t volatile *destination, size_t
     _InterlockedOr64((volatile long long*)destination, (long long)value);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         LseFetchOrRel(destination, value);
@@ -762,7 +768,7 @@ FORCEINLINE void Interlocked::OrUnordered(T volatile *destination, T value)
     _InterlockedOr((long*)destination, (long)value);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         LseFetchOrUnordered(destination, value);
@@ -783,7 +789,7 @@ FORCEINLINE void Interlocked::OrUnordered<size_t>(size_t volatile *destination, 
     _InterlockedOr64((volatile long long*)destination, (long long)value);
 #endif
 #else
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
         LseFetchOrUnordered(destination, value);

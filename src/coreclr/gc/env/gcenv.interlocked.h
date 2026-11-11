@@ -6,10 +6,15 @@
 #ifndef __GCENV_INTERLOCKED_H__
 #define __GCENV_INTERLOCKED_H__
 
-#if defined(HOST_ARM64) && !defined(_MSC_VER) && !defined(__ARM_FEATURE_ATOMICS)
-// The compiler may not use the LSE atomics (ARMv8.1), but the processor may have them. The operations check at run time
-// and use them when it does, otherwise they are loops of exclusive loads and stores (see UseLseAtomics).
-#define INTERLOCKED_ARM64_LSE_DISPATCH
+#if defined(HOST_ARM64) && !defined(_MSC_VER)
+// With GCC and Clang the operations are LSE instructions (ARMv8.1) in inline assembly when the processor has them,
+// and loops of exclusive loads and stores otherwise (see UseLseAtomics).
+#define INTERLOCKED_ARM64_LSE
+#ifndef __ARM_FEATURE_ATOMICS
+// The build does not require the LSE atomics (the compiler may not use them), so whether the processor has them is checked at run time.
+// Where the build requires them (macOS, for one) the operations use them without a check.
+#define INTERLOCKED_ARM64_LSE_DETECTION
+#endif
 #endif
 
 // Interlocked operations
@@ -21,7 +26,7 @@ private:
     static void InterlockedOperationBarrier();
 #endif // !_MSC_VER
 
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
+#ifdef INTERLOCKED_ARM64_LSE
     static bool UseLseAtomics();
 
     // One LSE instruction each, see gcenv.interlocked.inl. They return the value that the destination had.
@@ -37,15 +42,15 @@ private:
     template<typename T> static T LseCompareExchange(T volatile *destination, T exchange, T comparand);
     template<typename T> static T LseCompareExchangeAcq(T volatile *destination, T exchange, T comparand);
     template<typename T> static T LseCompareExchangeUnordered(T volatile *destination, T exchange, T comparand);
-#endif // INTERLOCKED_ARM64_LSE_DISPATCH
+#endif // INTERLOCKED_ARM64_LSE
 
 public:
 
-#ifdef INTERLOCKED_ARM64_LSE_DISPATCH
-    // Whether the processor has the LSE atomics. Set when the module is loaded, see gcenv.unix.cpp. Until then the operations
-    // use the exclusive loads and stores, which is correct as well: the two kinds of operations are atomic with respect to each other.
+#ifdef INTERLOCKED_ARM64_LSE_DETECTION
+    // Whether the processor has the LSE atomics. Set when the module is loaded, on Linux and FreeBSD, see gcenv.unix.cpp. Elsewhere, and until then,
+    // the operations use the exclusive loads and stores, which is correct as well: the two kinds of operations are atomic with respect to each other.
     static inline bool s_arm64LseAtomics = false;
-#endif // INTERLOCKED_ARM64_LSE_DISPATCH
+#endif // INTERLOCKED_ARM64_LSE_DETECTION
 
     // Increment the value of the specified 32-bit variable as an atomic operation.
     // Parameters:
