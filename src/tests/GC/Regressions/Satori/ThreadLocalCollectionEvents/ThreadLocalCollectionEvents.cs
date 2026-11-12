@@ -26,7 +26,6 @@ public static class ThreadLocalCollectionEvents
     private static bool IsSatori =>
         GC.GetConfigurationVariables().TryGetValue("SatoriGC", out object? value) && value is true;
 
-    [ActiveIssue("Fails intermittently on unmodified builds: the workload sometimes leaves the tracked region or the local collection events do not arrive.")]
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
