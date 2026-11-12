@@ -100,6 +100,7 @@ SatoriHeap* SatoriHeap::Create()
     heap->m_reservedMapSize = mapSize;
     heap->m_committedMapSize = commitSize - offsetof(SatoriHeap, m_pageMap);
     heap->m_committedBytes = commitSize;
+    heap->m_trimmingBytes = 0;
     InitWriteBarrier(heap->m_pageMap, s_pageByteMap, heap->CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
     heap->m_mapLock.Initialize();
 
@@ -318,6 +319,30 @@ SatoriRegion* SatoriHeap::RegionForAddressChecked(size_t address)
     }
 
     return nullptr;
+}
+
+size_t SatoriHeap::FreeCommittedBytes()
+{
+    size_t bytes = 0;
+    ForEachPage(
+        [&](SatoriPage* page)
+        {
+            bytes += page->FreeCommittedBytes();
+        }
+    );
+
+    return bytes;
+}
+
+// The counts are read one after another, and a claim, a free, or a run of the trimmer can come between the reads.
+// The trimmer counts a run that it claimed before it decommits it, and stops counting it right after the commit count goes down.
+size_t SatoriHeap::InUseBytes()
+{
+    size_t committed = GetBytesCommitted();
+    size_t free = FreeCommittedBytes();
+    size_t trimming = VolatileLoad(&m_trimmingBytes);
+    size_t notInUse = free + trimming;
+    return committed > notInUse ? committed - notInUse : 0;
 }
 
 #if _DEBUG

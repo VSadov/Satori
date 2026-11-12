@@ -80,26 +80,13 @@ void SatoriTrimmer::LoopFn(void* inst)
     ths->Loop();
 }
 
-// What the free granules of all pages have committed. A snapshot, see SatoriPage::FreeCommittedBytes.
-size_t SatoriTrimmer::FreeCommittedBytes()
-{
-    size_t bytes = 0;
-    m_heap->ForEachPage(
-        [&](SatoriPage* page)
-        {
-            bytes += page->FreeCommittedBytes();
-        }
-    );
-
-    return bytes;
-}
-
 // The coming GC cycles take the memory that a GC frees: the next one about its gen1 budget, less what the sweeping parked in reusable
 // regions, and the ones before the next gen2 also what they promote, up to the gen2 limit (see SatoriRecycler::GetTrimBudget).
 // The trimmer keeps that much of the free committed memory, and decommits the rest, the surplus. A process that runs steady,
 // with its GCs at about the same occupancy, has about no surplus, and does not decommit memory only to commit it again.
 // A process whose live set grows and shrinks over many cycles needs again at its next peak what it needed at the last one,
-// so the trimmer also keeps what brings the heap to the highest size that it needed in the last hold period (DOTNET_gcTrimPeakHold).
+// so the trimmer also keeps what brings the heap back to the most memory that it had in use at a GC in the last hold period
+// (DOTNET_gcTrimPeakHold). That is what the heap needed, whatever the fragmentation and the floating garbage were then. (see SatoriRecycler::NoteInUse)
 // A pass comes shortly after every blocking GC, and the next GC ends it. It decommits the surplus at a pace: decommit has a cost
 // for the whole process, and the process may need the memory again soon. When the memory is low the surplus goes without the pace.
 // An idle process (no GC for a round interval) needs less: every round of idleness halves the budget, until all the free memory
@@ -122,8 +109,7 @@ void SatoriTrimmer::Loop()
     bool passDue = false;
     int idleRounds = 0;
 
-    // The highest sizes that the heap needed after a GC, its live part and the budget, in two periods of the hold.
-    // A peak is held for between one and two periods.
+    // The most memory that the heap had in use at a GC, in two periods of the hold. A peak is held for between one and two periods.
     const int64_t holdPeriod = freq * (int64_t)SatoriUtil::TrimPeakHoldSeconds();
     size_t peaks[2] = { 0, 0 };
     int64_t peakRotationTs = lastBlockingGcTs;
@@ -206,8 +192,7 @@ void SatoriTrimmer::Loop()
 
             if (idleRounds == 0)
             {
-                bool unused;
-                peaks[0] = max(peaks[0], recycler->GetTotalOccupancy() + recycler->GetTrimBudget(0, unused));
+                peaks[0] = max(peaks[0], recycler->TakeInUsePeak());
             }
         }
 
@@ -255,8 +240,12 @@ void SatoriTrimmer::Loop()
                     }
 
                     // Every run looks at the surplus again, since the GC sweeping parks free space and the threads take free granules meanwhile.
+                    // The free memory that brings what is in use back to the held peak is kept.
+                    size_t free = m_heap->FreeCommittedBytes();
+                    size_t committed = m_heap->GetBytesCommitted();
+                    size_t inUse = committed > free ? committed - free : 0;
                     bool underPressure;
-                    size_t budget = recycler->GetTrimBudget(held, underPressure);
+                    size_t budget = recycler->GetTrimBudget(held > inUse ? held - inUse : 0, underPressure);
                     if (idleRounds > 0)
                     {
                         budget >>= idleRounds;
@@ -266,7 +255,6 @@ void SatoriTrimmer::Loop()
                         }
                     }
 
-                    size_t free = FreeCommittedBytes();
                     if (free <= budget)
                     {
                         trimming = false;
@@ -316,7 +304,7 @@ void SatoriTrimmer::Loop()
             }
         );
 
-        leftWork = FreeCommittedBytes() != 0;
+        leftWork = m_heap->FreeCommittedBytes() != 0;
     }
 }
 

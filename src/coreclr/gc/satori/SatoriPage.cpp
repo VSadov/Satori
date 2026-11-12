@@ -892,10 +892,13 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
 
         // One call covers the run. The granules before the last one are committed in full or not, and decommitting
         // what is not committed does nothing.
+        // Until the commit count goes down, the claimed granules are neither free nor decommitted. (see SatoriHeap::InUseBytes)
         size_t decommitStart = GranuleStart(first);
+        m_heap->SetTrimmingBytes(committedBytes);
         if (GCToOSInterface::VirtualDecommit((void*)decommitStart, decommitEnd - decommitStart))
         {
             m_heap->DecBytesCommitted(committedBytes);
+            m_heap->SetTrimmingBytes(0);
 
             // What is committed next time is whatever the next owner commits, and all of it is zero. No granule is warm.
             for (size_t i = 0; i < claimed; i++)
@@ -917,6 +920,10 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
             }
 
             trimmed = true;
+        }
+        else
+        {
+            m_heap->SetTrimmingBytes(0);
         }
     }
 

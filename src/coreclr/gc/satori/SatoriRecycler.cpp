@@ -161,6 +161,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_expectedGen1 = MIN_GEN1_BUDGET;
     m_totalLimit = MIN_GEN1_BUDGET;
     m_nextGcIsFullGc = true;
+    m_inUsePeak = 0;
     m_prevCondemnedGeneration = 2;
     m_gcNextTimeTarget = 0;
 
@@ -1594,6 +1595,9 @@ void SatoriRecycler::BlockingCollectImpl()
 
     m_gcState = GC_STATE_BLOCKED;
 
+    // The heap has the most in use now, before this GC frees anything.
+    NoteInUse();
+
     // assume that we will relocate. we will rethink later.
     m_isRelocating = m_condemnedGeneration == 2 ? SatoriUtil::IsRelocatingInGen2() : SatoriUtil::IsRelocatingInGen1();
 
@@ -1651,6 +1655,8 @@ void SatoriRecycler::BlockingCollectImpl()
     BlockingMark();
     Plan();
     Relocate();
+    // The relocation targets are taken, and the sources are not freed yet.
+    NoteInUse();
     Update();
 
 #if _DEBUG
@@ -5390,7 +5396,7 @@ size_t SatoriRecycler::GetTotalOccupancy()
 
 // Read by the trimmer between GCs, when the GC is not changing the numbers below, except for what sweeping parks. (it stops the trimmer when it starts)
 // The numbers are estimates and read without synchronization.
-size_t SatoriRecycler::GetTrimBudget(size_t heldTotal, bool& underPressure)
+size_t SatoriRecycler::GetTrimBudget(size_t heldFree, bool& underPressure)
 {
     // The next cycle takes about what the gen1 budget lets it take, and first the free space that sweeping parks in reusable regions.
     // The parked space grows while the sweeping goes on, so this is read again as the trimmer goes.
@@ -5412,15 +5418,47 @@ size_t SatoriRecycler::GetTrimBudget(size_t heldTotal, bool& underPressure)
     }
 
     // The available memory is what the last GC saw. When it cannot hold the budget, what is above it is decommitted without pacing.
-    // A held peak is kept only when there is memory for it.
+    // The memory for a held peak is kept only when there is memory for it.
     size_t available = m_availableMemory;
     underPressure = available < budget;
-    if (heldTotal > occupancy)
-    {
-        budget = max(budget, min(heldTotal - occupancy, available));
-    }
+    budget = max(budget, min(heldFree, available));
 
     return min(budget, available);
+}
+
+// What the heap has in use (committed and not free) is the most right before a GC frees anything, or, when the GC relocates,
+// after it has taken the targets and before it frees the sources. That is what the heap needed, with the free space in its regions
+// and the garbage that it allocated, whatever the fragmentation and the floating garbage were. (see SatoriTrimmer::Loop)
+// The trimmer may be taking the peak at the same time, or, in the precise mode, be decommitting.
+void SatoriRecycler::NoteInUse()
+{
+    size_t inUse = m_heap->InUseBytes();
+    size_t peak = VolatileLoad(&m_inUsePeak);
+    while (inUse > peak)
+    {
+        size_t seen = Interlocked::CompareExchange(&m_inUsePeak, inUse, peak);
+        if (seen == peak)
+        {
+            break;
+        }
+
+        peak = seen;
+    }
+}
+
+size_t SatoriRecycler::TakeInUsePeak()
+{
+    size_t peak = VolatileLoad(&m_inUsePeak);
+    while (true)
+    {
+        size_t seen = Interlocked::CompareExchange(&m_inUsePeak, (size_t)0, peak);
+        if (seen == peak)
+        {
+            return peak;
+        }
+
+        peak = seen;
+    }
 }
 
 size_t SatoriRecycler::GetGcStartMillis(int generation)

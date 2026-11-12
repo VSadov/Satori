@@ -122,9 +122,11 @@ public:
     void UpdateGenerationOccupancies();
     size_t GetTotalOccupancy();
     // How much free committed memory the trimmer keeps: what the coming GC cycles are expected to take, see SatoriTrimmer::Loop,
-    // and at least what brings the heap to heldTotal, a size that it needed recently.
+    // and at least heldFree, what brings the heap back to a peak that it had in use recently.
     // underPressure is set when the memory is too low for the expected cycles, and the budget is then what is available.
-    size_t GetTrimBudget(size_t heldTotal, bool& underPressure);
+    size_t GetTrimBudget(size_t heldFree, bool& underPressure);
+    // The most memory that the heap had in use at the GCs since the last call. (see NoteInUse)
+    size_t TakeInUsePeak();
     size_t GetOccupancy(int i);
     size_t GetGcStartMillis(int generation);
     size_t GetGcDurationMillis(int generation);
@@ -338,6 +340,8 @@ private:
     int64_t m_reusableLimitAtPlan;
     size_t m_expectedGen1;
     bool m_nextGcIsFullGc;
+    // the most memory that the heap had in use at the GCs since the trimmer took it. (see NoteInUse)
+    size_t m_inUsePeak;
 
     size_t m_condemnedRegionsCount;
     size_t m_deferredSweepCount;
@@ -460,7 +464,7 @@ private:
     void BlockingCollect1();
     void BlockingCollect2();
     void BlockingCollectImpl();
-
+    void NoteInUse();
     void BlockingMark();
     void MarkNewReachable();
     void DrainAndCleanWorker();

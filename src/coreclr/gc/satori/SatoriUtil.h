@@ -80,8 +80,8 @@ namespace Satori
     static const size_t TRIM_SURPLUS_PART_PER_SEC = 4;
     // The heap of a process whose live set grows and shrinks again, like a compiler between the compilations, needs at its next peak
     // what it needed at the last one, and the budget of the next cycle cannot know that. The trimmer keeps the memory
-    // for the highest peak of the last this many seconds (default of DOTNET_gcTrimPeakHold, 1E in hex), see TrimPeakHoldSeconds.
-    static const size_t TRIM_PEAK_HOLD_SEC = 30;
+    // for the highest peak of the last this many seconds (default of DOTNET_gcTrimPeakHold, A in hex), see TrimPeakHoldSeconds.
+    static const size_t TRIM_PEAK_HOLD_SEC = 10;
 
     // A thread waits this long for the page-add lock, then may add a page without it, one such thread at a time
     // (see SatoriAllocator::GetRegionCore). The longest add measured was 3.7 ms. On Windows the wait ends on a tick of the system timer
@@ -714,7 +714,7 @@ public:
     }
 
     // DOTNET_gcTrimPeakHold, in seconds (hex, like the other GC settings). For how long the trimmer keeps the memory
-    // that the heap needed at a peak. 0 turns the hold off. (see SatoriTrimmer::Loop)
+    // that the heap had in use at a peak. 0 turns the hold off. (see SatoriTrimmer::Loop)
     static size_t TrimPeakHoldSeconds()
     {
         int64_t hold = GCConfig::GetTrimPeakHold();

@@ -177,6 +177,19 @@ public:
         return m_committedBytes;
     }
 
+    // What the free granules of all pages have committed. A snapshot, see SatoriPage::FreeCommittedBytes.
+    size_t FreeCommittedBytes();
+
+    // What is committed and not free: the regions, the cards and the map. A snapshot.
+    size_t InUseBytes();
+
+    // The trimmer claims a run of free granules before it decommits them, and they are not free then, but still counted as committed.
+    // It says how much that is, so that InUseBytes does not count it. (see SatoriPage::TryTrimRun)
+    void SetTrimmingBytes(size_t bytes)
+    {
+        VolatileStore(&m_trimmingBytes, bytes);
+    }
+
 #if _DEBUG
     // Checks that the free granules of all pages are consistent with the region maps and the regions,
     // and that what the heap counts as committed is what the pages, the regions and the free granules have.
@@ -208,6 +221,7 @@ private:
     SatoriLock m_mapLock;
 
     size_t m_committedBytes;
+    size_t m_trimmingBytes;
 
     DECLSPEC_ALIGN(64)
     SatoriFinalizationQueue m_finalizationQueue;

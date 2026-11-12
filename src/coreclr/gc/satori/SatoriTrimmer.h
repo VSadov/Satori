@@ -62,7 +62,6 @@ private:
 
     static void LoopFn(void* inst);
     void Loop();
-    size_t FreeCommittedBytes();
     void StopAndWait();
     void Pause(int msec);
     void Unpause();
