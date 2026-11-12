@@ -219,6 +219,19 @@ void SatoriTrimmer::Loop()
         size_t pacedBytes = 0;
         bool trimming = true;
 
+        // A GC ends the pass, and the next one starts after the delay, with the budget for the next cycle. A GC asks the trimmer to stop
+        // when it starts, and counts itself before it lets the trimmer run again. In the precise mode it does not wait for the trimmer to stop.
+        // (an acquire: after a state that the GC set when it ended, the count is the new one)
+        bool gcCame = false;
+        auto checkForGc = [&]()
+        {
+            gcCame = gcCame ||
+                VolatileLoad(&m_state) != TRIMMER_STATE_RUNNING ||
+                recycler->GetCollectionCount(1) != lastBlockingGcCount;
+
+            return gcCame;
+        };
+
         m_heap->ForEachPage(
             [&](SatoriPage* page)
             {
@@ -235,8 +248,7 @@ void SatoriTrimmer::Loop()
                         StopAndWait();
                     }
 
-                    // A GC ends the pass. The next one starts after the delay, with the budget for the next cycle.
-                    if (recycler->GetCollectionCount(1) != lastBlockingGcCount)
+                    if (checkForGc())
                     {
                         trimming = false;
                         break;
@@ -290,7 +302,16 @@ void SatoriTrimmer::Loop()
                 }
 
                 // Every pass looks at all the free granules, so that the next pass can tell which ones have stayed free.
-                page->RememberFreeGranules();
+                // Not after a GC: the next pass comes right after it, and would take the granules that the GC freed for ones that stayed free.
+                // A look that a GC overlapped could have seen some of them, so the page forgets it, and has no granule seen free until the next look.
+                if (!checkForGc())
+                {
+                    page->RememberFreeGranules();
+                    if (checkForGc())
+                    {
+                        page->ForgetFreeGranules();
+                    }
+                }
             }
         );
 

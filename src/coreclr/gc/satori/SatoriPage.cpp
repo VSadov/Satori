@@ -954,6 +954,15 @@ void SatoriPage::RememberFreeGranules()
 #endif
 }
 
+void SatoriPage::ForgetFreeGranules()
+{
+    for (size_t word = 0; word < GranuleCount() / 64; word++)
+    {
+        // Only atomicity is needed, as in RememberFreeGranules. A free that clears seen bits meanwhile leaves them clear.
+        VolatileStoreWithoutBarrier(&m_seenFreeBitmap[word], (size_t)0);
+    }
+}
+
 size_t SatoriPage::FreeCommittedBytes()
 {
     // The watermark of a free granule is stable, but the granule can be claimed any moment. A hint, as in NextGranuleToTrim.

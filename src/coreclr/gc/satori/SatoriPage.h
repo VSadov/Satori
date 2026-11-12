@@ -109,6 +109,8 @@ public:
     bool TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, size_t& count);
     // Remembers which granules are free now, for the next time (see m_seenFreeBitmap).
     void RememberFreeGranules();
+    // Forgets the last look: no granule is seen free until the next one.
+    void ForgetFreeGranules();
     // What the free granules have committed. A snapshot: the granules can be claimed and freed meanwhile.
     size_t FreeCommittedBytes();
 
