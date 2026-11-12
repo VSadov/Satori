@@ -145,7 +145,11 @@ public:
 
     // The operations above order both ways: a locked instruction on x86 and x64; on ARM64 an atomic that is both an acquire and a release,
     // and with GCC and Clang, when it is a loop of exclusive loads and stores rather than an LSE instruction, a full barrier after it
-    // (see InterlockedOperationBarrier). The ones below order no more than their names say.
+    // (see InterlockedOperationBarrier).
+    // A CompareExchange that fails does not write. Where no barrier follows it (an LSE instruction, or with MSVC a loop of exclusive loads
+    // and stores) it then orders as an acquire load only: what the thread does next is ordered after the read, but an earlier store is
+    // not ordered before a later load.
+    // The ones below order no more than their names say.
     //   Acq:       what the thread does after the operation is ordered after the read of the destination.
     //   Rel:       what the thread did before the operation is ordered before the write of the destination.
     //   Unordered: atomic, and nothing more.

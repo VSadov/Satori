@@ -90,10 +90,13 @@ inline void SatoriPage::EnterUnownedHeaderRead()
     // and finds the region gone. That holds only if the registration is ordered before the read of the map,
     // and an acquire or a release alone does not order a store before a later load. What does:
     //  - x64: the locked instruction is a full fence.
-    //  - ARM64, GCC and Clang without the LSE atomics: a full barrier ends the ldaxr/stlxr loop (see InterlockedOperationBarrier).
-    //  - ARM64 otherwise: no barrier follows the operation (it is ldaddal, or with MSVC an ldaxr/stlxr loop without LSE). Its store is
-    //    a release, the map is read with an acquire (see NextInPage), and a store-release is ordered before a later load-acquire.
-    // So this stays the full interlocked increment, and the map stays an acquire load: an acquire or a release here is not enough.
+    //  - ARM64 with the LSE atomics: ldaddal, one instruction that is both an acquire and a release. No barrier follows, and none
+    //    is needed: such an instruction is a full barrier by itself (the PAL and the Linux kernel rely on the same).
+    //  - ARM64 without them, GCC and Clang: a full barrier ends the ldaxr/stlxr loop (see InterlockedOperationBarrier).
+    //  - ARM64 without them, MSVC: the intrinsic is an ldaxr/stlxr loop with no barrier after it, so only its store is a release.
+    //    It is ordered before the read of the map because the map is read with an acquire (see NextInPage), and a store-release
+    //    is ordered before a later load-acquire.
+    // So this stays the full interlocked increment (an acquire or a release form of it is not enough), and the map stays an acquire load.
     Interlocked::Increment(UnownedHeaderReaders());
 }
 
