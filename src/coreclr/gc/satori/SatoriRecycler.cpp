@@ -5394,8 +5394,10 @@ size_t SatoriRecycler::GetTrimBudget(size_t heldTotal, bool& underPressure)
 {
     // The next cycle takes about what the gen1 budget lets it take, and first the free space that sweeping parks in reusable regions.
     // The parked space grows while the sweeping goes on, so this is read again as the trimmer goes.
+    // Once the limit runs out, ShouldReuse still takes from it the regions that it does not park, so no more than the limit counts as parked.
     size_t expectedGen1 = m_expectedGen1;
-    int64_t parked = m_reusableLimitAtPlan - VolatileLoad(&m_reusableLimit);
+    int64_t limitAtPlan = m_reusableLimitAtPlan;
+    int64_t parked = min(limitAtPlan - VolatileLoad(&m_reusableLimit), limitAtPlan);
     size_t budget = parked > 0 ? expectedGen1 - min(expectedGen1, (size_t)parked) : expectedGen1;
 
     // Until the next gen2, the cycles after the next one grow the heap with what they promote, up to the gen2 limit.
