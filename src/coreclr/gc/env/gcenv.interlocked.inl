@@ -481,7 +481,7 @@ FORCEINLINE T Interlocked::ExchangePointer(T volatile * destination, T value)
 #ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
-        return (T)(TADDR)LseSwap((size_t volatile *)destination, (size_t)value);
+        return (T)(TADDR)LseSwap((size_t volatile *)destination, (size_t)(void*)value);
     }
 #endif
     T result = (T)(TADDR)__atomic_exchange_n((void* volatile *)destination, value, __ATOMIC_ACQ_REL);
@@ -533,7 +533,7 @@ FORCEINLINE T Interlocked::CompareExchangePointer(T volatile *destination, T exc
 #ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
-        return (T)(TADDR)LseCompareExchange((size_t volatile *)destination, (size_t)exchange, (size_t)comparand);
+        return (T)(TADDR)LseCompareExchange((size_t volatile *)destination, (size_t)(void*)exchange, (size_t)(void*)comparand);
     }
 #endif
     T result = (T)(TADDR)__sync_val_compare_and_swap((void* volatile *)destination, comparand, exchange);
@@ -555,7 +555,7 @@ FORCEINLINE T Interlocked::CompareExchangePointer(T volatile *destination, T exc
 #ifdef INTERLOCKED_ARM64_LSE
     if (UseLseAtomics())
     {
-        return (T)(TADDR)LseCompareExchange((size_t volatile *)destination, (size_t)exchange, (size_t)0);
+        return (T)(TADDR)LseCompareExchange((size_t volatile *)destination, (size_t)(void*)exchange, (size_t)0);
     }
 #endif
     T result = (T)(TADDR)__sync_val_compare_and_swap((void* volatile *)destination, (void*)comparand, (void*)exchange);
