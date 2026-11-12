@@ -71,14 +71,24 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
     // we can't have sparse commit coarser than regions.
     // besides we would end up comitting the entire page anyways once the obj size
     // is aligned up and committed.
+    // Where the card slices are not decommitted (see SatoriUtil::CanDecommitCardSlices), the card table is committed in full and stays so.
+    // It is 2Mb per 1Gb of the page and starts where the page does, so with THP huge pages can back it.
     // Otherwise only the slices of the card table's own granules are committed: the header and the metadata, and the slices that share
     // an OS page with them. The slices of the other granules are committed when the granules are claimed (see FormatClaimed).
     size_t firstGranule = cardTableSize >> Satori::REGION_BITS;
     size_t pinnedSliceGranules = ALIGN_UP(firstGranule, SatoriUtil::CardSliceGroupGranules());
-    size_t commitSize = SatoriUtil::CommitGranularity() > Satori::REGION_SIZE_GRANULARITY ?
-        pageSize :
-        pinnedSliceGranules * Satori::CARD_SLICE_SIZE;
-    _ASSERTE(!SatoriUtil::CanDecommitCardSlices() || commitSize < cardTableSize);
+    size_t commitSize = pinnedSliceGranules * Satori::CARD_SLICE_SIZE;
+    if (SatoriUtil::CommitGranularity() > Satori::REGION_SIZE_GRANULARITY)
+    {
+        commitSize = pageSize;
+    }
+    else if (!SatoriUtil::CanDecommitCardSlices())
+    {
+        commitSize = cardTableSize;
+    }
+
+    // Where the slices are not decommitted, every granule has its cards from the start: no granule gets the WATERMARK_NO_CARDS bit below.
+    _ASSERTE(SatoriUtil::CanDecommitCardSlices() ? commitSize < cardTableSize : commitSize >= cardTableSize);
 
     if (!GCToOSInterface::VirtualCommit((void*)address, commitSize))
     {
@@ -578,7 +588,7 @@ bool SatoriPage::IsCommittedInFull(size_t first, size_t count)
 }
 
 // Gives back a page that was not published. The only thing committed in it is the card table: its header, and the slices that a claim
-// of the page's region (see SatoriHeap::AddLargePage) committed.
+// of the page's region (see SatoriHeap::AddLargePage) committed, or all of it where the slices are not decommitted.
 void SatoriPage::Release()
 {
 #if _DEBUG
@@ -813,8 +823,8 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
 
     size_t claimed = 0;
     // The run ends where a block of maxCount granules ends, so that adjacent runs meet at the boundaries of the groups of granules
-    // whose card slices share an OS page, and no group is split between two runs. (see DecommitCardSlices)
-    _ASSERTE(maxCount % SatoriUtil::CardSliceGroupGranules() == 0);
+    // whose card slices share an OS page, and no group is split between two runs, where the slices are decommitted. (see DecommitCardSlices)
+    _ASSERTE(!SatoriUtil::CanDecommitCardSlices() || maxCount % SatoriUtil::CardSliceGroupGranules() == 0);
     size_t limit = min(ALIGN_DOWN(first, maxCount) + maxCount, GranuleCount());
     for (size_t granule = first; granule < limit; granule++)
     {

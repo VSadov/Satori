@@ -134,6 +134,7 @@ public:
 
     // What of the card table is committed: the slices of the card table's own granules (the header and the metadata), and the slices
     // of the granules that have their cards. (With OS pages larger than a slice the OS may have a little more, see DecommitCardSlices.)
+    // All of it where the slices are not decommitted (see SatoriUtil::CanDecommitCardSlices).
     size_t CardTableCommittedBytes();
 
 #if _DEBUG
@@ -309,7 +310,8 @@ private:
             // 1 byte per granule, meaningful only while the granule is free.
             // How much of the granule from its start is committed, in WATERMARK_UNITs (0 - 64), and the bit WATERMARK_NO_CARDS, which
             // says that the granule's slice of the card table is decommitted too (only with 0 units). A granule that is in use has its cards,
-            // whatever its byte says: the claim commits them (FormatClaimed), and the trimmer decommits them with the free granule's memory.
+            // whatever its byte says: the claim commits them (FormatClaimed), and the trimmer decommits them with the free granule's memory,
+            // where the slices are decommitted at all (see SatoriUtil::CanDecommitCardSlices).
             uint8_t* m_commitWatermarks;
             // 1 byte per granule, meaningful only while the granule is free.
             // How much of the granule from its start may hold nonzero data, rounded up, in WATERMARK_UNITs (0 - 64).

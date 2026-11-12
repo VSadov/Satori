@@ -870,11 +870,31 @@ public:
         return max(Satori::WATERMARK_UNIT, ALIGN_UP(GCToOSInterface::GetPageSize(), Satori::WATERMARK_UNIT));
     }
 
-    // The card slices of free granules are decommitted only where the free granules themselves can be decommitted
-    // (see SatoriTrimmer's CanDecommitGranules). Otherwise the card table is committed in full, as the page is.
+    // DOTNET_gcDecommitCards
+    // Whether the card slices of free granules are decommitted with their memory, and committed again when the granules are claimed.
+    // If not, the card table of a page is committed in full when the page is made, and stays committed. (see SatoriPage::InitializeAt)
+    // The default is to decommit, but not with THP: a card table is a whole number of huge pages (2 MB per 1 GB of the page) from the
+    // start of its page, and huge pages can back it only when it is not committed and decommitted by the slice.
+    // Either way, the slices are decommitted only where the free granules themselves can be (see SatoriTrimmer's CanDecommitGranules).
+    // Otherwise the card table is committed in full, as the page is.
     static bool CanDecommitCardSlices()
     {
-        return CommitGranularity() <= Satori::REGION_SIZE_GRANULARITY;
+        if (CommitGranularity() > Satori::REGION_SIZE_GRANULARITY)
+        {
+            return false;
+        }
+
+        int64_t decommit = GCConfig::GetDecommitCards();
+        if (decommit < 0)
+        {
+#if defined(TARGET_LINUX)
+            return !UseTHP();
+#else
+            return true;
+#endif
+        }
+
+        return decommit != 0;
     }
 
     // How many granules have their card slices in one OS page: 1 with 4 KB pages, 4 with 16 KB, 16 with 64 KB.

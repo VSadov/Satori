@@ -268,8 +268,10 @@ void SatoriTrimmer::Loop()
                     }
 
                     // A run of up to the surplus, in a power of 2 granules, so that the runs stay aligned. (see TryTrimRun)
+                    // Where the card slices are decommitted, no less than the granules whose slices share an OS page.
                     size_t surplusGranules = max((size_t)1, surplus / Satori::REGION_SIZE_GRANULARITY);
-                    size_t maxCount = max(SatoriUtil::CardSliceGroupGranules(), min(Satori::TRIM_RUN_GRANULES, SatoriUtil::RoundDownPwr2(surplusGranules)));
+                    size_t minCount = SatoriUtil::CanDecommitCardSlices() ? SatoriUtil::CardSliceGroupGranules() : 1;
+                    size_t maxCount = max(minCount, min(Satori::TRIM_RUN_GRANULES, SatoriUtil::RoundDownPwr2(surplusGranules)));
 
                     size_t before = page->FreeCommittedBytes();
                     size_t count;
