@@ -291,7 +291,8 @@ void SatoriTrimmer::Loop()
                     {
                         size_t after = page->FreeCommittedBytes();
                         pacedBytes += before > after ? before - after : 0;
-                        int64_t aheadTicks = paceStart + (int64_t)(pacedBytes / paceRate * freq + pacedBytes % paceRate * freq / paceRate) - SatoriUtil::GetTimeStamp();
+                        // in floating point: the bytes times the frequency would overflow
+                        int64_t aheadTicks = paceStart + (int64_t)((double)pacedBytes / (double)paceRate * (double)freq) - SatoriUtil::GetTimeStamp();
                         if (aheadTicks > 0)
                         {
                             Pause((int)(aheadTicks * 1000 / freq + 1));
