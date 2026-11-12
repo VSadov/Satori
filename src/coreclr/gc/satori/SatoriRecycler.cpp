@@ -157,6 +157,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_availableMemory = 0;
     m_reusableTargetPercent = SatoriUtil::ReusableTarget();
     m_reusableLimit = 0;
+    m_reusableLimitAtPlan = 0;
+    m_expectedGen1 = MIN_GEN1_BUDGET;
     m_totalLimit = MIN_GEN1_BUDGET;
     m_nextGcIsFullGc = true;
     m_prevCondemnedGeneration = 2;
@@ -4297,6 +4299,8 @@ void SatoriRecycler::Plan()
     m_gen1OverrunPerCycle = max(overrun, (m_gen1OverrunPerCycle * 7 + overrun) / 8);
     size_t expectedGen1 = min(m_availableMemory, m_gen1Budget + m_gen1OverrunPerCycle);
     m_reusableLimit = (int64_t)(expectedGen1 / 100 * m_reusableTargetPercent);
+    m_reusableLimitAtPlan = m_reusableLimit;
+    m_expectedGen1 = expectedGen1;
 
     size_t estimatedReclaim = m_estimatedEphemeralReclaim;
     if (m_condemnedGeneration == 2)
@@ -5382,6 +5386,39 @@ size_t SatoriRecycler::GetTotalOccupancy()
     return m_occupancy[0] +
            m_occupancy[1] +
            m_occupancy[2];
+}
+
+// Read by the trimmer between GCs, when the GC is not changing the numbers below, except for what sweeping parks. (it stops the trimmer when it starts)
+// The numbers are estimates and read without synchronization.
+size_t SatoriRecycler::GetTrimBudget(size_t heldTotal, bool& underPressure)
+{
+    // The next cycle takes about what the gen1 budget lets it take, and first the free space that sweeping parks in reusable regions.
+    // The parked space grows while the sweeping goes on, so this is read again as the trimmer goes.
+    size_t expectedGen1 = m_expectedGen1;
+    int64_t parked = m_reusableLimitAtPlan - VolatileLoad(&m_reusableLimit);
+    size_t budget = parked > 0 ? expectedGen1 - min(expectedGen1, (size_t)parked) : expectedGen1;
+
+    // Until the next gen2, the cycles after the next one grow the heap with what they promote, up to the gen2 limit.
+    // The memory that a gen2 frees is then taken again over the cycles before the next gen2, and is not decommitted
+    // only to be committed again. When the live set shrinks, the limit shrinks with it at the next gen2.
+    // (when the next GC is a gen2 because the heap will be over the limit by then, there is nothing to add here)
+    size_t occupancy = GetTotalOccupancy();
+    size_t expectedSize = occupancy + expectedGen1;
+    if (m_totalLimit > expectedSize)
+    {
+        budget += m_totalLimit - expectedSize;
+    }
+
+    // The available memory is what the last GC saw. When it cannot hold the budget, what is above it is decommitted without pacing.
+    // A held peak is kept only when there is memory for it.
+    size_t available = m_availableMemory;
+    underPressure = available < budget;
+    if (heldTotal > occupancy)
+    {
+        budget = max(budget, min(heldTotal - occupancy, available));
+    }
+
+    return min(budget, available);
 }
 
 size_t SatoriRecycler::GetGcStartMillis(int generation)

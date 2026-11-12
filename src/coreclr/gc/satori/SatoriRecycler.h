@@ -121,6 +121,10 @@ public:
     void RecordDemotedOccupancy(ptrdiff_t demotedOccupancy);
     void UpdateGenerationOccupancies();
     size_t GetTotalOccupancy();
+    // How much free committed memory the trimmer keeps: what the coming GC cycles are expected to take, see SatoriTrimmer::Loop,
+    // and at least what brings the heap to heldTotal, a size that it needed recently.
+    // underPressure is set when the memory is too low for the expected cycles, and the budget is then what is available.
+    size_t GetTrimBudget(size_t heldTotal, bool& underPressure);
     size_t GetOccupancy(int i);
     size_t GetGcStartMillis(int generation);
     size_t GetGcDurationMillis(int generation);
@@ -330,6 +334,9 @@ private:
     // budget and cycle allocations are known, and spent as regions are parked. 0 stops parking any more.
     int m_reusableTargetPercent;
     int64_t m_reusableLimit;
+    // what Plan set m_reusableLimit to, and the allocation that it expects until the next GC. (see GetTrimBudget)
+    int64_t m_reusableLimitAtPlan;
+    size_t m_expectedGen1;
     bool m_nextGcIsFullGc;
 
     size_t m_condemnedRegionsCount;

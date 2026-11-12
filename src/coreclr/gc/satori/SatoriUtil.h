@@ -72,16 +72,21 @@ namespace Satori
     // The trimmer decommits runs of adjacent free granules with one call, up to this many granules (64 MB).
     static const size_t TRIM_RUN_GRANULES = 32;
 
+    // The trimmer (see SatoriTrimmer::Loop) starts this long after a GC, so that it does not decommit while the threads
+    // that the GC resumed take memory and fault it in. Their first allocations also make the surplus smaller.
+    static const int TRIM_GC_DELAY_MS = 5;
+    // It decommits a surplus at this many bytes per second, or at a quarter of the surplus per second if that is more.
+    static const size_t TRIM_MIN_RATE = (size_t)160 << 20;
+    static const size_t TRIM_SURPLUS_PART_PER_SEC = 4;
+    // The heap of a process whose live set grows and shrinks again, like a compiler between the compilations, needs at its next peak
+    // what it needed at the last one, and the budget of the next cycle cannot know that. The trimmer keeps the memory
+    // for the highest peak of the last this many seconds (default of DOTNET_gcTrimPeakHold, 1E in hex), see TrimPeakHoldSeconds.
+    static const size_t TRIM_PEAK_HOLD_SEC = 30;
+
     // A thread waits this long for the page-add lock, then may add a page without it, one such thread at a time
     // (see SatoriAllocator::GetRegionCore). The longest add measured was 3.7 ms. On Windows the wait ends on a tick of the system timer
     // (15.6 ms by default).
     static const int PAGE_ADD_LOCK_TIMEOUT_MS = 6;
-
-    // The trimmer decommits a free granule only after it has been free for this long, in seconds, counted from the first look of
-    // the trimmer that saw it free (and at most twice this, see SatoriTrimmer::MaybeRotateAges). Memory that a gen2 frees and that the allocation
-    // takes again in the next cycle would otherwise
-    // be decommitted and committed again every cycle. This is the default of DOTNET_gcTrimMinFreeAge (1E in hex), see TrimMinFreeAgeSeconds.
-    static const size_t TRIM_MIN_FREE_AGE_SEC = 30;
 
     const static int INDEX_GRANULARITY_BITS = 11;
     const static int INDEX_GRANULARITY = 1 << INDEX_GRANULARITY_BITS;
@@ -708,14 +713,12 @@ public:
         return (GCConfig::GetPacingGC());
     }
 
-    // How long in seconds a granule has to be free before the trimmer decommits it. DOTNET_gcTrimMinFreeAge, parsed as hex like the other GC
-    // settings: DOTNET_gcTrimMinFreeAge=1E is 30 seconds, which is the default (TRIM_MIN_FREE_AGE_SEC, in effect when the setting is not given).
-    // 0 turns the minimum off. The age is counted from the first look of the trimmer that saw the granule free, and is known
-    // within a factor of two: a granule is decommitted between this and twice this after that look (see SatoriTrimmer::MaybeRotateAges).
-    static size_t TrimMinFreeAgeSeconds()
+    // DOTNET_gcTrimPeakHold, in seconds (hex, like the other GC settings). For how long the trimmer keeps the memory
+    // that the heap needed at a peak. 0 turns the hold off. (see SatoriTrimmer::Loop)
+    static size_t TrimPeakHoldSeconds()
     {
-        int64_t age = GCConfig::GetTrimMinFreeAge();
-        return age < 0 ? Satori::TRIM_MIN_FREE_AGE_SEC : (size_t)min(age, (int64_t)INT32_MAX);
+        int64_t hold = GCConfig::GetTrimPeakHold();
+        return hold < 0 ? Satori::TRIM_PEAK_HOLD_SEC : (size_t)min(hold, (int64_t)INT32_MAX);
     }
 
     // DOTNET_gcTrackBackoff

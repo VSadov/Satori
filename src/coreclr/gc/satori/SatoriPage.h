@@ -96,25 +96,21 @@ public:
     // that it does not own without being registered, see EnterUnownedHeaderRead.
     //
     // Finds the first free granule that has anything committed, not before `from`. When asked, only among the granules
-    // that were also free when the trimmer last looked at this page, and that have been free for the minimum free age
-    // (one to two periods of RotateAges, see SatoriTrimmer::MaybeRotateAges), unless `ignoreAge` says that the granules that are too young count too (to see if there is work left).
+    // that were also free when the trimmer last looked at this page.
     // Returns SIZE_MAX if there is none.
-    size_t NextGranuleToTrim(size_t from, bool onlyIfSeenFree, bool ignoreAge = false);
+    size_t NextGranuleToTrim(size_t from, bool onlyIfSeenFree);
     // Claims the granule `first`, which NextGranuleToTrim found, and the free granules after it that have anything committed,
     // up to the end of the block of `maxCount` granules that `first` is in. Decommits them with one call and gives them back as free and cold.
-    // When asked, only the granules that are still ones that were seen free, and old enough: the caller may have found them before
+    // When asked, only the granules that are still ones that were seen free: the caller may have found them before
     // they were claimed and freed again, and then the claim takes the new free bit.
     // `count` is the number of granules that the run covered (at least 1), the caller goes on after them.
     // Returns true if it decommitted anything. It decommits nothing, and gives the granules back, if a thread is registered as a reader
     // of an unowned header.
     bool TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, size_t& count);
-    // Remembers which granules are free now, for the next time. A granule that this look sees free for the first time
-    // starts its age: it is in neither of the age snapshots (see RotateAges).
+    // Remembers which granules are free now, for the next time (see m_seenFreeBitmap).
     void RememberFreeGranules();
-    // The minimum free age. Called by the trimmer every period (SatoriTrimmer::MaybeRotateAges): the "aged" snapshot gets the "aging" one,
-    // and "aging" gets the granules that the last look saw free. A granule in "aged" was seen free at least one period ago,
-    // and a granule is first in "aged" one to two periods after the look that first saw it free.
-    void RotateAges();
+    // What the free granules have committed. A snapshot: the granules can be claimed and freed meanwhile.
+    size_t FreeCommittedBytes();
 
     // A thread that reads the header of a region that it does not own (the region that follows its own, see TryGetRegularRegion)
     // registers with the page before it reads the region map for that region, and leaves after its last read of the header.
@@ -256,9 +252,6 @@ private:
     bool TryClearRun(size_t first, size_t count);
     void ForgetSeenFree(size_t first, size_t count);
     bool IsTrimCandidate(size_t granule, bool onlyIfSeenFree);
-    bool IsOldEnoughToTrim(size_t granule);
-    size_t* AgingBitmap();
-    size_t* AgedBitmap();
     size_t PinnedCardSliceGranules();
     bool TryCommitCardSlices(size_t first, size_t count);
     void DecommitCardSlices(size_t first, size_t count);
@@ -327,9 +320,7 @@ private:
             // 1 bit per granule. The granules that were free when the trimmer last looked at the page, and were not freed since.
             // FreeRegion clears the bits of the granules that it frees, before it sets their free bits.
             // Only the trimmer sets bits (and a GC that trims on request, while the trimmer is stopped).
-            // It is followed by two more bitmaps of 1 bit per granule, the snapshots of the minimum free age, "aging" and "aged"
-            // (see RotateAges and AgingBitmap). Only the trimmer writes them, and a GC that trims on request, while the trimmer is stopped.
-            // The bitmaps end where the line of the reader count starts (see UnownedHeaderReaders).
+            // The bitmaps end before the line of the reader count (see UnownedHeaderReaders).
             size_t* m_seenFreeBitmap;
 #if _DEBUG
             // Checked builds only. The trimmer asserts that it never decommits a granule that was freed after the last look at its page.

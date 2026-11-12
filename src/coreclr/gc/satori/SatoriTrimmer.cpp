@@ -28,6 +28,7 @@
 
 #include "gcenv.h"
 #include "../env/gcenv.os.h"
+#include "../gcenv.inl"
 
 #include "SatoriUtil.h"
 #include "SatoriTrimmer.h"
@@ -41,7 +42,6 @@
 SatoriTrimmer::SatoriTrimmer(SatoriHeap* heap)
 {
     m_lastGen2Count = 0;
-    m_lastAgeRotation = SatoriUtil::GetTimeStamp();
     m_heap  = heap;
     m_state = TRIMMER_STATE_STOPPED;
 
@@ -80,131 +80,219 @@ void SatoriTrimmer::LoopFn(void* inst)
     ths->Loop();
 }
 
+// What the free granules of all pages have committed. A snapshot, see SatoriPage::FreeCommittedBytes.
+size_t SatoriTrimmer::FreeCommittedBytes()
+{
+    size_t bytes = 0;
+    m_heap->ForEachPage(
+        [&](SatoriPage* page)
+        {
+            bytes += page->FreeCommittedBytes();
+        }
+    );
+
+    return bytes;
+}
+
+// The coming GC cycles take the memory that a GC frees: the next one about its gen1 budget, less what the sweeping parked in reusable
+// regions, and the ones before the next gen2 also what they promote, up to the gen2 limit (see SatoriRecycler::GetTrimBudget).
+// The trimmer keeps that much of the free committed memory, and decommits the rest, the surplus. A process that runs steady,
+// with its GCs at about the same occupancy, has about no surplus, and does not decommit memory only to commit it again.
+// A process whose live set grows and shrinks over many cycles needs again at its next peak what it needed at the last one,
+// so the trimmer also keeps what brings the heap to the highest size that it needed in the last hold period (DOTNET_gcTrimPeakHold).
+// A pass comes shortly after every blocking GC, and the next GC ends it. It decommits the surplus at a pace: decommit has a cost
+// for the whole process, and the process may need the memory again soon. When the memory is low the surplus goes without the pace.
+// An idle process (no GC for a round interval) needs less: every round of idleness halves the budget, until all the free memory
+// is decommitted.
+// The granules that a pass decommits were free on the pass before too, so they were not taken by a whole GC cycle,
+// and the memory that a GC frees, which is what the process takes again first, is not decommitted right after the GC.
 void SatoriTrimmer::Loop()
 {
-    int64_t lastGen2 = m_heap->Recycler()->GetCollectionCount(2);
-    int64_t roundStart = 0;
-    const int64_t roundInterval = SatoriUtil::GetTimeStampFrequency() * 5;
+    SatoriRecycler* recycler = m_heap->Recycler();
+    const int64_t freq = SatoriUtil::GetTimeStampFrequency();
+    const int64_t roundInterval = freq * 5;
+    const int64_t gcDelay = freq * Satori::TRIM_GC_DELAY_MS / 1000;
 
-    // The last round saw granules that are free and committed, and could not trim them, since they were not free on the round before,
-    // or have not been free for the minimum free age. A later round can, if they stay free.
+    // The blocking GCs, which free granules, and the GCs of any kind, which say that the process is not idle.
+    int64_t lastBlockingGcCount = recycler->GetCollectionCount(1);
+    int64_t lastGcCount = recycler->GetCollectionCount(0);
+    int64_t lastBlockingGcTs = SatoriUtil::GetTimeStamp();
+    int64_t lastGcSeenTs = lastBlockingGcTs;
+    int64_t lastPassTs = lastBlockingGcTs;
+    bool passDue = false;
+    int idleRounds = 0;
+
+    // The highest sizes that the heap needed after a GC, its live part and the budget, in two periods of the hold.
+    // A peak is held for between one and two periods.
+    const int64_t holdPeriod = freq * (int64_t)SatoriUtil::TrimPeakHoldSeconds();
+    size_t peaks[2] = { 0, 0 };
+    int64_t peakRotationTs = lastBlockingGcTs;
+
+    // The last pass left free committed memory. If no GC comes, a later pass will decommit it, as the budget shrinks.
     bool leftWork = false;
-
-    // The GCs of any generation that the trimmer has seen, and when it saw the last new one.
-    // A process that has seen no GC for a round interval is idle.
-    int64_t lastGcCount = m_heap->Recycler()->GetCollectionCount(0);
-    int64_t lastGcSeenTs = SatoriUtil::GetTimeStamp();
 
     while (true)
     {
-        // A round is due after a gen2 that came since the last round started, since that is when memory is freed in bulk.
-        // A round is also due when the last round left work for this one, but only in an idle process: where GCs keep coming,
-        // the granules that this round would find are about to be taken again, and the gen2 gate is the one that counts.
-        // Without the second condition the memory that the last gen2 freed would be seen once and never decommitted,
-        // in a process that stops allocating and has no more gen2.
-        // The rounds are at least 5 sec apart.
         while (true)
         {
             int64_t now = SatoriUtil::GetTimeStamp();
-            int64_t newGen2 = m_heap->Recycler()->GetCollectionCount(2);
-            int64_t gcCount = m_heap->Recycler()->GetCollectionCount(0);
+            int64_t blockingGcCount = recycler->GetCollectionCount(1);
+            if (blockingGcCount != lastBlockingGcCount)
+            {
+                lastBlockingGcCount = blockingGcCount;
+                lastBlockingGcTs = now;
+                passDue = true;
+            }
+
+            int64_t gcCount = recycler->GetCollectionCount(0);
             if (gcCount != lastGcCount)
             {
                 lastGcCount = gcCount;
                 lastGcSeenTs = now;
+                idleRounds = 0;
             }
 
-            bool gen2Due = lastGen2 != newGen2;
-            int64_t dueTs = roundStart + roundInterval;
-            if (!gen2Due && leftWork)
+            int64_t dueTs = INT64_MAX;
+            if (passDue)
             {
-                dueTs = max(dueTs, lastGcSeenTs + roundInterval);
+                dueTs = lastBlockingGcTs + gcDelay;
+            }
+            else if (leftWork)
+            {
+                dueTs = max(lastPassTs, lastGcSeenTs) + roundInterval;
             }
 
-            int64_t waitTicks = dueTs - now;
-            if (waitTicks <= 0 && (gen2Due || leftWork))
+            if (now >= dueTs)
             {
-                lastGen2 = newGen2;
                 break;
             }
 
-            // Idle throttling must not revoke a GC's run permission. Only a GC-requested stop
-            // needs another SetOkToRun before the trimmer can continue.
-            // The wait also ends in time for the next rotation of the age snapshots, so that their period is what it is meant to be.
-            int64_t untilRotation = MaybeRotateAges();
-            int64_t waitFor = min(waitTicks <= 0 ? untilRotation : min(waitTicks, untilRotation), roundInterval);
-            int waitMsec = (int)(waitFor * 1000 / SatoriUtil::GetTimeStampFrequency() + 1);
+            int64_t waitFor = min(dueTs - now, roundInterval);
+            int waitMsec = (int)(waitFor * 1000 / freq + 1);
             Pause(waitMsec);
             StopAndWait();
         }
 
-        roundStart = SatoriUtil::GetTimeStamp();
+        passDue = false;
         leftWork = false;
+        lastPassTs = SatoriUtil::GetTimeStamp();
 
         if (!CanDecommitGranules())
         {
             continue;
         }
 
-        // Regions in the cache are not free granules, and the trimmer only decommits free granules.
-        // The ones that nobody has taken by the next round will be decommitted then.
-        // The round starts with the permission to run. Without this call the first round could start while a GC is in progress
-        // (the state is STOPPED, if a gen2 completed between the two reads of its count at the start), and in the conservative mode
-        // a GC marks only while the trimmer is not active.
+        // The pass starts with the permission to run. The wait above can end without asking for it (when the last pass took longer than
+        // a round interval), and a GC could be in progress then. In the conservative mode a GC marks only while the trimmer is not active.
         StopAndWait();
-        MaybeRotateAges();
-        m_heap->Allocator()->DrainRegionCache();
+        if (lastPassTs - lastGcSeenTs >= roundInterval)
+        {
+            idleRounds = min(idleRounds + 1, 63);
+
+            // Regions in the cache are not free granules, and the trimmer only decommits free granules.
+            // A busy process takes them from the cache, an idle one has them decommitted by the next pass.
+            m_heap->Allocator()->DrainRegionCache();
+        }
+
+        if (holdPeriod != 0)
+        {
+            int64_t sinceRotation = lastPassTs - peakRotationTs;
+            if (sinceRotation >= holdPeriod)
+            {
+                peaks[1] = sinceRotation >= holdPeriod * 2 ? 0 : peaks[0];
+                peaks[0] = 0;
+                peakRotationTs = lastPassTs;
+            }
+
+            if (idleRounds == 0)
+            {
+                bool unused;
+                peaks[0] = max(peaks[0], recycler->GetTotalOccupancy() + recycler->GetTrimBudget(0, unused));
+            }
+        }
+
+        size_t held = max(peaks[0], peaks[1]);
+
+        // The pace is set by the surplus at the start of the pass, and a pass that is behind does not pause.
+        int64_t paceStart = SatoriUtil::GetTimeStamp();
+        size_t paceRate = 0;
+        size_t pacedBytes = 0;
+        bool trimming = true;
 
         m_heap->ForEachPage(
             [&](SatoriPage* page)
             {
-                // limit the rate of scanning to 1 page/msec.
-                Pause(1);
                 if (m_state != TRIMMER_STATE_RUNNING)
                 {
                     StopAndWait();
                 }
 
-                int64_t lastGen1 = m_heap->Recycler()->GetCollectionCount(1);
-
-                // Only the granules that were free on the previous round too, and have been free for the minimum free age, so that memory
-                // that a busy process is about to take again is not decommitted. Adjacent granules are decommitted together.
-                size_t granule = page->NextGranuleToTrim(0, /* onlyIfSeenFree */ true);
+                size_t granule = trimming ? page->NextGranuleToTrim(0, /* onlyIfSeenFree */ true) : SIZE_MAX;
                 while (granule != SIZE_MAX)
                 {
-                    size_t count;
-                    if (page->TryTrimRun(granule, Satori::TRIM_RUN_GRANULES, /* onlyIfSeenFree */ true, count))
-                    {
-                        // limit the decommit rate to 1 call/10 msec.
-                        Pause(10);
-                    }
-
-                    // also we will pause for 1 sec if there was a GC - to further reduce the churn
-                    // if the app is allocation-active.
-                    int64_t newGen1 = m_heap->Recycler()->GetCollectionCount(1);
-                    if (newGen1 != lastGen1)
-                    {
-                        lastGen1 = newGen1;
-                        Pause(1000);
-                    }
-
                     if (m_state != TRIMMER_STATE_RUNNING)
                     {
                         StopAndWait();
                     }
 
+                    // A GC ends the pass. The next one starts after the delay, with the budget for the next cycle.
+                    if (recycler->GetCollectionCount(1) != lastBlockingGcCount)
+                    {
+                        trimming = false;
+                        break;
+                    }
+
+                    // Every run looks at the surplus again, since the GC sweeping parks free space and the threads take free granules meanwhile.
+                    bool underPressure;
+                    size_t budget = recycler->GetTrimBudget(held, underPressure);
+                    if (idleRounds > 0)
+                    {
+                        budget >>= idleRounds;
+                        if (budget < Satori::TRIM_RUN_GRANULES * Satori::REGION_SIZE_GRANULARITY)
+                        {
+                            budget = 0;
+                        }
+                    }
+
+                    size_t free = FreeCommittedBytes();
+                    if (free <= budget)
+                    {
+                        trimming = false;
+                        break;
+                    }
+
+                    size_t surplus = free - budget;
+                    if (paceRate == 0)
+                    {
+                        paceRate = max(Satori::TRIM_MIN_RATE, surplus / Satori::TRIM_SURPLUS_PART_PER_SEC);
+                    }
+
+                    // A run of up to the surplus, in a power of 2 granules, so that the runs stay aligned. (see TryTrimRun)
+                    size_t surplusGranules = max((size_t)1, surplus / Satori::REGION_SIZE_GRANULARITY);
+                    size_t maxCount = max(SatoriUtil::CardSliceGroupGranules(), min(Satori::TRIM_RUN_GRANULES, SatoriUtil::RoundDownPwr2(surplusGranules)));
+
+                    size_t before = page->FreeCommittedBytes();
+                    size_t count;
+                    if (page->TryTrimRun(granule, maxCount, /* onlyIfSeenFree */ true, count) && !underPressure)
+                    {
+                        size_t after = page->FreeCommittedBytes();
+                        pacedBytes += before > after ? before - after : 0;
+                        int64_t aheadTicks = paceStart + (int64_t)(pacedBytes / paceRate * freq + pacedBytes % paceRate * freq / paceRate) - SatoriUtil::GetTimeStamp();
+                        if (aheadTicks > 0)
+                        {
+                            Pause((int)(aheadTicks * 1000 / freq + 1));
+                        }
+                    }
+
                     granule = page->NextGranuleToTrim(granule + count, /* onlyIfSeenFree */ true);
                 }
 
+                // Every pass looks at all the free granules, so that the next pass can tell which ones have stayed free.
                 page->RememberFreeGranules();
-
-                // what this round saw, and a later round can trim, when the granules are old enough
-                if (page->NextGranuleToTrim(0, /* onlyIfSeenFree */ true, /* ignoreAge */ true) != SIZE_MAX)
-                {
-                    leftWork = true;
-                }
             }
         );
+
+        leftWork = FreeCommittedBytes() != 0;
     }
 }
 
@@ -238,40 +326,6 @@ void SatoriTrimmer::TrimNow()
             page->RememberFreeGranules();
         }
     );
-}
-
-// The minimum free age (DOTNET_gcTrimMinFreeAge) without a stamp per granule. Every period E the pages rotate their two age snapshots
-// (SatoriPage::RotateAges): "aged" gets "aging", and "aging" gets the granules that the last look saw free. The trimmer takes a granule
-// for its age only if it is in "aged", that is it was seen free before the rotation before the last one: at least E ago.
-// It is first in "aged" one to two periods after the look that first saw it free, so with E = gcTrimMinFreeAge the effective
-// minimum age is between the setting and twice that. E is at least one round interval (5 s).
-// The check is one comparison of the clock, made by the trimmer when it runs. No rotation happens while the trimmer is stopped:
-// the snapshots then age by the time of the stop, which is the safe direction.
-// Returns the time until the next rotation, in ticks (INT64_MAX if the age is off).
-int64_t SatoriTrimmer::MaybeRotateAges()
-{
-    size_t minAge = SatoriUtil::TrimMinFreeAgeSeconds();
-    if (minAge == 0)
-    {
-        return INT64_MAX;
-    }
-
-    int64_t now = SatoriUtil::GetTimeStamp();
-    int64_t period = (int64_t)max(minAge, (size_t)5) * SatoriUtil::GetTimeStampFrequency();
-    if (now - m_lastAgeRotation < period)
-    {
-        return m_lastAgeRotation + period - now;
-    }
-
-    m_lastAgeRotation = now;
-    m_heap->ForEachPage(
-        [&](SatoriPage* page)
-        {
-            page->RotateAges();
-        }
-    );
-
-    return period;
 }
 
 void SatoriTrimmer::StopAndWait()
@@ -328,6 +382,8 @@ void SatoriTrimmer::SetOkToRun()
         case TRIMMER_STATE_STOPPED:
             if (Interlocked::CompareExchange(&m_state, TRIMMER_STATE_OK_TO_RUN, state) == state)
             {
+                // The trimmer is pausing in StopAndWait, wake it up, so that a pass after the GC starts in time.
+                Unpause();
                 return;
             }
             break;

@@ -40,12 +40,12 @@
 
 // The bitmaps and the watermarks of the granules come after the region map, and must end before the line of the reader count, the last
 // 64 bytes before the first useful card word. (see InitializeAt and UnownedHeaderReaders) The smallest page is the tightest fit:
-// no slack at 1Gb, and 192 bytes more for every 1Gb more. ALIGN_UP is a function, so the rounding of the free bitmap's offset is written out.
+// 128 bytes of slack at 1Gb, and 320 bytes more for every 1Gb more. ALIGN_UP is a function, so the rounding of the free bitmap's offset is written out.
 static const size_t s_granulesInSmallestPage = Satori::PAGE_SIZE_GRANULARITY >> Satori::REGION_BITS;
 static const size_t s_freeBitmapOffset =
     (128 + Satori::PAGE_SIZE_GRANULARITY / Satori::BYTES_PER_CARD_GROUP * 2 + s_granulesInSmallestPage + 63) & ~(size_t)63;
 static_assert(
-    s_freeBitmapOffset + 2 * s_granulesInSmallestPage + 5 * (s_granulesInSmallestPage / 8) <=
+    s_freeBitmapOffset + 2 * s_granulesInSmallestPage + 3 * (s_granulesInSmallestPage / 8) <=
         Satori::PAGE_SIZE_GRANULARITY / Satori::BYTES_PER_CARD_BYTE / Satori::BYTES_PER_CARD_BYTE - 64,
     "the bitmaps and the watermarks of the granules must end before the line of the reader count.");
 
@@ -133,7 +133,7 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 
     result->m_regionMap = (uint8_t*)(address + 128 + cardGroupSize);
 
-    // The free bitmap is one cache line per 1Gb. The bitmaps and the watermarks need 2.5 bytes per granule
+    // The free bitmap is one cache line per 1Gb. The three bitmaps and the two watermarks need 19 bits per granule
     // on top of the region map, and the card table that covers itself has room for that at any page size.
     _ASSERTE(regionCount % 64 == 0);
     result->m_freeBitmap = (size_t*)ALIGN_UP((size_t)result->m_regionMap + regionCount, 64);
@@ -144,8 +144,8 @@ SatoriPage* SatoriPage::InitializeAt(size_t address, size_t pageSize, SatoriHeap
 
     // make sure the first useful card word is beyond the header, and that the line of the reader count (the last 64 bytes before it,
     // see UnownedHeaderReaders) is not used by the bitmaps. The card words before the first useful one cover the card table itself, nothing uses them.
-    // In a 1Gb page the two age snapshots after the seen bitmap end exactly there.
-    _ASSERTE((size_t)(result->AgedBitmap() + regionCount / 64) <= result->Start() + cardTableStart - 64);
+    // In a 1Gb page the seen bitmap ends two lines before the line of the reader count.
+    _ASSERTE((size_t)(result->m_seenFreeBitmap + regionCount / 64) <= result->Start() + cardTableStart - 64);
     _ASSERTE(*result->UnownedHeaderReaders() == 0);
 
 #if _DEBUG
@@ -588,9 +588,8 @@ void SatoriPage::Release()
     GCToOSInterface::VirtualRelease(this, m_end - Start());
 }
 
-// Clears the seen bits of the granules, see FreeRegion.
-// The age snapshots are not touched here: the next look sees the granules free for the first time, and clears them in the snapshots
-// before it sets their seen bits (see RememberFreeGranules). Until then no seen bit lets the trimmer take them.
+// Clears the seen bits of the granules, see FreeRegion. The trimmer does not take them until a later look sees them free
+// (see RememberFreeGranules).
 void SatoriPage::ForgetSeenFree(size_t first, size_t count)
 {
     for (size_t word = first / 64; word <= (first + count - 1) / 64; word++)
@@ -598,16 +597,6 @@ void SatoriPage::ForgetSeenFree(size_t first, size_t count)
         // atomic, no order: the free bits that are set after this are the release for it.
         Interlocked::AndUnordered(&m_seenFreeBitmap[word], ~RunBitsInWord(first, count, word));
     }
-}
-
-size_t* SatoriPage::AgingBitmap()
-{
-    return m_seenFreeBitmap + GranuleCount() / 64;
-}
-
-size_t* SatoriPage::AgedBitmap()
-{
-    return m_seenFreeBitmap + 2 * (GranuleCount() / 64);
 }
 
 // The granules from 0 whose card slices are always committed: the card table's own granules, whose slices hold the header and the metadata,
@@ -764,20 +753,7 @@ void SatoriPage::DecommitCardSlices(size_t first, size_t count)
     }
 }
 
-// The granule has been seen free for the minimum free age: it is in the "aged" snapshot, see RotateAges.
-// Meaningful only for a granule that is seen free.
-bool SatoriPage::IsOldEnoughToTrim(size_t granule)
-{
-    if (SatoriUtil::TrimMinFreeAgeSeconds() == 0)
-    {
-        return true;
-    }
-
-    return (VolatileLoad(&AgedBitmap()[granule / 64]) >> (granule % 64)) & 1;
-}
-
-// The granule is free and has anything committed. When asked, it was also free when the trimmer last looked at the page,
-// and has been free for the minimum free age.
+// The granule is free and has anything committed. When asked, it was also free when the trimmer last looked at the page.
 // The watermark of a free granule is stable, but the granule may be claimed any moment. This is only a hint,
 // TryTrimRun looks at the watermark again when the granules are ours.
 bool SatoriPage::IsTrimCandidate(size_t granule, bool onlyIfSeenFree)
@@ -790,10 +766,10 @@ bool SatoriPage::IsTrimCandidate(size_t granule, bool onlyIfSeenFree)
         candidates &= VolatileLoad(&m_seenFreeBitmap[word]);
     }
 
-    return ((candidates >> (granule % 64)) & 1) && (m_commitWatermarks[granule] & Satori::WATERMARK_UNITS_MASK) != 0 && (!onlyIfSeenFree || IsOldEnoughToTrim(granule));
+    return ((candidates >> (granule % 64)) & 1) && (m_commitWatermarks[granule] & Satori::WATERMARK_UNITS_MASK) != 0;
 }
 
-size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree, bool ignoreAge)
+size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree)
 {
     size_t end = GranuleCount();
     size_t granule = max(from, FirstGranule());
@@ -816,7 +792,7 @@ size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree, bool igno
             size_t candidate = word * 64 + bit;
 
             // a hint, see IsTrimCandidate
-            if ((m_commitWatermarks[candidate] & Satori::WATERMARK_UNITS_MASK) != 0 && (!onlyIfSeenFree || ignoreAge || IsOldEnoughToTrim(candidate)))
+            if ((m_commitWatermarks[candidate] & Satori::WATERMARK_UNITS_MASK) != 0)
             {
                 return candidate;
             }
@@ -854,10 +830,9 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
         }
 
         // The granule could have been claimed and freed again after it was found, and then our claim took the new free bit.
-        // FreeRegion clears the seen bit before it sets the free bit, so a granule that is seen now was not freed since it was seen,
-        // and its bit in the "aged" snapshot, which the look that first saw it free cleared, says if it is old enough (see RotateAges).
+        // FreeRegion clears the seen bit before it sets the free bit, so a granule that is seen now was not freed since it was seen.
         // The watermark is stable now that the granule is ours. A granule that has nothing committed is not worth a run.
-        if ((onlyIfSeenFree && (((VolatileLoad(&m_seenFreeBitmap[granule / 64]) >> (granule % 64)) & 1) == 0 || !IsOldEnoughToTrim(granule))) ||
+        if ((onlyIfSeenFree && ((VolatileLoad(&m_seenFreeBitmap[granule / 64]) >> (granule % 64)) & 1) == 0) ||
             (m_commitWatermarks[granule] & Satori::WATERMARK_UNITS_MASK) == 0)
         {
             PublishFreeGranules(granule, 1);
@@ -954,35 +929,12 @@ void SatoriPage::AssertHeaderIsReadable(size_t granule)
 
 void SatoriPage::RememberFreeGranules()
 {
-    // The granules that this look sees free for the first time (free, and not seen by the last look, or freed since: FreeRegion clears
-    // the seen bit) start their age: they leave both snapshots, before their seen bits are set. Only the trimmer writes the snapshots
-    // (and a GC that trims on request, while the trimmer is stopped), so the stores need not be interlocked.
-    size_t* aging = AgingBitmap();
-    size_t* aged = AgedBitmap();
     for (size_t word = 0; word < GranuleCount() / 64; word++)
     {
-        size_t freeBits = VolatileLoad(&m_freeBitmap[word]);
-        size_t seen = VolatileLoad(&m_seenFreeBitmap[word]);
-        while (true)
-        {
-            size_t fresh = freeBits & ~seen;
-            if (fresh)
-            {
-                VolatileStore(&aging[word], aging[word] & ~fresh);
-                VolatileStore(&aged[word], aged[word] & ~fresh);
-            }
-
-            // A free clears the seen bits of its granules meanwhile (ForgetSeenFree). A plain store would set such a bit again,
-            // and the granule would keep the age that it had. If the word has changed, what the free cleared is fresh now.
-            // Only atomicity is needed: nothing is published through this word.
-            size_t prev = Interlocked::CompareExchangeUnordered(&m_seenFreeBitmap[word], freeBits, seen);
-            if (prev == seen)
-            {
-                break;
-            }
-
-            seen = prev;
-        }
+        // A granule that is claimed and freed again between the load and the store gets back the seen bit that the free cleared
+        // (ForgetSeenFree). It is free, and it was freed during this look, which counts as before it.
+        // Only atomicity is needed: nothing is published through this word.
+        VolatileStoreWithoutBarrier(&m_seenFreeBitmap[word], VolatileLoad(&m_freeBitmap[word]));
     }
 
 #if _DEBUG
@@ -992,15 +944,23 @@ void SatoriPage::RememberFreeGranules()
 #endif
 }
 
-void SatoriPage::RotateAges()
+size_t SatoriPage::FreeCommittedBytes()
 {
-    size_t* aging = AgingBitmap();
-    size_t* aged = AgedBitmap();
+    // The watermark of a free granule is stable, but the granule can be claimed any moment. A hint, as in NextGranuleToTrim.
+    size_t units = 0;
     for (size_t word = 0; word < GranuleCount() / 64; word++)
     {
-        VolatileStore(&aged[word], aging[word]);
-        VolatileStore(&aging[word], VolatileLoad(&m_seenFreeBitmap[word]));
+        size_t freeBits = VolatileLoad(&m_freeBitmap[word]);
+        while (freeBits)
+        {
+            DWORD bit;
+            BitScanForward64(&bit, freeBits);
+            units += m_commitWatermarks[word * 64 + bit] & Satori::WATERMARK_UNITS_MASK;
+            freeBits &= freeBits - 1;
+        }
     }
+
+    return units << Satori::WATERMARK_UNIT_BITS;
 }
 
 #if _DEBUG
