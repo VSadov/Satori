@@ -25,8 +25,8 @@ FORCEINLINE void Interlocked::InterlockedOperationBarrier()
 FORCEINLINE bool Interlocked::UseLseAtomics()
 {
 #ifdef INTERLOCKED_ARM64_LSE_DETECTION
-    // Written once, when the module is loaded.
-    return __atomic_load_n(&s_arm64LseAtomics, __ATOMIC_RELAXED);
+    // Written once, when the module is loaded, and either value is correct, so a plain read is enough.
+    return s_arm64LseAtomics;
 #else
     // The build requires a processor that has them.
     return true;
