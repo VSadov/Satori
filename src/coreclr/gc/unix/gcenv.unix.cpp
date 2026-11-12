@@ -103,6 +103,9 @@ typedef cpuset_t cpu_set_t;
 #if defined(INTERLOCKED_ARM64_LSE_DETECTION) && (defined(__linux__) || defined(__FreeBSD__))
 #include <sys/auxv.h>
 #define HAVE_INTERLOCKED_LSE_DETECTION
+#elif defined(INTERLOCKED_ARM64_LSE_DETECTION) && defined(__APPLE__)
+#include <sys/sysctl.h>
+#define HAVE_INTERLOCKED_LSE_DETECTION
 #endif
 
 #ifndef __APPLE__
@@ -152,6 +155,13 @@ static size_t g_kern_memorystatus_level_mib_length = 0;
 __attribute__((constructor))
 static void InitializeInterlockedLseAtomics()
 {
+#if defined(__APPLE__)
+    // iOS and tvOS, where the build does not require LSE. The key is there from iOS 15 and tvOS 15; where it is not, the flag stays false.
+    // The same check as in minipal_getcpufeatures.
+    int64_t valueFromSysctl = 0;
+    size_t sz = sizeof(valueFromSysctl);
+    Interlocked::s_arm64LseAtomics = (sysctlbyname("hw.optional.arm.FEAT_LSE", &valueFromSysctl, &sz, NULL, 0) == 0) && (valueFromSysctl != 0);
+#else
 #ifdef HWCAP_ATOMICS
     const unsigned long lseAtomicsBit = HWCAP_ATOMICS;
 #else
@@ -164,6 +174,7 @@ static void InitializeInterlockedLseAtomics()
     elf_aux_info(AT_HWCAP, &hwcap, sizeof(hwcap));
 #endif
     Interlocked::s_arm64LseAtomics = (hwcap & lseAtomicsBit) != 0;
+#endif
 }
 #endif // HAVE_INTERLOCKED_LSE_DETECTION
 

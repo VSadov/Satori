@@ -47,7 +47,7 @@ private:
 public:
 
 #ifdef INTERLOCKED_ARM64_LSE_DETECTION
-    // Whether the processor has the LSE atomics. Set when the module is loaded, on Linux and FreeBSD, see gcenv.unix.cpp. Elsewhere, and until then,
+    // Whether the processor has the LSE atomics. Set when the module is loaded, on Linux, FreeBSD, iOS and tvOS, see gcenv.unix.cpp. Elsewhere, and until then,
     // the operations use the exclusive loads and stores, which is correct as well: the two kinds of operations are atomic with respect to each other.
     static inline bool s_arm64LseAtomics = false;
 #endif // INTERLOCKED_ARM64_LSE_DETECTION
