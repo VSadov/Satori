@@ -101,6 +101,7 @@ SatoriHeap* SatoriHeap::Create()
     heap->m_committedMapSize = commitSize - offsetof(SatoriHeap, m_pageMap);
     heap->m_committedBytes = commitSize;
     heap->m_trimmingBytes = 0;
+    heap->m_lastCommitTs = 0;
     InitWriteBarrier(heap->m_pageMap, s_pageByteMap, heap->CommittedMapLength() * Satori::PAGE_SIZE_GRANULARITY - 1);
     heap->m_mapLock.Initialize();
 

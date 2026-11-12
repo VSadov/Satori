@@ -78,6 +78,9 @@ namespace Satori
     // It decommits a surplus at this many bytes per second, or at a quarter of the surplus per second if that is more.
     static const size_t TRIM_MIN_RATE = (size_t)160 << 20;
     static const size_t TRIM_SURPLUS_PART_PER_SEC = 4;
+    // The trimmer does not decommit while the heap is being committed, and for this many seconds after the last commit:
+    // a heap that is growing needs the memory, and what the trimmer decommits it commits again.
+    static const int TRIM_COMMIT_HOLD_SEC = 5;
     // The heap of a process whose live set grows and shrinks again, like a compiler between the compilations, needs at its next peak
     // what it needed at the last one, and the budget of the next cycle cannot know that. The trimmer keeps the memory
     // for the highest peak of the last this many seconds (default of DOTNET_gcTrimPeakHold, A in hex), see TrimPeakHoldSeconds.

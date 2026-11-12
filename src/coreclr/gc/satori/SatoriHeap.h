@@ -164,6 +164,15 @@ public:
     {
         Interlocked::ExchangeAdd64(&m_committedBytes, bytes);
         _ASSERTE((ptrdiff_t)m_committedBytes > 0);
+
+        // A commit is a system call, the store is cheap next to it. Only the trimmer reads this, as a hint.
+        VolatileStore(&m_lastCommitTs, SatoriUtil::GetTimeStamp());
+    }
+
+    // When memory was committed last, in GetTimeStamp() ticks. The trimmer leaves a growing heap alone.
+    int64_t GetLastCommitTimeStamp()
+    {
+        return VolatileLoad(&m_lastCommitTs);
     }
 
     void DecBytesCommitted(size_t bytes)
@@ -222,6 +231,7 @@ private:
 
     size_t m_committedBytes;
     size_t m_trimmingBytes;
+    int64_t m_lastCommitTs;
 
     DECLSPEC_ALIGN(64)
     SatoriFinalizationQueue m_finalizationQueue;

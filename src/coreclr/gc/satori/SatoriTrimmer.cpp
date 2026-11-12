@@ -89,6 +89,7 @@ void SatoriTrimmer::LoopFn(void* inst)
 // (DOTNET_gcTrimPeakHold). That is what the heap needed, whatever the fragmentation and the floating garbage were then. (see SatoriRecycler::NoteInUse)
 // A pass comes shortly after every blocking GC, and the next GC ends it. It decommits the surplus at a pace: decommit has a cost
 // for the whole process, and the process may need the memory again soon. When the memory is low the surplus goes without the pace.
+// A heap that committed memory in the last few seconds (TRIM_COMMIT_HOLD_SEC) is growing, and a pass does not decommit then.
 // An idle process (no GC for a round interval) needs less: every round of idleness halves the budget, until all the free memory
 // is decommitted.
 // The granules that a pass decommits were free on the pass before too, so they were not taken by a whole GC cycle,
@@ -99,6 +100,7 @@ void SatoriTrimmer::Loop()
     const int64_t freq = SatoriUtil::GetTimeStampFrequency();
     const int64_t roundInterval = freq * 5;
     const int64_t gcDelay = freq * Satori::TRIM_GC_DELAY_MS / 1000;
+    const int64_t commitHold = freq * Satori::TRIM_COMMIT_HOLD_SEC;
 
     // The blocking GCs, which free granules, and the GCs of any kind, which say that the process is not idle.
     int64_t lastBlockingGcCount = recycler->GetCollectionCount(1);
@@ -256,6 +258,14 @@ void SatoriTrimmer::Loop()
                     }
 
                     if (free <= budget)
+                    {
+                        trimming = false;
+                        break;
+                    }
+
+                    // A heap that committed memory lately is growing, and would commit again what the pass decommits. The pass leaves it alone
+                    // then, and the next one, after a GC or a round interval, looks again. When the memory is low the surplus goes anyway.
+                    if (!underPressure && SatoriUtil::GetTimeStamp() - m_heap->GetLastCommitTimeStamp() < commitHold)
                     {
                         trimming = false;
                         break;
