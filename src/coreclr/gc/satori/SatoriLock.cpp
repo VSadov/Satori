@@ -73,7 +73,7 @@ bool SatoriLock::EnterSlow(bool noBlock, int64_t deadline)
                 if (hasWaited)
                     newState = (newState - WaiterCountIncrement) & ~(WaiterWoken | YieldToWaiters);
 
-                if (CompareExchangeAcq(&_state, newState, oldState))
+                if (Interlocked::CompareExchangeAcq(&_state, newState, oldState) == oldState)
                 {
                     // GOT THE LOCK!!
                     _ASSERTE((_state | Locked) != 0);

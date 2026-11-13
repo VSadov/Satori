@@ -63,34 +63,6 @@ private:
     SatoriGate* _gate;
 
 private:
-    FORCEINLINE
-    static bool CompareExchangeAcq(uint32_t volatile* destination, uint32_t exchange, uint32_t comparand)
-    {
-#ifdef _MSC_VER
-#if defined(TARGET_AMD64)
-        return _InterlockedCompareExchange((long*)destination, exchange, comparand) == (long)comparand;
-#else
-        return _InterlockedCompareExchange_acq((long*)destination, exchange, comparand) == (long)comparand;
-#endif
-#else
-        return __atomic_compare_exchange_n(destination, &comparand, exchange, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
-#endif
-    }
-
-    FORCEINLINE
-    static uint32_t InterlockedDecRel(volatile uint32_t* arg)
-    {
-#ifdef _MSC_VER
-#if defined(TARGET_AMD64)
-        return (uint32_t)_InterlockedDecrement((long*)arg);
-#else
-        return (uint32_t)_InterlockedDecrement_rel((long*)arg);
-#endif
-#else
-        return __atomic_sub_fetch(arg, 1, __ATOMIC_RELEASE);
-#endif
-    }
-
     static const uint16_t SpinCountNotInitialized = INT16_MIN;
 
     // While spinning is parameterized in terms of iterations,
@@ -142,7 +114,7 @@ public:
         if ((origState & (YieldToWaiters | Locked)) == 0)
         {
             uint32_t newState = origState + Locked;
-            if (CompareExchangeAcq(&_state, newState, origState))
+            if (Interlocked::CompareExchangeAcq(&_state, newState, origState) == origState)
             {
                 _ASSERTE(_owningThreadId == 0);
                 _owningThreadId = SatoriUtil::GetCurrentThreadTag();
@@ -192,7 +164,7 @@ public:
         _ASSERTE(_owningThreadId == SatoriUtil::GetCurrentThreadTag());
 
         _owningThreadId = 0;
-        uint32_t state = InterlockedDecRel(&_state);
+        uint32_t state = Interlocked::DecrementRel(&_state);
         if ((int32_t)state < (int32_t)WaiterCountIncrement) // true if have no waiters or WaiterWoken is set
         {
             return;
