@@ -134,8 +134,7 @@ public:
     template <typename F>
     bool ForEachPageFrom(size_t startHint, F lambda)
     {
-        // acquire: a page that we find is initialized, and all the map entries of a large page are there. (see AddLargePage)
-        size_t usedLength = VolatileLoad(&m_usedMapLength);
+        size_t usedLength = m_usedMapLength;
         if (usedLength <= 1)
         {
             return false;
@@ -147,7 +146,8 @@ public:
         for (size_t i = 0; i < span; i++)
         {
             size_t mapIndex = 1 + (start + i) % span;
-            SatoriPage* page = VolatileLoad(&m_pageMap[mapIndex]);
+            // No acquire: the entry is stored with a release, and the page is read through the pointer that this loads. (see AddLargePage)
+            SatoriPage* page = m_pageMap[mapIndex];
             if (page && IsFirstMapEntryOfPage(page, mapIndex))
             {
                 if (lambda(page))
@@ -165,14 +165,14 @@ public:
         Interlocked::ExchangeAdd64(&m_committedBytes, bytes);
         _ASSERTE((ptrdiff_t)m_committedBytes > 0);
 
-        // A commit is a system call, the store is cheap next to it. Only the trimmer reads this, as a hint.
-        VolatileStore(&m_lastCommitTs, SatoriUtil::GetTimeStamp());
+        // Only the trimmer reads this, as a hint.
+        m_lastCommitTs = SatoriUtil::GetTimeStamp();
     }
 
     // When memory was committed last, in GetTimeStamp() ticks. The trimmer leaves a growing heap alone.
     int64_t GetLastCommitTimeStamp()
     {
-        return VolatileLoad(&m_lastCommitTs);
+        return m_lastCommitTs;
     }
 
     void DecBytesCommitted(size_t bytes)
@@ -196,7 +196,7 @@ public:
     // It says how much that is, so that InUseBytes does not count it. (see SatoriPage::TryTrimRun)
     void SetTrimmingBytes(size_t bytes)
     {
-        VolatileStore(&m_trimmingBytes, bytes);
+        m_trimmingBytes = bytes;
     }
 
 #if _DEBUG

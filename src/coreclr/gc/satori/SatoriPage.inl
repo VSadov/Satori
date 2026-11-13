@@ -156,7 +156,7 @@ template <typename F>
         while (granule > first)
         {
             granule--;
-            if (VolatileLoad(&RegionMap()[granule]) == 0)
+            if (RegionMap()[granule] == 0)
             {
                 // a free granule.
                 continue;

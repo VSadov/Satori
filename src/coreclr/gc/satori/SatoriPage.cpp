@@ -216,15 +216,15 @@ void SatoriPage::OnRegionInitialized(SatoriRegion* region)
     }
 }
 
-// The reverse of OnRegionInitialized. The start goes first, so that a lookup that does not find the region
-// as it was finds nothing, and not a continuation of a region that is no more.
+// The reverse of OnRegionInitialized. A lookup reads a byte once, so it finds the region as it was or nothing, in whatever order
+// the bytes are cleared. The set of the free bits is the release for the clear. (see PublishFreeGranules)
 void SatoriPage::OnRegionFreed(SatoriRegion* region)
 {
     size_t startIndex = (region->Start() - Start()) >> Satori::REGION_BITS;
     size_t mapCount = region->Size() >> Satori::REGION_BITS;
     _ASSERTE(RegionMap()[startIndex] == 1);
 
-    VolatileStore(&RegionMap()[startIndex], (uint8_t)0);
+    RegionMap()[startIndex] = 0;
     memset(&RegionMap()[startIndex + 1], 0, mapCount - 1);
 }
 
@@ -358,7 +358,7 @@ void SatoriPage::PublishFreeGranules(size_t first, size_t count)
         size_t lowGranule = max(first, word * 64);
         size_t highGranule = min(first + count, word * 64 + 64);
         size_t bits = BitRange(lowGranule - word * 64, highGranule - lowGranule);
-        _ASSERTE((VolatileLoad(&m_freeBitmap[word]) & bits) == 0);
+        _ASSERTE((m_freeBitmap[word] & bits) == 0);
         Interlocked::OrRel(&m_freeBitmap[word], bits);
     }
 }
@@ -371,10 +371,10 @@ size_t SatoriPage::TryClaimGranule(bool warmOnly, bool fromTop)
     for (size_t i = 0; i < wordCount; i++)
     {
         size_t word = fromTop ? wordCount - 1 - i : i;
-        size_t freeBits = VolatileLoad(&m_freeBitmap[word]);
+        size_t freeBits = VolatileLoadWithoutBarrier(&m_freeBitmap[word]);
         while (true)
         {
-            size_t candidates = warmOnly ? (freeBits & VolatileLoad(&m_warmBitmap[word])) : freeBits;
+            size_t candidates = warmOnly ? (freeBits & VolatileLoadWithoutBarrier(&m_warmBitmap[word])) : freeBits;
             if (candidates == 0)
             {
                 break;
@@ -411,7 +411,7 @@ bool SatoriPage::TryClaimGranuleAt(size_t granule)
     _ASSERTE(granule >= FirstGranule() && granule < GranuleCount());
 
     size_t bit = (size_t)1 << (granule % 64);
-    size_t freeBits = VolatileLoad(&m_freeBitmap[granule / 64]);
+    size_t freeBits = VolatileLoadWithoutBarrier(&m_freeBitmap[granule / 64]);
     while (freeBits & bit)
     {
         // an acquire: what the last owner wrote before it set the bit is read after this. (see PublishFreeGranules)
@@ -431,8 +431,8 @@ bool SatoriPage::TryClaimGranuleAt(size_t granule)
 // The warm bit of a granule is written before its free bit is set, so a free granule has its warm bit.
 size_t SatoriPage::FreeWord(size_t word, bool warmOnly)
 {
-    size_t bits = VolatileLoad(&m_freeBitmap[word]);
-    return warmOnly ? bits & VolatileLoad(&m_warmBitmap[word]) : bits;
+    size_t bits = m_freeBitmap[word];
+    return warmOnly ? bits & m_warmBitmap[word] : bits;
 }
 
 // Finds the first granule of a run of free granules that is the lowest (or the highest) among the runs that fit.
@@ -529,7 +529,7 @@ bool SatoriPage::TryClearRun(size_t first, size_t count)
     for (size_t word = firstWord; word <= lastWord; word++)
     {
         size_t runBits = RunBitsInWord(first, count, word);
-        size_t freeBits = VolatileLoad(&m_freeBitmap[word]);
+        size_t freeBits = VolatileLoadWithoutBarrier(&m_freeBitmap[word]);
         while (true)
         {
             if ((freeBits & runBits) != runBits)
@@ -769,11 +769,11 @@ void SatoriPage::DecommitCardSlices(size_t first, size_t count)
 bool SatoriPage::IsTrimCandidate(size_t granule, bool onlyIfSeenFree)
 {
     size_t word = granule / 64;
-    size_t candidates = VolatileLoad(&m_freeBitmap[word]);
+    size_t candidates = m_freeBitmap[word];
     if (onlyIfSeenFree)
     {
-        // after the free bits: see FreeRegion
-        candidates &= VolatileLoad(&m_seenFreeBitmap[word]);
+        // a hint: TryTrimRun reads the seen bit again after its claim
+        candidates &= m_seenFreeBitmap[word];
     }
 
     return ((candidates >> (granule % 64)) & 1) && (m_commitWatermarks[granule] & Satori::WATERMARK_UNITS_MASK) != 0;
@@ -786,11 +786,11 @@ size_t SatoriPage::NextGranuleToTrim(size_t from, bool onlyIfSeenFree)
     while (granule < end)
     {
         size_t word = granule / 64;
-        size_t candidates = VolatileLoad(&m_freeBitmap[word]);
+        size_t candidates = VolatileLoadWithoutBarrier(&m_freeBitmap[word]);
         if (onlyIfSeenFree)
         {
-            // after the free bits: see FreeRegion
-            candidates &= VolatileLoad(&m_seenFreeBitmap[word]);
+            // a hint: TryTrimRun reads the seen bit again after its claim
+            candidates &= VolatileLoadWithoutBarrier(&m_seenFreeBitmap[word]);
         }
 
         // only the granules that are not before the one we were asked for
@@ -842,7 +842,7 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
         // The granule could have been claimed and freed again after it was found, and then our claim took the new free bit.
         // FreeRegion clears the seen bit before it sets the free bit, so a granule that is seen now was not freed since it was seen.
         // The watermark is stable now that the granule is ours. A granule that has nothing committed is not worth a run.
-        if ((onlyIfSeenFree && ((VolatileLoad(&m_seenFreeBitmap[granule / 64]) >> (granule % 64)) & 1) == 0) ||
+        if ((onlyIfSeenFree && ((m_seenFreeBitmap[granule / 64] >> (granule % 64)) & 1) == 0) ||
             (m_commitWatermarks[granule] & Satori::WATERMARK_UNITS_MASK) == 0)
         {
             PublishFreeGranules(granule, 1);
@@ -876,10 +876,10 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
     // is a release (see PublishFreeGranules), so a thread that registers after the look reads the map after the clear and finds the region gone.
     // A claim is an acquire, and that orders the look after it. No fence is needed on this side: it is a load after a load,
     // and the readers do not read the free bits. The reader's side is the one that needs a store ordered before a load (see EnterUnownedHeaderRead).
-    // The count is read with an acquire, so that the decommit below is not ordered before it, and so that what a reader that left did
-    // (its reads of the header, before its release) is done.
+    // The count needs no acquire: a reader that left did its reads of the header before its release, and the decommit below is a system call
+    // behind the branch on the count.
     bool trimmed = false;
-    if (VolatileLoad(UnownedHeaderReaders()) == 0)
+    if (*UnownedHeaderReaders() == 0)
     {
         size_t committedBytes = 0;
         size_t decommitEnd = 0;
@@ -935,7 +935,7 @@ bool SatoriPage::TryTrimRun(size_t first, size_t maxCount, bool onlyIfSeenFree, 
 #if _DEBUG
 void SatoriPage::AssertHeaderIsReadable(size_t granule)
 {
-    _ASSERTE(VolatileLoad(UnownedHeaderReaders()) > 0);
+    _ASSERTE(*UnownedHeaderReaders() > 0);
 
     // A region that was freed after the reader found it makes its granule free, with a commit that its header gives it: FreeRegion
     // records the commit of the region, and a region has its header committed. The trimmer does not decommit while we are registered.
@@ -951,7 +951,7 @@ void SatoriPage::RememberFreeGranules()
         // A granule that is claimed and freed again between the load and the store gets back the seen bit that the free cleared
         // (ForgetSeenFree). It is free, and it was freed during this look, which counts as before it.
         // Only atomicity is needed: nothing is published through this word.
-        VolatileStoreWithoutBarrier(&m_seenFreeBitmap[word], VolatileLoad(&m_freeBitmap[word]));
+        VolatileStoreWithoutBarrier(&m_seenFreeBitmap[word], m_freeBitmap[word]);
     }
 
 #if _DEBUG
@@ -976,7 +976,7 @@ size_t SatoriPage::FreeCommittedBytes()
     size_t units = 0;
     for (size_t word = 0; word < GranuleCount() / 64; word++)
     {
-        size_t freeBits = VolatileLoad(&m_freeBitmap[word]);
+        size_t freeBits = VolatileLoadWithoutBarrier(&m_freeBitmap[word]);
         while (freeBits)
         {
             DWORD bit;
@@ -1026,7 +1026,7 @@ size_t SatoriPage::VerifyGranules(size_t& committedBytes, bool report)
     size_t granule = first;
     while (granule < end)
     {
-        bool isFree = (VolatileLoad(&m_freeBitmap[granule / 64]) >> (granule % 64)) & 1;
+        bool isFree = (m_freeBitmap[granule / 64] >> (granule % 64)) & 1;
         uint8_t mapValue = RegionMap()[granule];
 
         if (isFree)
@@ -1333,9 +1333,9 @@ SatoriRegion* SatoriPage::RegionForCardGroup(size_t group)
 {
     size_t mapIndex = group * Satori::BYTES_PER_CARD_GROUP / Satori::REGION_SIZE_GRANULARITY;
 
-    // a byte is read once, see RegionForAddressChecked
+    // the region is live (a group that is not blank has one), so its map bytes do not change
     uint8_t mapValue;
-    while ((mapValue = VolatileLoad(&RegionMap()[mapIndex])) > 1)
+    while ((mapValue = RegionMap()[mapIndex]) > 1)
     {
         mapIndex -= ((size_t)1 << (mapValue - 2));
     }

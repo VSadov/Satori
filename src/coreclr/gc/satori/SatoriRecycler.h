@@ -113,7 +113,7 @@ public:
 #if _DEBUG
     bool IsConservativeScanInProgress()
     {
-        return VolatileLoad(&m_conservativeScans) != 0;
+        return m_conservativeScans != 0;
     }
 #endif
 

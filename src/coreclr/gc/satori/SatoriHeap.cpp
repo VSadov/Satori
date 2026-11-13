@@ -195,7 +195,7 @@ bool SatoriHeap::TryAddRegularPage(SatoriPage*& newPage)
                 //
                 // That is not enough for the page itself. Free granules of a page can be claimed by anyone who finds
                 // the page in the map, and that must see the page as it was initialized. The map entry is the last write,
-                // and it is a release. (readers use VolatileLoad, see ForEachPageFrom)
+                // and it is a release. (readers get to the page through the entry that they load, see ForEachPageFrom)
                 s_pageByteMap[i] = 1;
                 VolatileStore(&m_pageMap[i], newPage);
 
@@ -341,7 +341,7 @@ size_t SatoriHeap::InUseBytes()
 {
     size_t committed = GetBytesCommitted();
     size_t free = FreeCommittedBytes();
-    size_t trimming = VolatileLoad(&m_trimmingBytes);
+    size_t trimming = VolatileLoadWithoutBarrier(&m_trimmingBytes);
     size_t notInUse = free + trimming;
     return committed > notInUse ? committed - notInUse : 0;
 }

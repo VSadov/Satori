@@ -196,7 +196,7 @@ tryAgain:
         // never after it, and the add without the lock takes m_mapLock as usual.
         bool locked = m_pageAddLock.TryEnterFor(Satori::PAGE_ADD_LOCK_TIMEOUT_MS);
         bool escaped = false;
-        while (!locked && VolatileLoad(&m_pageAddsCompleted) == pageAddsCompleted)
+        while (!locked && m_pageAddsCompleted == pageAddsCompleted)
         {
             if (Interlocked::CompareExchange(&m_pageAddEscapee, 1, 0) == 0)
             {
@@ -207,7 +207,7 @@ tryAgain:
             locked = m_pageAddLock.TryEnterFor(Satori::PAGE_ADD_LOCK_TIMEOUT_MS);
         }
 
-        if (VolatileLoad(&m_pageAddsCompleted) != pageAddsCompleted)
+        if (m_pageAddsCompleted != pageAddsCompleted)
         {
             LeavePageAdd(locked, escaped);
             goto tryAgain;

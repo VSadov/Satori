@@ -5403,7 +5403,7 @@ size_t SatoriRecycler::GetTrimBudget(size_t heldFree, bool& underPressure)
     // Once the limit runs out, ShouldReuse still takes from it the regions that it does not park, so no more than the limit counts as parked.
     size_t expectedGen1 = m_expectedGen1;
     int64_t limitAtPlan = m_reusableLimitAtPlan;
-    int64_t parked = min(limitAtPlan - VolatileLoad(&m_reusableLimit), limitAtPlan);
+    int64_t parked = min(limitAtPlan - m_reusableLimit, limitAtPlan);
     size_t budget = parked > 0 ? expectedGen1 - min(expectedGen1, (size_t)parked) : expectedGen1;
 
     // Until the next gen2, the cycles after the next one grow the heap with what they promote, up to the gen2 limit.
@@ -5433,7 +5433,7 @@ size_t SatoriRecycler::GetTrimBudget(size_t heldFree, bool& underPressure)
 void SatoriRecycler::NoteInUse()
 {
     size_t inUse = m_heap->InUseBytes();
-    size_t peak = VolatileLoad(&m_inUsePeak);
+    size_t peak = VolatileLoadWithoutBarrier(&m_inUsePeak);
     while (inUse > peak)
     {
         size_t seen = Interlocked::CompareExchange(&m_inUsePeak, inUse, peak);
@@ -5448,7 +5448,7 @@ void SatoriRecycler::NoteInUse()
 
 size_t SatoriRecycler::TakeInUsePeak()
 {
-    size_t peak = VolatileLoad(&m_inUsePeak);
+    size_t peak = VolatileLoadWithoutBarrier(&m_inUsePeak);
     while (true)
     {
         size_t seen = Interlocked::CompareExchange(&m_inUsePeak, (size_t)0, peak);
