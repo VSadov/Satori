@@ -1003,15 +1003,7 @@ inline void SatoriRegion::SetMarkedAtomic(SatoriObject* o)
     //NB: this does not need to be a full fence, if possible. 
     //    just need to set a bit atomically.
     //    ordering WRT other writes is unimportant, as long as the bit is set.
-#ifdef _MSC_VER
-#if defined(TARGET_AMD64)
-    _InterlockedOr64((long long*)&m_bitmap[bitmapIndex], mask);
-#else
-    _InterlockedOr64_nf((long long*)&m_bitmap[bitmapIndex], mask);
-#endif
-#else
-    __atomic_or_fetch(&m_bitmap[bitmapIndex], mask, __ATOMIC_RELAXED);
-#endif
+    Interlocked::OrUnordered(&m_bitmap[bitmapIndex], mask);
 }
 
 inline void SatoriRegion::ClearMarked(SatoriObject* o)
