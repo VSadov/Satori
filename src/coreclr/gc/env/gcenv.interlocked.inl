@@ -104,6 +104,26 @@ INTERLOCKED_LSE_COMPARE_EXCHANGE(LseCompareExchangeUnordered, "cas")
 #undef INTERLOCKED_LSE_COMPARE_EXCHANGE_FOR_SIZE
 #undef INTERLOCKED_LSE_COMPARE_EXCHANGE
 
+// CASPAL compares and exchanges pairs of registers, each an even-numbered register and the one after it, the first with the half at the lower
+// address. Inline assembly cannot ask for such a pair, so the operands are in fixed registers, the way that Linux does it (see
+// __lse__cmpxchg128). Nothing that could use those registers, a call for one, may be between their assignment and the instruction.
+FORCEINLINE bool Interlocked::LseCompareExchange128(int64_t volatile *destination, int64_t exchangeHigh, int64_t exchangeLow, int64_t *comparandResult)
+{
+    uint64_t comparandLow = (uint64_t)comparandResult[0];
+    uint64_t comparandHigh = (uint64_t)comparandResult[1];
+    register uint64_t originalLow __asm__("x0") = comparandLow;
+    register uint64_t originalHigh __asm__("x1") = comparandHigh;
+    register uint64_t valueLow __asm__("x2") = (uint64_t)exchangeLow;
+    register uint64_t valueHigh __asm__("x3") = (uint64_t)exchangeHigh;
+    __asm__ __volatile__(".arch_extension lse\n\tcaspal %[originalLow], %[originalHigh], %[valueLow], %[valueHigh], %[destination]"
+        : [destination] "+Q" (*(__uint128_t*)destination), [originalLow] "+&r" (originalLow), [originalHigh] "+&r" (originalHigh)
+        : [valueLow] "r" (valueLow), [valueHigh] "r" (valueHigh)
+        : "memory");
+    comparandResult[0] = (int64_t)originalLow;
+    comparandResult[1] = (int64_t)originalHigh;
+    return ((originalLow ^ comparandLow) | (originalHigh ^ comparandHigh)) == 0;
+}
+
 #endif // INTERLOCKED_ARM64_LSE
 
 // Increment the value of the specified 32-bit variable as an atomic operation.
@@ -565,6 +585,54 @@ FORCEINLINE T Interlocked::CompareExchangePointer(T volatile *destination, T exc
     return result;
 #endif
 }
+
+#ifdef HOST_64BIT
+// Performs an atomic compare-and-exchange operation on a 16-byte value, which has to be aligned to 16 bytes.
+// Parameters:
+//  destination     - value to be exchanged, two 64-bit halves with the low one first
+//  exchangeHigh    - high half of the value to set the destination to
+//  exchangeLow     - low half of the value to set the destination to
+//  comparandResult - value to compare the destination to before setting it to the exchange, two halves with the low one first.
+//                    The destination is set only if the destination is equal to the comparand.
+//                    Receives the original value of the destination.
+// Return:
+//  true if the destination was set
+FORCEINLINE bool Interlocked::CompareExchange128(int64_t volatile *destination, int64_t exchangeHigh, int64_t exchangeLow, int64_t *comparandResult)
+{
+#ifdef _MSC_VER
+    return _InterlockedCompareExchange128(destination, exchangeHigh, exchangeLow, comparandResult) != 0;
+#elif defined(HOST_AMD64)
+    // CMPXCHG16B in inline assembly: the compiler expands a 16-byte __sync_val_compare_and_swap inline only when it may emit the
+    // instruction (-mcx16), and otherwise calls a library function, which may not be lock-free. This keeps the operation lock-free
+    // without raising the baseline ISA for the rest of the build.
+    bool exchanged;
+    __asm__ __volatile__(
+        "lock cmpxchg16b %[destination]"
+        : [destination] "+m" (*destination),
+          "+d" (comparandResult[1]),    // RDX:RAX is the comparand, and receives
+          "+a" (comparandResult[0]),    // the current value when the exchange fails
+          [exchanged] "=@ccz" (exchanged)
+        : "c" (exchangeHigh),           // RCX:RBX is the value to store
+          "b" (exchangeLow)
+        : "cc", "memory");
+    return exchanged;
+#else
+#ifdef INTERLOCKED_ARM64_LSE
+    if (__builtin_expect(UseLseAtomics(), 1))
+    {
+        return LseCompareExchange128(destination, exchangeHigh, exchangeLow, comparandResult);
+    }
+#endif
+    __uint128_t comparand = ((__uint128_t)(uint64_t)comparandResult[1] << 64) | (uint64_t)comparandResult[0];
+    __uint128_t exchange = ((__uint128_t)(uint64_t)exchangeHigh << 64) | (uint64_t)exchangeLow;
+    __uint128_t result = __sync_val_compare_and_swap((__uint128_t volatile *)destination, comparand, exchange);
+    InterlockedOperationBarrier();
+    comparandResult[0] = (int64_t)(uint64_t)result;
+    comparandResult[1] = (int64_t)(uint64_t)(result >> 64);
+    return result == comparand;
+#endif
+}
+#endif // HOST_64BIT
 
 template <typename T>
 FORCEINLINE T Interlocked::CompareExchangeAcq(T volatile *destination, T exchange, T comparand)
