@@ -3047,7 +3047,15 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                         // NB: It is safe to get a region even if region map may be changing because
                         //    a region with remembered/dirty marks must be there and cannot be destroyed.
                         SatoriRegion* region = page->RegionForCardGroup(i);
-                        _ASSERTE(region->Generation() >= 0);
+                        // A region brought into use during marking can expose a dirty group before
+                        // its allocation-generation release is visible here. Acquiring that release
+                        // observes the preceding setup; -1 means defer.
+                        // Mark-start synchronization covers pre-existing tenured remembered-set sources,
+                        // so on -1 we can leave the cards and group state intact for the cleaners.
+                        if (region->GenerationAcquire() < 0)
+                        {
+                            continue;
+                        }
 
                         // we should not be marking when there could be dead objects
                         _ASSERTE(!region->HasMarksSet());
