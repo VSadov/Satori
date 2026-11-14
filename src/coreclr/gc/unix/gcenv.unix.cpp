@@ -252,7 +252,7 @@ static size_t g_kern_memorystatus_level_mib_length = 0;
 #endif
 
 #ifdef HAVE_INTERLOCKED_LSE_DETECTION
-// Tells the interlocked operations whether the processor has the LSE atomics, see Interlocked::s_arm64LseAtomics.
+// Tells the interlocked operations whether the processor has the LSE atomics, see Interlocked::LseAtomicsFlag.
 // A constructor runs when the module is loaded, before the GC starts.
 __attribute__((constructor))
 static void InitializeInterlockedLseAtomics()
@@ -262,7 +262,7 @@ static void InitializeInterlockedLseAtomics()
     // The same check as in minipal_getcpufeatures.
     int64_t valueFromSysctl = 0;
     size_t sz = sizeof(valueFromSysctl);
-    Interlocked::s_arm64LseAtomics = (sysctlbyname("hw.optional.arm.FEAT_LSE", &valueFromSysctl, &sz, NULL, 0) == 0) && (valueFromSysctl != 0);
+    Interlocked::LseAtomicsFlag() = (sysctlbyname("hw.optional.arm.FEAT_LSE", &valueFromSysctl, &sz, NULL, 0) == 0) && (valueFromSysctl != 0);
 #else
 #ifdef HWCAP_ATOMICS
     const unsigned long lseAtomicsBit = HWCAP_ATOMICS;
@@ -275,7 +275,7 @@ static void InitializeInterlockedLseAtomics()
 #else
     elf_aux_info(AT_HWCAP, &hwcap, sizeof(hwcap));
 #endif
-    Interlocked::s_arm64LseAtomics = (hwcap & lseAtomicsBit) != 0;
+    Interlocked::LseAtomicsFlag() = (hwcap & lseAtomicsBit) != 0;
 #endif
 }
 #endif // HAVE_INTERLOCKED_LSE_DETECTION

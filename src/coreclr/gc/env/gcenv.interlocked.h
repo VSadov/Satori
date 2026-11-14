@@ -51,7 +51,14 @@ public:
 #ifdef INTERLOCKED_ARM64_LSE_DETECTION
     // Whether the processor has the LSE atomics. Set when the module is loaded, on Linux, FreeBSD, iOS and tvOS, see gcenv.unix.cpp. Elsewhere, and until then,
     // the operations use the exclusive loads and stores, which is correct as well: the two kinds of operations are atomic with respect to each other.
-    static inline bool s_arm64LseAtomics = false;
+    // This is a function with a static local and not a static data member, because the native code of this branch is built as C++11 and a data member
+    // of a class that is defined in a header would need a definition in one file of every module that includes it (or "inline", a C++17 feature).
+    // The local is constant-initialized, so it is ready before the constructor of gcenv.unix.cpp runs and is read without a guard.
+    static bool& LseAtomicsFlag()
+    {
+        static bool s_lseAtomics = false;
+        return s_lseAtomics;
+    }
 #endif // INTERLOCKED_ARM64_LSE_DETECTION
 
     // Increment the value of the specified 32-bit variable as an atomic operation.

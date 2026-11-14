@@ -28,7 +28,7 @@ FORCEINLINE bool Interlocked::UseLseAtomics()
 {
 #ifdef INTERLOCKED_ARM64_LSE_DETECTION
     // Written once, when the module is loaded, and either value is correct, so a plain read is enough.
-    return s_arm64LseAtomics;
+    return LseAtomicsFlag();
 #else
     // The build requires a processor that has them.
     return true;
@@ -53,14 +53,17 @@ FORCEINLINE bool Interlocked::UseLseAtomics()
     }
 
 // Does the operation of the instruction on the destination and the value, and returns what the destination had.
+// The operand size is selected with a plain "if" on sizeof(T), not "if constexpr": the native code of this branch is built as C++11.
+// All four forms are compiled for every T, which is fine for the types that these are instantiated with (integers and size_t, the pointer
+// forms of the operations convert through size_t), and the compiler removes the ones that do not match, since the condition is a constant.
 #define INTERLOCKED_LSE_FETCH_OP(name, instruction)                                                                                 \
     template <typename T>                                                                                                           \
     FORCEINLINE T Interlocked::name(T volatile *destination, T value)                                                               \
     {                                                                                                                               \
         static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8, "Unsupported size");                   \
-        if constexpr (sizeof(T) == 8) INTERLOCKED_LSE_FETCH_OP_FOR_SIZE(instruction, "", "x", uint64_t)                              \
-        else if constexpr (sizeof(T) == 4) INTERLOCKED_LSE_FETCH_OP_FOR_SIZE(instruction, "", "w", uint32_t)                         \
-        else if constexpr (sizeof(T) == 2) INTERLOCKED_LSE_FETCH_OP_FOR_SIZE(instruction, "h", "w", uint16_t)                        \
+        if (sizeof(T) == 8) INTERLOCKED_LSE_FETCH_OP_FOR_SIZE(instruction, "", "x", uint64_t)                                        \
+        else if (sizeof(T) == 4) INTERLOCKED_LSE_FETCH_OP_FOR_SIZE(instruction, "", "w", uint32_t)                                   \
+        else if (sizeof(T) == 2) INTERLOCKED_LSE_FETCH_OP_FOR_SIZE(instruction, "h", "w", uint16_t)                                  \
         else INTERLOCKED_LSE_FETCH_OP_FOR_SIZE(instruction, "b", "w", uint8_t)                                                       \
     }
 
@@ -89,9 +92,9 @@ INTERLOCKED_LSE_FETCH_OP(LseSwap, "swpal")
     FORCEINLINE T Interlocked::name(T volatile *destination, T exchange, T comparand)                                               \
     {                                                                                                                               \
         static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8, "Unsupported size");                   \
-        if constexpr (sizeof(T) == 8) INTERLOCKED_LSE_COMPARE_EXCHANGE_FOR_SIZE(instruction, "", "x", uint64_t)                      \
-        else if constexpr (sizeof(T) == 4) INTERLOCKED_LSE_COMPARE_EXCHANGE_FOR_SIZE(instruction, "", "w", uint32_t)                 \
-        else if constexpr (sizeof(T) == 2) INTERLOCKED_LSE_COMPARE_EXCHANGE_FOR_SIZE(instruction, "h", "w", uint16_t)                \
+        if (sizeof(T) == 8) INTERLOCKED_LSE_COMPARE_EXCHANGE_FOR_SIZE(instruction, "", "x", uint64_t)                                \
+        else if (sizeof(T) == 4) INTERLOCKED_LSE_COMPARE_EXCHANGE_FOR_SIZE(instruction, "", "w", uint32_t)                           \
+        else if (sizeof(T) == 2) INTERLOCKED_LSE_COMPARE_EXCHANGE_FOR_SIZE(instruction, "h", "w", uint16_t)                          \
         else INTERLOCKED_LSE_COMPARE_EXCHANGE_FOR_SIZE(instruction, "b", "w", uint8_t)                                               \
     }
 
