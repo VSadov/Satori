@@ -336,12 +336,15 @@ inline bool SatoriRegion::ClearStaleEscapeMarks()
 inline void SatoriRegion::SetCardsForObject(SatoriObject* o, size_t size)
 {
     _ASSERTE(this->Size() == Satori::REGION_SIZE_GRANULARITY);
+    // The region is tenured by now (see IndividuallyPromote), so a child in it needs no card.
+    _ASSERTE(Generation() >= 2);
 
     o->ForEachObjectRef(
         [&](SatoriObject** ppObject)
         {
             SatoriObject* child = VolatileLoadWithoutBarrier(ppObject);
             if (child &&
+                !child->SameRegion(this) &&
                 !child->IsExternal() &&
                 child->ContainingRegion()->Generation() < 2)
            {

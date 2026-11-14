@@ -3120,7 +3120,8 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                                     [&](SatoriObject** ref)
                                     {
                                         SatoriObject* child = VolatileLoadWithoutBarrier(ref);
-                                        if (child && !child->IsExternal())
+                                        // same region: tenured too, nothing to mark. (first, as it reads no memory)
+                                        if (child && !child->SameRegion(region) && !child->IsExternal())
                                         {
                                             SatoriRegion* childRegion = child->ContainingRegion();
                                             if (!childRegion->MaybeEscapeTrackingAcquire())
@@ -3369,7 +3370,9 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                                         [&](SatoriObject** ref)
                                         {
                                             SatoriObject* child = VolatileLoadWithoutBarrier(ref);
+                                            // same region and older than condemned: nothing to mark. (first, as it reads no memory)
                                             if (child &&
+                                                !(considerAllMarked && child->SameRegion(region)) &&
                                                 !child->IsExternal())
                                             {
                                                 SatoriRegion* childRegion = child->ContainingRegion();
@@ -3553,7 +3556,9 @@ void SatoriRecycler::MarkThroughCards()
                                     [&](SatoriObject** ref)
                                     {
                                         SatoriObject* child = VolatileLoadWithoutBarrier(ref);
+                                        // same region: tenured too, nothing to mark. (first, as it reads no memory)
                                         if (child &&
+                                            !child->SameRegion(region) &&
                                             !child->IsExternal() &&
                                             !child->IsMarkedOrOlderThan(1))
                                         {
@@ -3708,7 +3713,9 @@ void SatoriRecycler::CleanCards()
                                         [&](SatoriObject** ref)
                                         {
                                             SatoriObject* child = *ref;
+                                            // same region and older than condemned: nothing to mark. (first, as it reads no memory)
                                             if (child &&
+                                                !(considerAllMarked && child->SameRegion(region)) &&
                                                 !child->IsExternal() &&
                                                 !child->IsMarkedOrOlderThan(condemnedGeneration))
                                             {
