@@ -1423,8 +1423,10 @@ void SatoriPage::DirtyCardsForRange(size_t start, size_t end)
     _ASSERTE(lastCard >= m_cardTableStart);
     _ASSERTE(lastCard < m_cardTableSize);
 
-    // we dirty these cards unconditionally, since they can be concurrently cleaned
-    // see similar note above
+    // we dirty these cards unconditionally, since they can be concurrently cleaned.
+    // This is called on mark overflow, after the object was marked with an unordered atomic (SetMarkedAtomic).
+    // A cleaner that sees a dirty card visits only the marked objects in it, so the mark must be visible first.
+    VolatileStoreBarrier();
     memset((void*)(m_cardTable + firstCard), Satori::CardState::DIRTY, lastCard - firstCard + 1);
 
     // if dirtying can be concurrent with cleaning, we must ensure order

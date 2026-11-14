@@ -221,10 +221,11 @@ public:
         _ASSERTE(cardByteOffset >= m_cardTableStart);
         _ASSERTE(cardByteOffset < m_cardTableSize);
 
-        // we dirty the card unconditionally, since it can be concurrently cleaned
-        // however this does not get called after field writes (unlike in barriers or bulk helpers),
-        // so the dirtying write can be unordered.
-        m_cardTable[cardByteOffset] = Satori::CardState::DIRTY;
+        // we dirty the card unconditionally, since it can be concurrently cleaned.
+        // The card store is a release. ErectWriteBarrier calls this right after a reference store, and the markers call it after the object
+        // that holds the reference was marked (with an unordered atomic). A cleaner that sees the dirty card visits the marked objects in it,
+        // so it must see the reference and the mark too. (as the barriers do with stlrb, see WriteBarriers.S)
+        VolatileStore(&m_cardTable[cardByteOffset], Satori::CardState::DIRTY);
 
         // we do not clean groups concurrently, so these can be conditional and unordered
         // only the eventual final state matters
