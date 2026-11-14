@@ -597,7 +597,8 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
     LOCAL_LABEL(SetPage):
         ldrb    w17, [x16]
         cbnz    w17, LOCAL_LABEL(CardSet)
-        mov     w17, #1
+        // DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     w17, #4
         strb    w17, [x16]
 
     LOCAL_LABEL(CardSet):
@@ -806,6 +807,8 @@ LEAF_ENTRY RhpCheckedLockCmpXchg
     LOCAL_LABEL(SetPageCmpXchg):
         ldrb    w3, [x16]
         cbnz    w3, LOCAL_LABEL(CardSetCmpXchg)
+        // DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     w17, #4
         strb    w17, [x16]
 
     LOCAL_LABEL(CardSetCmpXchg):
@@ -1004,6 +1007,8 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
     LOCAL_LABEL(SetPageXchg):
         ldrb    w3, [x16]
         cbnz    w3, LOCAL_LABEL(CardSetXchg)
+        // DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     w17, #4
         strb    w17, [x16]
 
     LOCAL_LABEL(CardSetXchg):
