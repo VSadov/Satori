@@ -1333,9 +1333,12 @@ SatoriRegion* SatoriPage::RegionForCardGroup(size_t group)
 {
     size_t mapIndex = group * Satori::BYTES_PER_CARD_GROUP / Satori::REGION_SIZE_GRANULARITY;
 
-    // the region is live (a group that is not blank has one), so its map bytes do not change
+    // An acquire, as in RegionForAddressChecked and NextInPage: the byte that ends the search is the one that OnRegionInitialized
+    // stored with a release after it wrote the header, and the caller reads the header next. The address of the region is computed
+    // from the index, not loaded, so nothing else orders those reads after this load. Do not relax it.
+    // (The region is live, a group that is not blank has one, so the bytes do not change under us.)
     uint8_t mapValue;
-    while ((mapValue = RegionMap()[mapIndex]) > 1)
+    while ((mapValue = VolatileLoad(&RegionMap()[mapIndex])) > 1)
     {
         mapIndex -= ((size_t)1 << (mapValue - 2));
     }
