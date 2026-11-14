@@ -158,6 +158,7 @@ public:
     uint8_t* RegionMap();
     SatoriHeap* Heap();
 
+    // Not for the write barrier: a blank page becomes REMEMBERED, which is right only while nothing dirties cards.
     inline void SetCardForAddress(size_t address)
     {
         size_t offset = address - (size_t)this;
@@ -177,6 +178,32 @@ public:
                 if (!m_cardState)
                 {
                     m_cardState = Satori::CardState::REMEMBERED;
+                }
+            }
+        }
+    }
+
+    // For the write barrier, which runs concurrently with dirtying.
+    inline void SetCardForAddressConcurrent(size_t address)
+    {
+        size_t offset = address - (size_t)this;
+        size_t cardByteOffset = offset / Satori::BYTES_PER_CARD_BYTE;
+
+        _ASSERTE(cardByteOffset >= m_cardTableStart);
+        _ASSERTE(cardByteOffset < m_cardTableSize);
+
+        if (!m_cardTable[cardByteOffset])
+        {
+            m_cardTable[cardByteOffset] = Satori::CardState::REMEMBERED;
+
+            size_t cardGroup = offset / Satori::BYTES_PER_CARD_GROUP;
+            if (!m_cardGroups[cardGroup * 2])
+            {
+                m_cardGroups[cardGroup * 2] = Satori::CardState::REMEMBERED;
+                if (!m_cardState)
+                {
+                    // DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+                    m_cardState = Satori::CardState::DIRTY;
                 }
             }
         }
@@ -226,7 +253,7 @@ public:
     }
 
     void DirtyCardForAddress(size_t address);
-    void SetCardsForRange(size_t start, size_t end);
+    void SetCardsForRangeConcurrent(size_t start, size_t end);
     void DirtyCardsForRange(size_t start, size_t length);
     void DirtyCardsForRangeConcurrent(size_t start, size_t end);
 

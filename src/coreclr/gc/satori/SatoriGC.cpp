@@ -881,7 +881,7 @@ void SatoriGC::SetCardsAfterBulkCopy(size_t dst, size_t src, size_t len)
         SatoriRecycler* recycler = m_heap->Recycler();
         if (!recycler->IsBarrierConcurrent(/* includeSwitching */ true))
         {
-            page->SetCardsForRange(dst, dst + len);
+            page->SetCardsForRangeConcurrent(dst, dst + len);
         }
 
         if (recycler->IsBarrierConcurrent(/* includeSwitching */ true))

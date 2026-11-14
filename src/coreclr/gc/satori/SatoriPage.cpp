@@ -1350,7 +1350,7 @@ SatoriRegion* SatoriPage::RegionForCardGroup(size_t group)
 
 // setting cards is never concurent with unsetting (unlike dirtying)
 // so there are no ordering implications.
-void SatoriPage::SetCardsForRange(size_t start, size_t end)
+void SatoriPage::SetCardsForRangeConcurrent(size_t start, size_t end)
 {
     _ASSERTE(end > start);
 
@@ -1386,7 +1386,8 @@ void SatoriPage::SetCardsForRange(size_t start, size_t end)
 
     if (!m_cardState)
     {
-        m_cardState = Satori::CardState::REMEMBERED;
+        // DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        m_cardState = Satori::CardState::DIRTY;
     }
 }
 
