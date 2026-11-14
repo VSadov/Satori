@@ -214,6 +214,10 @@ void SatoriPage::OnRegionInitialized(SatoriRegion* region)
         BitScanReverse64(&log2, i);
         RegionMap()[startIndex + i] = (uint8_t)(log2 + 2);
     }
+
+    // The header and the map are stored before any card state of the region, also when one thread stores both.
+    // (a card scanner finds the region through a card group state, see RegionForCardGroup)
+    VolatileStoreBarrier();
 }
 
 // The reverse of OnRegionInitialized. A lookup reads a byte once, so it finds the region as it was or nothing, in whatever order
@@ -1332,6 +1336,10 @@ SatoriRegion* SatoriPage::NextInPage(SatoriRegion* region)
 SatoriRegion* SatoriPage::RegionForCardGroup(size_t group)
 {
     size_t mapIndex = group * Satori::BYTES_PER_CARD_GROUP / Satori::REGION_SIZE_GRANULARITY;
+
+    // The caller comes here on a card group state that it read with a plain load. Order that load before the loads of the map
+    // and of the region header that follow, or they can see the granule as it was before the region was put there.
+    VolatileLoadBarrier();
 
     // An acquire, as in RegionForAddressChecked and NextInPage: the byte that ends the search is the one that OnRegionInitialized
     // stored with a release after it wrote the header, and the caller reads the header next. The address of the region is computed
