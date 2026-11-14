@@ -2598,6 +2598,13 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
 
     while (srcChunk)
     {
+        // Order preceding mark-bit updates before scanning this chunk's references.
+        // Covers caller-owned chunks, local chunk swaps, and range chunks.
+        // Not needed on x86/x64, where the locked instruction that sets a mark bit is a full fence.
+#if !defined(TARGET_X86) && !defined(TARGET_AMD64)
+        MemoryBarrier();
+#endif
+
         if (srcChunk->IsRange())
         {
             size_t start, end;
