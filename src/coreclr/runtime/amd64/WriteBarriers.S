@@ -382,7 +382,8 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
      LOCAL_LABEL(SetPage):
         cmp     byte ptr [rax], 0
         jne     LOCAL_LABEL(CardSet)
-        mov     byte ptr [rax], 1
+        // DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     byte ptr [rax], 4
 
      LOCAL_LABEL(CardSet):
      // check if concurrent marking is still not in progress
@@ -554,7 +555,8 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
      LOCAL_LABEL(SetPage_CmpXchg):
         cmp     byte ptr [r11], 0
         jne     LOCAL_LABEL(CardSet_CmpXchg)
-        mov     byte ptr [r11], 1
+        // DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     byte ptr [r11], 4
 
      LOCAL_LABEL(CardSet_CmpXchg):
      // check if concurrent marking is still not in progress
@@ -565,7 +567,7 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
     // DIRTYING CARD FOR rdi
      LOCAL_LABEL(DirtyCard_CmpXchg):
         cmp     byte ptr [r11 + rdx], 4
-        je      LOCAL_LABEL(Exit_CmpXchg)
+        je      LOCAL_LABEL(DirtyGroup_CmpXchg)
         mov     byte ptr [r11 + rdx], 4
      LOCAL_LABEL(DirtyGroup_CmpXchg):
         cmp     byte ptr [rsi], 4
@@ -721,7 +723,8 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
      LOCAL_LABEL(SetPage_Xchg):
         cmp     byte ptr [r11], 0
         jne     LOCAL_LABEL(CardSet_Xchg)
-        mov     byte ptr [r11], 1
+        // DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     byte ptr [r11], 4
 
      LOCAL_LABEL(CardSet_Xchg):
      // check if concurrent marking is still not in progress
@@ -732,7 +735,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
     // DIRTYING CARD FOR rdi
      LOCAL_LABEL(DirtyCard_Xchg):
         cmp     byte ptr [r11 + rdx], 4
-        je      LOCAL_LABEL(Exit_Xchg)
+        je      LOCAL_LABEL(DirtyGroup_Xchg)
         mov     byte ptr [r11 + rdx], 4
      LOCAL_LABEL(DirtyGroup_Xchg):
         cmp     byte ptr [rsi], 4
