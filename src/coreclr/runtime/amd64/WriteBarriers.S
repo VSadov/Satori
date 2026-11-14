@@ -567,7 +567,7 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
     // DIRTYING CARD FOR rdi
      LOCAL_LABEL(DirtyCard_CmpXchg):
         cmp     byte ptr [r11 + rdx], 4
-        je      LOCAL_LABEL(Exit_CmpXchg)
+        je      LOCAL_LABEL(DirtyGroup_CmpXchg)
         mov     byte ptr [r11 + rdx], 4
      LOCAL_LABEL(DirtyGroup_CmpXchg):
         cmp     byte ptr [rsi], 4
@@ -735,7 +735,7 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
     // DIRTYING CARD FOR rdi
      LOCAL_LABEL(DirtyCard_Xchg):
         cmp     byte ptr [r11 + rdx], 4
-        je      LOCAL_LABEL(Exit_Xchg)
+        je      LOCAL_LABEL(DirtyGroup_Xchg)
         mov     byte ptr [r11 + rdx], 4
      LOCAL_LABEL(DirtyGroup_Xchg):
         cmp     byte ptr [rsi], 4
