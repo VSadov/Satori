@@ -5325,6 +5325,11 @@ BOOL IsIPinVirtualStub(PCODE f_IP)
 
 typedef uint8_t CODE_LOCATION;
 EXTERN_C CODE_LOCATION RhpAssignRefAVLocation;
+#if defined(FEATURE_SATORI_GC) && (defined(HOST_AMD64) || defined(HOST_ARM64))
+// The Satori RhpAssignRef has a second store, for values that need no cards: null, objects outside of the heap
+// and thread-local assignments.
+EXTERN_C CODE_LOCATION RhpAssignRefAVLocationNotHeap;
+#endif
 #if defined(HOST_X86)
 EXTERN_C CODE_LOCATION RhpAssignRefEAXAVLocation;
 EXTERN_C CODE_LOCATION RhpAssignRefECXAVLocation;
@@ -5346,6 +5351,9 @@ EXTERN_C CODE_LOCATION RhpCheckedAssignRefEBPAVLocation;
 static uintptr_t writeBarrierAVLocations[] =
 {
     (uintptr_t)&RhpAssignRefAVLocation,
+#if defined(FEATURE_SATORI_GC) && (defined(HOST_AMD64) || defined(HOST_ARM64))
+    (uintptr_t)&RhpAssignRefAVLocationNotHeap,
+#endif
 #if defined(HOST_X86)
     (uintptr_t)&RhpAssignRefEAXAVLocation,
     (uintptr_t)&RhpAssignRefECXAVLocation,
