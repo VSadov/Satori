@@ -55,7 +55,7 @@
 static const int MIN_GEN1_BUDGET = 2 * Satori::REGION_SIZE_GRANULARITY;
 
 // Publishes the barrier state to the barriers via the g_write_watch_table slot.
-// When EE is suspended, the EE may also switch to barrier code that assumes the state rather than checks it.
+// When EE is suspended, the EE may also switch to barrier code specialized for the state.
 void ToggleWriteBarrier(int barrierState, bool eeSuspended)
 {
     // only the states that have a published counterpart could be set

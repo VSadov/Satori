@@ -33,6 +33,7 @@ public:
         WRITE_BARRIER_BIT_REGIONS64,
 #ifdef FEATURE_SATORI_GC
         WRITE_BARRIER_SATORI,
+        WRITE_BARRIER_SATORI2,
         WRITE_BARRIER_SATORI_CONCURRENT,
         WRITE_BARRIER_SATORI_CONCURRENT2,
 #endif // FEATURE_SATORI_GC
@@ -91,7 +92,7 @@ private:
 
 #ifdef FEATURE_SATORI_GC
     // SATORI patches the page map (m_pCardTableImmediate), the address of the barrier state (m_pWriteWatchTableImmediate,
-    // only the regular barrier reads the state) and the page byte map in the barrier (m_pCardBundleTableImmediate) and
+    // only the nonconcurrent barriers read the state) and the page byte map in the barrier (m_pCardBundleTableImmediate) and
     // in JIT_CheckedWriteBarrier, which is never replaced.
     PBYTE   m_pCheckedCardBundleTableImmediate;
 #endif // FEATURE_SATORI_GC

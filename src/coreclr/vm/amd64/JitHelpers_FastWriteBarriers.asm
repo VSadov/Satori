@@ -349,12 +349,13 @@ ifdef FEATURE_SATORI_GC
 ; The Satori barriers. WriteBarrierManager copies one of them into the JIT_WriteBarrier buffer (see patchedcode.asm)
 ; and patches the constants in the copy:
 ; - JIT_WriteBarrier_SATORI             - the regular barrier, it reads the barrier state (g_write_watch_table).
+; - JIT_WriteBarrier_SATORI2            - the GC does not mark concurrently and the next GC is a full GC.
 ; - JIT_WriteBarrier_SATORI_CONCURRENT  - while the GC marks concurrently and the next GC is not a full GC.
 ; - JIT_WriteBarrier_SATORI_CONCURRENT2 - while the GC marks concurrently and the next GC is a full GC.
 ;
 ; The concurrent barriers do not check the barrier state, they assume that the GC marks concurrently.
 ; The GC switches barriers only when EE is suspended anyway: to a concurrent barrier at the start of
-; the concurrent marking and back to the regular barrier in the blocking collection that follows.
+; the concurrent marking and back to a nonconcurrent barrier in the blocking collection that follows.
 ;
 ; The barriers have the same code ahead of the <Name>_CheckedEntry label, so that JIT_CheckedWriteBarrier
 ; can jump to CheckedEntry in the buffer, whichever barrier is there.
@@ -544,6 +545,148 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_Patch_Label_CardTable
         pop     rsp
         jmp     AssignAndMarkCards
 LEAF_END_MARKED JIT_WriteBarrier_SATORI, _TEXT
+
+;
+; The GC does not mark concurrently and the next GC is a full GC, thus cards are not needed.
+; The barrier state may become concurrent while EE runs, so this barrier still checks it.
+;
+LEAF_ENTRY JIT_WriteBarrier_SATORI2, _TEXT
+
+ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+    ; check if src is in heap
+        NOP_6_BYTE ; padding for alignment of constant
+PATCH_LABEL JIT_WriteBarrier_SATORI2_Patch_Label_CardBundleTable
+        mov     rax, 0F0F0F0F0F0F0F0F0h    ; the page byte map
+PATCH_LABEL JIT_WriteBarrier_SATORI2_CheckedEntry
+        mov     r8,  rdx
+        shr     r8,  30                    ; src page index
+        cmp     byte ptr [rax + r8], 0
+        je      JustAssign                 ; src not in heap
+else
+PATCH_LABEL JIT_WriteBarrier_SATORI2_CheckedEntry
+endif
+
+    ; check for escaping assignment
+    ; 1) check if we own the source region
+        mov     r8, rdx
+        and     r8, 0FFFFFFFFFFE00000h  ; source region
+
+ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
+        jz      JustAssign              ; assigning null
+endif
+
+        mov     rax,  gs:[30h]          ; thread tag, TEB on NT
+        cmp     qword ptr [r8], rax
+        jne     AssignAndMarkCards      ; not local to this thread
+
+    ; 2) check if the src and dst are from the same region
+        mov     rax, rcx
+        and     rax, 0FFFFFFFFFFE00000h ; target aligned to region
+        cmp     rax, r8
+        jne     RecordEscape            ; cross region assignment. definitely escaping
+
+    ; 3) check if the target is exposed
+        mov     rax, rcx
+        and     rax, 01FFFFFh
+        shr     rax, 3
+        bt      qword ptr [r8], rax
+        jb      RecordEscape            ; target is exposed. record an escape.
+
+    JustAssign:
+        mov     [rcx], rdx              ; src is external/null, or the assignment is completely threadlocal
+        ret
+
+    ; Not executed. Aligns the constant below: the padding, the 3-byte store and the 2-byte opcode
+    ; end on an 8-byte boundary.
+        align   8
+        NOP_3_BYTE
+    AssignAndMarkCards:
+        mov     [rcx], rdx
+
+    ; The barrier state may become concurrent while EE runs, thus this barrier reads it.
+PATCH_LABEL JIT_WriteBarrier_SATORI2_Patch_Label_WriteWatchTable
+        mov     r10, 0F0F0F0F0F0F0F0F0h ; the address of the barrier state (g_write_watch_table)
+
+    ; check the barrier state. this must be done after the assignment (in program order)
+    ; if state == 2 we do not set or dirty cards. Otherwise the GC marks concurrently for a full GC,
+    ; which marks through objects of any generation, so the card is dirtied regardless of src.
+        cmp     qword ptr [r10], 2h
+        jne     MarkCards
+        ret
+
+    ; Not executed. Aligns the constant below: the padding and the 2-byte opcode end on an 8-byte boundary.
+        align   8
+        NOP_6_BYTE
+    MarkCards:
+    ; fetch card location for rcx
+PATCH_LABEL JIT_WriteBarrier_SATORI2_Patch_Label_CardTable
+        mov     r9, 0F0F0F0F0F0F0F0F0h  ; the page map
+        mov     r8,  rcx
+        shr     rcx, 30
+        mov     rax, qword ptr [r9 + rcx * 8] ; page
+        sub     r8, rax   ; offset in page
+        mov     rdx,r8
+        shr     r8, 9     ; card offset
+        shr     rdx, 20   ; group index
+        lea     rdx, [rax + rdx * 2 + 80h] ; group offset
+
+    ; DIRTYING CARD FOR RCX
+     DirtyCard:
+        mov     byte ptr [rax + r8], 4
+     DirtyGroup:
+        cmp     byte ptr [rdx], 4
+        je      Exit
+        mov     byte ptr [rdx], 4
+     DirtyPage:
+        cmp     byte ptr [rax], 4
+        je      Exit
+        mov     byte ptr [rax], 4
+     Exit:
+        ret
+
+    ; this is expected to be rare.
+    RecordEscape:
+
+        ; 4) check if the source is escaped
+        mov     rax, rdx
+        add     rax, 8                        ; escape bit is MT + 1
+        and     rax, 01FFFFFh
+        shr     rax, 3
+        bt      qword ptr [r8], rax
+        jb      AssignAndMarkCards            ; source is already escaped.
+
+        ; Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+
+        ; save rsp, rcx, rdx, r8
+        push r9
+        push rcx
+        push rdx
+        push r8
+
+        ; also save xmm0, in case it is used for stack clearing.
+        ; Hopefully EscapeFn cannot corrupt other xmm regs, since there is no float math or vectorizable code in there.
+        sub     rsp, 16
+        movdqa  [rsp], xmm0
+
+        ; shadow space
+        sub  rsp, 20h
+
+        ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
+        call    qword ptr [r8 + 8]
+
+        add     rsp, 20h
+
+        movdqa  xmm0, [rsp]
+        add     rsp, 16
+
+        pop     r8
+        pop     rdx
+        pop     rcx
+        pop     rsp
+        jmp     AssignAndMarkCards
+LEAF_END_MARKED JIT_WriteBarrier_SATORI2, _TEXT
 
 ;
 ; The GC marks concurrently and the next GC is not a full GC.

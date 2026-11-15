@@ -62,7 +62,7 @@ public:
     //     (see: ToggleWriteBarrier)
     //
     // While EE is suspended to mark stacks for the concurrent marking and in the blocking collection,
-    // the EE may also switch the barrier code to the code that assumes the state rather than checks it.
+    // the EE may also switch the barrier code to the code specialized for the state.
     static const int BARRIER_STATE_NOT_CONCURRENT = 0;
     static const int BARRIER_STATE_CONCURRENT = 1;
     // Not concurrent and the next GC is a full GC, thus cards are not needed.

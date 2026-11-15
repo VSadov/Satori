@@ -60,6 +60,9 @@ EXTERN_C void CheckedEntry();
 EXTERN_C void JIT_WriteBarrier_SATORI(Object **dst, Object *ref);
 EXTERN_C void JIT_WriteBarrier_SATORI_End();
 EXTERN_C void JIT_WriteBarrier_SATORI_CheckedEntry();
+EXTERN_C void JIT_WriteBarrier_SATORI2(Object **dst, Object *ref);
+EXTERN_C void JIT_WriteBarrier_SATORI2_End();
+EXTERN_C void JIT_WriteBarrier_SATORI2_CheckedEntry();
 EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT(Object **dst, Object *ref);
 EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT_End();
 EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT_CheckedEntry();
@@ -70,14 +73,21 @@ EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT2_CheckedEntry();
 EXTERN_C void JIT_CheckedWriteBarrier_Patch_Label_CardBundleTable();
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
 EXTERN_C void JIT_WriteBarrier_SATORI_Patch_Label_CardBundleTable();
+EXTERN_C void JIT_WriteBarrier_SATORI2_Patch_Label_CardBundleTable();
 EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT_Patch_Label_CardBundleTable();
 EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT2_Patch_Label_CardBundleTable();
 #endif
 EXTERN_C void JIT_WriteBarrier_SATORI_Patch_Label_WriteWatchTable();
 EXTERN_C void JIT_WriteBarrier_SATORI_Patch_Label_CardTable();
+EXTERN_C void JIT_WriteBarrier_SATORI2_Patch_Label_WriteWatchTable();
+EXTERN_C void JIT_WriteBarrier_SATORI2_Patch_Label_CardTable();
 EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT_Patch_Label_CardTable();
 EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT2_Patch_Label_CardTable();
 #endif // WRITE_BARRIER_VARS_INLINE
+
+// The barrier state that Satori publishes in g_write_watch_table when it does not mark concurrently and
+// the next GC is a full GC, thus the barriers do not need cards. (see SatoriRecycler::BARRIER_STATE_SKIPPING_CARDS)
+static const size_t SATORI_BARRIER_STATE_SKIPPING_CARDS = 2;
 #endif // FEATURE_SATORI_GC
 
 #if defined(WRITE_BARRIER_VARS_INLINE)
@@ -210,6 +220,8 @@ PCODE WriteBarrierManager::GetCurrentWriteBarrierCode()
 #ifdef FEATURE_SATORI_GC
         case WRITE_BARRIER_SATORI:
             return GetEEFuncEntryPoint(JIT_WriteBarrier_SATORI);
+        case WRITE_BARRIER_SATORI2:
+            return GetEEFuncEntryPoint(JIT_WriteBarrier_SATORI2);
         case WRITE_BARRIER_SATORI_CONCURRENT:
             return GetEEFuncEntryPoint(JIT_WriteBarrier_SATORI_CONCURRENT);
         case WRITE_BARRIER_SATORI_CONCURRENT2:
@@ -259,6 +271,8 @@ size_t WriteBarrierManager::GetSpecificWriteBarrierSize(WriteBarrierType writeBa
 #ifdef FEATURE_SATORI_GC
         case WRITE_BARRIER_SATORI:
             return MARKED_FUNCTION_SIZE(JIT_WriteBarrier_SATORI);
+        case WRITE_BARRIER_SATORI2:
+            return MARKED_FUNCTION_SIZE(JIT_WriteBarrier_SATORI2);
         case WRITE_BARRIER_SATORI_CONCURRENT:
             return MARKED_FUNCTION_SIZE(JIT_WriteBarrier_SATORI_CONCURRENT);
         case WRITE_BARRIER_SATORI_CONCURRENT2:
@@ -390,6 +404,7 @@ void WriteBarrierManager::Initialize()
     size_t cbWriteBarrierBuffer = (size_t)((LPBYTE)GetEEFuncEntryPoint(JIT_WriteBarrier_End) - (LPBYTE)GetEEFuncEntryPoint(JIT_WriteBarrier));
 
     _ASSERTE_ALL_BUILDS(cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_SATORI));
+    _ASSERTE_ALL_BUILDS(cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_SATORI2));
     _ASSERTE_ALL_BUILDS(cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_SATORI_CONCURRENT));
     _ASSERTE_ALL_BUILDS(cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_SATORI_CONCURRENT2));
 
@@ -397,6 +412,7 @@ void WriteBarrierManager::Initialize()
 #define CHECKED_ENTRY_OFFSET(func)  (size_t)((LPBYTE)GetEEFuncEntryPoint(func##_CheckedEntry) - (LPBYTE)GetEEFuncEntryPoint(func))
     size_t checkedEntryOffset = (size_t)((LPBYTE)GetEEFuncEntryPoint(CheckedEntry) - (LPBYTE)GetEEFuncEntryPoint(JIT_WriteBarrier));
     _ASSERTE_ALL_BUILDS(checkedEntryOffset == CHECKED_ENTRY_OFFSET(JIT_WriteBarrier_SATORI));
+    _ASSERTE_ALL_BUILDS(checkedEntryOffset == CHECKED_ENTRY_OFFSET(JIT_WriteBarrier_SATORI2));
     _ASSERTE_ALL_BUILDS(checkedEntryOffset == CHECKED_ENTRY_OFFSET(JIT_WriteBarrier_SATORI_CONCURRENT));
     _ASSERTE_ALL_BUILDS(checkedEntryOffset == CHECKED_ENTRY_OFFSET(JIT_WriteBarrier_SATORI_CONCURRENT2));
 #undef CHECKED_ENTRY_OFFSET
@@ -541,6 +557,7 @@ bool WriteBarrierManager::NeedDifferentWriteBarrier(bool bReqUpperBoundsCheck, b
 
 #ifdef FEATURE_SATORI_GC
         case WRITE_BARRIER_SATORI:
+        case WRITE_BARRIER_SATORI2:
         case WRITE_BARRIER_SATORI_CONCURRENT:
         case WRITE_BARRIER_SATORI_CONCURRENT2:
             break;
@@ -755,7 +772,7 @@ int WriteBarrierManager::UpdateWriteWatchAndCardTableLocations(bool isRuntimeSus
 // Patches the values embedded in the barrier that was just copied into the JIT_WriteBarrier buffer and in
 // JIT_CheckedWriteBarrier. They do not change after the write barrier is initialized: the page byte map
 // (g_card_bundle_table), the page map (g_card_table) and the address of the barrier state (g_write_watch_table).
-// The barrier state itself changes at runtime, so the regular barrier reads it through its address.
+// The barrier state itself changes at runtime, so the nonconcurrent barriers read it through its address.
 int WriteBarrierManager::UpdateSatoriBarrierValues()
 {
     int stompWBCompleteActions = SWB_PASS;
@@ -770,7 +787,8 @@ int WriteBarrierManager::UpdateSatoriBarrierValues()
     switch (m_currentWriteBarrier)
     {
         case WRITE_BARRIER_SATORI:
-            // only the regular barrier reads the barrier state
+        case WRITE_BARRIER_SATORI2:
+            // only the nonconcurrent barriers read the barrier state
             stompWBCompleteActions |= updateVariable<UINT64>(m_pWriteWatchTableImmediate, (size_t)&g_write_watch_table);
             break;
 
@@ -819,10 +837,11 @@ int WriteBarrierManager::SwitchToWriteWatchBarrier(bool isRuntimeSuspended)
 
 #ifdef FEATURE_SATORI_GC
         case WRITE_BARRIER_SATORI:
+        case WRITE_BARRIER_SATORI2:
         case WRITE_BARRIER_SATORI_CONCURRENT:
         case WRITE_BARRIER_SATORI_CONCURRENT2:
             // The GC starts marking concurrently while EE runs and we do not suspend EE just to switch barriers.
-            // The regular barrier reads the barrier state, so it works meanwhile. The GC calls here again when
+            // The nonconcurrent barriers read the barrier state, so they work meanwhile. The GC calls here again when
             // EE is suspended anyway and that is when we switch to a concurrent barrier.
             if (!isRuntimeSuspended)
             {
@@ -882,14 +901,20 @@ int WriteBarrierManager::SwitchToNonWriteWatchBarrier(bool isRuntimeSuspended)
 
 #ifdef FEATURE_SATORI_GC
         case WRITE_BARRIER_SATORI:
-            // The regular barrier reads the barrier state, so it does not change.
-            return SWB_PASS;
-
+        case WRITE_BARRIER_SATORI2:
         case WRITE_BARRIER_SATORI_CONCURRENT:
         case WRITE_BARRIER_SATORI_CONCURRENT2:
-            // The GC stops marking concurrently in a blocking collection, when EE is suspended.
+            // The GC stops marking concurrently and sets the barrier state for the next GC in a blocking collection,
+            // when EE is suspended. If the next GC is a full GC, the barrier does not need cards until it starts.
             _ASSERTE(isRuntimeSuspended);
-            newWriteBarrierType = WRITE_BARRIER_SATORI;
+            newWriteBarrierType = (size_t)g_write_watch_table == SATORI_BARRIER_STATE_SKIPPING_CARDS ?
+                WRITE_BARRIER_SATORI2 :
+                WRITE_BARRIER_SATORI;
+
+            if (newWriteBarrierType == m_currentWriteBarrier)
+            {
+                return SWB_PASS;
+            }
             break;
 #endif
 
@@ -1089,6 +1114,8 @@ void WriteBarrierManager::Validate()
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
     pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI, Patch_Label_CardBundleTable, 2);
     _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
+    pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI2, Patch_Label_CardBundleTable, 2);
+    _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
     pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI_CONCURRENT, Patch_Label_CardBundleTable, 2);
     _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
     pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI_CONCURRENT2, Patch_Label_CardBundleTable, 2);
@@ -1097,8 +1124,12 @@ void WriteBarrierManager::Validate()
 
     pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI, Patch_Label_WriteWatchTable, 2);
     _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
+    pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI2, Patch_Label_WriteWatchTable, 2);
+    _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
 
     pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI, Patch_Label_CardTable, 2);
+    _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
+    pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI2, Patch_Label_CardTable, 2);
     _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
     pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI_CONCURRENT, Patch_Label_CardTable, 2);
     _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
@@ -1215,6 +1246,19 @@ void WriteBarrierManager::UpdatePatchLocations(WriteBarrierType newWriteBarrier)
 #endif
             m_pWriteWatchTableImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI, Patch_Label_WriteWatchTable, 2);
             m_pCardTableImmediate       = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI, Patch_Label_CardTable, 2);
+
+            // Make sure that we will be bashing the right places (immediates should be hardcoded to 0x0f0f0f0f0f0f0f0f0).
+            _ASSERTE_ALL_BUILDS(0xf0f0f0f0f0f0f0f0 == *(UINT64*)m_pWriteWatchTableImmediate);
+            _ASSERTE_ALL_BUILDS(0xf0f0f0f0f0f0f0f0 == *(UINT64*)m_pCardTableImmediate);
+            break;
+
+        case WRITE_BARRIER_SATORI2:
+#ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+            m_pCardBundleTableImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI2, Patch_Label_CardBundleTable, 2);
+            _ASSERTE_ALL_BUILDS(0xf0f0f0f0f0f0f0f0 == *(UINT64*)m_pCardBundleTableImmediate);
+#endif
+            m_pWriteWatchTableImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI2, Patch_Label_WriteWatchTable, 2);
+            m_pCardTableImmediate       = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI2, Patch_Label_CardTable, 2);
 
             // Make sure that we will be bashing the right places (immediates should be hardcoded to 0x0f0f0f0f0f0f0f0f0).
             _ASSERTE_ALL_BUILDS(0xf0f0f0f0f0f0f0f0 == *(UINT64*)m_pWriteWatchTableImmediate);

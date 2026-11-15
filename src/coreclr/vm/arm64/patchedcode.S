@@ -623,12 +623,13 @@ LEAF_END JIT_PatchedCodeLast, _TEXT
 //-----------------------------------------------------------------------------
 // The Satori barriers. WriteBarrierManager copies one of them into the JIT_WriteBarrier buffer:
 // - JIT_WriteBarrier_SATORI             - the regular barrier, it reads the barrier state (g_write_watch_table).
+// - JIT_WriteBarrier_SATORI2            - the GC does not mark concurrently and the next GC is a full GC.
 // - JIT_WriteBarrier_SATORI_CONCURRENT  - while the GC marks concurrently and the next GC is not a full GC.
 // - JIT_WriteBarrier_SATORI_CONCURRENT2 - while the GC marks concurrently and the next GC is a full GC.
 //
 // The concurrent barriers do not check the barrier state, they assume that the GC marks concurrently.
 // The GC switches barriers only when EE is suspended anyway: to a concurrent barrier at the start of
-// the concurrent marking and back to the regular barrier in the blocking collection that follows.
+// the concurrent marking and back to a nonconcurrent barrier in the blocking collection that follows.
 //
 // The barriers find the patchable literal pool at a fixed offset from where they are copied (JIT_WriteBarrier_Offset_*).
 // They have the same code ahead of the <Name>_CheckedEntry label, so that JIT_CheckedWriteBarrier can jump to
@@ -824,6 +825,155 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_CheckedEntry
         and     x16, x15, #0xFFFFFFFFFFE00000  // source region
         b       LOCAL_LABEL(AssignAndMarkCards_SATORI)
 LEAF_END_MARKED JIT_WriteBarrier_SATORI, _TEXT
+
+//-----------------------------------------------------------------------------
+// void JIT_WriteBarrier_SATORI2(Object** dst, Object* src)
+//
+// The GC does not mark concurrently and the next GC is a full GC, thus cards are not needed.
+// The barrier state may become concurrent while EE runs, so this barrier still checks it.
+//
+// On entry:
+//   x14  : the destination address (LHS of the assignment)
+//   x15  : the object reference (RHS of the assignment)
+//
+// On exit:
+//   x12  : trashed
+//   x14  : preserved (the destination address is not modified)
+//   x15  : trashed
+//   x16  : trashed (ip0)
+//   x17  : trashed (ip1)
+//
+LEAF_ENTRY JIT_WriteBarrier_SATORI2, _TEXT
+FIXUP_LABEL(Start_SATORI2):
+    // check for escaping assignment
+    // 1) check if we own the source region
+#ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+        ldr     x16, JIT_WriteBarrier_Offset_CardBundleTable + FIXUP_LABEL(Start_SATORI2)
+PATCH_LABEL JIT_WriteBarrier_SATORI2_CheckedEntry
+        lsr     x17, x15, #30                   // src page index
+        ldrb    w12, [x16, x17]
+        cbz     x12, LOCAL_LABEL(JustAssign_SATORI2)    // null or external (immutable) object
+#else
+PATCH_LABEL JIT_WriteBarrier_SATORI2_CheckedEntry
+        cbz     x15, LOCAL_LABEL(JustAssign_SATORI2)    // assigning null
+#endif
+        and     x16,  x15, #0xFFFFFFFFFFE00000  // source region
+        ldr     x12, [x16]                      // region tag
+#ifdef TARGET_APPLE
+        mrs     x17, TPIDRRO_EL0
+        and     x17, x17, #-8                   // thread tag on OSX
+#else
+        mrs     x17, TPIDR_EL0                  // thread tag on other Unix
+#endif
+        cmp     x12, x17
+        bne     LOCAL_LABEL(AssignAndMarkCards_SATORI2) // not local to this thread
+
+    // 2) check if the src and dst are from the same region
+        and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
+        cmp     x12, x16
+        bne     LOCAL_LABEL(RecordEscape_SATORI2)       // cross region assignment. definitely escaping
+
+    // 3) check if the target is exposed
+        ubfx        x17, x14,#9,#12             // word index = (dst >> 9) & 0x1FFFFF
+        ldr         x17, [x16, x17, lsl #3]     // mark word = [region + index * 8]
+        lsr         x12, x14, #3                // bit = (dst >> 3) [& 63]
+        lsr         x17, x17, x12
+        tbnz        x17, #0, LOCAL_LABEL(RecordEscape_SATORI2) // target is exposed. record an escape.
+
+    // UNORDERED! src is external/null, or the assignment is completely threadlocal
+    LOCAL_LABEL(JustAssign_SATORI2):
+        str  x15, [x14]
+        ret  lr
+
+    LOCAL_LABEL(AssignAndMarkCards_SATORI2):
+        stlr    x15, [x14]
+
+    // The barrier state may become concurrent while EE runs, thus this barrier reads it.
+        ldr     x17, JIT_WriteBarrier_Offset_WriteWatchTable + FIXUP_LABEL(Start_SATORI2) // the address of the barrier state
+        ldr     x17, [x17]
+    // check the barrier state. this must be done after the assignment (in program order)
+    // if state == 2 we do not set or dirty cards. Otherwise the GC marks concurrently for a full GC,
+    // which marks through objects of any generation, so the card is dirtied regardless of src.
+        tbz     x17, #1, LOCAL_LABEL(MarkCards_SATORI2)
+        ret     lr
+
+    LOCAL_LABEL(MarkCards_SATORI2):
+    // only x12, x15, x16 and x17 may be trashed here, so we keep the card offset in x12,
+    // the group address in x15, the page in x16, and reuse x17 for the value being stored.
+
+    // fetch card location for x14
+        ldr     x12, JIT_WriteBarrier_Offset_CardTable + FIXUP_LABEL(Start_SATORI2) // fetch the page map
+        lsr     x16, x14, #30
+        ldr     x16, [x12, x16, lsl #3]              // page
+        sub     x12, x14, x16   // offset in page
+        lsr     x15, x12, #20   // group index
+        lsr     x12, x12, #9    // card offset
+        add     x15, x16, x15, lsl #1   // group address (page + index * 2)
+
+    // DIRTYING CARD FOR X14
+    LOCAL_LABEL(DirtyCard_SATORI2):
+        add     x12, x16, x12   // card address
+        mov     w17, #4
+        // must be after the field write to allow concurrent clean
+        stlrb   w17, [x12]
+    LOCAL_LABEL(DirtyGroup_SATORI2):
+        ldrb    w12, [x15, #0x80]
+        tbnz    w12, #2, LOCAL_LABEL(Exit_SATORI2)
+        strb    w17, [x15, #0x80]
+    LOCAL_LABEL(DirtyPage_SATORI2):
+        ldrb    w12, [x16]
+        tbnz    w12, #2, LOCAL_LABEL(Exit_SATORI2)
+        strb    w17, [x16]
+    LOCAL_LABEL(Exit_SATORI2):
+        ret  lr
+
+    // this is expected to be rare.
+    LOCAL_LABEL(RecordEscape_SATORI2):
+
+    // 4) check if the source is escaped (x16 has source region)
+        add         x12, x15, #8                   // escape bit is MT + 1
+        ubfx        x17, x12, #9,#12               // word index = (dst >> 9) & 0x1FFFFF
+        ldr         x17, [x16, x17, lsl #3]        // mark word = [region + index * 8]
+        lsr         x12, x12, #3                   // bit = (dst >> 3) [& 63]
+        lsr         x17, x17, x12
+        tbnz        x17, #0, LOCAL_LABEL(AssignAndMarkCards_SATORI2)        // source is already escaped.
+
+        // because of the barrier call convention we need to preserve x0-x11, x13, x14, x15 and x30.
+        // x12, x16 and x17 are trashable per the barrier contract, and x12 is rewritten before
+        // being read again. x29 is callee-saved, so EscapeFn preserves it for us.
+        // also save q0, in case it is used for stack clearing.
+        // Hopefully EscapeFn cannot corrupt other vector regs, since there is no float math or vectorizable code in there.
+
+        stp     x30, x0, [sp, -16 * 9]!
+        stp     x1,  x2, [sp, 16 * 1]
+        stp     x3,  x4, [sp, 16 * 2]
+        stp     x5,  x6, [sp, 16 * 3]
+        stp     x7,  x8, [sp, 16 * 4]
+        stp     x9,  x10,[sp, 16 * 5]
+        stp     x11, x13,[sp, 16 * 6]
+        stp     x14, x15,[sp, 16 * 7]
+        str     q0,      [sp, 16 * 8]
+
+        // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
+        // mov  x0, x14  EscapeFn does not use dst, it is just to avoid arg shuffle on x64
+        mov  x1, x15
+        mov  x2, x16                       // source region
+        ldr  x12, [x16, #8]                 // EscapeFn address
+        blr  x12
+
+        ldr     q0,      [sp, 16 * 8]
+        ldp     x14, x15,[sp, 16 * 7]
+        ldp     x11, x13,[sp, 16 * 6]
+        ldp     x9,  x10,[sp, 16 * 5]
+        ldp     x7,  x8, [sp, 16 * 4]
+        ldp     x5,  x6, [sp, 16 * 3]
+        ldp     x3,  x4, [sp, 16 * 2]
+        ldp     x1,  x2, [sp, 16 * 1]
+        ldp     x30, x0, [sp], 16 * 9
+
+        and     x16, x15, #0xFFFFFFFFFFE00000  // source region
+        b       LOCAL_LABEL(AssignAndMarkCards_SATORI2)
+LEAF_END_MARKED JIT_WriteBarrier_SATORI2, _TEXT
 
 //-----------------------------------------------------------------------------
 // void JIT_WriteBarrier_SATORI_CONCURRENT(Object** dst, Object* src)
