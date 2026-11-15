@@ -56,13 +56,27 @@ EXTERN_C void JIT_WriteBarrier_WriteWatch_Bit_Region64_End();
 #ifdef FEATURE_SATORI_GC
 EXTERN_C void JIT_PatchedCodeStart();
 EXTERN_C void JIT_PatchedCodeLast();
+EXTERN_C void CheckedEntry();
+EXTERN_C void JIT_WriteBarrier_SATORI(Object **dst, Object *ref);
+EXTERN_C void JIT_WriteBarrier_SATORI_End();
+EXTERN_C void JIT_WriteBarrier_SATORI_CheckedEntry();
+EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT(Object **dst, Object *ref);
+EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT_End();
+EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT_CheckedEntry();
+EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT2(Object **dst, Object *ref);
+EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT2_End();
+EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT2_CheckedEntry();
 #if defined(WRITE_BARRIER_VARS_INLINE)
 EXTERN_C void JIT_CheckedWriteBarrier_Patch_Label_CardBundleTable();
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
-EXTERN_C void JIT_WriteBarrier_Patch_Label_CardBundleTable();
+EXTERN_C void JIT_WriteBarrier_SATORI_Patch_Label_CardBundleTable();
+EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT_Patch_Label_CardBundleTable();
+EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT2_Patch_Label_CardBundleTable();
 #endif
-EXTERN_C void JIT_WriteBarrier_Patch_Label_CardTable();
-EXTERN_C void JIT_WriteBarrier_Patch_Label_WriteWatchTable();
+EXTERN_C void JIT_WriteBarrier_SATORI_Patch_Label_WriteWatchTable();
+EXTERN_C void JIT_WriteBarrier_SATORI_Patch_Label_CardTable();
+EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT_Patch_Label_CardTable();
+EXTERN_C void JIT_WriteBarrier_SATORI_CONCURRENT2_Patch_Label_CardTable();
 #endif // WRITE_BARRIER_VARS_INLINE
 #endif // FEATURE_SATORI_GC
 
@@ -193,7 +207,14 @@ PCODE WriteBarrierManager::GetCurrentWriteBarrierCode()
 
     switch (m_currentWriteBarrier)
     {
-#ifndef FEATURE_SATORI_GC
+#ifdef FEATURE_SATORI_GC
+        case WRITE_BARRIER_SATORI:
+            return GetEEFuncEntryPoint(JIT_WriteBarrier_SATORI);
+        case WRITE_BARRIER_SATORI_CONCURRENT:
+            return GetEEFuncEntryPoint(JIT_WriteBarrier_SATORI_CONCURRENT);
+        case WRITE_BARRIER_SATORI_CONCURRENT2:
+            return GetEEFuncEntryPoint(JIT_WriteBarrier_SATORI_CONCURRENT2);
+#else // FEATURE_SATORI_GC
         case WRITE_BARRIER_PREGROW64:
             return GetEEFuncEntryPoint(JIT_WriteBarrier_PreGrow64);
         case WRITE_BARRIER_POSTGROW64:
@@ -220,7 +241,7 @@ PCODE WriteBarrierManager::GetCurrentWriteBarrierCode()
         case WRITE_BARRIER_WRITE_WATCH_BIT_REGIONS64:
             return GetEEFuncEntryPoint(JIT_WriteBarrier_WriteWatch_Bit_Region64);
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
-#endif // !FEATURE_SATORI_GC
+#endif // FEATURE_SATORI_GC
         default:
             UNREACHABLE_MSG("unexpected m_currentWriteBarrier!");
     };
@@ -235,7 +256,14 @@ size_t WriteBarrierManager::GetSpecificWriteBarrierSize(WriteBarrierType writeBa
 
     switch (writeBarrier)
     {
-#ifndef FEATURE_SATORI_GC
+#ifdef FEATURE_SATORI_GC
+        case WRITE_BARRIER_SATORI:
+            return MARKED_FUNCTION_SIZE(JIT_WriteBarrier_SATORI);
+        case WRITE_BARRIER_SATORI_CONCURRENT:
+            return MARKED_FUNCTION_SIZE(JIT_WriteBarrier_SATORI_CONCURRENT);
+        case WRITE_BARRIER_SATORI_CONCURRENT2:
+            return MARKED_FUNCTION_SIZE(JIT_WriteBarrier_SATORI_CONCURRENT2);
+#else // FEATURE_SATORI_GC
         case WRITE_BARRIER_PREGROW64:
             return MARKED_FUNCTION_SIZE(JIT_WriteBarrier_PreGrow64);
         case WRITE_BARRIER_POSTGROW64:
@@ -262,7 +290,7 @@ size_t WriteBarrierManager::GetSpecificWriteBarrierSize(WriteBarrierType writeBa
         case WRITE_BARRIER_WRITE_WATCH_BIT_REGIONS64:
             return MARKED_FUNCTION_SIZE(JIT_WriteBarrier_WriteWatch_Bit_Region64);
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
-#endif // !FEATURE_SATORI_GC
+#endif // FEATURE_SATORI_GC
         case WRITE_BARRIER_BUFFER:
 #if defined(WRITE_BARRIER_VARS_INLINE)
             return MARKED_FUNCTION_SIZE(JIT_WriteBarrier);
@@ -292,11 +320,12 @@ int WriteBarrierManager::ChangeWriteBarrierTo(WriteBarrierType newWriteBarrier, 
     }
 
     _ASSERTE(m_currentWriteBarrier != newWriteBarrier);
+#ifdef FEATURE_SATORI_GC
+    // The Satori barriers are switched only when the runtime is suspended anyway.
+    _ASSERTE(isRuntimeSuspended || m_currentWriteBarrier == WRITE_BARRIER_UNINITIALIZED);
+#endif // FEATURE_SATORI_GC
     m_currentWriteBarrier = newWriteBarrier;
 
-#ifdef FEATURE_SATORI_GC
-    // The Satori barriers are never replaced, only the values embedded in them are patched.
-#else
     // the memcpy must come before the switch statement because the asserts inside the switch
     // are actually looking into the JIT_WriteBarrier buffer
     {
@@ -304,21 +333,24 @@ int WriteBarrierManager::ChangeWriteBarrierTo(WriteBarrierType newWriteBarrier, 
         memcpy(writeBarrierWriterHolder.GetRW(), (LPVOID)GetCurrentWriteBarrierCode(), GetCurrentWriteBarrierSize());
         stompWBCompleteActions |= SWB_ICACHE_FLUSH;
     }
-#endif // FEATURE_SATORI_GC
 
 #if defined(WRITE_BARRIER_VARS_INLINE)
     UpdatePatchLocations(newWriteBarrier);
 #endif
 
+#ifdef FEATURE_SATORI_GC
+    stompWBCompleteActions |= UpdateSatoriBarrierValues();
+#else
     stompWBCompleteActions |= UpdateEphemeralBounds(true);
     stompWBCompleteActions |= UpdateWriteWatchAndCardTableLocations(true, false);
+#endif // FEATURE_SATORI_GC
 
     return stompWBCompleteActions;
 }
 
-#ifdef FEATURE_SATORI_GC
-// The Satori barriers are not copied into the JIT_WriteBarrier buffer, so the values embedded in them are patched
-// where they are in the copy of the patched code region.
+#if defined(FEATURE_SATORI_GC) && defined(WRITE_BARRIER_VARS_INLINE)
+// JIT_CheckedWriteBarrier is never replaced, so the value embedded in it is patched where it is in the copy of
+// the patched code region.
 #define CALC_SATORI_PATCH_LOCATION(func,label,offset)      CalculateSatoriPatchLocation((PVOID)func##_##label, offset)
 
 static PBYTE CalculateSatoriPatchLocation(LPVOID label, int inlineOffset)
@@ -335,14 +367,12 @@ static PBYTE CalculateSatoriPatchLocation(LPVOID label, int inlineOffset)
     _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(patchLocation) & 0x7) == 0);
 #endif
 
-#if defined(WRITE_BARRIER_VARS_INLINE)
     // Make sure that we will be bashing the right places (immediates should be hardcoded to 0x0f0f0f0f0f0f0f0f0).
     _ASSERTE_ALL_BUILDS(0xf0f0f0f0f0f0f0f0 == *(UINT64*)patchLocation);
-#endif
 
     return patchLocation;
 }
-#endif // FEATURE_SATORI_GC
+#endif // FEATURE_SATORI_GC && WRITE_BARRIER_VARS_INLINE
 
 void WriteBarrierManager::Initialize()
 {
@@ -355,19 +385,27 @@ void WriteBarrierManager::Initialize()
     CONTRACTL_END;
 
 #ifdef FEATURE_SATORI_GC
+    // Ensure that the JIT_WriteBarrier buffer is large enough to hold any of the Satori barriers.
+    // NB: on ARM64 WRITE_BARRIER_BUFFER includes the literal pool, so take the size of JIT_WriteBarrier itself.
+    size_t cbWriteBarrierBuffer = (size_t)((LPBYTE)GetEEFuncEntryPoint(JIT_WriteBarrier_End) - (LPBYTE)GetEEFuncEntryPoint(JIT_WriteBarrier));
+
+    _ASSERTE_ALL_BUILDS(cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_SATORI));
+    _ASSERTE_ALL_BUILDS(cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_SATORI_CONCURRENT));
+    _ASSERTE_ALL_BUILDS(cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_SATORI_CONCURRENT2));
+
+    // JIT_CheckedWriteBarrier jumps to CheckedEntry in the buffer, so all the barriers must have it at the same offset.
+#define CHECKED_ENTRY_OFFSET(func)  (size_t)((LPBYTE)GetEEFuncEntryPoint(func##_CheckedEntry) - (LPBYTE)GetEEFuncEntryPoint(func))
+    size_t checkedEntryOffset = (size_t)((LPBYTE)GetEEFuncEntryPoint(CheckedEntry) - (LPBYTE)GetEEFuncEntryPoint(JIT_WriteBarrier));
+    _ASSERTE_ALL_BUILDS(checkedEntryOffset == CHECKED_ENTRY_OFFSET(JIT_WriteBarrier_SATORI));
+    _ASSERTE_ALL_BUILDS(checkedEntryOffset == CHECKED_ENTRY_OFFSET(JIT_WriteBarrier_SATORI_CONCURRENT));
+    _ASSERTE_ALL_BUILDS(checkedEntryOffset == CHECKED_ENTRY_OFFSET(JIT_WriteBarrier_SATORI_CONCURRENT2));
+#undef CHECKED_ENTRY_OFFSET
+
 #if defined(WRITE_BARRIER_VARS_INLINE)
     m_pCheckedCardBundleTableImmediate = CALC_SATORI_PATCH_LOCATION(JIT_CheckedWriteBarrier, Patch_Label_CardBundleTable, 2);
-#ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
-    m_pCardBundleTableImmediate        = CALC_SATORI_PATCH_LOCATION(JIT_WriteBarrier, Patch_Label_CardBundleTable, 2);
-#endif
-    m_pCardTableImmediate              = CALC_SATORI_PATCH_LOCATION(JIT_WriteBarrier, Patch_Label_CardTable, 2);
-    m_pWriteWatchTableImmediate        = CALC_SATORI_PATCH_LOCATION(JIT_WriteBarrier, Patch_Label_WriteWatchTable, 2);
 #else
-    // JIT_CheckedWriteBarrier and JIT_WriteBarrier use the same table.
-    m_pCheckedCardBundleTableImmediate = CALC_SATORI_PATCH_LOCATION(JIT_WriteBarrier, Patch_Label_CardBundleTable, 0);
-    m_pCardBundleTableImmediate        = m_pCheckedCardBundleTableImmediate;
-    m_pCardTableImmediate              = CALC_SATORI_PATCH_LOCATION(JIT_WriteBarrier, Patch_Label_CardTable, 0);
-    m_pWriteWatchTableImmediate        = CALC_SATORI_PATCH_LOCATION(JIT_WriteBarrier, Patch_Label_WriteWatchTable, 0);
+    // The barriers find the literal pool at a fixed offset from where they are copied, so check that in all builds.
+    _ASSERTE_ALL_BUILDS((size_t)((LPBYTE)GetEEFuncEntryPoint(JIT_WriteBarrier_Table) - (LPBYTE)GetEEFuncEntryPoint(JIT_WriteBarrier)) == JIT_WriteBarrier_Table_Offset);
 #endif // WRITE_BARRIER_VARS_INLINE
 #else // FEATURE_SATORI_GC
     // Ensure that the generic JIT_WriteBarrier function buffer is large enough to hold any of the more specific
@@ -390,6 +428,7 @@ void WriteBarrierManager::Initialize()
     _ASSERTE_ALL_BUILDS(cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_WRITE_WATCH_BYTE_REGIONS64));
     _ASSERTE_ALL_BUILDS(cbWriteBarrierBuffer >= GetSpecificWriteBarrierSize(WRITE_BARRIER_WRITE_WATCH_BIT_REGIONS64));
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+#endif // FEATURE_SATORI_GC
 
 
 #if !defined(WRITE_BARRIER_VARS_INLINE)
@@ -417,12 +456,16 @@ void WriteBarrierManager::Initialize()
 #endif // WRITE_BARRIER_CHECK
 #endif // TARGET_AMD64
 
+#ifdef FEATURE_SATORI_GC
+    // JIT_CheckedWriteBarrier reads the page byte map from the same literal pool.
+    m_pCheckedCardBundleTableImmediate = m_pCardBundleTableImmediate;
+#endif // FEATURE_SATORI_GC
+
 #endif // !WRITE_BARRIER_VARS_INLINE
 
 #if !defined(CODECOVERAGE) && defined(WRITE_BARRIER_VARS_INLINE)
     Validate();
 #endif
-#endif // FEATURE_SATORI_GC
 }
 
 template <typename T> int updateVariable(PBYTE loc, T value)
@@ -498,6 +541,8 @@ bool WriteBarrierManager::NeedDifferentWriteBarrier(bool bReqUpperBoundsCheck, b
 
 #ifdef FEATURE_SATORI_GC
         case WRITE_BARRIER_SATORI:
+        case WRITE_BARRIER_SATORI_CONCURRENT:
+        case WRITE_BARRIER_SATORI_CONCURRENT2:
             break;
 #endif // FEATURE_SATORI_GC
 
@@ -533,6 +578,15 @@ bool WriteBarrierManager::NeedDifferentWriteBarrier(bool bReqUpperBoundsCheck, b
 
 int WriteBarrierManager::UpdateEphemeralBounds(bool isRuntimeSuspended)
 {
+#ifdef FEATURE_SATORI_GC
+    // The Satori barriers do not use the ephemeral bounds and after the initialization only the GC switches them.
+    // (see UpdateWriteWatchAndCardTableLocations)
+    if (m_currentWriteBarrier != WRITE_BARRIER_UNINITIALIZED)
+    {
+        return SWB_PASS;
+    }
+#endif // FEATURE_SATORI_GC
+
     WriteBarrierType newType;
     if (NeedDifferentWriteBarrier(false, g_region_use_bitwise_write_barrier, &newType))
     {
@@ -607,6 +661,17 @@ int WriteBarrierManager::UpdateEphemeralBounds(bool isRuntimeSuspended)
 
 int WriteBarrierManager::UpdateWriteWatchAndCardTableLocations(bool isRuntimeSuspended, bool bReqUpperBoundsCheck)
 {
+#ifdef FEATURE_SATORI_GC
+    // The Satori barriers embed only the values that do not change after the write barrier is initialized.
+    // They are patched when a barrier is copied into the JIT_WriteBarrier buffer (see UpdateSatoriBarrierValues),
+    // not here, since StompResize may come here on any thread while the GC switches barriers. For the same reason,
+    // after the initialization this does not even look at which barrier is in place.
+    if (m_currentWriteBarrier != WRITE_BARRIER_UNINITIALIZED)
+    {
+        return SWB_PASS;
+    }
+#endif // FEATURE_SATORI_GC
+
     // If we are told that we require an upper bounds check (GC did some heap reshuffling),
     // we need to switch to the WriteBarrier_PostGrow function for good.
 
@@ -624,16 +689,7 @@ int WriteBarrierManager::UpdateWriteWatchAndCardTableLocations(bool isRuntimeSus
         return stompWBCompleteActions;
 #endif
 
-#ifdef FEATURE_SATORI_GC
-    // The Satori barriers embed only the values that do not change after the write barrier is initialized,
-    // so these are patched just once. The barrier state changes at runtime and is read through its address.
-    stompWBCompleteActions |= updateVariable<UINT64>(m_pCheckedCardBundleTableImmediate, (size_t)g_card_bundle_table);
-#ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
-    stompWBCompleteActions |= updateVariable<UINT64>(m_pCardBundleTableImmediate, (size_t)g_card_bundle_table);
-#endif
-    stompWBCompleteActions |= updateVariable<UINT64>(m_pCardTableImmediate, (size_t)g_card_table);
-    stompWBCompleteActions |= updateVariable<UINT64>(m_pWriteWatchTableImmediate, (size_t)&g_write_watch_table);
-#else // FEATURE_SATORI_GC
+#ifndef FEATURE_SATORI_GC
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 #if defined(WRITE_BARRIER_VARS_INLINE)
     switch (m_currentWriteBarrier)
@@ -690,10 +746,44 @@ int WriteBarrierManager::UpdateWriteWatchAndCardTableLocations(bool isRuntimeSus
     stompWBCompleteActions |= updateVariable<UINT64>(m_pGCShadowEnd, (size_t)g_GCShadowEnd);
 #endif // WRITE_BARRIER_CHECK
 #endif // TARGET_AMD64
-#endif // FEATURE_SATORI_GC
+#endif // !FEATURE_SATORI_GC
 
     return stompWBCompleteActions;
 }
+
+#ifdef FEATURE_SATORI_GC
+// Patches the values embedded in the barrier that was just copied into the JIT_WriteBarrier buffer and in
+// JIT_CheckedWriteBarrier. They do not change after the write barrier is initialized: the page byte map
+// (g_card_bundle_table), the page map (g_card_table) and the address of the barrier state (g_write_watch_table).
+// The barrier state itself changes at runtime, so the regular barrier reads it through its address.
+int WriteBarrierManager::UpdateSatoriBarrierValues()
+{
+    int stompWBCompleteActions = SWB_PASS;
+
+    stompWBCompleteActions |= updateVariable<UINT64>(m_pCheckedCardBundleTableImmediate, (size_t)g_card_bundle_table);
+#if defined(FEATURE_SATORI_EXTERNAL_OBJECTS) || !defined(WRITE_BARRIER_VARS_INLINE)
+    stompWBCompleteActions |= updateVariable<UINT64>(m_pCardBundleTableImmediate, (size_t)g_card_bundle_table);
+#endif
+    stompWBCompleteActions |= updateVariable<UINT64>(m_pCardTableImmediate, (size_t)g_card_table);
+
+#if defined(WRITE_BARRIER_VARS_INLINE)
+    switch (m_currentWriteBarrier)
+    {
+        case WRITE_BARRIER_SATORI:
+            // only the regular barrier reads the barrier state
+            stompWBCompleteActions |= updateVariable<UINT64>(m_pWriteWatchTableImmediate, (size_t)&g_write_watch_table);
+            break;
+
+        default:
+            break;
+    }
+#else
+    stompWBCompleteActions |= updateVariable<UINT64>(m_pWriteWatchTableImmediate, (size_t)&g_write_watch_table);
+#endif // WRITE_BARRIER_VARS_INLINE
+
+    return stompWBCompleteActions;
+}
+#endif // FEATURE_SATORI_GC
 
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 int WriteBarrierManager::SwitchToWriteWatchBarrier(bool isRuntimeSuspended)
@@ -729,8 +819,27 @@ int WriteBarrierManager::SwitchToWriteWatchBarrier(bool isRuntimeSuspended)
 
 #ifdef FEATURE_SATORI_GC
         case WRITE_BARRIER_SATORI:
-            // The Satori barrier reads the barrier state from g_write_watch_table, so it does not change.
-            return SWB_PASS;
+        case WRITE_BARRIER_SATORI_CONCURRENT:
+        case WRITE_BARRIER_SATORI_CONCURRENT2:
+            // The GC starts marking concurrently while EE runs and we do not suspend EE just to switch barriers.
+            // The regular barrier reads the barrier state, so it works meanwhile. The GC calls here again when
+            // EE is suspended anyway and that is when we switch to a concurrent barrier.
+            if (!isRuntimeSuspended)
+            {
+                return SWB_PASS;
+            }
+
+            // A full GC marks through objects of any generation, while a gen1 GC does not need cards for tenured ones.
+            newWriteBarrierType =
+                GCHeapUtilities::GetGCHeap()->GetCondemnedGeneration() == GCHeapUtilities::GetGCHeap()->GetMaxGeneration() ?
+                WRITE_BARRIER_SATORI_CONCURRENT2 :
+                WRITE_BARRIER_SATORI_CONCURRENT;
+
+            if (newWriteBarrierType == m_currentWriteBarrier)
+            {
+                return SWB_PASS;
+            }
+            break;
 #endif
 
         default:
@@ -773,8 +882,15 @@ int WriteBarrierManager::SwitchToNonWriteWatchBarrier(bool isRuntimeSuspended)
 
 #ifdef FEATURE_SATORI_GC
         case WRITE_BARRIER_SATORI:
-            // The Satori barrier reads the barrier state from g_write_watch_table, so it does not change.
+            // The regular barrier reads the barrier state, so it does not change.
             return SWB_PASS;
+
+        case WRITE_BARRIER_SATORI_CONCURRENT:
+        case WRITE_BARRIER_SATORI_CONCURRENT2:
+            // The GC stops marking concurrently in a blocking collection, when EE is suspended.
+            _ASSERTE(isRuntimeSuspended);
+            newWriteBarrierType = WRITE_BARRIER_SATORI;
+            break;
 #endif
 
         default:
@@ -966,6 +1082,29 @@ void WriteBarrierManager::Validate()
 #endif
 
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+
+#ifdef FEATURE_SATORI_GC
+    PBYTE pSatoriImmediate;
+
+#ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+    pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI, Patch_Label_CardBundleTable, 2);
+    _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
+    pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI_CONCURRENT, Patch_Label_CardBundleTable, 2);
+    _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
+    pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI_CONCURRENT2, Patch_Label_CardBundleTable, 2);
+    _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
+#endif
+
+    pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI, Patch_Label_WriteWatchTable, 2);
+    _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
+
+    pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI, Patch_Label_CardTable, 2);
+    _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
+    pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI_CONCURRENT, Patch_Label_CardTable, 2);
+    _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
+    pSatoriImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI_CONCURRENT2, Patch_Label_CardTable, 2);
+    _ASSERTE_ALL_BUILDS((reinterpret_cast<UINT64>(pSatoriImmediate) & 0x7) == 0);
+#endif // FEATURE_SATORI_GC
 }
 
 #endif // CODECOVERAGE
@@ -1070,7 +1209,38 @@ void WriteBarrierManager::UpdatePatchLocations(WriteBarrierType newWriteBarrier)
 
 #ifdef FEATURE_SATORI_GC
         case WRITE_BARRIER_SATORI:
-            // The Satori barriers are patched where they are, so the patch locations are computed in Initialize.
+#ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+            m_pCardBundleTableImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI, Patch_Label_CardBundleTable, 2);
+            _ASSERTE_ALL_BUILDS(0xf0f0f0f0f0f0f0f0 == *(UINT64*)m_pCardBundleTableImmediate);
+#endif
+            m_pWriteWatchTableImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI, Patch_Label_WriteWatchTable, 2);
+            m_pCardTableImmediate       = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI, Patch_Label_CardTable, 2);
+
+            // Make sure that we will be bashing the right places (immediates should be hardcoded to 0x0f0f0f0f0f0f0f0f0).
+            _ASSERTE_ALL_BUILDS(0xf0f0f0f0f0f0f0f0 == *(UINT64*)m_pWriteWatchTableImmediate);
+            _ASSERTE_ALL_BUILDS(0xf0f0f0f0f0f0f0f0 == *(UINT64*)m_pCardTableImmediate);
+            break;
+
+        case WRITE_BARRIER_SATORI_CONCURRENT:
+#ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+            m_pCardBundleTableImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI_CONCURRENT, Patch_Label_CardBundleTable, 2);
+            _ASSERTE_ALL_BUILDS(0xf0f0f0f0f0f0f0f0 == *(UINT64*)m_pCardBundleTableImmediate);
+#endif
+            m_pCardTableImmediate       = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI_CONCURRENT, Patch_Label_CardTable, 2);
+
+            // Make sure that we will be bashing the right places (immediates should be hardcoded to 0x0f0f0f0f0f0f0f0f0).
+            _ASSERTE_ALL_BUILDS(0xf0f0f0f0f0f0f0f0 == *(UINT64*)m_pCardTableImmediate);
+            break;
+
+        case WRITE_BARRIER_SATORI_CONCURRENT2:
+#ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+            m_pCardBundleTableImmediate = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI_CONCURRENT2, Patch_Label_CardBundleTable, 2);
+            _ASSERTE_ALL_BUILDS(0xf0f0f0f0f0f0f0f0 == *(UINT64*)m_pCardBundleTableImmediate);
+#endif
+            m_pCardTableImmediate       = CALC_PATCH_LOCATION(JIT_WriteBarrier_SATORI_CONCURRENT2, Patch_Label_CardTable, 2);
+
+            // Make sure that we will be bashing the right places (immediates should be hardcoded to 0x0f0f0f0f0f0f0f0f0).
+            _ASSERTE_ALL_BUILDS(0xf0f0f0f0f0f0f0f0 == *(UINT64*)m_pCardTableImmediate);
             break;
 #endif // FEATURE_SATORI_GC
 
@@ -1220,7 +1390,7 @@ void FlushWriteBarrierInstructionCache()
     if (IsWriteBarrierCopyEnabled())
     {
 #ifdef FEATURE_SATORI_GC
-        // The Satori barriers are patched where they are, which includes JIT_CheckedWriteBarrier.
+        // JIT_CheckedWriteBarrier is patched as well, so flush the whole region.
         FlushInstructionCache(GetCurrentProcess(), GetWriteBarrierCodeLocation((PVOID)JIT_PatchedCodeStart), (LPBYTE)JIT_PatchedCodeLast - (LPBYTE)JIT_PatchedCodeStart);
 #else
         FlushInstructionCache(GetCurrentProcess(), GetWriteBarrierCodeLocation((PVOID)JIT_WriteBarrier), g_WriteBarrierManager.GetCurrentWriteBarrierSize());

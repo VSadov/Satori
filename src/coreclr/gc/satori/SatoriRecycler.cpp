@@ -55,6 +55,7 @@
 static const int MIN_GEN1_BUDGET = 2 * Satori::REGION_SIZE_GRANULARITY;
 
 // Publishes the barrier state to the barriers via the g_write_watch_table slot.
+// When EE is suspended, the EE may also switch to barrier code that assumes the state rather than checks it.
 void ToggleWriteBarrier(int barrierState, bool eeSuspended)
 {
     // only the states that have a published counterpart could be set
@@ -1097,6 +1098,12 @@ void SatoriRecycler::BlockingMarkForConcurrent()
 
         size_t blockingStart = minipal_hires_ticks();
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
+
+        // The barrier became concurrent while EE was running. EE is suspended now anyway, so let it switch to
+        // barrier code that assumes concurrent marking rather than checks the barrier state.
+        // The blocking collection switches the code back, when it changes the barrier state.
+        _ASSERTE(IsBarrierConcurrent());
+        ToggleWriteBarrier(BARRIER_STATE_CONCURRENT, /* eeSuspended */ true);
 
         // the concurrent pass has already filtered what is in the alternate, make it usable again.
         // whatever is left in m_reusableRegions it did not reach - the loop below will filter that.
