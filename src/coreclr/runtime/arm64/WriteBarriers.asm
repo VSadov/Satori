@@ -512,7 +512,8 @@ SetGroup
 SetPage
         ldrb    w17, [x16]
         cbnz    w17, CardSet
-        mov     w17, #1
+        ; DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     w17, #4
         strb    w17, [x16]
 
 CardSet
@@ -718,6 +719,8 @@ SetGroupCmpXchg
 SetPageCmpXchg
         ldrb    w3, [x16]
         cbnz    w3, CardSetCmpXchg
+        ; DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     w17, #4
         strb    w17, [x16]
 
 CardSetCmpXchg
@@ -911,6 +914,8 @@ SetGroupXchg
 SetPageXchg
         ldrb    w3, [x16]
         cbnz    w3, CardSetXchg
+        ; DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     w17, #4
         strb    w17, [x16]
 
 CardSetXchg

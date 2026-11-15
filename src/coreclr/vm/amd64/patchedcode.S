@@ -450,7 +450,8 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
      LOCAL_LABEL(SetPage):
         cmp     byte ptr [rax], 0
         jne     LOCAL_LABEL(CardSet)
-        mov     byte ptr [rax], 1
+        // DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     byte ptr [rax], 4
 
      LOCAL_LABEL(CardSet):
      // check if concurrent marking is still not in progress
