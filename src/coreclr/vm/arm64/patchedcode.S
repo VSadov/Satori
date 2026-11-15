@@ -591,7 +591,8 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 
     // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
     //         needs to suspend EE, not sure if skipping mode check would worth that much.
-        ldr     x17, LOCAL_LABEL(wbs_sw_ww_table)
+        ldr     x17, LOCAL_LABEL(wbs_sw_ww_table)    // the address of the barrier state (g_write_watch_table)
+        ldr     x17, [x17]
     // check the barrier state. this must be done after the assignment (in program order)
     // if state == 2 we do not set or dirty cards.
         tbz     x17, #1, LOCAL_LABEL(DoCards)
@@ -651,7 +652,8 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
     LOCAL_LABEL(CardSet):
     // check if concurrent marking is still not in progress
     // (uses x17 so that the card offset in x12 stays live for DirtyCard)
-        ldr     x17, LOCAL_LABEL(wbs_sw_ww_table)    // !wbs_sw_ww_table -> !concurrent
+        ldr     x17, LOCAL_LABEL(wbs_sw_ww_table)    // the address of the barrier state
+        ldr     x17, [x17]                           // !barrier state -> !concurrent
         cbnz    x17, LOCAL_LABEL(DirtyCard)
 
     LOCAL_LABEL(Exit):
@@ -726,6 +728,10 @@ WRITE_BARRIER_END JIT_WriteBarrier
 // 
 // Patchable literal pool
 //
+// The Satori barriers use only the values that do not change after the GC initializes the write barrier:
+// the page map (g_card_table), the page byte map (g_card_bundle_table) and the address of g_write_watch_table,
+// which holds the barrier state.
+//
     .balign 64  // Align to power of two at least as big as patchable literal pool so that it fits optimally in cache line
 WRITE_BARRIER_ENTRY JIT_WriteBarrier_Table
 LOCAL_LABEL(wbs_card_table):
@@ -770,13 +776,6 @@ LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
     ret  lr
 LEAF_END JIT_PatchedCodeLast, _TEXT
 #endif
-
-LEAF_ENTRY JIT_WriteBarrier_SATORI, _TEXT
-    // TODO: Satori, when we need barrier replacement
-        mov   x14, 0
-        stlr  x15, [x14]
-        ret   lr
-LEAF_END_MARKED JIT_WriteBarrier_SATORI, _TEXT
 
 #endif  // FEATURE_SATORI_GC
 

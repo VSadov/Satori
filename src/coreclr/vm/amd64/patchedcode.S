@@ -51,6 +51,24 @@ C_FUNC(\name\()_End):
 #endif
 .endm
 
+// WRITE_BARRIER_PATCH_LABEL
+//
+// Marks a patchable constant within a write barrier function. On Apple platforms it is an .alt_entry, so that it
+// does not split the patched region (see above).
+//
+.macro WRITE_BARRIER_PATCH_LABEL name
+#if defined(__APPLE__)
+    // .cfi_startproc/.cfi_endproc is workaround for https://github.com/dotnet/runtime/issues/119005
+    .cfi_endproc
+    .alt_entry C_FUNC(\name)
+    .private_extern C_FUNC(\name)
+C_FUNC(\name):
+    .cfi_startproc
+#else
+    PATCH_LABEL \name
+#endif
+.endm
+
 #ifndef FEATURE_SATORI_GC
 
 // Mark start of the code region that we patch at runtime
@@ -309,6 +327,16 @@ LEAF_END JIT_PatchedCodeLast, _TEXT
 
 #else  //FEATURE_SATORI_GC      ##############################################################################
 
+// The Satori barriers run from the copy of the patched code region (see GetWriteBarrierCodeLocation), so they
+// cannot refer to globals RIP-relatively. Instead they embed the values that do not change after the GC
+// initializes the write barrier - the page byte map (g_card_bundle_table), the page map (g_card_table) and the
+// address of g_write_watch_table, which holds the barrier state - as constants that WriteBarrierManager patches.
+//
+// Regarding patchable constants:
+// - 64-bit constants have to be loaded into a register
+// - The constants have to be aligned to 8 bytes so that they can be patched easily
+// - The alignment is by construction: there is only fixed-size code between an alignment directive and a constant
+
 // Mark start of the code region that we patch at runtime
 #if defined(__APPLE__)
         .global C_FUNC(JIT_PatchedCodeStart)
@@ -326,8 +354,9 @@ LEAF_END JIT_PatchedCodeStart, _TEXT
 WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
 
      // See if dst is in GCHeap
-        PREPARE_EXTERNAL_VAR g_card_bundle_table, rax   // fetch the page byte map
-        mov     rax, [rax]
+        NOP_6_BYTE // padding for alignment of constant
+WRITE_BARRIER_PATCH_LABEL JIT_CheckedWriteBarrier_Patch_Label_CardBundleTable
+        movabs  rax, 0xF0F0F0F0F0F0F0F0                 // the page byte map
         mov     r8, rdi
         shr     r8, 30                                  // dst page index
         cmp     byte ptr [rax + r8], 0
@@ -348,8 +377,9 @@ WRITE_BARRIER_END JIT_CheckedWriteBarrier
 WRITE_BARRIER_ENTRY JIT_WriteBarrier
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
     // check if src is in heap
-        PREPARE_EXTERNAL_VAR g_card_bundle_table, rax   // fetch the page byte map
-        mov     rax, [rax]
+        NOP_6_BYTE // padding for alignment of constant
+WRITE_BARRIER_PATCH_LABEL JIT_WriteBarrier_Patch_Label_CardBundleTable
+        movabs  rax, 0xF0F0F0F0F0F0F0F0                 // the page byte map
     ALTERNATE_ENTRY CheckedEntry
         mov     r8, rsi
         shr     r8, 30                                  //  src page index
@@ -391,12 +421,17 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         mov     [rdi], rsi              // src is external/null, or the assignment is completely threadlocal
         ret
 
+        // Not executed. Aligns the constant below: the padding, the 3-byte store and the 2-byte opcode
+        // end on an 8-byte boundary.
+        .p2align 3
+        NOP_3_BYTE
     LOCAL_LABEL(AssignAndMarkCards):
         mov     [rdi], rsi
 
         // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
         //         needs to suspend EE, not sure if skipping mode check would worth that much.
-        PREPARE_EXTERNAL_VAR g_write_watch_table, rcx
+WRITE_BARRIER_PATCH_LABEL JIT_WriteBarrier_Patch_Label_WriteWatchTable
+        movabs  rcx, 0xF0F0F0F0F0F0F0F0 // the address of the barrier state (g_write_watch_table)
         mov     r11, [rcx]
 
         // check the barrier state. this must be done after the assignment (in program order)
@@ -421,10 +456,14 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         cmp     r11, 0
         je      LOCAL_LABEL(Exit)
 
+        // Aligns the constant below: the padding and the 2-byte opcode end on an 8-byte boundary.
+        // It is ahead of the label, so only the fall-through from CheckConcurrent runs it.
+        .p2align 3
+        NOP_6_BYTE
     LOCAL_LABEL(MarkCards):
     // fetch card location for rdi
-        PREPARE_EXTERNAL_VAR g_card_table, r9 
-        mov     r9,  [r9]  // fetch the page map
+WRITE_BARRIER_PATCH_LABEL JIT_WriteBarrier_Patch_Label_CardTable
+        movabs  r9, 0xF0F0F0F0F0F0F0F0  // the page map
         mov     rdx, rdi
         shr     rdi, 30
         mov     rax, qword ptr [r9 + rdi * 8] // page
@@ -455,7 +494,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
 
      LOCAL_LABEL(CardSet):
      // check if concurrent marking is still not in progress
-        cmp     qword ptr [rcx], 0
+        cmp     qword ptr [rcx], 0      // rcx - the address of the barrier state
         jne     LOCAL_LABEL(DirtyCard)
         ret
 

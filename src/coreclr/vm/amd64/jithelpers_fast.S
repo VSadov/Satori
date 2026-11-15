@@ -17,20 +17,6 @@
         .text
 #endif
 
-// ------------------------------------------------------------------
-// __declspec(naked) void F_CALL_CONV JIT_WriteBarrier_Callable(Object **dst, Object* val)
-.balign 16
-LEAF_ENTRY  JIT_WriteBarrier_Callable, _TEXT
-        // JIT_WriteBarrier(Object** dst, Object* src)
-
-        // this will be needed if JIT_WriteBarrier relocated/bashed
-        // also will need to update locations for checked and byref jit helpers
-        // jmp     [rip + C_FUNC(JIT_WriteBarrier_Loc)]
-
-        jmp     C_FUNC(JIT_WriteBarrier)
-
-LEAF_END JIT_WriteBarrier_Callable, _TEXT
-
 
 // The following helper will access ("probe") a word on each page of the stack
 // starting with the page right beneath rsp down to the one pointed to by r11.

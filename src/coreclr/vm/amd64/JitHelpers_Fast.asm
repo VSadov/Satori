@@ -101,18 +101,6 @@ Section segment para 'DATA'
 JIT_WriteBarrier_Loc:
         dq 0
 
-extern JIT_WriteBarrier:proc
-
-LEAF_ENTRY  JIT_WriteBarrier_Callable, _TEXT
-        ; JIT_WriteBarrier(Object** dst, Object* src)
-
-        ; this will be needed if JIT_WriteBarrier relocated/bashed
-        ; also will need to update locations for checked and byref jit helpers
-        ; jmp     QWORD PTR [JIT_WriteBarrier_Loc]
-
-        jmp     JIT_WriteBarrier
-LEAF_END JIT_WriteBarrier_Callable, _TEXT
-
 endif  ; FEATURE_SATORI_GC
 
 ; The following helper will access ("probe") a word on each page of the stack

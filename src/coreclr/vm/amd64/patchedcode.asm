@@ -202,13 +202,15 @@ LEAF_END JIT_PatchedCodeLast, _TEXT
 
 else  ;FEATURE_SATORI_GC     ##########################################################################
 
-EXTERN g_card_table:QWORD
-EXTERN g_card_bundle_table:QWORD
-EXTERN g_write_watch_table:QWORD
-
-ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
-EXTERN  g_sw_ww_enabled_for_gc_heap:BYTE
-endif
+; The Satori barriers run from the copy of the patched code region (see GetWriteBarrierCodeLocation), so they
+; cannot refer to globals RIP-relatively. Instead they embed the values that do not change after the GC
+; initializes the write barrier - the page byte map (g_card_bundle_table), the page map (g_card_table) and the
+; address of g_write_watch_table, which holds the barrier state - as constants that WriteBarrierManager patches.
+;
+; Regarding patchable constants:
+; - 64-bit constants have to be loaded into a register
+; - The constants have to be aligned to 8 bytes so that they can be patched easily
+; - The alignment is by construction: there is only fixed-size code between an alignment directive and a constant
 
 ; Mark start of the code region that we patch at runtime
 LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
@@ -218,7 +220,9 @@ LEAF_END JIT_PatchedCodeStart, _TEXT
 ; void JIT_CheckedWriteBarrier(Object** dst, Object* src)
 LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
     ; See if dst is in GCHeap
-        mov     rax, [g_card_bundle_table] ; fetch the page byte map
+        NOP_6_BYTE ; padding for alignment of constant
+PATCH_LABEL JIT_CheckedWriteBarrier_Patch_Label_CardBundleTable
+        mov     rax, 0F0F0F0F0F0F0F0F0h    ; the page byte map
         mov     r8,  rcx
         shr     r8,  30                    ; dst page index
         cmp     byte ptr [rax + r8], 0
@@ -244,7 +248,9 @@ LEAF_ENTRY JIT_WriteBarrier, _TEXT
 
 ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
     ; check if src is in heap
-        mov     rax, [g_card_bundle_table] ; fetch the page byte map
+        NOP_6_BYTE ; padding for alignment of constant
+PATCH_LABEL JIT_WriteBarrier_Patch_Label_CardBundleTable
+        mov     rax, 0F0F0F0F0F0F0F0F0h    ; the page byte map
     ALTERNATE_ENTRY CheckedEntry
         mov     r8,  rdx
         shr     r8,  30                    ; src page index
@@ -284,12 +290,18 @@ endif
         mov     [rcx], rdx              ; src is external/null, or the assignment is completely threadlocal
         ret
 
+    ; Not executed. Aligns the constant below: the padding, the 3-byte store and the 2-byte opcode
+    ; end on an 8-byte boundary.
+        align   8
+        NOP_3_BYTE
     AssignAndMarkCards:
         mov     [rcx], rdx
 
     ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
     ;         needs to suspend EE, not sure if skipping mode check would worth that much.
-        mov     r11, qword ptr [g_write_watch_table]
+PATCH_LABEL JIT_WriteBarrier_Patch_Label_WriteWatchTable
+        mov     r10, 0F0F0F0F0F0F0F0F0h ; the address of the barrier state (g_write_watch_table)
+        mov     r11, qword ptr [r10]
 
     ; check the barrier state. this must be done after the assignment (in program order)
     ; if state == 2 we do not set or dirty cards.
@@ -312,9 +324,14 @@ endif
         cmp     r11, 0h
         je      Exit                    ; if not concurrent, exit
 
+    ; Aligns the constant below: the padding and the 2-byte opcode end on an 8-byte boundary.
+    ; It is ahead of the label, so only the fall-through from CheckConcurrent runs it.
+        align   8
+        NOP_6_BYTE
     MarkCards:
     ; fetch card location for rcx
-        mov     r9 , [g_card_table]     ; fetch the page map
+PATCH_LABEL JIT_WriteBarrier_Patch_Label_CardTable
+        mov     r9, 0F0F0F0F0F0F0F0F0h  ; the page map
         mov     r8,  rcx
         shr     rcx, 30
         mov     rax, qword ptr [r9 + rcx * 8] ; page
@@ -345,7 +362,7 @@ endif
 
      CardSet:
     ; check if concurrent marking is still not in progress
-        cmp     qword ptr [g_write_watch_table], 0h
+        cmp     qword ptr [r10], 0h     ; r10 - the address of the barrier state
         jne     DirtyCard
         ret
 

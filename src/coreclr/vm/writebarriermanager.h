@@ -83,6 +83,12 @@ private:
     PBYTE   m_pRegionShrDest;               //         |          |     | WRITE_WATCH | REGION
     PBYTE   m_pRegionShrSrc;                //         |          |     | WRITE_WATCH | RETION
 
+#ifdef FEATURE_SATORI_GC
+    // SATORI patches the page map (m_pCardTableImmediate), the address of the barrier state (m_pWriteWatchTableImmediate)
+    // and the page byte map in JIT_WriteBarrier (m_pCardBundleTableImmediate) and in JIT_CheckedWriteBarrier.
+    PBYTE   m_pCheckedCardBundleTableImmediate;
+#endif // FEATURE_SATORI_GC
+
 #if defined(TARGET_ARM64)
     PBYTE   m_lowestAddress;
     PBYTE   m_highestAddress;
