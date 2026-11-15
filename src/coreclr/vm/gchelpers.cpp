@@ -1716,7 +1716,7 @@ void ErectWriteBarrier(OBJECTREF *dst, OBJECTREF ref)
 
     if (!BarrierIsConcurrentSatori())
     {
-        page->SetCardForAddress((size_t)dst);
+        page->SetCardForAddressConcurrent((size_t)dst);
         // recheck - the barrier could turn concurrent while we were setting the card.
         if (!BarrierIsConcurrentSatori())
             return;

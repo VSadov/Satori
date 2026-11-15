@@ -472,7 +472,8 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
      SetPage:
         cmp     byte ptr [rax], 0
         jne     CardSet
-        mov     byte ptr [rax], 1
+        ; DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     byte ptr [rax], 4
 
      CardSet:
     ; check if concurrent marking is still not in progress
@@ -692,7 +693,8 @@ endif
      SetPage:
         cmp     byte ptr [r10], 0
         jne     CardSet
-        mov     byte ptr [r10], 1
+        ; DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     byte ptr [r10], 4
 
      CardSet:
     ; check if concurrent marking is still not in progress
@@ -852,7 +854,8 @@ endif
      SetPage:
         cmp     byte ptr [r10], 0
         jne     CardSet
-        mov     byte ptr [r10], 1
+        ; DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     byte ptr [r10], 4
 
      CardSet:
     ; check if concurrent marking is still not in progress
