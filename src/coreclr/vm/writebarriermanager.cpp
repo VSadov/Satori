@@ -864,8 +864,8 @@ int WriteBarrierManager::SwitchToWriteWatchBarrier(bool isRuntimeSuspended)
             // The GC starts marking concurrently while EE runs and we do not suspend EE just to switch barriers.
             // The regular barrier reads the barrier state, so it works meanwhile. The GC calls here again when
             // EE is suspended anyway and that is when we switch to a concurrent barrier.
-            // With DOTNET_gcEarlyPrep the GC starts marking concurrently only with EE suspended, and only then
-            // the barriers that do not read the state (SATORI1 and SATORI2) are installed.
+            // While the barriers that do not read the state (SATORI1 and SATORI2) are installed, the GC starts
+            // marking concurrently only with EE suspended. (see SatoriRecycler::ShouldBarrierStateBeStable)
             if (!isRuntimeSuspended)
             {
                 // SATORI1 and SATORI2 would miss the change
@@ -933,9 +933,10 @@ int WriteBarrierManager::SwitchToNonWriteWatchBarrier(bool isRuntimeSuspended)
             // The GC stops marking concurrently and sets the barrier state for the next GC in a blocking collection,
             // when EE is suspended. Normally the state may become concurrent while EE runs, so the regular barrier,
             // which checks the state, is used until the next GC.
-            // If the GC says that the state is stable (DOTNET_gcEarlyPrep), it changes only with EE suspended, when
-            // the GC calls us again, so the barrier does not need to check it. If the next GC is a full GC, that
-            // barrier does not need cards either.
+            // If the GC says that the state is stable (with early prep, or when no GC is going to mark concurrently
+            // until then), it changes only with EE suspended, when the GC calls us again, so the barrier does not need
+            // to check it. If the next GC is a full GC, that barrier does not need cards either.
+            // The GC also calls here when it initializes, if the state is stable until the first GC.
             _ASSERTE(isRuntimeSuspended);
             if (g_satori_barrier_state_is_stable)
             {

@@ -63,7 +63,8 @@ public:
     //
     // While EE is suspended to mark stacks for the concurrent marking and in the blocking collection,
     // the EE may also switch the barrier code to the code specialized for the state.
-    // With DOTNET_gcEarlyPrep the state changes only then, so the barriers between GCs do not check it either.
+    // While the state is stable (see ShouldBarrierStateBeStable) it changes only then, so the barriers between GCs
+    // do not check it either.
     static const int BARRIER_STATE_NOT_CONCURRENT = 0;
     static const int BARRIER_STATE_CONCURRENT = 1;
     // Not concurrent and the next GC is a full GC, thus cards are not needed.
@@ -106,6 +107,7 @@ public:
     void BlockingMarkForConcurrentImpl();
     void BlockingMarkForConcurrent();
     void EarlyPrepForConcurrent();
+    bool ShouldBarrierStateBeStable();
     void MaybeAskForHelp();
 
     SatoriRegion* TryGetReusable(size_t minFree);
@@ -316,6 +318,9 @@ private:
     bool m_isLowLatencyMode;
     bool m_promoteAllRegions;
     volatile int m_barrierState;
+    // Until the next GC, the barrier state changes only with EE suspended and the barrier in place may not check it.
+    // Then a concurrent GC does early prep. Set with EE suspended. (see ShouldBarrierStateBeStable)
+    bool m_barrierStateIsStable;
 
     int m_prevCondemnedGeneration;
 

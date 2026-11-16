@@ -635,8 +635,9 @@ LEAF_END JIT_PatchedCodeLast, _TEXT
 // The concurrent barriers do not check the barrier state, they assume that the GC marks concurrently.
 // The GC switches barriers only when EE is suspended anyway: to a concurrent barrier at the start of
 // the concurrent marking and back to a nonconcurrent barrier in the blocking collection that follows.
-// SATORI1 and SATORI2 do not check the barrier state either. They are used only with DOTNET_gcEarlyPrep, when
-// the barrier state changes only while EE is suspended. Otherwise the regular barrier is used between GCs.
+// SATORI1 and SATORI2 do not check the barrier state either. They are used when the barrier state changes only while EE is
+// suspended: with DOTNET_gcEarlyPrep (the default, unless in low latency mode), or when no GC is going to mark
+// concurrently until the next GC. Otherwise the regular barrier is used between GCs.
 //
 // The barriers find the patchable literal pool at a fixed offset from where they are copied (JIT_WriteBarrier_Offset_*).
 // The offsets are relative to a local label at the start of each barrier. It must be a temporary label: on Apple
@@ -850,8 +851,8 @@ LEAF_END_MARKED JIT_WriteBarrier_SATORI, _TEXT
 // void JIT_WriteBarrier_SATORI1(Object** dst, Object* src)
 //
 // The GC does not mark concurrently and the next GC is not necessarily a full GC, thus cards are needed.
-// The barrier state changes only while EE is suspended (see DOTNET_gcEarlyPrep), when the GC also switches
-// the barrier, thus this barrier does not check the state.
+// The barrier state changes only while EE is suspended (see SatoriRecycler::ShouldBarrierStateBeStable), when the GC
+// also switches the barrier, thus this barrier does not check the state.
 //
 // On entry:
 //   x14  : the destination address (LHS of the assignment)
@@ -864,7 +865,7 @@ LEAF_END_MARKED JIT_WriteBarrier_SATORI, _TEXT
 //   x16  : trashed (ip0)
 //   x17  : trashed (ip1)
 //
-// It starts on a cache line boundary, as the copy does, so that the block aligned below is aligned in the copy.
+// It starts on a cache line boundary, as the copy does, so that the blocks aligned below are aligned in the copy.
 //
     .balign 64
 LEAF_ENTRY JIT_WriteBarrier_SATORI1, _TEXT
@@ -927,6 +928,8 @@ PATCH_LABEL JIT_WriteBarrier_SATORI1_CheckedEntry
     LOCAL_LABEL(Exit_SATORI1):
         ret     lr
 
+    // Not executed. Places the card marking below within one cache line.
+        .balign 64
     LOCAL_LABEL(MarkCards_SATORI1):
     // only x12, x15, x16 and x17 may be trashed here, so we keep the card offset in x12,
     // the group address in x15, the page in x16, and reuse x17 for both the loaded byte
@@ -1015,8 +1018,8 @@ LEAF_END_MARKED JIT_WriteBarrier_SATORI1, _TEXT
 // void JIT_WriteBarrier_SATORI2(Object** dst, Object* src)
 //
 // The GC does not mark concurrently and the next GC is a full GC, thus cards are not needed.
-// The barrier state changes only while EE is suspended (see DOTNET_gcEarlyPrep), when the GC also switches
-// the barrier, thus this barrier does not check the state.
+// The barrier state changes only while EE is suspended (see SatoriRecycler::ShouldBarrierStateBeStable), when the GC
+// also switches the barrier, thus this barrier does not check the state.
 //
 // On entry:
 //   x14  : the destination address (LHS of the assignment)

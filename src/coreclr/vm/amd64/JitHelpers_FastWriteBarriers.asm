@@ -357,8 +357,9 @@ ifdef FEATURE_SATORI_GC
 ; The concurrent barriers do not check the barrier state, they assume that the GC marks concurrently.
 ; The GC switches barriers only when EE is suspended anyway: to a concurrent barrier at the start of
 ; the concurrent marking and back to a nonconcurrent barrier in the blocking collection that follows.
-; SATORI1 and SATORI2 do not check the barrier state either. They are used only with DOTNET_gcEarlyPrep, when
-; the barrier state changes only while EE is suspended. Otherwise the regular barrier is used between GCs.
+; SATORI1 and SATORI2 do not check the barrier state either. They are used when the barrier state changes only while EE is
+; suspended: with DOTNET_gcEarlyPrep (the default, unless in low latency mode), or when no GC is going to mark
+; concurrently until the next GC. Otherwise the regular barrier is used between GCs.
 ;
 ; The barriers have the same code ahead of the <Name>_CheckedEntry label, so that JIT_CheckedWriteBarrier
 ; can jump to CheckedEntry in the buffer, whichever barrier is there.
@@ -559,8 +560,8 @@ LEAF_END_MARKED JIT_WriteBarrier_SATORI, _TEXT
 
 ;
 ; The GC does not mark concurrently and the next GC is not necessarily a full GC, thus cards are needed.
-; The barrier state changes only while EE is suspended (see DOTNET_gcEarlyPrep), when the GC also switches
-; the barrier, thus this barrier does not check the state.
+; The barrier state changes only while EE is suspended (see SatoriRecycler::ShouldBarrierStateBeStable), when the GC
+; also switches the barrier, thus this barrier does not check the state.
 ;
 LEAF_ENTRY JIT_WriteBarrier_SATORI1, _TEXT
 
@@ -629,9 +630,9 @@ endif
     Exit:
         ret
 
-    ; Not executed. Aligns the constant below: the padding and the 2-byte opcode end on an 8-byte boundary.
-        align   8
-        NOP_6_BYTE
+    ; Not executed. Places the card marking below within one cache line where the barrier runs, with the constant
+    ; on an 8-byte boundary: the block starts 6 bytes into a line.
+        db      ((70 - (($ - JIT_WriteBarrier_SATORI1) mod 64)) mod 64) dup (0CCh)
     MarkCards:
 PATCH_LABEL JIT_WriteBarrier_SATORI1_Patch_Label_CardTable
         mov     r9, 0F0F0F0F0F0F0F0F0h  ; the page map
@@ -713,8 +714,8 @@ LEAF_END_MARKED JIT_WriteBarrier_SATORI1, _TEXT
 
 ;
 ; The GC does not mark concurrently and the next GC is a full GC, thus cards are not needed.
-; The barrier state changes only while EE is suspended (see DOTNET_gcEarlyPrep), when the GC also switches
-; the barrier, thus this barrier does not check the state.
+; The barrier state changes only while EE is suspended (see SatoriRecycler::ShouldBarrierStateBeStable), when the GC
+; also switches the barrier, thus this barrier does not check the state.
 ;
 LEAF_ENTRY JIT_WriteBarrier_SATORI2, _TEXT
 
