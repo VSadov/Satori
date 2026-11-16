@@ -374,6 +374,7 @@ LEAF_END_MARKED JIT_WriteBarrier_Bit_Region64, _TEXT
 // The Satori barriers. WriteBarrierManager copies one of them into the JIT_WriteBarrier buffer (see patchedcode.S)
 // and patches the constants in the copy:
 // - JIT_WriteBarrier_SATORI             - the regular barrier, it reads the barrier state (g_write_watch_table).
+// - JIT_WriteBarrier_SATORI1            - the GC does not mark concurrently and the next GC is not necessarily a full GC.
 // - JIT_WriteBarrier_SATORI2            - the GC does not mark concurrently and the next GC is a full GC.
 // - JIT_WriteBarrier_SATORI_CONCURRENT  - while the GC marks concurrently and the next GC is not a full GC.
 // - JIT_WriteBarrier_SATORI_CONCURRENT2 - while the GC marks concurrently and the next GC is a full GC.
@@ -381,6 +382,8 @@ LEAF_END_MARKED JIT_WriteBarrier_Bit_Region64, _TEXT
 // The concurrent barriers do not check the barrier state, they assume that the GC marks concurrently.
 // The GC switches barriers only when EE is suspended anyway: to a concurrent barrier at the start of
 // the concurrent marking and back to a nonconcurrent barrier in the blocking collection that follows.
+// SATORI1 and SATORI2 do not check the barrier state either. They are used only with DOTNET_gcEarlyPrep, when
+// the barrier state changes only while EE is suspended. Otherwise the regular barrier is used between GCs.
 //
 // The barriers have the same code ahead of the <Name>_CheckedEntry label, so that JIT_CheckedWriteBarrier
 // can jump to CheckedEntry in the buffer, whichever barrier is there.
@@ -431,54 +434,55 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_CheckedEntry
         jnz     LOCAL_LABEL(RecordEscape_SATORI)               // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
-        mov     rax, rdi
-        and     rax, 0x1FFFFF
-        shr     rax, 3
-        bt      qword ptr [rdx], rax
-        jb      LOCAL_LABEL(RecordEscape_SATORI)               // target is exposed. record an escape.
+        mov     eax, edi
+        and     eax, 0x1FFFFF           // offset in the region
+        shr     eax, 9                  // the bitmap qword with the bit for the target (a bit per 8 bytes)
+        mov     rax, qword ptr [rdx + rax * 8]
+        mov     r9, rdi
+        shr     r9, 3                   // bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      LOCAL_LABEL(RecordEscape_SATORI)               // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign_SATORI):
         mov     [rdi], rsi              // src is external/null, or the assignment is completely threadlocal
         ret
 
-        // Not executed. Aligns the constant below: the padding, the 3-byte store and the 2-byte opcode
-        // end on an 8-byte boundary.
-        .p2align 3
-        NOP_3_BYTE
+        // Not executed. Places the block below within one cache line where the barrier runs (the copy starts on a cache
+        // line): the block starts 3 bytes into a line, so that the 3-byte store and the 2-byte opcode end on an 8-byte boundary.
+        .fill ((67 - ((. - C_FUNC(JIT_WriteBarrier_SATORI)) % 64)) % 64), 1, 0xCC
     LOCAL_LABEL(AssignAndMarkCards_SATORI):
         mov     [rdi], rsi
 
         // The barrier state may become concurrent while EE runs, thus this barrier reads it.
+        // This must be done after the assignment (in program order).
 PATCH_LABEL JIT_WriteBarrier_SATORI_Patch_Label_WriteWatchTable
         movabs  rcx, 0xF0F0F0F0F0F0F0F0 // the address of the barrier state (g_write_watch_table)
         mov     r11, [rcx]
 
-        // check the barrier state. this must be done after the assignment (in program order)
-        // if state == 2 we do not set or dirty cards.
+    // if src and dst are in the same region, cards are needed only while concurrent
+        xor     rsi, rdi
+        shr     rsi, 21
+        jnz     LOCAL_LABEL(CrossRegion_SATORI)
+        cmp     r11, 1
+        je      LOCAL_LABEL(MarkCards_SATORI)
+        ret
+
+    LOCAL_LABEL(CrossRegion_SATORI):
+    // if state == 2 we do not set or dirty cards.
         cmp     r11, 2
-        jne     LOCAL_LABEL(DoCards_SATORI)
+        je      LOCAL_LABEL(Exit_SATORI)
+
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2), or while concurrent
+        cmp     dword ptr [rdx + 16], 2
+        jl      LOCAL_LABEL(MarkCards_SATORI)
+        test    r11, r11
+        jnz     LOCAL_LABEL(MarkCards_SATORI)
     LOCAL_LABEL(Exit_SATORI):
         ret
 
-    LOCAL_LABEL(DoCards_SATORI):
-    // if src and dst are in the same region, cards are not needed, unless concurrent
-        xor     rsi, rdi
-        shr     rsi, 21
-        jz      LOCAL_LABEL(CheckConcurrent_SATORI)            // same region, just check if barrier is not concurrent
-
-    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
-        cmp     dword ptr [rdx + 16], 2
-        jl     LOCAL_LABEL(MarkCards_SATORI)
-
-    LOCAL_LABEL(CheckConcurrent_SATORI):
-    // if not concurrent, exit
-        cmp     r11, 0
-        je      LOCAL_LABEL(Exit_SATORI)
-
-        // Aligns the constant below: the padding and the 2-byte opcode end on an 8-byte boundary.
-        // It is ahead of the label, so only the fall-through from CheckConcurrent runs it.
-        .p2align 3
-        NOP_6_BYTE
+        // Not executed. Places the card marking below within one cache line where the barrier runs, with the constant
+        // on an 8-byte boundary: the block starts 6 bytes into a line.
+        .fill ((70 - ((. - C_FUNC(JIT_WriteBarrier_SATORI)) % 64)) % 64), 1, 0xCC
     LOCAL_LABEL(MarkCards_SATORI):
     // fetch card location for rdi
 PATCH_LABEL JIT_WriteBarrier_SATORI_Patch_Label_CardTable
@@ -493,13 +497,15 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_Patch_Label_CardTable
         lea     r8,  [rax + r8 * 2 + 0x80] // group offset
 
      // check if concurrent marking is in progress
-        cmp     r11, 0
-        jne     LOCAL_LABEL(DirtyCard_SATORI)
+        test    r11, r11
+        jnz     LOCAL_LABEL(DirtyCard_SATORI)
 
      // SETTING CARD
      LOCAL_LABEL(SetCard_SATORI):
         cmp     byte ptr [rax + rdx], 0
-        jne     LOCAL_LABEL(Exit_SATORI)
+        je      LOCAL_LABEL(DoSetCard_SATORI)
+        ret
+     LOCAL_LABEL(DoSetCard_SATORI):
         mov     byte ptr [rax + rdx], 1
      LOCAL_LABEL(SetGroup_SATORI):
         cmp     byte ptr [r8], 0
@@ -522,7 +528,9 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_Patch_Label_CardTable
         mov     byte ptr [rax + rdx], 4
      LOCAL_LABEL(DirtyGroup_SATORI):
         cmp     byte ptr [r8], 4
-        je      LOCAL_LABEL(Exit_SATORI)
+        jne     LOCAL_LABEL(DoDirtyGroup_SATORI)
+        ret
+     LOCAL_LABEL(DoDirtyGroup_SATORI):
         mov     byte ptr [r8], 4
      LOCAL_LABEL(DirtyPage_SATORI):
         cmp     byte ptr [rax], 4
@@ -534,12 +542,14 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_Patch_Label_CardTable
     LOCAL_LABEL(RecordEscape_SATORI):
 
     // 4) check if the source is escaped
-        mov     rax, rsi
-        add     rax, 8                        // escape bit is MT + 1
-        and     rax, 0x1FFFFF
-        shr     rax, 3
-        bt      qword ptr [rdx], rax
-        jb      LOCAL_LABEL(AssignAndMarkCards_SATORI)         // source is already escaped.
+        lea     eax, [rsi + 8]                // escape bit is MT + 1
+        and     eax, 0x1FFFFF                 // offset in the region
+        shr     eax, 9                        // the bitmap qword with the bit (a bit per 8 bytes)
+        mov     rax, qword ptr [rdx + rax * 8]
+        lea     r9, [rsi + 8]
+        shr     r9, 3                         // bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      LOCAL_LABEL(AssignAndMarkCards_SATORI)         // source is already escaped.
 
         // Align rsp
         mov  r9, rsp
@@ -570,8 +580,160 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_Patch_Label_CardTable
 LEAF_END_MARKED JIT_WriteBarrier_SATORI, _TEXT
 
 //
+// The GC does not mark concurrently and the next GC is not necessarily a full GC, thus cards are needed.
+// The barrier state changes only while EE is suspended (see DOTNET_gcEarlyPrep), when the GC also switches
+// the barrier, thus this barrier does not check the state.
+//
+        .balign 16
+LEAF_ENTRY JIT_WriteBarrier_SATORI1, _TEXT
+#ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+    // check if src is in heap
+        NOP_6_BYTE // padding for alignment of constant
+PATCH_LABEL JIT_WriteBarrier_SATORI1_Patch_Label_CardBundleTable
+        movabs  rax, 0xF0F0F0F0F0F0F0F0                 // the page byte map
+PATCH_LABEL JIT_WriteBarrier_SATORI1_CheckedEntry
+        mov     r8, rsi
+        shr     r8, 30                                  //  src page index
+        cmp     byte ptr [rax + r8], 0
+        je      LOCAL_LABEL(JustAssign_SATORI1)                 // src not in heap
+#else
+PATCH_LABEL JIT_WriteBarrier_SATORI1_CheckedEntry
+#endif
+
+    // check for escaping assignment
+    // 1) check if we own the source region
+        mov     rdx, rsi
+        and     rdx, 0xFFFFFFFFFFE00000  // source region
+#ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
+        jz      LOCAL_LABEL(JustAssign_SATORI1)                 // assigning null
+#endif
+#ifdef TARGET_APPLE
+        mov     rax,  gs:[0]            // thread tag
+#else
+        mov     rax,  fs:[0]            // thread tag
+#endif
+        cmp     qword ptr [rdx], rax
+        jne     LOCAL_LABEL(AssignAndMarkCards_SATORI1)         // not local to this thread
+
+    // 2) check if the src and dst are from the same region
+        mov     rax, rdi
+        and     rax, 0xFFFFFFFFFFE00000 // target aligned to region
+        cmp     rax, rdx
+        jnz     LOCAL_LABEL(RecordEscape_SATORI1)               // cross region assignment. definitely escaping
+
+    // 3) check if the target is exposed
+        mov     eax, edi
+        and     eax, 0x1FFFFF           // offset in the region
+        shr     eax, 9                  // the bitmap qword with the bit for the target (a bit per 8 bytes)
+        mov     rax, qword ptr [rdx + rax * 8]
+        mov     r9, rdi
+        shr     r9, 3                   // bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      LOCAL_LABEL(RecordEscape_SATORI1)               // target is exposed. record an escape.
+
+    LOCAL_LABEL(JustAssign_SATORI1):
+        mov     [rdi], rsi              // src is external/null, or the assignment is completely threadlocal
+        ret
+
+        // Not executed. Places the block below within one cache line where the barrier runs (the copy starts on a cache line).
+        .fill ((64 - ((. - C_FUNC(JIT_WriteBarrier_SATORI1)) % 64)) % 64), 1, 0xCC
+    LOCAL_LABEL(AssignAndMarkCards_SATORI1):
+        mov     [rdi], rsi
+
+    // if src and dst are in the same region, cards are not needed
+        xor     rsi, rdi
+        shr     rsi, 21
+        jnz     LOCAL_LABEL(CrossRegion_SATORI1)
+        ret
+
+    LOCAL_LABEL(CrossRegion_SATORI1):
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
+        cmp     dword ptr [rdx + 16], 2
+        jl      LOCAL_LABEL(MarkCards_SATORI1)
+    LOCAL_LABEL(Exit_SATORI1):
+        ret
+
+        // Not executed. Aligns the constant below: the padding and the 2-byte opcode end on an 8-byte boundary.
+        .p2align 3
+        NOP_6_BYTE
+    LOCAL_LABEL(MarkCards_SATORI1):
+PATCH_LABEL JIT_WriteBarrier_SATORI1_Patch_Label_CardTable
+        movabs  r9, 0xF0F0F0F0F0F0F0F0  // the page map
+
+    // fetch card location for rdi
+        mov     rdx, rdi
+        shr     rdi, 30
+        mov     rax, qword ptr [r9 + rdi * 8] // page
+        sub     rdx, rax   // offset in page
+        mov     r8,  rdx
+        shr     rdx, 9     // card offset
+        shr     r8,  20    // group index
+        lea     r8,  [rax + r8 * 2 + 0x80] // group offset
+
+     // SETTING CARD
+     LOCAL_LABEL(SetCard_SATORI1):
+        cmp     byte ptr [rax + rdx], 0
+        je      LOCAL_LABEL(DoSetCard_SATORI1)
+        ret
+     LOCAL_LABEL(DoSetCard_SATORI1):
+        mov     byte ptr [rax + rdx], 1
+     LOCAL_LABEL(SetGroup_SATORI1):
+        cmp     byte ptr [r8], 0
+        jne     LOCAL_LABEL(Exit_SATORI1)
+        mov     byte ptr [r8], 1
+     LOCAL_LABEL(SetPage_SATORI1):
+        cmp     byte ptr [rax], 0
+        jne     LOCAL_LABEL(Exit_SATORI1)
+        // DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY. That is possible
+        // with the stable barrier state too, cards are also dirtied regardless of it (see SatoriGC::PublishObject).
+        mov     byte ptr [rax], 4
+        ret
+
+    // this is expected to be rare.
+    LOCAL_LABEL(RecordEscape_SATORI1):
+
+    // 4) check if the source is escaped
+        lea     eax, [rsi + 8]                // escape bit is MT + 1
+        and     eax, 0x1FFFFF                 // offset in the region
+        shr     eax, 9                        // the bitmap qword with the bit (a bit per 8 bytes)
+        mov     rax, qword ptr [rdx + rax * 8]
+        lea     r9, [rsi + 8]
+        shr     r9, 3                         // bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      LOCAL_LABEL(AssignAndMarkCards_SATORI1)         // source is already escaped.
+
+        // Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+
+        // save rsp, rdi, rsi and rdx
+        push r9
+        push rdi
+        push rsi
+        push rdx
+
+        // also save xmm0, in case it is used for stack clearing.
+        // Hopefully EscapeFn cannot corrupt other xmm regs, since there is no float math or vectorizable code in there.
+        sub     rsp, 16
+        movdqa  [rsp], xmm0
+
+        // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
+        call    qword ptr [rdx + 8]
+
+        movdqa  xmm0, [rsp]
+        add     rsp, 16
+
+        pop     rdx
+        pop     rsi
+        pop     rdi
+        pop     rsp
+        jmp     LOCAL_LABEL(AssignAndMarkCards_SATORI1)
+LEAF_END_MARKED JIT_WriteBarrier_SATORI1, _TEXT
+
+//
 // The GC does not mark concurrently and the next GC is a full GC, thus cards are not needed.
-// The barrier state may become concurrent while EE runs, so this barrier still checks it.
+// The barrier state changes only while EE is suspended (see DOTNET_gcEarlyPrep), when the GC also switches
+// the barrier, thus this barrier does not check the state.
 //
         .balign 16
 LEAF_ENTRY JIT_WriteBarrier_SATORI2, _TEXT
@@ -602,7 +764,7 @@ PATCH_LABEL JIT_WriteBarrier_SATORI2_CheckedEntry
         mov     rax,  fs:[0]            // thread tag
 #endif
         cmp     qword ptr [rdx], rax
-        jne     LOCAL_LABEL(AssignAndMarkCards_SATORI2)         // not local to this thread
+        jne     LOCAL_LABEL(JustAssign_SATORI2)         // not local to this thread, no cards needed
 
     // 2) check if the src and dst are from the same region
         mov     rax, rdi
@@ -611,74 +773,31 @@ PATCH_LABEL JIT_WriteBarrier_SATORI2_CheckedEntry
         jnz     LOCAL_LABEL(RecordEscape_SATORI2)               // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
-        mov     rax, rdi
-        and     rax, 0x1FFFFF
-        shr     rax, 3
-        bt      qword ptr [rdx], rax
-        jb      LOCAL_LABEL(RecordEscape_SATORI2)               // target is exposed. record an escape.
+        mov     eax, edi
+        and     eax, 0x1FFFFF           // offset in the region
+        shr     eax, 9                  // the bitmap qword with the bit for the target (a bit per 8 bytes)
+        mov     rax, qword ptr [rdx + rax * 8]
+        mov     r9, rdi
+        shr     r9, 3                   // bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      LOCAL_LABEL(RecordEscape_SATORI2)               // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign_SATORI2):
-        mov     [rdi], rsi              // src is external/null, or the assignment is completely threadlocal
-        ret
-
-        // Not executed. Aligns the constant below: the padding, the 3-byte store and the 2-byte opcode
-        // end on an 8-byte boundary.
-        .p2align 3
-        NOP_3_BYTE
-    LOCAL_LABEL(AssignAndMarkCards_SATORI2):
-        mov     [rdi], rsi
-
-        // The barrier state may become concurrent while EE runs, thus this barrier reads it.
-PATCH_LABEL JIT_WriteBarrier_SATORI2_Patch_Label_WriteWatchTable
-        movabs  rcx, 0xF0F0F0F0F0F0F0F0 // the address of the barrier state (g_write_watch_table)
-
-        // check the barrier state. this must be done after the assignment (in program order)
-        // if state == 2 we do not set or dirty cards. Otherwise the GC marks concurrently for a full GC,
-        // which marks through objects of any generation, so the card is dirtied regardless of src.
-        cmp     qword ptr [rcx], 2
-        jne     LOCAL_LABEL(MarkCards_SATORI2)
-        ret
-
-        // Not executed. Aligns the constant below: the padding and the 2-byte opcode end on an 8-byte boundary.
-        .p2align 3
-        NOP_6_BYTE
-    LOCAL_LABEL(MarkCards_SATORI2):
-    // fetch card location for rdi
-PATCH_LABEL JIT_WriteBarrier_SATORI2_Patch_Label_CardTable
-        movabs  r9, 0xF0F0F0F0F0F0F0F0  // the page map
-        mov     rdx, rdi
-        shr     rdi, 30
-        mov     rax, qword ptr [r9 + rdi * 8] // page
-        sub     rdx, rax   // offset in page
-        mov     r8,  rdx
-        shr     rdx, 9     // card offset
-        shr     r8,  20    // group index
-        lea     r8,  [rax + r8 * 2 + 0x80] // group offset
-
-     // DIRTYING CARD
-     LOCAL_LABEL(DirtyCard_SATORI2):
-        mov     byte ptr [rax + rdx], 4
-     LOCAL_LABEL(DirtyGroup_SATORI2):
-        cmp     byte ptr [r8], 4
-        je      LOCAL_LABEL(Exit_SATORI2)
-        mov     byte ptr [r8], 4
-     LOCAL_LABEL(DirtyPage_SATORI2):
-        cmp     byte ptr [rax], 4
-        je      LOCAL_LABEL(Exit_SATORI2)
-        mov     byte ptr [rax], 4
-     LOCAL_LABEL(Exit_SATORI2):
+        mov     [rdi], rsi              // src is external/null, or the assignment does not need cards
         ret
 
     // this is expected to be rare.
     LOCAL_LABEL(RecordEscape_SATORI2):
 
     // 4) check if the source is escaped
-        mov     rax, rsi
-        add     rax, 8                        // escape bit is MT + 1
-        and     rax, 0x1FFFFF
-        shr     rax, 3
-        bt      qword ptr [rdx], rax
-        jb      LOCAL_LABEL(AssignAndMarkCards_SATORI2)         // source is already escaped.
+        lea     eax, [rsi + 8]                // escape bit is MT + 1
+        and     eax, 0x1FFFFF                 // offset in the region
+        shr     eax, 9                        // the bitmap qword with the bit (a bit per 8 bytes)
+        mov     rax, qword ptr [rdx + rax * 8]
+        lea     r9, [rsi + 8]
+        shr     r9, 3                         // bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      LOCAL_LABEL(JustAssign_SATORI2)         // source is already escaped.
 
         // Align rsp
         mov  r9, rsp
@@ -705,7 +824,7 @@ PATCH_LABEL JIT_WriteBarrier_SATORI2_Patch_Label_CardTable
         pop     rsi
         pop     rdi
         pop     rsp
-        jmp     LOCAL_LABEL(AssignAndMarkCards_SATORI2)
+        jmp     LOCAL_LABEL(JustAssign_SATORI2)
 LEAF_END_MARKED JIT_WriteBarrier_SATORI2, _TEXT
 
 //
@@ -751,11 +870,14 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_CONCURRENT_CheckedEntry
         jnz     LOCAL_LABEL(RecordEscape_SATORI_CONCURRENT)               // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
-        mov     rax, rdi
-        and     rax, 0x1FFFFF
-        shr     rax, 3
-        bt      qword ptr [rdx], rax
-        jb      LOCAL_LABEL(RecordEscape_SATORI_CONCURRENT)               // target is exposed. record an escape.
+        mov     eax, edi
+        and     eax, 0x1FFFFF           // offset in the region
+        shr     eax, 9                  // the bitmap qword with the bit for the target (a bit per 8 bytes)
+        mov     rax, qword ptr [rdx + rax * 8]
+        mov     r9, rdi
+        shr     r9, 3                   // bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      LOCAL_LABEL(RecordEscape_SATORI_CONCURRENT)               // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign_SATORI_CONCURRENT):
         mov     [rdi], rsi              // src is external/null, or the assignment is completely threadlocal
@@ -789,7 +911,9 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_CONCURRENT_Patch_Label_CardTable
         mov     byte ptr [rax + rdx], 4
      LOCAL_LABEL(DirtyGroup_SATORI_CONCURRENT):
         cmp     byte ptr [r8], 4
-        je      LOCAL_LABEL(Exit_SATORI_CONCURRENT)
+        jne     LOCAL_LABEL(DoDirtyGroup_SATORI_CONCURRENT)
+        ret
+     LOCAL_LABEL(DoDirtyGroup_SATORI_CONCURRENT):
         mov     byte ptr [r8], 4
      LOCAL_LABEL(DirtyPage_SATORI_CONCURRENT):
         cmp     byte ptr [rax], 4
@@ -802,12 +926,14 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_CONCURRENT_Patch_Label_CardTable
     LOCAL_LABEL(RecordEscape_SATORI_CONCURRENT):
 
     // 4) check if the source is escaped
-        mov     rax, rsi
-        add     rax, 8                        // escape bit is MT + 1
-        and     rax, 0x1FFFFF
-        shr     rax, 3
-        bt      qword ptr [rdx], rax
-        jb      LOCAL_LABEL(AssignAndMarkCards_SATORI_CONCURRENT)         // source is already escaped.
+        lea     eax, [rsi + 8]                // escape bit is MT + 1
+        and     eax, 0x1FFFFF                 // offset in the region
+        shr     eax, 9                        // the bitmap qword with the bit (a bit per 8 bytes)
+        mov     rax, qword ptr [rdx + rax * 8]
+        lea     r9, [rsi + 8]
+        shr     r9, 3                         // bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      LOCAL_LABEL(AssignAndMarkCards_SATORI_CONCURRENT)         // source is already escaped.
 
         // Align rsp
         mov  r9, rsp
@@ -879,11 +1005,14 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_CONCURRENT2_CheckedEntry
         jnz     LOCAL_LABEL(RecordEscape_SATORI_CONCURRENT2)               // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
-        mov     rax, rdi
-        and     rax, 0x1FFFFF
-        shr     rax, 3
-        bt      qword ptr [rdx], rax
-        jb      LOCAL_LABEL(RecordEscape_SATORI_CONCURRENT2)               // target is exposed. record an escape.
+        mov     eax, edi
+        and     eax, 0x1FFFFF           // offset in the region
+        shr     eax, 9                  // the bitmap qword with the bit for the target (a bit per 8 bytes)
+        mov     rax, qword ptr [rdx + rax * 8]
+        mov     r9, rdi
+        shr     r9, 3                   // bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      LOCAL_LABEL(RecordEscape_SATORI_CONCURRENT2)               // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign_SATORI_CONCURRENT2):
         mov     [rdi], rsi              // src is external/null, or the assignment is completely threadlocal
@@ -913,7 +1042,9 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_CONCURRENT2_Patch_Label_CardTable
         mov     byte ptr [rax + rdx], 4
      LOCAL_LABEL(DirtyGroup_SATORI_CONCURRENT2):
         cmp     byte ptr [r8], 4
-        je      LOCAL_LABEL(Exit_SATORI_CONCURRENT2)
+        jne     LOCAL_LABEL(DoDirtyGroup_SATORI_CONCURRENT2)
+        ret
+     LOCAL_LABEL(DoDirtyGroup_SATORI_CONCURRENT2):
         mov     byte ptr [r8], 4
      LOCAL_LABEL(DirtyPage_SATORI_CONCURRENT2):
         cmp     byte ptr [rax], 4
@@ -926,12 +1057,14 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_CONCURRENT2_Patch_Label_CardTable
     LOCAL_LABEL(RecordEscape_SATORI_CONCURRENT2):
 
     // 4) check if the source is escaped
-        mov     rax, rsi
-        add     rax, 8                        // escape bit is MT + 1
-        and     rax, 0x1FFFFF
-        shr     rax, 3
-        bt      qword ptr [rdx], rax
-        jb      LOCAL_LABEL(AssignAndMarkCards_SATORI_CONCURRENT2)         // source is already escaped.
+        lea     eax, [rsi + 8]                // escape bit is MT + 1
+        and     eax, 0x1FFFFF                 // offset in the region
+        shr     eax, 9                        // the bitmap qword with the bit (a bit per 8 bytes)
+        mov     rax, qword ptr [rdx + rax * 8]
+        lea     r9, [rsi + 8]
+        shr     r9, 3                         // bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      LOCAL_LABEL(AssignAndMarkCards_SATORI_CONCURRENT2)         // source is already escaped.
 
         // Align rsp
         mov  r9, rsp

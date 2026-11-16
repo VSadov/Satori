@@ -337,8 +337,12 @@ LEAF_END JIT_PatchedCodeLast, _TEXT
 // - 64-bit constants have to be loaded into a register
 // - The constants have to be aligned to 8 bytes so that they can be patched easily
 // - The alignment is by construction: there is only fixed-size code between an alignment directive and a constant
+//
+// The region and the barriers in it start on cache line boundaries, so that the barriers are cache line aligned
+// also where the region is copied, which keeps their offsets from the region start.
 
 // Mark start of the code region that we patch at runtime
+        .balign 64
 #if defined(__APPLE__)
         .global C_FUNC(JIT_PatchedCodeStart)
 C_FUNC(JIT_PatchedCodeStart):
@@ -352,6 +356,7 @@ LEAF_END JIT_PatchedCodeStart, _TEXT
 
 
 // void JIT_CheckedWriteBarrier(Object** dst, Object* src)
+        .balign 64
 WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
 
      // See if dst is in GCHeap
@@ -379,7 +384,7 @@ WRITE_BARRIER_END JIT_CheckedWriteBarrier
 //   rdi - dest address
 //   rsi - object
 //
-.balign 16
+        .balign 64
 WRITE_BARRIER_ENTRY JIT_WriteBarrier
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         NOP_6_BYTE

@@ -447,6 +447,7 @@ LEAF_END RhpCheckedAssignRefArm64, _TEXT
 //   x15  : trashed
 //   x16  : trashed (ip0)
 //   x17  : trashed (ip1)
+    .balign 64
 LEAF_ENTRY RhpAssignRefArm64, _TEXT
     // check for escaping assignment
     // 1) check if we own the source region
@@ -491,6 +492,8 @@ ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
         str  x15, [x14]
         ret  lr
 
+    // Not executed. Places the block below within one cache line (RhpAssignRefArm64 starts on a cache line).
+        .balign 64
     LOCAL_LABEL(AssignAndMarkCards):
 ALTERNATE_ENTRY RhpAssignRefAVLocation
         stlr    x15, [x14]
@@ -499,26 +502,26 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
     //         needs to suspend EE, not sure if skipping mode check would worth that much.
         PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
     // check the barrier state. this must be done after the assignment (in program order)
-    // if state == 2 we do not set or dirty cards.
-        tbz     x17, #1, LOCAL_LABEL(DoCards)
+    // if src and dst are in the same region, cards are needed only while concurrent (state == 1)
+        and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
+        cmp     x12, x16
+        bne     LOCAL_LABEL(CrossRegion)
+        tbnz    x17, #0, LOCAL_LABEL(MarkCards)
+        ret     lr
 
+    LOCAL_LABEL(CrossRegion):
+    // if state == 2 we do not set or dirty cards.
+        tbnz    x17, #1, LOCAL_LABEL(ExitNoCards)
+
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2), or while concurrent
+        ldr     w12, [x16, 16]                  // source region + 16 -> generation
+        tbz     x12, #1, LOCAL_LABEL(MarkCards)
+        cbnz    x17, LOCAL_LABEL(MarkCards)
     LOCAL_LABEL(ExitNoCards):
         ret     lr
 
-    LOCAL_LABEL(DoCards):
-    // if src and dst are in the same region, cards are not needed, unless concurrent
-        and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
-        cmp     x12, x16
-        beq     LOCAL_LABEL(CheckConcurrent)    // same region, just check if barrier is not concurrent
-
-    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
-        ldr     w12, [x16, 16]                  // source region + 16 -> generation
-        tbz     x12, #1, LOCAL_LABEL(MarkCards)
-
-    LOCAL_LABEL(CheckConcurrent):
-    // if not concurrent, exit
-        cbz     x17, LOCAL_LABEL(ExitNoCards)
-
+    // Not executed. Places the card marking below within one cache line.
+        .balign 64
     LOCAL_LABEL(MarkCards):
     // only x12, x15, x16 and x17 may be trashed here, so we keep the card offset in x12,
     // the group address in x15, the page in x16, and reuse x17 for both the loaded byte
@@ -539,7 +542,9 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
     // SETTING CARD FOR X14
     LOCAL_LABEL(SetCard):
         ldrb    w17, [x16, x12]
-        cbnz    w17, LOCAL_LABEL(Exit)
+        cbz     w17, LOCAL_LABEL(DoSetCard)
+        ret     lr
+    LOCAL_LABEL(DoSetCard):
         mov     w17, #1
         strb    w17, [x16, x12]
     LOCAL_LABEL(SetGroup):
@@ -571,7 +576,9 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         stlrb   w17, [x12]
     LOCAL_LABEL(DirtyGroup):
         ldrb    w12, [x15, #0x80]
-        tbnz    w12, #2, LOCAL_LABEL(Exit)
+        tbz     w12, #2, LOCAL_LABEL(DoDirtyGroup)
+        ret     lr
+    LOCAL_LABEL(DoDirtyGroup):
         strb    w17, [x15, #0x80]
     LOCAL_LABEL(DirtyPage):
         ldrb    w12, [x16]
@@ -716,22 +723,23 @@ LEAF_ENTRY RhpCheckedLockCmpXchg
         PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
 
     // check the barrier state. this must be done after the assignment (in program order)
-    // if state == 2 we do not set or dirty cards.
-        tbnz    x17, #1, LOCAL_LABEL(ExitCmpXchg)
-
-    LOCAL_LABEL(DoCardsCmpXchg):
-    // if src and dst are in the same region, cards are not needed, unless concurrent
+    // if src and dst are in the same region, cards are needed only while concurrent (state == 1)
         and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
-        beq     LOCAL_LABEL(CheckConcurrentCmpXchg)    // same region, just check if barrier is not concurrent
+        bne     LOCAL_LABEL(CrossRegionCmpXchg)
+        tbnz    x17, #0, LOCAL_LABEL(MarkCardsCmpXchg)
+        ret     lr
 
-    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
+    LOCAL_LABEL(CrossRegionCmpXchg):
+    // if state == 2 we do not set or dirty cards.
+        tbnz    x17, #1, LOCAL_LABEL(ExitNoCardsCmpXchg)
+
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2), or while concurrent
         ldr     w12, [x16, 16]                  // source region + 16 -> generation
         tbz     x12, #1, LOCAL_LABEL(MarkCardsCmpXchg)
-
-    LOCAL_LABEL(CheckConcurrentCmpXchg):
-    // if not concurrent, exit
-        cbz     x17, LOCAL_LABEL(ExitCmpXchg)
+        cbnz    x17, LOCAL_LABEL(MarkCardsCmpXchg)
+    LOCAL_LABEL(ExitNoCardsCmpXchg):
+        ret     lr
 
     LOCAL_LABEL(MarkCardsCmpXchg):
     // x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
@@ -752,7 +760,9 @@ LEAF_ENTRY RhpCheckedLockCmpXchg
     // SETTING CARD FOR X14
     LOCAL_LABEL(SetCardCmpXchg):
         ldrb    w3, [x16, x2]
-        cbnz    w3, LOCAL_LABEL(ExitCmpXchg)
+        cbz     w3, LOCAL_LABEL(DoSetCardCmpXchg)
+        ret     lr
+    LOCAL_LABEL(DoSetCardCmpXchg):
         mov     w17, #1
         strb    w17, [x16, x2]
     LOCAL_LABEL(SetGroupCmpXchg):
@@ -782,7 +792,9 @@ LEAF_ENTRY RhpCheckedLockCmpXchg
         stlrb   w17, [x2]
     LOCAL_LABEL(DirtyGroupCmpXchg):
         ldrb    w3, [x15, #0x80]
-        tbnz    w3, #2, LOCAL_LABEL(ExitCmpXchg)
+        tbz     w3, #2, LOCAL_LABEL(DoDirtyGroupCmpXchg)
+        ret     lr
+    LOCAL_LABEL(DoDirtyGroupCmpXchg):
         strb    w17, [x15, #0x80]
     LOCAL_LABEL(DirtyPageCmpXchg):
         ldrb    w3, [x16]
@@ -915,22 +927,23 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
     //         needs to suspend EE, not sure if skipping mode check would worth that much.
         PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
     // check the barrier state. this must be done after the assignment (in program order)
-    // if state == 2 we do not set or dirty cards.
-        tbnz    x17, #1, LOCAL_LABEL(ExitXchg)
-
-    LOCAL_LABEL(DoCardsXchg):
-    // if src and dst are in the same region, cards are not needed, unless concurrent
+    // if src and dst are in the same region, cards are needed only while concurrent (state == 1)
         and     x12, x14, #0xFFFFFFFFFFE00000   // target aligned to region
         cmp     x12, x16
-        beq     LOCAL_LABEL(CheckConcurrentXchg)    // same region, just check if barrier is not concurrent
+        bne     LOCAL_LABEL(CrossRegionXchg)
+        tbnz    x17, #0, LOCAL_LABEL(MarkCardsXchg)
+        ret     lr
 
-    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
+    LOCAL_LABEL(CrossRegionXchg):
+    // if state == 2 we do not set or dirty cards.
+        tbnz    x17, #1, LOCAL_LABEL(ExitNoCardsXchg)
+
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2), or while concurrent
         ldr     w12, [x16, 16]                  // source region + 16 -> generation
         tbz     x12, #1, LOCAL_LABEL(MarkCardsXchg)
-
-    LOCAL_LABEL(CheckConcurrentXchg):
-    // if not concurrent, exit
-        cbz     x17, LOCAL_LABEL(ExitXchg)
+        cbnz    x17, LOCAL_LABEL(MarkCardsXchg)
+    LOCAL_LABEL(ExitNoCardsXchg):
+        ret     lr
 
     LOCAL_LABEL(MarkCardsXchg):
     // x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
@@ -951,7 +964,9 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
     // SETTING CARD FOR X14
     LOCAL_LABEL(SetCardXchg):
         ldrb    w3, [x16, x2]
-        cbnz    w3, LOCAL_LABEL(ExitXchg)
+        cbz     w3, LOCAL_LABEL(DoSetCardXchg)
+        ret     lr
+    LOCAL_LABEL(DoSetCardXchg):
         mov     w17, #1
         strb    w17, [x16, x2]
     LOCAL_LABEL(SetGroupXchg):
@@ -981,7 +996,9 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         stlrb   w17, [x2]
     LOCAL_LABEL(DirtyGroupXchg):
         ldrb    w3, [x15, #0x80]
-        tbnz    w3, #2, LOCAL_LABEL(ExitXchg)
+        tbz     w3, #2, LOCAL_LABEL(DoDirtyGroupXchg)
+        ret     lr
+    LOCAL_LABEL(DoDirtyGroupXchg):
         strb    w17, [x15, #0x80]
     LOCAL_LABEL(DirtyPageXchg):
         ldrb    w3, [x16]

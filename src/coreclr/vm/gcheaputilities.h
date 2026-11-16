@@ -174,6 +174,11 @@ extern "C" uint8_t *g_write_watch_table;
 // Write watch may be disabled when it is not needed (between GCs for instance). This indicates whether it is enabled.
 extern "C" bool g_sw_ww_enabled_for_gc_heap;
 
+#ifdef FEATURE_SATORI_GC
+// The Satori barrier state in g_write_watch_table does not change while the barrier chosen for it is in use. (see WriteBarrierParameters)
+extern "C" bool g_satori_barrier_state_is_stable;
+#endif // FEATURE_SATORI_GC
+
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 
 // g_gc_dac_vars is a structure of pointers to GC globals that the

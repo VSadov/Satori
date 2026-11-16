@@ -212,14 +212,17 @@ else  ;FEATURE_SATORI_GC     ###################################################
 ; - 64-bit constants have to be loaded into a register
 ; - The constants have to be aligned to 8 bytes so that they can be patched easily
 ; - The alignment is by construction: there is only fixed-size code between an alignment directive and a constant
+;
+; The region and the barriers in it start on cache line boundaries, so that the barriers are cache line aligned
+; also where the region is copied, which keeps their offsets from the region start.
 
 ; Mark start of the code region that we patch at runtime
-LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
+LEAF_ENTRY_ALIGN64 JIT_PatchedCodeStart
         ret
-LEAF_END JIT_PatchedCodeStart, _TEXT
+LEAF_END_ALIGN64 JIT_PatchedCodeStart
 
 ; void JIT_CheckedWriteBarrier(Object** dst, Object* src)
-LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
+LEAF_ENTRY_ALIGN64 JIT_CheckedWriteBarrier
     ; See if dst is in GCHeap
         NOP_6_BYTE ; padding for alignment of constant
 PATCH_LABEL JIT_CheckedWriteBarrier_Patch_Label_CardBundleTable
@@ -233,7 +236,7 @@ PATCH_LABEL JIT_CheckedWriteBarrier_Patch_Label_CardBundleTable
         ; See comment above about possible AV
         mov     [rcx], rdx
         ret
-LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
+LEAF_END_MARKED_ALIGN64 JIT_CheckedWriteBarrier
 
 ALTERNATE_ENTRY macro Name
 
@@ -250,7 +253,7 @@ PUBLIC Name
 ;   rcx - dest address
 ;   rdx - object
 ;
-LEAF_ENTRY JIT_WriteBarrier, _TEXT
+LEAF_ENTRY_ALIGN64 JIT_WriteBarrier
 
 ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         NOP_6_BYTE
@@ -260,12 +263,12 @@ endif
 
         ; make sure this is bigger than any of the barriers
         db      1F0h dup (0CCh)
-LEAF_END_MARKED JIT_WriteBarrier, _TEXT
+LEAF_END_MARKED_ALIGN64 JIT_WriteBarrier
 
 ; Mark start of the code region that we patch at runtime
-LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
+LEAF_ENTRY_ALIGN64 JIT_PatchedCodeLast
         ret
-LEAF_END JIT_PatchedCodeLast, _TEXT
+LEAF_END_ALIGN64 JIT_PatchedCodeLast
 
 endif  ; FEATURE_SATORI_GC
 

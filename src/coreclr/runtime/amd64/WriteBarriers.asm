@@ -318,17 +318,22 @@ endif
         jnz     RecordEscape            ; cross region assignment. definitely escaping
 
     ; 3) check if the target is exposed
-        mov     rax, rcx
-        and     rax, 01FFFFFh
-        shr     rax, 3
-        bt      qword ptr [r8], rax
-        jb      RecordEscape            ; target is exposed. record an escape.
+        mov     eax, ecx
+        and     eax, 01FFFFFh           ; offset in the region
+        shr     eax, 9                  ; the bitmap qword with the bit for the target (a bit per 8 bytes)
+        mov     rax, qword ptr [r8 + rax * 8]
+        mov     r9, rcx
+        shr     r9, 3                   ; bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      RecordEscape            ; target is exposed. record an escape.
 
     JustAssign:
 ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
         mov     [rcx], rdx              ; src is external/null, or the assignment is completely threadlocal
         ret
 
+    ; Not executed. Places the block below within one cache line (RhpAssignRef starts on a cache line).
+        db      ((64 - (($ - RhpAssignRef) mod 64)) mod 64) dup (0CCh)
     AssignAndMarkCards:
 ALTERNATE_ENTRY RhpAssignRefAVLocation
         mov     [rcx], rdx
@@ -338,26 +343,29 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         mov     r11, qword ptr [g_write_watch_table]
 
     ; check the barrier state. this must be done after the assignment (in program order)
+    ; if src and dst are in the same region, cards are needed only while concurrent
+        xor     rdx, rcx
+        shr     rdx, 21
+        jnz     CrossRegion
+        cmp     r11, 1h
+        je      MarkCards
+        ret
+
+    CrossRegion:
     ; if state == 2 we do not set or dirty cards.
         cmp     r11, 2h
-        jne     DoCards
+        je      Exit
+
+    ; dst is in another region - cards are needed if src is ephemeral (gen < 2), or while concurrent
+        cmp     dword ptr [r8 + 16], 2
+        jl      MarkCards
+        test    r11, r11
+        jnz     MarkCards
     Exit:
         ret
 
-    DoCards:
-    ; if src and dst are in the same region, cards are not needed, unless concurrent
-        xor     rdx, rcx
-        shr     rdx, 21
-        jz      CheckConcurrent         ; same region, just check if barrier is not concurrent
-
-    ; dst is in another region - cards are needed if src is ephemeral (gen < 2)
-        cmp     dword ptr [r8 + 16], 2
-        jl      MarkCards
-
-    CheckConcurrent:
-        cmp     r11, 0h
-        je      Exit                    ; if not concurrent, exit
-
+    ; Not executed. Places the card marking below within one cache line.
+        db      ((64 - (($ - RhpAssignRef) mod 64)) mod 64) dup (0CCh)
     MarkCards:
     ; fetch card location for rcx
         mov     r9 , [g_card_table]     ; fetch the page map
@@ -371,13 +379,15 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         lea     rdx, [rax + rdx * 2 + 80h] ; group offset
 
     ; check if concurrent marking is in progress
-        cmp     r11, 0h
-        jne     DirtyCard
+        test    r11, r11
+        jnz     DirtyCard
 
     ; SETTING CARD FOR RCX
      SetCard:
         cmp     byte ptr [rax + r8], 0
-        jne     Exit
+        je      DoSetCard
+        ret
+     DoSetCard:
         mov     byte ptr [rax + r8], 1
      SetGroup:
         cmp     byte ptr [rdx], 0
@@ -400,7 +410,9 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         mov     byte ptr [rax + r8], 4
      DirtyGroup:
         cmp     byte ptr [rdx], 4
-        je      Exit
+        jne     DoDirtyGroup
+        ret
+     DoDirtyGroup:
         mov     byte ptr [rdx], 4
      DirtyPage:
         cmp     byte ptr [rax], 4
@@ -412,12 +424,14 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
     RecordEscape:
 
         ; 4) check if the source is escaped
-        mov     rax, rdx
-        add     rax, 8                        ; escape bit is MT + 1
-        and     rax, 01FFFFFh
-        shr     rax, 3
-        bt      qword ptr [r8], rax
-        jb      AssignAndMarkCards            ; source is already escaped.
+        lea     eax, [rdx + 8]                ; escape bit is MT + 1
+        and     eax, 01FFFFFh                 ; offset in the region
+        shr     eax, 9                        ; the bitmap qword with the bit (a bit per 8 bytes)
+        mov     rax, qword ptr [r8 + rax * 8]
+        lea     r9, [rdx + 8]
+        shr     r9, 3                         ; bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      AssignAndMarkCards            ; source is already escaped.
 
         ; Align rsp
         mov  r9, rsp
@@ -491,11 +505,14 @@ endif
         jnz     RecordEscape            ; cross region assignment. definitely escaping
 
     ; 3) check if the target is exposed
-        mov     r11, rcx
-        and     r11, 01FFFFFh
-        shr     r11, 3
-        bt      qword ptr [r8], r11
-        jb      RecordEscape            ; target is exposed. record an escape.
+        mov     r11d, ecx
+        and     r11d, 01FFFFFh          ; offset in the region
+        shr     r11d, 9                 ; the bitmap qword with the bit for the target (a bit per 8 bytes)
+        mov     r11, qword ptr [r8 + r11 * 8]
+        mov     r9, rcx
+        shr     r9, 3                   ; bt takes the bit index modulo 64
+        bt      r11, r9
+        jc      RecordEscape            ; target is exposed. record an escape.
 
     JustAssign:
         lock cmpxchg    [rcx], rdx      ; dst not in heap, src is external/null, or the assignment is completely threadlocal
@@ -510,25 +527,26 @@ endif
         mov     r11, qword ptr [g_write_watch_table]
 
     ; check the barrier state. this must be done after the assignment (in program order)
-    ; if state == 2 we do not set or dirty cards.
-        cmp     r11, 2h
-        jne     DoCards
-    Exit:
-        ret
-
-    DoCards:
-    ; if src and dst are in the same region, cards are not needed, unless concurrent
+    ; if src and dst are in the same region, cards are needed only while concurrent
         xor     rdx, rcx
         shr     rdx, 21
-        jz      CheckConcurrent         ; same region, just check if barrier is not concurrent
+        jnz     CrossRegion
+        cmp     r11, 1h
+        je      MarkCards
+        ret
 
-    ; dst is in another region - cards are needed if src is ephemeral (gen < 2)
+    CrossRegion:
+    ; if state == 2 we do not set or dirty cards.
+        cmp     r11, 2h
+        je      Exit
+
+    ; dst is in another region - cards are needed if src is ephemeral (gen < 2), or while concurrent
         cmp     dword ptr [r8 + 16], 2
         jl      MarkCards
-
-    CheckConcurrent:
-        cmp     r11, 0h
-        je      Exit                    ; if not concurrent, exit
+        test    r11, r11
+        jnz     MarkCards
+    Exit:
+        ret
 
     MarkCards:
     ; fetch card location for rcx
@@ -543,13 +561,15 @@ endif
         lea     rdx, [r10 + rdx * 2 + 80h] ; group offset
 
     ; check if concurrent marking is in progress
-        cmp     r11, 0h
-        jne     DirtyCard
+        test    r11, r11
+        jnz     DirtyCard
 
     ; SETTING CARD FOR RCX
      SetCard:
         cmp     byte ptr [r10 + r8], 0
-        jne     Exit
+        je      DoSetCard
+        ret
+     DoSetCard:
         mov     byte ptr [r10 + r8], 1
      SetGroup:
         cmp     byte ptr [rdx], 0
@@ -572,7 +592,9 @@ endif
         mov     byte ptr [r10 + r8], 4
      DirtyGroup:
         cmp     byte ptr [rdx], 4
-        je      Exit
+        jne     DoDirtyGroup
+        ret
+     DoDirtyGroup:
         mov     byte ptr [rdx], 4
      DirtyPage:
         cmp     byte ptr [r10], 4
@@ -584,12 +606,14 @@ endif
     RecordEscape:
 
         ; 4) check if the source is escaped
-        mov     r11, rdx
-        add     r11, 8                        ; escape bit is MT + 1
-        and     r11, 01FFFFFh
-        shr     r11, 3
-        bt      qword ptr [r8], r11
-        jb      AssignAndMarkCards            ; source is already escaped.
+        lea     r11d, [rdx + 8]               ; escape bit is MT + 1
+        and     r11d, 01FFFFFh                ; offset in the region
+        shr     r11d, 9                       ; the bitmap qword with the bit (a bit per 8 bytes)
+        mov     r11, qword ptr [r8 + r11 * 8]
+        lea     r9, [rdx + 8]
+        shr     r9, 3                         ; bt takes the bit index modulo 64
+        bt      r11, r9
+        jc      AssignAndMarkCards            ; source is already escaped.
 
         ; Align rsp
         mov  r9, rsp
@@ -653,11 +677,14 @@ endif
         jnz     RecordEscape            ; cross region assignment. definitely escaping
 
     ; 3) check if the target is exposed
-        mov     r11, rcx
-        and     r11, 01FFFFFh
-        shr     r11, 3
-        bt      qword ptr [r8], r11
-        jb      RecordEscape            ; target is exposed. record an escape.
+        mov     r11d, ecx
+        and     r11d, 01FFFFFh          ; offset in the region
+        shr     r11d, 9                 ; the bitmap qword with the bit for the target (a bit per 8 bytes)
+        mov     r11, qword ptr [r8 + r11 * 8]
+        mov     r9, rcx
+        shr     r9, 3                   ; bt takes the bit index modulo 64
+        bt      r11, r9
+        jc      RecordEscape            ; target is exposed. record an escape.
 
     JustAssign:
         xchg    [rcx], rax              ; dst not in heap, src is external/null, or the assignment is completely threadlocal
@@ -671,25 +698,26 @@ endif
         mov     r11, qword ptr [g_write_watch_table]
 
     ; check the barrier state. this must be done after the assignment (in program order)
-    ; if state == 2 we do not set or dirty cards.
-        cmp     r11, 2h
-        jne     DoCards
-    Exit:
-        ret
-
-    DoCards:
-    ; if src and dst are in the same region, cards are not needed, unless concurrent
+    ; if src and dst are in the same region, cards are needed only while concurrent
         xor     rdx, rcx
         shr     rdx, 21
-        jz      CheckConcurrent         ; same region, just check if barrier is not concurrent
+        jnz     CrossRegion
+        cmp     r11, 1h
+        je      MarkCards
+        ret
 
-    ; dst is in another region - cards are needed if src is ephemeral (gen < 2)
+    CrossRegion:
+    ; if state == 2 we do not set or dirty cards.
+        cmp     r11, 2h
+        je      Exit
+
+    ; dst is in another region - cards are needed if src is ephemeral (gen < 2), or while concurrent
         cmp     dword ptr [r8 + 16], 2
         jl      MarkCards
-
-    CheckConcurrent:
-        cmp     r11, 0h
-        je      Exit                    ; if not concurrent, exit
+        test    r11, r11
+        jnz     MarkCards
+    Exit:
+        ret
 
     MarkCards:
     ; fetch card location for rcx
@@ -704,13 +732,15 @@ endif
         lea     rdx, [r10 + rdx * 2 + 80h] ; group offset
 
     ; check if concurrent marking is in progress
-        cmp     r11, 0h
-        jne     DirtyCard
+        test    r11, r11
+        jnz     DirtyCard
 
     ; SETTING CARD FOR RCX
      SetCard:
         cmp     byte ptr [r10 + r8], 0
-        jne     Exit
+        je      DoSetCard
+        ret
+     DoSetCard:
         mov     byte ptr [r10 + r8], 1
      SetGroup:
         cmp     byte ptr [rdx], 0
@@ -733,7 +763,9 @@ endif
         mov     byte ptr [r10 + r8], 4
      DirtyGroup:
         cmp     byte ptr [rdx], 4
-        je      Exit
+        jne     DoDirtyGroup
+        ret
+     DoDirtyGroup:
         mov     byte ptr [rdx], 4
      DirtyPage:
         cmp     byte ptr [r10], 4
@@ -745,12 +777,14 @@ endif
     RecordEscape:
 
         ; 4) check if the source is escaped
-        mov     r11, rdx
-        add     r11, 8                        ; escape bit is MT + 1
-        and     r11, 01FFFFFh
-        shr     r11, 3
-        bt      qword ptr [r8], r11
-        jb      AssignAndMarkCards            ; source is already escaped.
+        lea     r11d, [rdx + 8]               ; escape bit is MT + 1
+        and     r11d, 01FFFFFh                ; offset in the region
+        shr     r11d, 9                       ; the bitmap qword with the bit (a bit per 8 bytes)
+        mov     r11, qword ptr [r8 + r11 * 8]
+        lea     r9, [rdx + 8]
+        shr     r9, 3                         ; bt takes the bit index modulo 64
+        bt      r11, r9
+        jc      AssignAndMarkCards            ; source is already escaped.
 
         ; Align rsp
         mov  r9, rsp

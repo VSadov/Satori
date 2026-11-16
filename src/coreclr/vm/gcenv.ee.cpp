@@ -1273,6 +1273,7 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
     case WriteBarrierOp::StopConcurrentMarkingSatori:
         assert(args->is_runtime_suspended && "the runtime must be suspended here!");
         g_write_watch_table = args->write_watch_table;
+        g_satori_barrier_state_is_stable = args->satori_barrier_state_is_stable;
         g_sw_ww_enabled_for_gc_heap = false;
         stompWBCompleteActions |= ::SwitchToNonWriteWatchBarrier(true);
         break;
