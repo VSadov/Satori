@@ -128,7 +128,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_workList = SatoriShardedWorkList::AllocAlignedForProcessors(4);
     m_gcState = GC_STATE_NONE;
-    m_barrierState = BARRIER_STATE_NOT_CONCURRENT;
+    // The first GC is a full GC (see m_nextGcIsFullGc), thus cards are not needed until then.
+    m_barrierState = BARRIER_STATE_SKIPPING_CARDS;
 
     m_gcCount[0] = m_gcCount[1] = m_gcCount[2] = 0;
     m_compactingGcCount[0] = m_compactingGcCount[1] = m_compactingGcCount[2] = 0;
@@ -196,13 +197,11 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_CurrentGcInfo = nullptr;
     m_startMillis = GetNowMillis();
 
-    // The EE starts with the regular barrier, which checks the barrier state. If the state is going to be stable
-    // until the first GC, switch to the barrier that does not. Nothing runs managed code yet, as if EE was suspended.
+    // Publish the initial barrier state. The EE starts with the regular barrier, which checks the state.
+    // If the state is going to be stable until the first GC, the EE switches to the barrier that does not.
+    // Nothing runs managed code yet, as if EE was suspended.
     m_barrierStateIsStable = ShouldBarrierStateBeStable();
-    if (m_barrierStateIsStable)
-    {
-        ToggleWriteBarrier(BARRIER_STATE_NOT_CONCURRENT, /* eeSuspended */ true, /* stableState */ true);
-    }
+    ToggleWriteBarrier(m_barrierState, /* eeSuspended */ true, /* stableState */ m_barrierStateIsStable);
 }
 
 void SatoriRecycler::ShutDown()
