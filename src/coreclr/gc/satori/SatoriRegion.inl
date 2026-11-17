@@ -657,6 +657,7 @@ inline void SatoriRegion::SweepPrefetchAdvance(SweepPrefetcher& prefetcher, Sato
 inline void SatoriRegion::SweepPrefetchNext(SweepPrefetcher& prefetcher)
 {
     // NB: the sweep may clear marks behind us, but we are ahead and see the words before they are touched.
+    // NB: marking is done and the caller has the region to itself, see BitmapExclusive.
     while (prefetcher.m_word == 0)
     {
         if (prefetcher.m_index >= BITMAP_LENGTH - 1)
@@ -664,7 +665,7 @@ inline void SatoriRegion::SweepPrefetchNext(SweepPrefetcher& prefetcher)
             return;
         }
 
-        prefetcher.m_word = m_bitmap[++prefetcher.m_index];
+        prefetcher.m_word = BitmapExclusive()[++prefetcher.m_index];
     }
 
     DWORD bit;
@@ -1043,6 +1044,12 @@ inline bool SatoriRegion::CheckAndClearMarked(SatoriObject* o)
     bool wasMarked = bitmapWord & mask;
     bitmapWord &= ~mask;
     return wasMarked;
+}
+
+// see the declaration for when this can be used.
+inline size_t* SatoriRegion::BitmapExclusive()
+{
+    return (size_t*)m_bitmap;
 }
 
 // A thread-local GC keeps the pinned objects and the ends of marked objects in its own bitmap, see m_localBitmap.

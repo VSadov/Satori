@@ -475,11 +475,11 @@ private:
     void ThreadLocalCompact(size_t denseEnd, SatoriLocalStayRuns* stayRuns);
     void ThreadLocalPendFinalizables();
     size_t FindUnmovableThreadLocal(size_t from, size_t to, bool includePinned);
-    size_t SkipDenseThreadLocal(size_t from, int32_t* objCount);
+    size_t SkipDenseThreadLocal(size_t from, int32_t* objCount, size_t* searchFrom);
     void ClearMarksOfDenseThreadLocal(size_t from, size_t to);
-    size_t SkipEscapedThreadLocal(size_t from);
-    size_t MarkedSizeThreadLocal(SatoriObject* o);
-    bool StartsObjectAtEndOfRunThreadLocal(size_t lastBit);
+    size_t SkipEscapedThreadLocal(size_t from, size_t* nextMarked);
+    size_t MarkedSizeThreadLocal(SatoriObject* o, size_t* searchFrom);
+    bool StartsObjectAtEndOfRunThreadLocal(size_t lastBit, size_t* nextMark);
 #ifdef _DEBUG
     void VerifyLocalBitmap();
     void VerifyIndexThreadLocal();
@@ -502,6 +502,16 @@ private:
     void SetMarkedAtomic(SatoriObject* o);
     void ClearMarked(SatoriObject* o);
     bool CheckAndClearMarked(SatoriObject* o);
+
+    // The mark bitmap as an ordinary array, for the loops that go over the bitmap while one thread has it to itself,
+    // so that the compiler can keep, combine and pair the loads:
+    //  - thread-local GC. The current thread escape tracks the region and no other thread uses its bitmap meanwhile,
+    //    concurrent marking does not mark in such region. (see MaybeEscapeTrackingAcquire)
+    //  - after marking is done, the thread that relocates, updates or sweeps the region. It took the region from a queue
+    //    and nothing is marked until all regions are swept.
+    // Everything else, including the accesses to single bits, uses the bitmap as volatile.
+    // NB: not for the escape path - it runs in the write barrier and must not be vectorized.
+    size_t* BitmapExclusive();
 
     bool IsPinnedLocal(SatoriObject* o);
     void SetPinnedLocal(SatoriObject* o);
