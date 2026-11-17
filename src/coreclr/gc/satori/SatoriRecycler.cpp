@@ -56,9 +56,7 @@ static const int MIN_GEN1_BUDGET = 2 * Satori::REGION_SIZE_GRANULARITY;
 
 // Publishes the barrier state to the barriers via the g_write_watch_table slot.
 // When EE is suspended, the EE may also switch to barrier code specialized for the state.
-// stableState tells that the state will not change until the GC calls here again with EE suspended
-// (see SatoriRecycler::ShouldBarrierStateBeStable), so the barrier for a nonconcurrent state may skip checking it.
-void ToggleWriteBarrier(int barrierState, bool eeSuspended, bool stableState = false)
+void ToggleWriteBarrier(int barrierState, bool eeSuspended)
 {
     // only the states that have a published counterpart could be set
     _ASSERTE(barrierState == SatoriRecycler::BARRIER_STATE_NOT_CONCURRENT ||
@@ -78,7 +76,9 @@ void ToggleWriteBarrier(int barrierState, bool eeSuspended, bool stableState = f
 
     args.write_watch_table = (uint8_t*)(size_t)barrierState;
     args.is_runtime_suspended = eeSuspended;
-    args.satori_barrier_state_is_stable = stableState;
+    // Without concurrent GC nothing toggles the state while EE runs, so the barrier for a nonconcurrent state
+    // may skip checking it.
+    args.satori_barrier_state_is_stable = !SatoriUtil::IsConcurrentEnabled();
     GCToEEInterface::StompWriteBarrier(&args);
 }
 
@@ -197,11 +197,9 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_CurrentGcInfo = nullptr;
     m_startMillis = GetNowMillis();
 
-    // Publish the initial barrier state. The EE starts with the regular barrier, which checks the state.
-    // If the state is going to be stable until the first GC, the EE switches to the barrier that does not.
+    // Publish the initial barrier state, so that the EE switches to the barrier specialized for it.
     // Nothing runs managed code yet, as if EE was suspended.
-    m_barrierStateIsStable = ShouldBarrierStateBeStable();
-    ToggleWriteBarrier(m_barrierState, /* eeSuspended */ true, /* stableState */ m_barrierStateIsStable);
+    ToggleWriteBarrier(m_barrierState, /* eeSuspended */ true);
 }
 
 void SatoriRecycler::ShutDown()
@@ -659,11 +657,6 @@ void SatoriRecycler::TryStartGC(int generation, gc_reason reason)
         {
             BlockingCollect();
         }
-        else if (m_barrierStateIsStable)
-        {
-            // The barrier in place may not check the barrier state, so the state may change only with EE suspended.
-            EarlyPrepForConcurrent();
-        }
     }
 }
 
@@ -715,12 +708,6 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
     int origBarrierState = m_barrierState;
     if (origBarrierState != BARRIER_STATE_CONCURRENT)
     {
-        if (m_barrierStateIsStable)
-        {
-            // The barrier is switched to concurrent with EE suspended, when the GC starts. (see TryStartGC)
-            // We may not mark until then, come back later.
-            return true;
-        }
         // Toggling is a ProcessWide fence, which is expensive, and on some platforms
         // is serialized with other process-wide fences. There is no point in every helper
         // doing it, so claim the right to toggle and let just one thread do the work.
@@ -1120,14 +1107,11 @@ void SatoriRecycler::BlockingMarkForConcurrent()
         size_t blockingStart = minipal_hires_ticks();
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
 
-        // EE is suspended now, so let it switch to barrier code that assumes concurrent marking
-        // rather than checks the barrier state.
+        // The barrier became concurrent while EE was running. EE is suspended now anyway, so let it switch to
+        // barrier code that assumes concurrent marking rather than checks the barrier state.
         // The blocking collection switches the code back, when it changes the barrier state.
-        // Normally the barrier became concurrent while EE was running, when the concurrent marking started.
-        // With early prep, this is when the barrier becomes concurrent. No fence is needed, EE is suspended.
-        _ASSERTE(m_barrierStateIsStable ? !IsBarrierConcurrent() : IsBarrierConcurrent());
+        _ASSERTE(IsBarrierConcurrent());
         ToggleWriteBarrier(BARRIER_STATE_CONCURRENT, /* eeSuspended */ true);
-        VolatileStore((int*)&m_barrierState, BARRIER_STATE_CONCURRENT);
 
         // the concurrent pass has already filtered what is in the alternate, make it usable again.
         // whatever is left in m_reusableRegions it did not reach - the loop below will filter that.
@@ -1173,45 +1157,6 @@ void SatoriRecycler::BlockingMarkForConcurrent()
 
         GCToEEInterface::RestartEE(false);
     }
-}
-
-// With early prep, the pause that marks roots and switches the barrier to concurrent happens when
-// the concurrent GC starts, rather than after the concurrent marking of handles and cards.
-// The blocking collection that follows rescans stacks and handles anyway.
-// A concurrent GC does that whenever the barrier state is stable. (see ShouldBarrierStateBeStable)
-void SatoriRecycler::EarlyPrepForConcurrent()
-{
-    _ASSERTE(m_gcState == GC_STATE_CONCURRENT);
-
-    // regions must be swept before we can look for objects when marking stacks. helpers will do that too.
-    while (DrainDeferredSweepQueueConcurrent(/* deadline */ 0))
-    {
-        MaybeAskForHelp();
-        YieldProcessor();
-    }
-
-    // When a helper marks stacks, it counts as a helper until the pause ends, so cleaning, and thus the blocking
-    // collection, cannot start before that. Count this thread too. (see HelpOnceCore)
-    // Cleaning cannot be waiting for helpers to leave yet, since stacks are not marked.
-    _ASSERTE(m_concurrentCleaningState == CC_CLEAN_STATE_NOT_READY);
-    Interlocked::Increment(&m_ccHelpersNum);
-    BlockingMarkForConcurrent();
-    Interlocked::Decrement(&m_ccHelpersNum);
-}
-
-// Whether the barrier state should change only with EE suspended until the next GC, so that the barriers do not need
-// to check it. That is the case with early prep, and when no GC is going to mark concurrently anyway.
-// The guess uses the occupancy that TryStartGC will see (see the end of BlockingCollectImpl). If a concurrent GC
-// starts regardless, for example because the latency mode changed, it does early prep.
-bool SatoriRecycler::ShouldBarrierStateBeStable()
-{
-    if (SatoriUtil::IsEarlyPrepEnabled(IsLowLatencyMode()))
-    {
-        return true;
-    }
-
-    // A full GC marks the most, so if it would not be concurrent, neither would a gen1 GC.
-    return !SatoriUtil::IsConcurrentEnabled() || !ShouldDoConcurrent(2);
 }
 
 int SatoriRecycler::MaxWorkers()
@@ -1708,9 +1653,7 @@ void SatoriRecycler::BlockingCollectImpl()
     
     // Here we know if the next GC will surely be a full GC.
     int newBarrierState = m_nextGcIsFullGc ? BARRIER_STATE_SKIPPING_CARDS : BARRIER_STATE_NOT_CONCURRENT;
-    // If the state is going to be stable until the next GC, the barrier does not need to check it.
-    m_barrierStateIsStable = ShouldBarrierStateBeStable();
-    ToggleWriteBarrier(newBarrierState, /* eeSuspended */ true, /* stableState */ m_barrierStateIsStable);
+    ToggleWriteBarrier(newBarrierState, /* eeSuspended */ true);
     m_barrierState = newBarrierState;
 
     // tell EE that we are starting
@@ -1861,14 +1804,6 @@ void SatoriRecycler::BlockingCollectImpl()
     {
         // no deferred sweep, can update occupancy earlier (this is optional)
         UpdateGenerationOccupancies();
-
-        // The next GC decides whether to mark concurrently from the occupancy updated just now, let the barrier agree.
-        bool barrierStateIsStable = ShouldBarrierStateBeStable();
-        if (barrierStateIsStable != m_barrierStateIsStable)
-        {
-            m_barrierStateIsStable = barrierStateIsStable;
-            ToggleWriteBarrier(m_barrierState, /* eeSuspended */ true, /* stableState */ barrierStateIsStable);
-        }
     }
 
     // The handshake with the trimmer relies on no GC starting between m_gcState = GC_STATE_NONE above and this call: a GC that started

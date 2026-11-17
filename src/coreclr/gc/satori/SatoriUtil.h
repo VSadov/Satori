@@ -716,17 +716,6 @@ public:
         return (GCConfig::GetPacingGC());
     }
 
-    // DOTNET_gcEarlyPrep, 0 - disabled, 1 - enabled, -1 - default (enabled unless in low latency mode)
-    // A concurrent GC suspends EE as soon as it starts, to switch the barrier to concurrent and to mark stacks.
-    // Thus the barrier state never changes while EE runs, and the barriers between GCs need not check it.
-    // Marking stacks early leaves more for the blocking collection and gives threads less chance to mark their own stacks,
-    // so early prep trades some pause time for throughput. Thus it is not the default in low latency mode.
-    static bool IsEarlyPrepEnabled(bool isLowLatencyMode)
-    {
-        int64_t earlyPrep = GCConfig::GetEarlyPrep();
-        return earlyPrep < 0 ? !isLowLatencyMode : earlyPrep != 0;
-    }
-
     // DOTNET_gcTrimPeakHold, in seconds (hex, like the other GC settings). For how long the trimmer keeps the memory
     // that the heap had in use at a peak. 0 turns the hold off. (see SatoriTrimmer::Loop)
     static size_t TrimPeakHoldSeconds()

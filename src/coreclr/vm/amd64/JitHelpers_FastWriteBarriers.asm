@@ -348,18 +348,23 @@ ifdef FEATURE_SATORI_GC
 
 ; The Satori barriers. WriteBarrierManager copies one of them into the JIT_WriteBarrier buffer (see patchedcode.asm)
 ; and patches the constants in the copy:
-; - JIT_WriteBarrier_SATORI             - the regular barrier, it reads the barrier state (g_write_watch_table).
-; - JIT_WriteBarrier_SATORI1            - the GC does not mark concurrently and the next GC is not necessarily a full GC.
+; - JIT_WriteBarrier_SATORI             - the GC does not mark concurrently and the next GC is not necessarily a full GC.
+;                                         Used only when concurrent GC is disabled.
 ; - JIT_WriteBarrier_SATORI2            - the GC does not mark concurrently and the next GC is a full GC.
+;                                         Used only when concurrent GC is disabled.
 ; - JIT_WriteBarrier_SATORI_CONCURRENT  - while the GC marks concurrently and the next GC is not a full GC.
 ; - JIT_WriteBarrier_SATORI_CONCURRENT2 - while the GC marks concurrently and the next GC is a full GC.
+; - JIT_WriteBarrier_SATORI_DYNAMIC     - the next GC is not necessarily a full GC, it reads the barrier state (g_write_watch_table).
+;                                         Semantically the same as the Satori barriers that are not patched, such as
+;                                         the NativeAOT RhpAssignRef.
+; - JIT_WriteBarrier_SATORI_DYNAMIC2    - the next GC is a full GC, it reads the barrier state.
 ;
 ; The concurrent barriers do not check the barrier state, they assume that the GC marks concurrently.
 ; The GC switches barriers only when EE is suspended anyway: to a concurrent barrier at the start of
 ; the concurrent marking and back to a nonconcurrent barrier in the blocking collection that follows.
-; SATORI1 and SATORI2 do not check the barrier state either. They are used when the barrier state changes only while EE is
-; suspended: with DOTNET_gcEarlyPrep (the default, unless in low latency mode), or when no GC is going to mark
-; concurrently until the next GC. Otherwise the regular barrier is used between GCs.
+; SATORI and SATORI2 do not check the barrier state either. Without concurrent GC the barrier state changes only
+; while EE is suspended. Otherwise the dynamic barriers are used between GCs, since a concurrent GC switches
+; the barrier state to concurrent while EE runs.
 ;
 ; The barriers have the same code ahead of the <Name>_CheckedEntry label, so that JIT_CheckedWriteBarrier
 ; can jump to CheckedEntry in the buffer, whichever barrier is there.
@@ -372,20 +377,20 @@ ifdef FEATURE_SATORI_GC
 ;   rcx - dest address
 ;   rdx - object
 ;
-LEAF_ENTRY JIT_WriteBarrier_SATORI, _TEXT
+LEAF_ENTRY JIT_WriteBarrier_SATORI_DYNAMIC, _TEXT
 
 ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
     ; check if src is in heap
         NOP_6_BYTE ; padding for alignment of constant
-PATCH_LABEL JIT_WriteBarrier_SATORI_Patch_Label_CardBundleTable
+PATCH_LABEL JIT_WriteBarrier_SATORI_DYNAMIC_Patch_Label_CardBundleTable
         mov     rax, 0F0F0F0F0F0F0F0F0h    ; the page byte map
-PATCH_LABEL JIT_WriteBarrier_SATORI_CheckedEntry
+PATCH_LABEL JIT_WriteBarrier_SATORI_DYNAMIC_CheckedEntry
         mov     r8,  rdx
         shr     r8,  30                    ; src page index
         cmp     byte ptr [rax + r8], 0
         je      JustAssign                 ; src not in heap
 else
-PATCH_LABEL JIT_WriteBarrier_SATORI_CheckedEntry
+PATCH_LABEL JIT_WriteBarrier_SATORI_DYNAMIC_CheckedEntry
 endif
 
     ; check for escaping assignment
@@ -423,13 +428,13 @@ endif
 
     ; Not executed. Places the block below within one cache line where the barrier runs (the copy starts on a cache
     ; line): the block starts 3 bytes into a line, so that the 3-byte store and the 2-byte opcode end on an 8-byte boundary.
-        db      ((67 - (($ - JIT_WriteBarrier_SATORI) mod 64)) mod 64) dup (0CCh)
+        db      ((67 - (($ - JIT_WriteBarrier_SATORI_DYNAMIC) mod 64)) mod 64) dup (0CCh)
     AssignAndMarkCards:
         mov     [rcx], rdx
 
     ; The barrier state may become concurrent while EE runs, thus this barrier reads it.
     ; This must be done after the assignment (in program order).
-PATCH_LABEL JIT_WriteBarrier_SATORI_Patch_Label_WriteWatchTable
+PATCH_LABEL JIT_WriteBarrier_SATORI_DYNAMIC_Patch_Label_WriteWatchTable
         mov     r10, 0F0F0F0F0F0F0F0F0h ; the address of the barrier state (g_write_watch_table)
         mov     r11, qword ptr [r10]
 
@@ -456,10 +461,10 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_Patch_Label_WriteWatchTable
 
     ; Not executed. Places the card marking below within one cache line where the barrier runs, with the constant
     ; on an 8-byte boundary: the block starts 6 bytes into a line.
-        db      ((70 - (($ - JIT_WriteBarrier_SATORI) mod 64)) mod 64) dup (0CCh)
+        db      ((70 - (($ - JIT_WriteBarrier_SATORI_DYNAMIC) mod 64)) mod 64) dup (0CCh)
     MarkCards:
     ; fetch card location for rcx
-PATCH_LABEL JIT_WriteBarrier_SATORI_Patch_Label_CardTable
+PATCH_LABEL JIT_WriteBarrier_SATORI_DYNAMIC_Patch_Label_CardTable
         mov     r9, 0F0F0F0F0F0F0F0F0h  ; the page map
         mov     r8,  rcx
         shr     rcx, 30
@@ -556,27 +561,175 @@ PATCH_LABEL JIT_WriteBarrier_SATORI_Patch_Label_CardTable
         pop     rcx
         pop     rsp
         jmp     AssignAndMarkCards
-LEAF_END_MARKED JIT_WriteBarrier_SATORI, _TEXT
+LEAF_END_MARKED JIT_WriteBarrier_SATORI_DYNAMIC, _TEXT
 
 ;
-; The GC does not mark concurrently and the next GC is not necessarily a full GC, thus cards are needed.
-; The barrier state changes only while EE is suspended (see SatoriRecycler::ShouldBarrierStateBeStable), when the GC
-; also switches the barrier, thus this barrier does not check the state.
+; The GC does not mark concurrently yet and the next GC is a full GC, thus cards are not needed until it does.
+; The barrier state may become concurrent while EE runs, thus this barrier reads it. Once it is concurrent, the cards
+; are dirtied for any src, since a full GC marks through objects of any generation.
 ;
-LEAF_ENTRY JIT_WriteBarrier_SATORI1, _TEXT
+LEAF_ENTRY JIT_WriteBarrier_SATORI_DYNAMIC2, _TEXT
 
 ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
     ; check if src is in heap
         NOP_6_BYTE ; padding for alignment of constant
-PATCH_LABEL JIT_WriteBarrier_SATORI1_Patch_Label_CardBundleTable
+PATCH_LABEL JIT_WriteBarrier_SATORI_DYNAMIC2_Patch_Label_CardBundleTable
         mov     rax, 0F0F0F0F0F0F0F0F0h    ; the page byte map
-PATCH_LABEL JIT_WriteBarrier_SATORI1_CheckedEntry
+PATCH_LABEL JIT_WriteBarrier_SATORI_DYNAMIC2_CheckedEntry
         mov     r8,  rdx
         shr     r8,  30                    ; src page index
         cmp     byte ptr [rax + r8], 0
         je      JustAssign                 ; src not in heap
 else
-PATCH_LABEL JIT_WriteBarrier_SATORI1_CheckedEntry
+PATCH_LABEL JIT_WriteBarrier_SATORI_DYNAMIC2_CheckedEntry
+endif
+
+    ; check for escaping assignment
+    ; 1) check if we own the source region
+        mov     r8, rdx
+        and     r8, 0FFFFFFFFFFE00000h  ; source region
+
+ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
+        jz      JustAssign              ; assigning null
+endif
+
+        mov     rax,  gs:[30h]          ; thread tag, TEB on NT
+        cmp     qword ptr [r8], rax
+        jne     AssignAndMarkCards      ; not local to this thread
+
+    ; 2) check if the src and dst are from the same region
+        mov     rax, rcx
+        and     rax, 0FFFFFFFFFFE00000h ; target aligned to region
+        cmp     rax, r8
+        jne     RecordEscape            ; cross region assignment. definitely escaping
+
+    ; 3) check if the target is exposed
+        mov     eax, ecx
+        and     eax, 01FFFFFh           ; offset in the region
+        shr     eax, 9                  ; the bitmap qword with the bit for the target (a bit per 8 bytes)
+        mov     rax, qword ptr [r8 + rax * 8]
+        mov     r9, rcx
+        shr     r9, 3                   ; bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      RecordEscape            ; target is exposed. record an escape.
+
+    JustAssign:
+        mov     [rcx], rdx              ; src is external/null, or the assignment is completely threadlocal
+        ret
+
+    ; Not executed. Places the block below within one cache line where the barrier runs (the copy starts on a cache
+    ; line): the block starts 3 bytes into a line, so that the 3-byte store and the 2-byte opcode end on an 8-byte boundary.
+        db      ((67 - (($ - JIT_WriteBarrier_SATORI_DYNAMIC2) mod 64)) mod 64) dup (0CCh)
+    AssignAndMarkCards:
+        mov     [rcx], rdx
+
+    ; The barrier state may become concurrent while EE runs, thus this barrier reads it.
+    ; This must be done after the assignment (in program order).
+PATCH_LABEL JIT_WriteBarrier_SATORI_DYNAMIC2_Patch_Label_WriteWatchTable
+        mov     r10, 0F0F0F0F0F0F0F0F0h ; the address of the barrier state (g_write_watch_table)
+
+    ; if state == 2 we do not set or dirty cards.
+        cmp     qword ptr [r10], 2h
+        jne     MarkCards
+        ret
+
+    ; Not executed. Aligns the constant below: the padding and the 2-byte opcode end on an 8-byte boundary.
+        align   8
+        NOP_6_BYTE
+    MarkCards:
+    ; fetch card location for rcx
+PATCH_LABEL JIT_WriteBarrier_SATORI_DYNAMIC2_Patch_Label_CardTable
+        mov     r9, 0F0F0F0F0F0F0F0F0h  ; the page map
+        mov     r8,  rcx
+        shr     rcx, 30
+        mov     rax, qword ptr [r9 + rcx * 8] ; page
+        sub     r8, rax   ; offset in page
+        mov     rdx,r8
+        shr     r8, 9     ; card offset
+        shr     rdx, 20   ; group index
+        lea     rdx, [rax + rdx * 2 + 80h] ; group offset
+
+    ; DIRTYING CARD FOR RCX
+     DirtyCard:
+        mov     byte ptr [rax + r8], 4
+     DirtyGroup:
+        cmp     byte ptr [rdx], 4
+        jne     DoDirtyGroup
+        ret
+     DoDirtyGroup:
+        mov     byte ptr [rdx], 4
+     DirtyPage:
+        cmp     byte ptr [rax], 4
+        je      Exit
+        mov     byte ptr [rax], 4
+     Exit:
+        ret
+
+    ; this is expected to be rare.
+    RecordEscape:
+
+        ; 4) check if the source is escaped
+        lea     eax, [rdx + 8]                ; escape bit is MT + 1
+        and     eax, 01FFFFFh                 ; offset in the region
+        shr     eax, 9                        ; the bitmap qword with the bit (a bit per 8 bytes)
+        mov     rax, qword ptr [r8 + rax * 8]
+        lea     r9, [rdx + 8]
+        shr     r9, 3                         ; bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      AssignAndMarkCards            ; source is already escaped.
+
+        ; Align rsp
+        mov  r9, rsp
+        and  rsp, -16
+
+        ; save rsp, rcx, rdx, r8
+        push r9
+        push rcx
+        push rdx
+        push r8
+
+        ; also save xmm0, in case it is used for stack clearing.
+        ; Hopefully EscapeFn cannot corrupt other xmm regs, since there is no float math or vectorizable code in there.
+        sub     rsp, 16
+        movdqa  [rsp], xmm0
+
+        ; shadow space
+        sub  rsp, 20h
+
+        ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
+        call    qword ptr [r8 + 8]
+
+        add     rsp, 20h
+
+        movdqa  xmm0, [rsp]
+        add     rsp, 16
+
+        pop     r8
+        pop     rdx
+        pop     rcx
+        pop     rsp
+        jmp     AssignAndMarkCards
+LEAF_END_MARKED JIT_WriteBarrier_SATORI_DYNAMIC2, _TEXT
+
+;
+; The GC does not mark concurrently and the next GC is not necessarily a full GC, thus cards are needed.
+; Used only when concurrent GC is disabled. Then the barrier state changes only while EE is suspended, when the GC
+; also switches the barrier, thus this barrier does not check the state.
+;
+LEAF_ENTRY JIT_WriteBarrier_SATORI, _TEXT
+
+ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
+    ; check if src is in heap
+        NOP_6_BYTE ; padding for alignment of constant
+PATCH_LABEL JIT_WriteBarrier_SATORI_Patch_Label_CardBundleTable
+        mov     rax, 0F0F0F0F0F0F0F0F0h    ; the page byte map
+PATCH_LABEL JIT_WriteBarrier_SATORI_CheckedEntry
+        mov     r8,  rdx
+        shr     r8,  30                    ; src page index
+        cmp     byte ptr [rax + r8], 0
+        je      JustAssign                 ; src not in heap
+else
+PATCH_LABEL JIT_WriteBarrier_SATORI_CheckedEntry
 endif
 
     ; check for escaping assignment
@@ -613,7 +766,7 @@ endif
         ret
 
     ; Not executed. Places the block below within one cache line where the barrier runs (the copy starts on a cache line).
-        db      ((64 - (($ - JIT_WriteBarrier_SATORI1) mod 64)) mod 64) dup (0CCh)
+        db      ((64 - (($ - JIT_WriteBarrier_SATORI) mod 64)) mod 64) dup (0CCh)
     AssignAndMarkCards:
         mov     [rcx], rdx
 
@@ -632,9 +785,9 @@ endif
 
     ; Not executed. Places the card marking below within one cache line where the barrier runs, with the constant
     ; on an 8-byte boundary: the block starts 6 bytes into a line.
-        db      ((70 - (($ - JIT_WriteBarrier_SATORI1) mod 64)) mod 64) dup (0CCh)
+        db      ((70 - (($ - JIT_WriteBarrier_SATORI) mod 64)) mod 64) dup (0CCh)
     MarkCards:
-PATCH_LABEL JIT_WriteBarrier_SATORI1_Patch_Label_CardTable
+PATCH_LABEL JIT_WriteBarrier_SATORI_Patch_Label_CardTable
         mov     r9, 0F0F0F0F0F0F0F0F0h  ; the page map
 
     ; fetch card location for rcx
@@ -662,7 +815,7 @@ PATCH_LABEL JIT_WriteBarrier_SATORI1_Patch_Label_CardTable
         cmp     byte ptr [rax], 0
         jne     Exit
         ; DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY. That is possible
-        ; with the stable barrier state too, cards are also dirtied regardless of it (see SatoriGC::PublishObject).
+        ; without concurrent GC too, cards are also dirtied regardless of it (see SatoriGC::PublishObject).
         mov     byte ptr [rax], 4
         ret
 
@@ -710,11 +863,11 @@ PATCH_LABEL JIT_WriteBarrier_SATORI1_Patch_Label_CardTable
         pop     rcx
         pop     rsp
         jmp     AssignAndMarkCards
-LEAF_END_MARKED JIT_WriteBarrier_SATORI1, _TEXT
+LEAF_END_MARKED JIT_WriteBarrier_SATORI, _TEXT
 
 ;
 ; The GC does not mark concurrently and the next GC is a full GC, thus cards are not needed.
-; The barrier state changes only while EE is suspended (see SatoriRecycler::ShouldBarrierStateBeStable), when the GC
+; Used only when concurrent GC is disabled. Then the barrier state changes only while EE is suspended, when the GC
 ; also switches the barrier, thus this barrier does not check the state.
 ;
 LEAF_ENTRY JIT_WriteBarrier_SATORI2, _TEXT

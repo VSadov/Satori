@@ -246,7 +246,7 @@ PUBLIC Name
 
 ; void JIT_WriteBarrier(Object** dst, Object* src)
 ;
-; Space for one of the Satori barriers (see JIT_WriteBarrier_SATORI in JitHelpers_FastWriteBarriers.asm), which
+; Space for one of the Satori barriers (see JIT_WriteBarrier_SATORI_DYNAMIC in JitHelpers_FastWriteBarriers.asm), which
 ; WriteBarrierManager copies here when the GC initializes the write barrier and when the GC switches barriers.
 ; The barriers have the same code ahead of CheckedEntry, so JIT_CheckedWriteBarrier can jump there in any of them.
 ;

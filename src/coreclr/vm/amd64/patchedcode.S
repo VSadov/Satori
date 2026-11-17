@@ -377,7 +377,7 @@ WRITE_BARRIER_END JIT_CheckedWriteBarrier
 
 // void JIT_WriteBarrier(Object** dst, Object* src)
 //
-// Space for one of the Satori barriers (see JIT_WriteBarrier_SATORI in jithelpers_fastwritebarriers.S), which
+// Space for one of the Satori barriers (see JIT_WriteBarrier_SATORI_DYNAMIC in jithelpers_fastwritebarriers.S), which
 // WriteBarrierManager copies here when the GC initializes the write barrier and when the GC switches barriers.
 // The barriers have the same code ahead of CheckedEntry, so JIT_CheckedWriteBarrier can jump there in any of them.
 // It jumps to a local label, which the assembler resolves, because the linker could route a jump to the global

@@ -175,7 +175,8 @@ extern "C" uint8_t *g_write_watch_table;
 extern "C" bool g_sw_ww_enabled_for_gc_heap;
 
 #ifdef FEATURE_SATORI_GC
-// The Satori barrier state in g_write_watch_table does not change while the barrier chosen for it is in use. (see WriteBarrierParameters)
+// The Satori barrier state in g_write_watch_table does not change while the barrier chosen for it is in use.
+// That is the case when concurrent GC is disabled. (see WriteBarrierParameters)
 extern "C" bool g_satori_barrier_state_is_stable;
 #endif // FEATURE_SATORI_GC
 
