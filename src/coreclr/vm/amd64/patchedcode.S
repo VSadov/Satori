@@ -366,7 +366,7 @@ WRITE_BARRIER_PATCH_LABEL JIT_CheckedWriteBarrier_Patch_Label_CardBundleTable
         mov     r8, rdi
         shr     r8, 30                                  // dst page index
         cmp     byte ptr [rax + r8], 0
-        jne     C_FUNC(CheckedEntry)
+        jne     LOCAL_LABEL(CheckedEntryLocal)
 
     LOCAL_LABEL(NotInHeap):
         // See comment above about possible AV
@@ -380,6 +380,8 @@ WRITE_BARRIER_END JIT_CheckedWriteBarrier
 // Space for one of the Satori barriers (see JIT_WriteBarrier_SATORI in jithelpers_fastwritebarriers.S), which
 // WriteBarrierManager copies here when the GC initializes the write barrier and when the GC switches barriers.
 // The barriers have the same code ahead of CheckedEntry, so JIT_CheckedWriteBarrier can jump there in any of them.
+// It jumps to a local label, which the assembler resolves, because the linker could route a jump to the global
+// symbol outside the region (e.g. through the PLT), and then the jump would be wrong in the copy.
 //
 //   rdi - dest address
 //   rsi - object
@@ -390,6 +392,7 @@ WRITE_BARRIER_ENTRY JIT_WriteBarrier
         NOP_6_BYTE
         movabs  rax, 0xF0F0F0F0F0F0F0F0
 #endif
+    LOCAL_LABEL(CheckedEntryLocal):
     ALTERNATE_ENTRY CheckedEntry
 
         // make sure this is bigger than any of the barriers

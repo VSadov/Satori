@@ -530,7 +530,7 @@ WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
         ubfx    x17, x14, #SATORI_PAGE_BITS, #SATORI_PAGE_MAP_BITS
         ldrb    w12, [x16, x17]
         cbz     x12 , LOCAL_LABEL(NotInHeap)
-        b       C_FUNC(CheckedEntry)
+        b       LOCAL_LABEL(CheckedEntryLocal)
 
     LOCAL_LABEL(NotInHeap):
         str  x15, [x14]
@@ -544,6 +544,8 @@ WRITE_BARRIER_END JIT_CheckedWriteBarrier
 // The barriers find the literal pool at a fixed offset from their start (JIT_WriteBarrier_Offset_*), thus
 // JIT_WriteBarrier is aligned and has a fixed size, so that the offset does not depend on the code ahead of it.
 // The barriers have the same code ahead of CheckedEntry, so JIT_CheckedWriteBarrier can jump there in any of them.
+// It jumps to a local label, which the assembler resolves, because the linker could route a jump to the global
+// symbol outside the region (e.g. through the PLT), and then the jump would be wrong in the copy.
 //
 // On entry:
 //   x14  : the destination address (LHS of the assignment)
@@ -560,10 +562,12 @@ WRITE_BARRIER_END JIT_CheckedWriteBarrier
 WRITE_BARRIER_ENTRY JIT_WriteBarrier
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
         ldr     x16, LOCAL_LABEL(wbs_card_bundle_table)
+LOCAL_LABEL(CheckedEntryLocal):
 ALTERNATE_ENTRY CheckedEntry
     // This must be greater than the largest JIT_WriteBarrier_SATORI* function.
     .space JIT_WriteBarrier_Size - 4, 0
 #else
+LOCAL_LABEL(CheckedEntryLocal):
 ALTERNATE_ENTRY CheckedEntry
     // This must be greater than the largest JIT_WriteBarrier_SATORI* function.
     .space JIT_WriteBarrier_Size, 0
