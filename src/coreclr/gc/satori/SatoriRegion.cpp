@@ -1060,11 +1060,15 @@ SatoriObject* SatoriRegion::FindMarkedObjectFrom(size_t location, size_t limit, 
     // Only marked objects have bits (at their starts), so the last bit at or before the location
     // is the last marked object that starts before the location.
     // If it does not reach the location, the object at the location, if any, is not marked.
+    // NB: the region is being marked - other threads may be setting marks while we look, thus every word of the bitmap
+    //     is read once, with a volatile load. An object that gets its mark after we have looked is not missed:
+    //     it is traced through the mark queues, or, on overflow, dirties the cards after the mark is set.
+    //     (see SatoriPage::DirtyCardsForRange)
     const size_t MAX_BACK_WORDS = 64;
     size_t bitmapIndex;
     int offset = ((SatoriObject*)location)->GetMarkBitAndWord(&bitmapIndex);
     size_t lowest = bitmapIndex > BITMAP_START + MAX_BACK_WORDS ? bitmapIndex - MAX_BACK_WORDS : BITMAP_START;
-    size_t word = m_bitmap[bitmapIndex] & (((size_t)2 << offset) - 1);
+    size_t word = VolatileLoadWithoutBarrier(&m_bitmap[bitmapIndex]) & (((size_t)2 << offset) - 1);
     while (word == 0)
     {
         if (bitmapIndex <= lowest)
@@ -1084,7 +1088,7 @@ SatoriObject* SatoriRegion::FindMarkedObjectFrom(size_t location, size_t limit, 
                         SatoriObject* indexed = (SatoriObject*)(Start() + indexOffset);
                         if (indexed->Start() < windowStart &&
                             indexed->Start() + indexed->Size() > location &&
-                            IsMarked(indexed))
+                            IsMarkedAtomic(indexed))
                         {
                             // a marked object from before the window contains the location
                             return indexed;
@@ -1104,7 +1108,7 @@ SatoriObject* SatoriRegion::FindMarkedObjectFrom(size_t location, size_t limit, 
             return SkipUnmarked((SatoriObject*)location, limit);
         }
 
-        word = m_bitmap[--bitmapIndex];
+        word = VolatileLoadWithoutBarrier(&m_bitmap[--bitmapIndex]);
     }
 
     DWORD bit;
@@ -2401,7 +2405,7 @@ void SatoriRegion::ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache)
     }
 
     // go through all live objects and update pointers if targets are planned for relocation.
-    size_t* bitmap = BitmapExclusive();
+    size_t* bitmap = m_bitmap;
     size_t bitmapLimit = ParseableBitmapLimit();
     size_t bitmapIndex = BITMAP_START;
     int markBitOffset = 0;
@@ -2936,7 +2940,7 @@ void SatoriRegion::CompactFinalizableTrackers()
 }
 
 // NB: this is for the stages after marking, when one thread works with the region (relocation, update, sweep)
-//     and has the bitmap to itself. (see BitmapExclusive) While marking, use the overload that takes "upTo".
+//     and has the bitmap to itself. (see m_bitmap) While marking, use the overload that takes "upTo".
 SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
 {
     //SatoriObject* tmp = from;
@@ -2947,7 +2951,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from)
 
     _ASSERTE(from->Start() < End());
     _ASSERTE(HasMarksSet());
-    size_t* bitmap = BitmapExclusive();
+    size_t* bitmap = m_bitmap;
     size_t bitmapIndex;
     int markBitOffset = from->GetMarkBitAndWord(&bitmapIndex);
 
@@ -2983,7 +2987,7 @@ SatoriObject* SatoriRegion::SkipUnmarkedThreadLocal(SatoriObject* from)
         return (SatoriObject*)End();
     }
 
-    size_t* bitmap = BitmapExclusive();
+    size_t* bitmap = m_bitmap;
     size_t bitmapIndex;
     int markBitOffset = from->GetMarkBitAndWord(&bitmapIndex);
 
@@ -3032,7 +3036,7 @@ size_t SatoriRegion::FindUnmovableThreadLocal(size_t from, size_t to, bool inclu
     size_t bitmapIndex = (from >> 9) & (SatoriRegion::BITMAP_LENGTH - 1);
     // ignore the bits before "from"
     size_t mask = ~(size_t)0 << ((from >> 3) & 63);
-    size_t* bitmap = BitmapExclusive();
+    size_t* bitmap = m_bitmap;
     size_t* localBitmap = m_localBitmap;
 
     for (; bitmapIndex < limit; bitmapIndex++, mask = ~(size_t)0)
@@ -3108,7 +3112,7 @@ bool SatoriRegion::StartsObjectAtEndOfRunThreadLocal(size_t lastBit, size_t* nex
         return false;
     }
 
-    size_t* bitmap = BitmapExclusive();
+    size_t* bitmap = m_bitmap;
     size_t* localBitmap = m_localBitmap;
 
     // the marks after lastBit and the local bits at or after lastBit
@@ -3155,7 +3159,7 @@ size_t SatoriRegion::SkipEscapedThreadLocal(size_t from, size_t* nextMarked)
     _ASSERTE(from < End());
     _ASSERTE(IsEscaped((SatoriObject*)from));
 
-    size_t* bitmap = BitmapExclusive();
+    size_t* bitmap = m_bitmap;
     size_t firstBit = (from >> 3) & (SatoriRegion::BITMAP_LENGTH * 64 - 1);
     size_t index = firstBit >> 6;
     // find the first clear bit
@@ -3244,7 +3248,7 @@ size_t SatoriRegion::SkipDenseThreadLocal(size_t from, int32_t* objCount, size_t
     _ASSERTE(from < End());
     _ASSERTE(IsMarked((SatoriObject*)from));
 
-    size_t* bitmap = BitmapExclusive();
+    size_t* bitmap = m_bitmap;
     size_t* localBitmap = m_localBitmap;
     size_t limit = ParseableBitmapLimit();
     size_t pos = from;
@@ -3359,7 +3363,7 @@ void SatoriRegion::ClearMarksOfDenseThreadLocal(size_t from, size_t to, size_t* 
         if (escaped > pos)
         {
             // bit index in the mark bitmap is the index of a word in the region
-            ClearBitRange(BitmapExclusive(), (pos - Start()) >> 3, ((escaped - Start()) >> 3) - 1);
+            ClearBitRange(m_bitmap, (pos - Start()) >> 3, ((escaped - Start()) >> 3) - 1);
         }
 
         if (escaped >= to)
@@ -3378,12 +3382,12 @@ void SatoriRegion::ClearMarksOfDenseThreadLocal(size_t from, size_t to, size_t* 
 }
 
 // clears the mark bit
-// NB: this is for the sweep, which has the region to itself. (see BitmapExclusive)
+// NB: this is for the sweep, which has the region to itself. (see m_bitmap)
 SatoriObject* SatoriRegion::SkipUnmarkedAndClear(SatoriObject* from)
 {
     _ASSERTE(from->Start() < End());
     _ASSERTE(HasMarksSet());
-    size_t* bitmap = BitmapExclusive();
+    size_t* bitmap = m_bitmap;
     size_t bitmapIndex;
     int markBitOffset = from->GetMarkBitAndWord(&bitmapIndex);
 
@@ -3412,6 +3416,7 @@ SatoriObject* SatoriRegion::SkipUnmarkedAndClear(SatoriObject* from)
     return ObjectForMarkBit(bitmapIndex, markBitOffset);
 }
 
+// NB: this is used while the region is being marked, thus the bitmap is read with volatile loads. (see FindMarkedObjectFrom)
 SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
 {
     _ASSERTE(from->Start() < End());
@@ -3419,7 +3424,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
     int markBitOffset = from->GetMarkBitAndWord(&bitmapIndex);
 
     DWORD offset;
-    if (BitScanForward64(&offset, m_bitmap[bitmapIndex] >> markBitOffset))
+    if (BitScanForward64(&offset, VolatileLoadWithoutBarrier(&m_bitmap[bitmapIndex]) >> markBitOffset))
     {
         // got mark bit
         markBitOffset += offset;
@@ -3432,7 +3437,7 @@ SatoriObject* SatoriRegion::SkipUnmarked(SatoriObject* from, size_t upTo)
         do
         {
             bitmapIndex++;
-            if (BitScanForward64(&offset, m_bitmap[bitmapIndex]))
+            if (BitScanForward64(&offset, VolatileLoadWithoutBarrier(&m_bitmap[bitmapIndex])))
             {
                 // got mark bit
                 markBitOffset = offset;
@@ -3898,7 +3903,7 @@ void SatoriRegion::Verify(bool allowMarked)
         else
         {
             // escaped objects are marked while the region is escape-tracking, see SetEscaped
-            _ASSERTE(allowMarked || !IsMarked(o) || IsEscaped(o));
+            _ASSERTE(allowMarked || !IsMarkedAtomic(o) || IsEscaped(o));
         }
 
         prevPrevObj = prevObj;

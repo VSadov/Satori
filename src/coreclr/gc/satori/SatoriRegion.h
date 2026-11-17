@@ -324,7 +324,20 @@ private:
         // we will overlap the map and the header for simplicity of map operations.
         // it is ok because the first BITMAP_START elements of the map cover the header/map itself and thus will not be used.
         // +1 to include End(), it will always be 0, but it is convenient to make it legal map index.
-        volatile size_t m_bitmap[BITMAP_LENGTH + 1];
+        //
+        // The map is not volatile - nearly always one thread has the map of a region to itself:
+        //  - in a region that is escape tracked, the owning thread: the write barrier, escaping and thread-local GC.
+        //    Concurrent marking does not mark in such region (see MaybeEscapeTrackingAcquire) and a blocking GC has
+        //    the owner suspended. The map changes hands through the owner tag and the stale marks flag - the map is
+        //    cleared before the tag is cleared (see StopEscapeTracking), or, when the barrier stops tracking, the flag
+        //    is set before the tag is cleared and reset after the map is cleared (see ClearStaleEscapeMarks).
+        //  - after marking is done, the thread that relocates, updates or sweeps the region. It took the region from a queue
+        //    and nothing is marked until all regions are swept.
+        // While the global GC marks, the map of a region that is not escape tracked is shared - many threads set marks
+        // at once (see SetMarkedAtomic) and look at the marks that others set. The code that can run at such time reads
+        // the map with volatile loads: IsMarkedAtomic, FindMarkedObjectFrom and SkipUnmarked that takes "upTo".
+        // NB: the escape path stores to the map as volatile for another reason, see SetEscaped.
+        size_t m_bitmap[BITMAP_LENGTH + 1];
 
         // Header.(can be up to 72 size_t)
         struct
@@ -497,21 +510,16 @@ private:
         Escaped,
     };
 
+    // These use the bitmap as ordinary memory.
+    // Only for the code that has the bitmap of the region to itself. (see m_bitmap)
     bool IsMarked(SatoriObject* o);
     void SetMarked(SatoriObject* o);
-    void SetMarkedAtomic(SatoriObject* o);
     void ClearMarked(SatoriObject* o);
     bool CheckAndClearMarked(SatoriObject* o);
-
-    // The mark bitmap as an ordinary array, for the loops that go over the bitmap while one thread has it to itself,
-    // so that the compiler can keep, combine and pair the loads:
-    //  - thread-local GC. The current thread escape tracks the region and no other thread uses its bitmap meanwhile,
-    //    concurrent marking does not mark in such region. (see MaybeEscapeTrackingAcquire)
-    //  - after marking is done, the thread that relocates, updates or sweeps the region. It took the region from a queue
-    //    and nothing is marked until all regions are swept.
-    // Everything else, including the accesses to single bits, uses the bitmap as volatile.
-    // NB: not for the escape path - it runs in the write barrier and must not be vectorized.
-    size_t* BitmapExclusive();
+    // These are for use while the global GC marks, when other threads may be setting marks in the region:
+    // the mark is read with a volatile load and set with an interlocked operation. (see m_bitmap)
+    bool IsMarkedAtomic(SatoriObject* o);
+    void SetMarkedAtomic(SatoriObject* o);
 
     bool IsPinnedLocal(SatoriObject* o);
     void SetPinnedLocal(SatoriObject* o);
