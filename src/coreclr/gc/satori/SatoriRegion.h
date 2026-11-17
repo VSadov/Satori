@@ -476,7 +476,7 @@ private:
     void ThreadLocalPendFinalizables();
     size_t FindUnmovableThreadLocal(size_t from, size_t to, bool includePinned);
     size_t SkipDenseThreadLocal(size_t from, int32_t* objCount, size_t* searchFrom);
-    void ClearMarksOfDenseThreadLocal(size_t from, size_t to);
+    void ClearMarksOfDenseThreadLocal(size_t from, size_t to, size_t* searchFrom);
     size_t SkipEscapedThreadLocal(size_t from, size_t* nextMarked);
     size_t MarkedSizeThreadLocal(SatoriObject* o, size_t* searchFrom);
     bool StartsObjectAtEndOfRunThreadLocal(size_t lastBit, size_t* nextMark);

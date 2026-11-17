@@ -106,6 +106,9 @@ struct SatoriLocalScanContext : ScanContext
 
 // The runs of survivors that planning has found in the middle of the region, which stay where they are:
 // [start, end) are marked objects that follow each other without free space, none of them moves.
+// "next" is where to look for the next marked object after the run - there are no marks between the end and there.
+// When the run ends with escaped objects, it is the next marked object, found when skipping them, or End().
+// Otherwise it is the end. (see SkipDenseThreadLocal)
 // Compaction can skip such a run at once instead of looking at the objects. The list is ascending.
 // When it is full, planning stops recording. Compaction then walks the runs that are not in the list
 // like any other objects that do not move, which is slower, but gives the same result.
@@ -116,23 +119,26 @@ struct SatoriLocalStayRuns
     int count;
     size_t starts[CAPACITY];
     size_t ends[CAPACITY];
+    size_t nexts[CAPACITY];
 
-    void Add(size_t start, size_t end)
+    void Add(size_t start, size_t end, size_t next)
     {
         _ASSERTE(start < end);
-        _ASSERTE(count == 0 || ends[count - 1] <= start);
+        _ASSERTE(end <= next);
+        _ASSERTE(count == 0 || nexts[count - 1] <= start);
 
         if (count < CAPACITY)
         {
             starts[count] = start;
             ends[count] = end;
+            nexts[count] = next;
             count++;
         }
     }
 
-    // The end of the run that starts at "start", or 0 if there is no such run.
+    // The end of the run that starts at "start", or 0 if there is no such run. "next" gets the next of the run.
     // The lookups must go in the order of the addresses, "cursor" is where the previous one stopped.
-    size_t EndOfRunAt(int* cursor, size_t start)
+    size_t EndOfRunAt(int* cursor, size_t start, size_t* next)
     {
         int i = *cursor;
         while (i < count && starts[i] < start)
@@ -143,6 +149,7 @@ struct SatoriLocalStayRuns
         if (i < count && starts[i] == start)
         {
             *cursor = i + 1;
+            *next = nexts[i];
             return ends[i];
         }
 
@@ -2162,7 +2169,7 @@ size_t SatoriRegion::ThreadLocalPlan(SatoriLocalStayRuns* stayRuns)
                 }
 #endif
 
-                stayRuns->Add(runStart, plannedEnd);
+                stayRuns->Add(runStart, plannedEnd, searchFrom);
 
                 // The run can go through unmovable objects, thus it can end after dstEnd.
                 // Then the next destination is searched from the end of the run.
@@ -2490,10 +2497,14 @@ void SatoriRegion::ThreadLocalCompact(size_t denseEnd, SatoriLocalStayRuns* stay
     // (see planning) thus they only need to be unmarked, and their indices are still good.
     if (denseEnd > lastSurvivorEnd)
     {
-        ClearMarksOfDenseThreadLocal(lastSurvivorEnd, denseEnd);
+        // when they end with escaped objects, that finds the next marked object as well. The walks below continue
+        // from there and do not go through the free space after the escaped objects again.
+        size_t searchFrom;
+        ClearMarksOfDenseThreadLocal(lastSurvivorEnd, denseEnd, &searchFrom);
         lastSurvivorEnd = denseEnd;
         firstIndexToClear = LocationToIndex(denseEnd) + 1;
-        s2 = d1 = d2 = (SatoriObject*)denseEnd;
+        d1 = (SatoriObject*)denseEnd;
+        s2 = d2 = (SatoriObject*)searchFrom;
     }
 
     // compacting may invalidate indices, since objects move around.
@@ -2536,11 +2547,16 @@ void SatoriRegion::ThreadLocalCompact(size_t denseEnd, SatoriLocalStayRuns* stay
                 break;
             }
 
-            // a run of objects that stay is skipped at once
-            size_t runEnd = stayRuns->EndOfRunAt(&s1Run, s1->Start());
+            // a run of objects that stay is skipped at once, and so is the free space after it, if planning knows
+            // where the next marked object is.
+            size_t runNext;
+            size_t runEnd = stayRuns->EndOfRunAt(&s1Run, s1->Start(), &runNext);
             if (runEnd)
             {
-                s1 = (SatoriObject*)runEnd;
+                // nothing at or after s1 has been moved or unmarked yet, the marks after the run are as planning saw them
+                _ASSERTE(runNext == runEnd ||
+                    runNext == (runEnd < End() ? SkipUnmarkedThreadLocal((SatoriObject*)runEnd)->Start() : End()));
+                s1 = (SatoriObject*)runNext;
                 continue;
             }
 
@@ -2552,7 +2568,8 @@ void SatoriRegion::ThreadLocalCompact(size_t denseEnd, SatoriLocalStayRuns* stay
         while (d1->Start() < relocTarget)
         {
             _ASSERTE(d1->Start() <= d2->Start());
-            // NB: d2 is already at the end when nothing is marked after the escaped objects that were just skipped.
+            // NB: d2 is already at the end when nothing is marked after the escaped objects that were just skipped,
+            //     on their own or at the end of a run.
             if (d2->Start() < End())
             {
                 d2 = SkipUnmarkedThreadLocal(d2);
@@ -2609,13 +2626,19 @@ void SatoriRegion::ThreadLocalCompact(size_t denseEnd, SatoriLocalStayRuns* stay
             }
             else
             {
-                size_t runEnd = stayRuns->EndOfRunAt(&d1Run, d1->Start());
+                size_t runNext;
+                size_t runEnd = stayRuns->EndOfRunAt(&d1Run, d1->Start(), &runNext);
                 if (runEnd)
                 {
                     // a run of objects that stay. Unmark them at once, the escaped objects in the run keep their marks.
                     // NB: not setting indices for them. They are cleared, FindObject will fill in what it needs.
-                    ClearMarksOfDenseThreadLocal(d1->Start(), runEnd);
+                    // NB: when the run ends with escaped objects, that finds the next marked object as well.
+                    size_t searchFrom;
+                    ClearMarksOfDenseThreadLocal(d1->Start(), runEnd, &searchFrom);
+                    // the s1 walk has used what planning found, it must be the same
+                    _ASSERTE(searchFrom == runNext);
                     next = (SatoriObject*)runEnd;
+                    nextSearch = (SatoriObject*)searchFrom;
                 }
                 else
                 {
@@ -2626,9 +2649,8 @@ void SatoriRegion::ThreadLocalCompact(size_t denseEnd, SatoriLocalStayRuns* stay
                     next = d1->Next();
                     // opportunistically mark the index if d1 is indexable
                     SetIndicesForObject(d1, next->Start());
+                    nextSearch = next;
                 }
-
-                nextSearch = next;
             }
 
             lastSurvivorEnd = next->Start();
@@ -3310,8 +3332,13 @@ static inline void ClearBitRange(size_t* bitmap, size_t firstBit, size_t lastBit
 
 // Clears the marks of the objects in the run of objects that follow each other, [from, to).
 // The escaped objects keep their marks and the bits inside, see SetEscaped.
-void SatoriRegion::ClearMarksOfDenseThreadLocal(size_t from, size_t to)
+// "searchFrom" gets where to look for the next marked object after the run - there are no marks between "to" and
+// there. When the run ends with escaped objects, it is the next marked object, found when skipping them, or End().
+// Otherwise it is "to".
+void SatoriRegion::ClearMarksOfDenseThreadLocal(size_t from, size_t to, size_t* searchFrom)
 {
+    _ASSERTE(from < to);
+
     size_t pos = from;
     while (pos < to)
     {
@@ -3325,13 +3352,17 @@ void SatoriRegion::ClearMarksOfDenseThreadLocal(size_t from, size_t to)
 
         if (escaped >= to)
         {
-            break;
+            // the run ends with an object that is not escaped, nothing is known about what follows it
+            *searchFrom = to;
+            return;
         }
 
-        // (the next marked object is not needed - in a run it is right at the end of the escaped objects, if there is one)
-        size_t nextMarked;
-        pos = SkipEscapedThreadLocal(escaped, &nextMarked);
+        // in the run, the next marked object is right at the end of the escaped objects.
+        // after the last escaped objects it is the first marked object after the run.
+        pos = SkipEscapedThreadLocal(escaped, searchFrom);
     }
+
+    _ASSERTE(pos == to);
 }
 
 // clears the mark bit
