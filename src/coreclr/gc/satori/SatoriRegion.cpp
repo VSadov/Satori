@@ -2343,6 +2343,24 @@ static bool VerifyLocalRootCache(SatoriRegion* region, SatoriLocalRootCache* roo
 }
 #endif // _DEBUG
 
+// The index of the first word in [index, limit) that is not 0, or "limit" if there is none. "word" reads a word.
+// Checks 4 words at a time, and does not read at or after "limit" - the local bitmap is not cleared there.
+template <typename F>
+static inline size_t SkipZeroWords(size_t index, size_t limit, F word)
+{
+    while (index + 4 <= limit && (word(index) | word(index + 1) | word(index + 2) | word(index + 3)) == 0)
+    {
+        index += 4;
+    }
+
+    while (index < limit && word(index) == 0)
+    {
+        index++;
+    }
+
+    return index;
+}
+
 void SatoriRegion::ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache)
 {
     // update stack roots
@@ -2443,7 +2461,7 @@ void SatoriRegion::ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache)
         {
             // skip empty mark words
             markBitOffset = 0;
-            while (++bitmapIndex < bitmapLimit && bitmap[bitmapIndex] == 0) {}
+            bitmapIndex = SkipZeroWords(bitmapIndex + 1, bitmapLimit, [bitmap](size_t i) { return bitmap[i]; });
         }
     }
 
@@ -2977,27 +2995,20 @@ SatoriObject* SatoriRegion::SkipUnmarkedThreadLocal(SatoriObject* from)
     else
     {
         size_t limit = ParseableBitmapLimit();
-        markBitOffset = 0;
-        for (;;)
+        bitmapIndex = SkipZeroWords(bitmapIndex + 1, limit, [bitmap](size_t i) { return bitmap[i]; });
+        if (bitmapIndex >= limit)
         {
-            bitmapIndex++;
-            if (bitmapIndex >= limit)
-            {
 #ifdef _DEBUG
-                for (size_t i = limit; i < SatoriRegion::BITMAP_LENGTH; i++)
-                {
-                    _ASSERTE(bitmap[i] == 0);
-                }
-#endif
-                return (SatoriObject*)End();
-            }
-
-            if (BitScanForward64(&offset, bitmap[bitmapIndex]))
+            for (size_t i = limit; i < SatoriRegion::BITMAP_LENGTH; i++)
             {
-                markBitOffset = offset;
-                break;
+                _ASSERTE(bitmap[i] == 0);
             }
+#endif
+            return (SatoriObject*)End();
         }
+
+        BitScanForward64(&offset, bitmap[bitmapIndex]);
+        markBitOffset = offset;
     }
 
     return ObjectForMarkBit(bitmapIndex, markBitOffset);
@@ -3103,9 +3114,10 @@ bool SatoriRegion::StartsObjectAtEndOfRunThreadLocal(size_t lastBit, size_t* nex
     // the marks after lastBit and the local bits at or after lastBit
     size_t marks = bitmap[index] & (~(size_t)1 << (lastBit & 63));
     size_t locals = localBitmap[index] & (~(size_t)0 << (lastBit & 63));
-    while ((marks | locals) == 0)
+    if ((marks | locals) == 0)
     {
-        if (++index >= limit)
+        index = SkipZeroWords(index + 1, limit, [bitmap, localBitmap](size_t i) { return bitmap[i] | localBitmap[i]; });
+        if (index >= limit)
         {
             *nextMark = (size_t)-1;
             return false;
