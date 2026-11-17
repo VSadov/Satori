@@ -936,7 +936,7 @@ int WriteBarrierManager::SwitchToNonWriteWatchBarrier(bool isRuntimeSuspended)
             // If the GC says that the state is stable (with early prep, or when no GC is going to mark concurrently
             // until then), it changes only with EE suspended, when the GC calls us again, so the barrier does not need
             // to check it. If the next GC is a full GC, that barrier does not need cards either.
-            // The GC also calls here when it initializes, if the state is stable until the first GC.
+            // The GC also calls here when it initializes, to publish the state until the first GC.
             _ASSERTE(isRuntimeSuspended);
             if (g_satori_barrier_state_is_stable)
             {
