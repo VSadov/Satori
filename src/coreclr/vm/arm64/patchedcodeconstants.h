@@ -14,7 +14,10 @@
 
 #define JIT_WriteBarrier_Size					   0x3a0
 
-#ifdef TARGET_WINDOWS
+#if defined(FEATURE_SATORI_GC)
+// JIT_WriteBarrier is 64-byte aligned in the Satori layout, so the offset does not depend on the code ahead of it.
+#define JIT_WriteBarrier_Table_Offset              (0x20 + JIT_WriteBarrier_Size)
+#elif defined(TARGET_WINDOWS)
 #define JIT_WriteBarrier_Table_Offset              (0x3c + JIT_WriteBarrier_Size)
 #else
 #define JIT_WriteBarrier_Table_Offset              (0x38 + JIT_WriteBarrier_Size)

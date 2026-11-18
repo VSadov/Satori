@@ -51,6 +51,24 @@ C_FUNC(\name\()_End):
 #endif
 .endm
 
+// WRITE_BARRIER_PATCH_LABEL
+//
+// Marks a patchable constant within a write barrier function. On Apple platforms it is an .alt_entry, so that it
+// does not split the patched region (see above).
+//
+.macro WRITE_BARRIER_PATCH_LABEL name
+#if defined(__APPLE__)
+    // .cfi_startproc/.cfi_endproc is workaround for https://github.com/dotnet/runtime/issues/119005
+    .cfi_endproc
+    .alt_entry C_FUNC(\name)
+    .private_extern C_FUNC(\name)
+C_FUNC(\name):
+    .cfi_startproc
+#else
+    PATCH_LABEL \name
+#endif
+.endm
+
 #ifndef FEATURE_SATORI_GC
 
 // Mark start of the code region that we patch at runtime
@@ -309,7 +327,22 @@ LEAF_END JIT_PatchedCodeLast, _TEXT
 
 #else  //FEATURE_SATORI_GC      ##############################################################################
 
+// The Satori barriers run from the copy of the patched code region (see GetWriteBarrierCodeLocation), so they
+// cannot refer to globals RIP-relatively. Instead they embed the values that do not change after the GC
+// initializes the write barrier - the page byte map (g_card_bundle_table), the page map (g_card_table) and the
+// address of g_write_watch_table, which holds the barrier state - as constants that WriteBarrierManager patches.
+// JIT_WriteBarrier is a buffer for one of the barriers in jithelpers_fastwritebarriers.S.
+//
+// Regarding patchable constants:
+// - 64-bit constants have to be loaded into a register
+// - The constants have to be aligned to 8 bytes so that they can be patched easily
+// - The alignment is by construction: there is only fixed-size code between an alignment directive and a constant
+//
+// The region and the barriers in it start on cache line boundaries, so that the barriers are cache line aligned
+// also where the region is copied, which keeps their offsets from the region start.
+
 // Mark start of the code region that we patch at runtime
+        .balign 64
 #if defined(__APPLE__)
         .global C_FUNC(JIT_PatchedCodeStart)
 C_FUNC(JIT_PatchedCodeStart):
@@ -323,15 +356,17 @@ LEAF_END JIT_PatchedCodeStart, _TEXT
 
 
 // void JIT_CheckedWriteBarrier(Object** dst, Object* src)
+        .balign 64
 WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
 
      // See if dst is in GCHeap
-        PREPARE_EXTERNAL_VAR g_card_bundle_table, rax   // fetch the page byte map
-        mov     rax, [rax]
+        NOP_6_BYTE // padding for alignment of constant
+WRITE_BARRIER_PATCH_LABEL JIT_CheckedWriteBarrier_Patch_Label_CardBundleTable
+        movabs  rax, 0xF0F0F0F0F0F0F0F0                 // the page byte map
         mov     r8, rdi
         shr     r8, 30                                  // dst page index
         cmp     byte ptr [rax + r8], 0
-        jne     C_FUNC(CheckedEntry)
+        jne     LOCAL_LABEL(CheckedEntryLocal)
 
     LOCAL_LABEL(NotInHeap):
         // See comment above about possible AV
@@ -340,175 +375,28 @@ WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
 WRITE_BARRIER_END JIT_CheckedWriteBarrier
 
 
+// void JIT_WriteBarrier(Object** dst, Object* src)
+//
+// Space for one of the Satori barriers (see JIT_WriteBarrier_SATORI_DYNAMIC in jithelpers_fastwritebarriers.S), which
+// WriteBarrierManager copies here when the GC initializes the write barrier and when the GC switches barriers.
+// The barriers have the same code ahead of CheckedEntry, so JIT_CheckedWriteBarrier can jump there in any of them.
+// It jumps to a local label, which the assembler resolves, because the linker could route a jump to the global
+// symbol outside the region (e.g. through the PLT), and then the jump would be wrong in the copy.
 //
 //   rdi - dest address
 //   rsi - object
 //
-.balign 16
+        .balign 64
 WRITE_BARRIER_ENTRY JIT_WriteBarrier
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
-    // check if src is in heap
-        PREPARE_EXTERNAL_VAR g_card_bundle_table, rax   // fetch the page byte map
-        mov     rax, [rax]
+        NOP_6_BYTE
+        movabs  rax, 0xF0F0F0F0F0F0F0F0
+#endif
+    LOCAL_LABEL(CheckedEntryLocal):
     ALTERNATE_ENTRY CheckedEntry
-        mov     r8, rsi
-        shr     r8, 30                                  //  src page index
-        cmp     byte ptr [rax + r8], 0
-        je      LOCAL_LABEL(JustAssign)                 // src not in heap
-#else
-    ALTERNATE_ENTRY CheckedEntry
-#endif
 
-    // check for escaping assignment
-    // 1) check if we own the source region
-        mov     rdx, rsi
-        and     rdx, 0xFFFFFFFFFFE00000  // source region
-#ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
-        jz      LOCAL_LABEL(JustAssign)                 // assigning null
-#endif
-#ifdef TARGET_APPLE
-        mov     rax,  gs:[0]            // thread tag
-#else
-        mov     rax,  fs:[0]            // thread tag
-#endif
-        cmp     qword ptr [rdx], rax     
-        jne     LOCAL_LABEL(AssignAndMarkCards)         // not local to this thread
-
-    // 2) check if the src and dst are from the same region
-        mov     rax, rdi
-        and     rax, 0xFFFFFFFFFFE00000 // target aligned to region
-        cmp     rax, rdx
-        jnz     LOCAL_LABEL(RecordEscape)               // cross region assignment. definitely escaping
-
-    // 3) check if the target is exposed
-        mov     rax, rdi
-        and     rax, 0x1FFFFF
-        shr     rax, 3
-        bt      qword ptr [rdx], rax
-        jb      LOCAL_LABEL(RecordEscape)               // target is exposed. record an escape.
-
-    LOCAL_LABEL(JustAssign):
-        mov     [rdi], rsi              // src is external/null, or the assignment is completely threadlocal
-        ret
-
-    LOCAL_LABEL(AssignAndMarkCards):
-        mov     [rdi], rsi
-
-        // TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
-        //         needs to suspend EE, not sure if skipping mode check would worth that much.
-        PREPARE_EXTERNAL_VAR g_write_watch_table, rcx
-        mov     r11, [rcx]
-
-        // check the barrier state. this must be done after the assignment (in program order)
-        // if state == 2 we do not set or dirty cards.
-        cmp     r11, 2
-        jne     LOCAL_LABEL(DoCards)
-    LOCAL_LABEL(Exit):
-        ret
-
-    LOCAL_LABEL(DoCards):
-    // if src and dst are in the same region, cards are not needed, unless concurrent
-        xor     rsi, rdi
-        shr     rsi, 21
-        jz      LOCAL_LABEL(CheckConcurrent)            // same region, just check if barrier is not concurrent
-
-    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
-        cmp     dword ptr [rdx + 16], 2
-        jl     LOCAL_LABEL(MarkCards)
-
-    LOCAL_LABEL(CheckConcurrent):
-    // if not concurrent, exit
-        cmp     r11, 0
-        je      LOCAL_LABEL(Exit)
-
-    LOCAL_LABEL(MarkCards):
-    // fetch card location for rdi
-        PREPARE_EXTERNAL_VAR g_card_table, r9 
-        mov     r9,  [r9]  // fetch the page map
-        mov     rdx, rdi
-        shr     rdi, 30
-        mov     rax, qword ptr [r9 + rdi * 8] // page
-        sub     rdx, rax   // offset in page
-        mov     r8,  rdx
-        shr     rdx, 9     // card offset
-        shr     r8,  20    // group index
-        lea     r8,  [rax + r8 * 2 + 0x80] // group offset
-
-     // check if concurrent marking is in progress
-        cmp     r11, 0
-        jne     LOCAL_LABEL(DirtyCard)
-
-     // SETTING CARD
-     LOCAL_LABEL(SetCard):
-        cmp     byte ptr [rax + rdx], 0
-        jne     LOCAL_LABEL(Exit)
-        mov     byte ptr [rax + rdx], 1
-     LOCAL_LABEL(SetGroup):
-        cmp     byte ptr [r8], 0
-        jne     LOCAL_LABEL(CardSet)
-        mov     byte ptr [r8], 1
-     LOCAL_LABEL(SetPage):
-        cmp     byte ptr [rax], 0
-        jne     LOCAL_LABEL(CardSet)
-        // DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
-        mov     byte ptr [rax], 4
-
-     LOCAL_LABEL(CardSet):
-     // check if concurrent marking is still not in progress
-        cmp     qword ptr [rcx], 0
-        jne     LOCAL_LABEL(DirtyCard)
-        ret
-
-     // DIRTYING CARD
-     LOCAL_LABEL(DirtyCard):
-        mov     byte ptr [rax + rdx], 4
-     LOCAL_LABEL(DirtyGroup):
-        cmp     byte ptr [r8], 4
-        je      LOCAL_LABEL(Exit)
-        mov     byte ptr [r8], 4
-     LOCAL_LABEL(DirtyPage):
-        cmp     byte ptr [rax], 4
-        je      LOCAL_LABEL(Exit)
-        mov     byte ptr [rax], 4
-        ret
-
-    // this is expected to be rare.
-    LOCAL_LABEL(RecordEscape):
-
-    // 4) check if the source is escaped
-        mov     rax, rsi
-        add     rax, 8                        // escape bit is MT + 1
-        and     rax, 0x1FFFFF
-        shr     rax, 3
-        bt      qword ptr [rdx], rax
-        jb      LOCAL_LABEL(AssignAndMarkCards)         // source is already escaped.
-
-        // Align rsp
-        mov  r9, rsp
-        and  rsp, -16
-
-        // save rsp, rdi, rsi and rdx
-        push r9
-        push rdi
-        push rsi
-        push rdx
-
-        // also save xmm0, in case it is used for stack clearing.
-        // Hopefully EscapeFn cannot corrupt other xmm regs, since there is no float math or vectorizable code in there.
-        sub     rsp, 16
-        movdqa  [rsp], xmm0
-
-        // void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
-        call    qword ptr [rdx + 8]
-
-        movdqa  xmm0, [rsp]
-        add     rsp, 16
-
-        pop     rdx
-        pop     rsi
-        pop     rdi
-        pop     rsp
-        jmp     LOCAL_LABEL(AssignAndMarkCards)
+        // make sure this is bigger than any of the barriers
+        .fill 0x1F0, 1, 0xCC
 WRITE_BARRIER_END JIT_WriteBarrier
 
 

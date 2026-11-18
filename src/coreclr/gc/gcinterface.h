@@ -118,6 +118,12 @@ struct WriteBarrierParameters
 
     // whether to use the more precise but slower write barrier
     bool region_use_bitwise_write_barrier;
+
+    // Satori only. The barrier state that the GC publishes in write_watch_table will change only with the runtime suspended,
+    // when the GC calls StompWriteBarrier again. Thus the barrier for the state need not check it.
+    // That is the case when concurrent GC is disabled.
+    // Used for WriteBarrierOp::StopConcurrentMarkingSatori.
+    bool satori_barrier_state_is_stable;
 };
 
 struct FinalizerWorkItem

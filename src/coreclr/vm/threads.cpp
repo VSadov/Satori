@@ -962,9 +962,9 @@ extern "C" void STDCALL JIT_PatchedCodeLast();
 #ifndef TARGET_X86
 extern "C" void STDCALL JIT_WriteBarrier_End();
 #endif // !TARGET_X86
-#if defined(TARGET_ARM64) || defined(TARGET_ARM) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+#if defined(TARGET_ARM64) || defined(TARGET_ARM) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64) || (defined(TARGET_AMD64) && defined(FEATURE_SATORI_GC))
 extern "C" void STDCALL JIT_CheckedWriteBarrier_End();
-#endif // TARGET_ARM64 || TARGET_ARM || TARGET_LOONGARCH64 || TARGET_RISCV64
+#endif // TARGET_ARM64 || TARGET_ARM || TARGET_LOONGARCH64 || TARGET_RISCV64 || (TARGET_AMD64 && FEATURE_SATORI_GC)
 
 static void* s_barrierCopy = NULL;
 
@@ -1129,18 +1129,20 @@ void InitThreadManager()
         JIT_WriteBarrier_Table_Loc = GetWriteBarrierCodeLocation((void*)&JIT_WriteBarrier_Table);
 #endif // TARGET_ARM64 || TARGET_LOONGARCH64 || TARGET_RISCV64
 
-#if defined(TARGET_ARM64) || defined(TARGET_ARM) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+#if defined(TARGET_ARM64) || defined(TARGET_ARM) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64) || (defined(TARGET_AMD64) && defined(FEATURE_SATORI_GC))
+        // The Satori JIT_CheckedWriteBarrier is a part of the patched set of helpers on AMD64 as well,
+        // since it embeds patched values and jumps into JIT_WriteBarrier.
         DWORD dwCheckedWriteBarrierSize = GetCodeSize((void*)JIT_CheckedWriteBarrier, (void*)JIT_CheckedWriteBarrier_End);
         SetJitHelperFunction(CORINFO_HELP_CHECKED_ASSIGN_REF, GetWriteBarrierCodeLocation((void*)JIT_CheckedWriteBarrier));
         SetAuxiliarySymbol(GetWriteBarrierCodeLocation((void*)JIT_CheckedWriteBarrier), "JIT_CheckedWriteBarrier");
         ETW::MethodLog::StubInitialized((ULONGLONG)GetWriteBarrierCodeLocation((void*)JIT_CheckedWriteBarrier), dwCheckedWriteBarrierSize, W("@CheckedWriteBarrier"));
-#endif // TARGET_ARM64 || TARGET_ARM || TARGET_LOONGARCH64 || TARGET_RISCV64
+#endif // TARGET_ARM64 || TARGET_ARM || TARGET_LOONGARCH64 || TARGET_RISCV64 || (TARGET_AMD64 && FEATURE_SATORI_GC)
 
-#if defined(TARGET_AMD64)
+#if defined(TARGET_AMD64) && !defined(FEATURE_SATORI_GC)
         // On AMD64 the Checked variant of the helper jumps through an indirection
         // to the patched barrier, but is not part of the patched set of helpers.
         SetJitHelperFunction(CORINFO_HELP_CHECKED_ASSIGN_REF, (void*)JIT_CheckedWriteBarrier);
-#endif // TARGET_AMD64
+#endif // TARGET_AMD64 && !FEATURE_SATORI_GC
 
     }
     else

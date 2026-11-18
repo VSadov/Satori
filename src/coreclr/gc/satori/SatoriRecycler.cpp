@@ -55,6 +55,7 @@
 static const int MIN_GEN1_BUDGET = 2 * Satori::REGION_SIZE_GRANULARITY;
 
 // Publishes the barrier state to the barriers via the g_write_watch_table slot.
+// When EE is suspended, the EE may also switch to barrier code specialized for the state.
 void ToggleWriteBarrier(int barrierState, bool eeSuspended)
 {
     // only the states that have a published counterpart could be set
@@ -75,6 +76,9 @@ void ToggleWriteBarrier(int barrierState, bool eeSuspended)
 
     args.write_watch_table = (uint8_t*)(size_t)barrierState;
     args.is_runtime_suspended = eeSuspended;
+    // Without concurrent GC nothing toggles the state while EE runs, so the barrier for a nonconcurrent state
+    // may skip checking it.
+    args.satori_barrier_state_is_stable = !SatoriUtil::IsConcurrentEnabled();
     GCToEEInterface::StompWriteBarrier(&args);
 }
 
@@ -124,7 +128,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
 
     m_workList = SatoriShardedWorkList::AllocAlignedForProcessors(4);
     m_gcState = GC_STATE_NONE;
-    m_barrierState = BARRIER_STATE_NOT_CONCURRENT;
+    // The first GC is a full GC (see m_nextGcIsFullGc), thus cards are not needed until then.
+    m_barrierState = BARRIER_STATE_SKIPPING_CARDS;
 
     m_gcCount[0] = m_gcCount[1] = m_gcCount[2] = 0;
     m_compactingGcCount[0] = m_compactingGcCount[1] = m_compactingGcCount[2] = 0;
@@ -191,6 +196,10 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_lastTenuredGcInfo   = { 0 };
     m_CurrentGcInfo = nullptr;
     m_startMillis = GetNowMillis();
+
+    // Publish the initial barrier state, so that the EE switches to the barrier specialized for it.
+    // Nothing runs managed code yet, as if EE was suspended.
+    ToggleWriteBarrier(m_barrierState, /* eeSuspended */ true);
 }
 
 void SatoriRecycler::ShutDown()
@@ -1097,6 +1106,12 @@ void SatoriRecycler::BlockingMarkForConcurrent()
 
         size_t blockingStart = minipal_hires_ticks();
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
+
+        // The barrier became concurrent while EE was running. EE is suspended now anyway, so let it switch to
+        // barrier code that assumes concurrent marking rather than checks the barrier state.
+        // The blocking collection switches the code back, when it changes the barrier state.
+        _ASSERTE(IsBarrierConcurrent());
+        ToggleWriteBarrier(BARRIER_STATE_CONCURRENT, /* eeSuspended */ true);
 
         // the concurrent pass has already filtered what is in the alternate, make it usable again.
         // whatever is left in m_reusableRegions it did not reach - the loop below will filter that.
@@ -2009,7 +2024,7 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
 
     if (o->ContainingRegion()->Generation() <= markContext->m_condemnedGeneration)
     {
-        if (!o->IsMarked())
+        if (!o->IsMarkedAtomic())
         {
             o->SetMarkedAtomic();
             markContext->PushToMarkQueues(o);
@@ -2149,7 +2164,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
     // no need for fences here. a published obj cannot become gen2 concurrently. 
     if (containingRegion->Generation() <= markContext->m_condemnedGeneration)
     {
-        if (!o->IsMarked())
+        if (!o->IsMarkedAtomic())
         {
             o->SetMarkedAtomic();
             markContext->PushToMarkQueues(o);
@@ -2368,7 +2383,7 @@ void SatoriRecycler::MarkDemoted(SatoriRegion* curRegion, MarkContext* markConte
             {
                 SatoriObject* o = gen2Objects->Item(i);
                 // demotion put these in a gen1 region, so they may already be marked
-                if (!o->IsMarked())
+                if (!o->IsMarkedAtomic())
                 {
                     o->SetMarkedAtomic();
                     markContext->PushToMarkQueues(o);
@@ -2648,7 +2663,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
                 o = srcChunk->Pop();
                 srcChunk->PrefetchNext(MARK_PREFETCH_DISTANCE);
 
-                _ASSERTE(o->IsMarked());
+                _ASSERTE(o->IsMarkedAtomic());
                 if (o->IsUnmovable())
                 {
                     o->ContainingRegion()->SetHasPinnedObjects();
@@ -2893,7 +2908,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
                 SatoriObject* o = srcChunk->Pop();
                 srcChunk->PrefetchNext(MARK_PREFETCH_DISTANCE);
 
-                _ASSERTE(o->IsMarked());
+                _ASSERTE(o->IsMarkedAtomic());
                 if (o->IsUnmovable())
                 {
                     o->ContainingRegion()->SetHasPinnedObjects();
@@ -3120,7 +3135,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
 
                             if (cleaned)
                             {
-                                // do not allow card cleaning to delay until after checking IsMarked
+                                // do not allow card cleaning to delay until after checking IsMarkedAtomic
                                 MemoryBarrier();
                             }
 
@@ -3129,7 +3144,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                                 size_t size = o->Size();
 
                                 // everything is effectively marked in gen2 remembered set
-                                // if (o->IsMarked())
+                                // if (o->IsMarkedAtomic())
                                 {
                                     o->ForEachObjectRef(
                                     [&](SatoriObject** ref)
@@ -3357,7 +3372,7 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                             size_t end = page->LocationForCard(&cards[j]);
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
 
-                            // do not allow card cleaning to delay until after checking IsMarked or fetching children
+                            // do not allow card cleaning to delay until after checking IsMarkedAtomic or fetching children
                             MemoryBarrier();
 
                             // Only marked objects need visiting, those can be found via the mark bitmap.
@@ -3385,7 +3400,7 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
 
                                 size_t size = o->Size();
 
-                                // if (considerAllMarked || o->IsMarked())
+                                // if (considerAllMarked || o->IsMarkedAtomic())
                                 {
                                     o->ForEachObjectRef(
                                         [&](SatoriObject** ref)
@@ -3697,7 +3712,7 @@ void SatoriRecycler::CleanCards()
                             size_t end = page->LocationForCard(&cards[j]);
                             size_t objLimit = min(end, region->Start() + Satori::REGION_SIZE_GRANULARITY);
 
-                            // do not allow card cleaning to delay until after checking IsMarked
+                            // do not allow card cleaning to delay until after checking IsMarkedAtomic
                             if (!considerAllMarked)
                             {
                                 MemoryBarrier();
@@ -3728,7 +3743,7 @@ void SatoriRecycler::CleanCards()
 
                                 size_t size = o->Size();
 
-                                // if (considerAllMarked || o->IsMarked())
+                                // if (considerAllMarked || o->IsMarkedAtomic())
                                 {
                                     o->ForEachObjectRef(
                                         [&](SatoriObject** ref)
@@ -4731,6 +4746,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
             break;
         }
 
+        // marking is done and we have the region to ourselves
         _ASSERTE(o->IsMarked());
         _ASSERTE(!o->IsFree());
         _ASSERTE(!o->IsUnmovable());

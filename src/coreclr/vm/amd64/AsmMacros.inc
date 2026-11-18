@@ -154,6 +154,20 @@ _TEXT$HOT ends
 
         endm
 
+LEAF_END_MARKED_ALIGN64 macro Name
+        public Name&_End
+Name&_End label qword
+
+Name    endp
+
+        ; this nop is important to keep the label in
+        ; the right place in the face of BBT
+        nop
+
+_TEXT$HOT ends
+
+        endm
+
 LEAF_END_MARKED macro Name, section
         public Name&_End
 Name&_End label qword
@@ -278,6 +292,12 @@ NOP_2_BYTE macro
 NOP_3_BYTE macro
 
         nop dword ptr [rax]
+
+        endm
+
+NOP_6_BYTE macro
+
+        DB 066h, 00Fh, 01Fh, 044h, 000h, 000h
 
         endm
 

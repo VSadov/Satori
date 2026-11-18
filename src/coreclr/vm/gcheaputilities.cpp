@@ -39,6 +39,10 @@ GPTR_IMPL(GcDacVars, g_gcDacGlobals);
 uint8_t* g_write_watch_table = nullptr;
 bool g_sw_ww_enabled_for_gc_heap = false;
 
+#ifdef FEATURE_SATORI_GC
+bool g_satori_barrier_state_is_stable = false;
+#endif // FEATURE_SATORI_GC
+
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 
 GVAL_IMPL_INIT(ee_alloc_context, g_global_alloc_context, {});
