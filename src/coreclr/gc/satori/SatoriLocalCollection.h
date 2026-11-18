@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <minipal/utils.h>
 
 enum class SatoriLocalCollectionOutcome : uint32_t
 {
@@ -17,7 +18,7 @@ enum class SatoriLocalCollectionOutcome : uint32_t
 
 enum class SatoriLocalCollectionTrigger : uint32_t
 {
-    DyadicLimit = 0,
+    WindowLimit = 0,
     ExhaustedSpan = 1,
 };
 
@@ -28,56 +29,17 @@ enum class SatoriLocalCollectionRetry : uint32_t
     Failed = 2,
 };
 
-enum class SatoriLocalCollectionProgressStatus : uint32_t
+struct SatoriLocalCollectionData
 {
-    Available = 0,
-    CounterRollback = 1,
-    AccountingRebased = 2,
-    CounterOverflow = 3,
-};
-
-inline SatoriLocalCollectionProgressStatus SatoriProgressStatus(size_t current, size_t baseline,
-    SatoriLocalCollectionProgressStatus status)
-{
-    if (current > static_cast<uint64_t>(INT64_MAX) || baseline > static_cast<uint64_t>(INT64_MAX))
-    {
-        return SatoriLocalCollectionProgressStatus::CounterOverflow;
-    }
-
-    return status == SatoriLocalCollectionProgressStatus::Available && current < baseline ?
-        SatoriLocalCollectionProgressStatus::CounterRollback : status;
-}
-
-inline SatoriLocalCollectionProgressStatus SatoriProgressAfterClaim(size_t current, size_t claimed,
-    SatoriLocalCollectionProgressStatus status)
-{
-    // gc_alloc_context::alloc_bytes is signed, although the region's baselines use size_t.
-    return current > static_cast<uint64_t>(INT64_MAX) || claimed > static_cast<uint64_t>(INT64_MAX) - current ?
-        SatoriLocalCollectionProgressStatus::CounterOverflow : status;
-}
-
-struct SatoriLocalCollectionResult
-{
-    SatoriLocalCollectionOutcome outcome;
+    uint64_t allocationProgress;
+    uint64_t usableBefore;
+    uint64_t usableAfter;
+    uint64_t occupancyBefore;
+    uint64_t occupancyAfter;
+    uint64_t escapedBytesBefore;
+    uint64_t escapedBytesAfter;
+    double durationNs;
     uint32_t collectionIndex;
-    // Sampled before the marking baseline is updated, after unused claims are returned.
-    uint64_t allocationBytes = 0;
-    uint64_t allocationBytesBaseline = 0;
-    SatoriLocalCollectionProgressStatus progressStatus = SatoriLocalCollectionProgressStatus::Available;
-    // Both samples precede the allocation retry. Outcome qualifies completed-compaction recovery.
-    uint64_t usableBefore = 0;
-    uint64_t usableAfter = 0;
-
-    bool HasCollectionIndex() const
-    {
-        return outcome == SatoriLocalCollectionOutcome::SurvivalAbort ||
-            outcome == SatoriLocalCollectionOutcome::Completed;
-    }
-
-    bool Collected() const
-    {
-        return outcome == SatoriLocalCollectionOutcome::Completed;
-    }
 };
 
 // Limit-triggered rejections still retry allocation; exhausted-span rejections do not.
@@ -85,9 +47,13 @@ struct SatoriLocalCollectionResult
 template <typename TRegion>
 FORCEINLINE bool SatoriCollectAndRetry(TRegion* region, size_t allocBytes, size_t requestedBytes, SatoriLocalCollectionTrigger trigger)
 {
-    bool atTlgcLimit = trigger == SatoriLocalCollectionTrigger::DyadicLimit;
-    SatoriLocalCollectionResult result = region->ThreadLocalCollect(allocBytes, atTlgcLimit);
-    if (!result.Collected())
+    bool atTlgcLimit = trigger == SatoriLocalCollectionTrigger::WindowLimit;
+    bool eventEnabled = TRegion::ThreadLocalCollectionEventEnabled();
+    SatoriLocalCollectionData data;
+    SatoriLocalCollectionOutcome outcome = region->ThreadLocalCollect(allocBytes, atTlgcLimit,
+        eventEnabled ? &data : nullptr);
+    bool collected = outcome == SatoriLocalCollectionOutcome::Completed;
+    if (!collected)
     {
         TRegion::OnEscapeTrackingEnded(/* outOfSpace */ !atTlgcLimit);
         region->StopEscapeTracking();
@@ -95,13 +61,16 @@ FORCEINLINE bool SatoriCollectAndRetry(TRegion* region, size_t allocBytes, size_
 
     SatoriLocalCollectionRetry retry = SatoriLocalCollectionRetry::NotAttempted;
     bool allocated = false;
-    if (atTlgcLimit || result.Collected())
+    if (atTlgcLimit || collected)
     {
         allocated = region->StartAllocating(requestedBytes, allocBytes);
         retry = allocated ? SatoriLocalCollectionRetry::Succeeded : SatoriLocalCollectionRetry::Failed;
     }
 
-    region->ReportThreadLocalCollection(result, requestedBytes, trigger, retry);
+    if (eventEnabled)
+    {
+        region->ReportThreadLocalCollection(data, requestedBytes, trigger, outcome, retry);
+    }
     return allocated;
 }
 

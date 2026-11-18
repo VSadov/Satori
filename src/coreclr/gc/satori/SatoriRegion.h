@@ -140,8 +140,6 @@ public:
     // Called by the allocating owner before it resumes allocating from the region.
     // If a GC took the region while it stayed attached, starts a new accounting period.
     void RebaselineUsableIfStale(size_t allocBytes);
-    void ObserveAllocationClaim(size_t allocBytes, size_t claimed);
-    void ObserveAllocationReturn(size_t allocBytes);
     bool IsAttachedToAllocatingOwner();
     bool MaybeAllocatingAcquire();
     void SetHasFinalizables();
@@ -281,10 +279,12 @@ public:
     void ClearFreeLists();
 
     // we tell where we are in terms of alloc bytes, so we do not collect too soon
-    // Records the rejection or collection outcome without allocating an index for rejected calls.
-    SatoriLocalCollectionResult ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit);
-    void ReportThreadLocalCollection(const SatoriLocalCollectionResult& result, size_t requestedBytes,
-        SatoriLocalCollectionTrigger trigger, SatoriLocalCollectionRetry retry);
+    static bool ThreadLocalCollectionEventEnabled();
+    // Diagnostic data is optional; rejected calls do not acquire a collection index.
+    SatoriLocalCollectionOutcome ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit,
+        SatoriLocalCollectionData* data);
+    void ReportThreadLocalCollection(const SatoriLocalCollectionData& data, size_t requestedBytes,
+        SatoriLocalCollectionTrigger trigger, SatoriLocalCollectionOutcome outcome, SatoriLocalCollectionRetry retry);
 
     SatoriPage* ContainingPage();
     SatoriRegion* NextInPage();
@@ -436,8 +436,6 @@ private:
             bool m_usableBaselineStale;
             // TODO: VS can fold with m_doNotSweep?
             bool m_hasMarksSet;
-
-            SatoriLocalCollectionProgressStatus m_localCollectionProgressStatus;
 
             size_t m_freeListCapacities[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];

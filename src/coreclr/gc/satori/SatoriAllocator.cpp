@@ -806,7 +806,6 @@ tryAgain:
                 if (region->Allocate(moreSpace, zeroInitialize))
                 {
                     context->alloc_limit += moreSpace;
-                    region->ObserveAllocationClaim(context->alloc_bytes, moreSpace);
                     context->alloc_bytes += moreSpace;
 
                     SatoriObject* result = (SatoriObject*)(size_t)context->alloc_ptr;
@@ -834,7 +833,6 @@ tryAgain:
             // unclaim unused.
             size_t unused = context->alloc_limit - context->alloc_ptr;
             context->alloc_bytes -= unused;
-            region->ObserveAllocationReturn(context->alloc_bytes);
 
             bool collectAtTlgcLimit = region->ShouldCollectAtTlgcLimit(context->alloc_bytes);
 
@@ -849,9 +847,16 @@ tryAgain:
             }
 
             // try get from the free list
-            if (collectAtTlgcLimit ?
-                SatoriCollectAndRetry(region, context->alloc_bytes, size, SatoriLocalCollectionTrigger::DyadicLimit) :
-                region->StartAllocating(size, context->alloc_bytes))
+            bool allocated;
+            if (collectAtTlgcLimit)
+            {
+                allocated = SatoriCollectAndRetry(region, context->alloc_bytes, size, SatoriLocalCollectionTrigger::WindowLimit);
+            }
+            else
+            {
+                allocated = region->StartAllocating(size, context->alloc_bytes) != 0;
+            }
+            if (allocated)
             {
                 // we have enough free space in the region to continue
                 context->alloc_ptr = context->alloc_limit = (uint8_t*)region->GetAllocStart();

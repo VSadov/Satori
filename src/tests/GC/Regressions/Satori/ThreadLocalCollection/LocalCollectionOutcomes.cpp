@@ -1,9 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-#define FORCEINLINE inline
 #include "SatoriLocalCollection.h"
-#undef FORCEINLINE
 #ifdef SATORI_LOCAL_COLLECTION_TEST_LIBRARY
 #include "platformdefines.h"
 #endif
@@ -23,26 +21,30 @@ static void Require(bool condition, const char* message)
 struct TestRegion
 {
     static TestRegion* current;
-    SatoriLocalCollectionResult nextResult;
+    SatoriLocalCollectionOutcome nextOutcome;
+    SatoriLocalCollectionTrigger expectedTrigger;
+    uint32_t expectedIndex;
     bool allocationSucceeds;
+    bool eventEnabled;
+    bool toggleDuringCollection = false;
     bool tracking = true;
+    int enableChecks = 0;
     int collections = 0;
     int allocations = 0;
+    int samplingRequests = 0;
     int reports = 0;
+    int emissions = 0;
     char operations[32] = {};
     size_t operationCount = 0;
     SatoriLocalCollectionRetry reportedRetry = SatoriLocalCollectionRetry::NotAttempted;
-    SatoriLocalCollectionTrigger expectedTrigger;
-    uint32_t expectedIndex;
+    SatoriLocalCollectionTrigger reportedTrigger = SatoriLocalCollectionTrigger::WindowLimit;
 
-    TestRegion(SatoriLocalCollectionOutcome outcome, SatoriLocalCollectionTrigger trigger, bool succeeds, uint32_t index)
-        : nextResult{outcome, index}, allocationSucceeds(succeeds), expectedTrigger(trigger), expectedIndex(index)
+    TestRegion(SatoriLocalCollectionOutcome outcome, SatoriLocalCollectionTrigger trigger, bool succeeds,
+        uint32_t index, bool enabled)
+        : nextOutcome(outcome), expectedTrigger(trigger), expectedIndex(index),
+          allocationSucceeds(succeeds), eventEnabled(enabled)
     {
         current = this;
-        nextResult.allocationBytes = 1048576;
-        nextResult.allocationBytesBaseline = 983040;
-        nextResult.usableBefore = 4096;
-        nextResult.usableAfter = 2048;
     }
 
     void Record(char operation)
@@ -51,20 +53,37 @@ struct TestRegion
         operations[operationCount++] = operation;
     }
 
-    SatoriLocalCollectionResult ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit)
+    static bool ThreadLocalCollectionEventEnabled()
     {
-        Require(allocBytes == 1048576, "The original allocation progress must reach collection.");
-        Require(atTlgcLimit == (expectedTrigger == SatoriLocalCollectionTrigger::DyadicLimit), "Wrong collection trigger.");
+        current->enableChecks++;
+        return current->eventEnabled;
+    }
+
+    SatoriLocalCollectionOutcome ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit,
+        SatoriLocalCollectionData* data)
+    {
+        Require(allocBytes == 1048576, "Allocation progress argument changed.");
+        Require(atTlgcLimit == (expectedTrigger == SatoriLocalCollectionTrigger::WindowLimit), "Wrong collection trigger.");
+        Require((data != nullptr) == eventEnabled, "Disabled attempts must not request diagnostic samples.");
         collections++;
         Record('C');
-        return nextResult;
+        if (data != nullptr)
+        {
+            samplingRequests++;
+            data->collectionIndex = expectedIndex;
+        }
+        if (toggleDuringCollection)
+        {
+            eventEnabled = !eventEnabled;
+        }
+        return nextOutcome;
     }
 
     static void OnEscapeTrackingEnded(bool outOfSpace)
     {
         Require(current->tracking, "Tracking must still be active when history is updated.");
         Require(outOfSpace == (current->expectedTrigger == SatoriLocalCollectionTrigger::ExhaustedSpan),
-            "Tracking history must preserve the main out-of-space distinction.");
+            "Tracking history must preserve the out-of-space distinction.");
         current->Record('E');
     }
 
@@ -77,109 +96,91 @@ struct TestRegion
 
     bool StartAllocating(size_t requestedBytes, size_t allocBytes)
     {
-        Require(requestedBytes == 81920 && allocBytes == 1048576, "Retry arguments changed.");
+        Require(requestedBytes == 24576 && allocBytes == 1048576, "Retry arguments changed.");
         allocations++;
         Record('A');
         return allocationSucceeds;
     }
 
-    void ReportThreadLocalCollection(const SatoriLocalCollectionResult& result, size_t requestedBytes,
-        SatoriLocalCollectionTrigger trigger, SatoriLocalCollectionRetry retry)
+    void ReportThreadLocalCollection(const SatoriLocalCollectionData& data, size_t requestedBytes,
+        SatoriLocalCollectionTrigger trigger, SatoriLocalCollectionOutcome outcome, SatoriLocalCollectionRetry retry)
     {
-        Require(result.outcome == nextResult.outcome, "Outcome changed before reporting.");
-        Require(result.collectionIndex == expectedIndex, "Collection index changed before reporting.");
-        Require(result.allocationBytes == nextResult.allocationBytes &&
-            result.allocationBytesBaseline == nextResult.allocationBytesBaseline,
-            "Allocation progress must survive tracking-stop and retry.");
-        Require(result.progressStatus == nextResult.progressStatus,
-            "A completed collection must not make unavailable progress available.");
-        Require(result.usableBefore == nextResult.usableBefore && result.usableAfter == nextResult.usableAfter,
-            "Raw usable recovery may be negative and must not be clamped.");
-        bool marked = result.outcome == SatoriLocalCollectionOutcome::SurvivalAbort ||
-            result.outcome == SatoriLocalCollectionOutcome::Completed;
-        Require(result.HasCollectionIndex() == marked, "Rejected calls must not acquire a collection index.");
-        Require(requestedBytes == 81920 && trigger == expectedTrigger, "Incorrect report context.");
-        Require(reports + 1 == collections, "Each collection call must have exactly one report.");
+        Require(outcome == nextOutcome && data.collectionIndex == expectedIndex, "Incorrect report identity.");
+        Require(requestedBytes == 24576 && trigger == expectedTrigger, "Incorrect report context.");
         reportedRetry = retry;
+        reportedTrigger = trigger;
         reports++;
+        if (eventEnabled)
+        {
+            emissions++;
+        }
         Record('R');
     }
 };
 
 TestRegion* TestRegion::current = nullptr;
 
-static void CheckAttempt(SatoriLocalCollectionOutcome outcome, SatoriLocalCollectionTrigger trigger, bool succeeds, uint32_t index)
+static void CheckAttempt(SatoriLocalCollectionOutcome outcome, SatoriLocalCollectionTrigger trigger,
+    bool succeeds, uint32_t index, bool enabled)
 {
-    TestRegion region(outcome, trigger, succeeds, index);
-    bool allocated = SatoriCollectAndRetry(&region, 1048576, 81920, trigger);
-    bool retryExpected = trigger == SatoriLocalCollectionTrigger::DyadicLimit || outcome == SatoriLocalCollectionOutcome::Completed;
+    TestRegion region(outcome, trigger, succeeds, index, enabled);
+    bool allocated = SatoriCollectAndRetry(&region, 1048576, 24576, trigger);
+    bool retryExpected = trigger == SatoriLocalCollectionTrigger::WindowLimit || outcome == SatoriLocalCollectionOutcome::Completed;
     bool trackingEnded = outcome != SatoriLocalCollectionOutcome::Completed;
     Require(allocated == (retryExpected && succeeds), "Allocation return value changed.");
-    Require(region.collections == 1 && region.reports == 1, "Expected one companion record per call.");
+    Require(region.enableChecks == 1 && region.collections == 1, "Expected one enable check and collection call.");
+    Require(region.samplingRequests == (enabled ? 1 : 0), "Incorrect sampling request count.");
+    Require(region.reports == (enabled ? 1 : 0) && region.emissions == region.reports, "Incorrect report count.");
     Require(region.allocations == (retryExpected ? 1 : 0), "Diagnostics must not add an allocation retry.");
     Require(region.tracking != trackingEnded, "Tracking lifetime changed.");
-    SatoriLocalCollectionRetry expectedRetry = !retryExpected ? SatoriLocalCollectionRetry::NotAttempted :
-        succeeds ? SatoriLocalCollectionRetry::Succeeded : SatoriLocalCollectionRetry::Failed;
-    Require(region.reportedRetry == expectedRetry, "Wrong immediate same-region retry state.");
-    Require(strcmp(region.operations, trackingEnded ? (retryExpected ? "CESAR" : "CESR") : "CAR") == 0,
-        "Report must follow the actual retry and preserve tracking-stop order.");
+    if (enabled)
+    {
+        SatoriLocalCollectionRetry expectedRetry = !retryExpected ? SatoriLocalCollectionRetry::NotAttempted :
+            succeeds ? SatoriLocalCollectionRetry::Succeeded : SatoriLocalCollectionRetry::Failed;
+        Require(region.reportedRetry == expectedRetry, "Wrong immediate retry state.");
+    }
+    const char* expected = trackingEnded ? (retryExpected ? "CESA" : "CES") : "CA";
+    Require(strncmp(region.operations, expected, strlen(expected)) == 0, "Incorrect tracking-stop/retry order.");
+    Require(strcmp(region.operations + strlen(expected), enabled ? "R" : "") == 0, "Reporting must follow retry.");
 }
 
-static void CheckTwoCalls(SatoriLocalCollectionOutcome secondOutcome)
+static void CheckTwoCalls(SatoriLocalCollectionOutcome secondOutcome, bool enabled)
 {
-    TestRegion region(SatoriLocalCollectionOutcome::Completed, SatoriLocalCollectionTrigger::DyadicLimit, false, 42);
-    Require(!SatoriCollectAndRetry(&region, 1048576, 81920, region.expectedTrigger), "First retry must fail.");
-    Require(region.tracking, "A completed collection must leave tracking active.");
-    Require(region.reportedRetry == SatoriLocalCollectionRetry::Failed, "First report must describe the first retry only.");
-
-    region.nextResult = { secondOutcome, secondOutcome == SatoriLocalCollectionOutcome::Completed ? 43u : 0u };
-    region.nextResult.allocationBytes = 1048576;
-    region.nextResult.allocationBytesBaseline = 983040;
-    region.nextResult.usableBefore = 4096;
-    region.nextResult.usableAfter = 2048;
-    region.expectedIndex = region.nextResult.collectionIndex;
+    TestRegion region(SatoriLocalCollectionOutcome::Completed, SatoriLocalCollectionTrigger::WindowLimit, false, 42, enabled);
+    Require(!SatoriCollectAndRetry(&region, 1048576, 24576, region.expectedTrigger), "First retry must fail.");
+    Require(region.tracking, "Completed collection with failed retry must retain tracking.");
+    if (enabled)
+    {
+        Require(region.reportedRetry == SatoriLocalCollectionRetry::Failed, "First report must describe its own retry.");
+    }
+    region.nextOutcome = secondOutcome;
+    region.expectedIndex = secondOutcome == SatoriLocalCollectionOutcome::Completed ? 43u : 0u;
     region.expectedTrigger = SatoriLocalCollectionTrigger::ExhaustedSpan;
     region.allocationSucceeds = true;
-    bool allocated = SatoriCollectAndRetry(&region, 1048576, 81920, region.expectedTrigger);
-    bool secondCompleted = secondOutcome == SatoriLocalCollectionOutcome::Completed;
-    Require(allocated == secondCompleted, "Second call changed the exhausted-span allocation decision.");
-    Require(region.collections == 2 && region.reports == 2, "Two calls require two independent reports.");
-    Require(strcmp(region.operations, secondCompleted ? "CARCAR" : "CARCESR") == 0, "Incorrect two-call sequence.");
+    bool allocated = SatoriCollectAndRetry(&region, 1048576, 24576, region.expectedTrigger);
+    bool completed = secondOutcome == SatoriLocalCollectionOutcome::Completed;
+    Require(allocated == completed, "Second call changed the exhausted-span decision.");
+    Require(region.enableChecks == 2 && region.collections == 2, "Two attempts must remain two calls.");
+    Require(region.reports == (enabled ? 2 : 0), "Enabled attempts need independent reports.");
+    if (enabled)
+    {
+        Require(region.reportedTrigger == SatoriLocalCollectionTrigger::ExhaustedSpan, "Second trigger was lost.");
+        Require(region.reportedRetry == (completed ? SatoriLocalCollectionRetry::Succeeded :
+            SatoriLocalCollectionRetry::NotAttempted), "Second retry was lost.");
+    }
+    const char* expected = enabled ? (completed ? "CARCAR" : "CARCESR") : (completed ? "CACA" : "CACES");
+    Require(strcmp(region.operations, expected) == 0, "Incorrect two-call sequence.");
 }
 
-static int CheckProgress()
+static void CheckEnablementChange(bool initiallyEnabled)
 {
-    using Status = SatoriLocalCollectionProgressStatus;
-    Require(SatoriProgressStatus(0, 0, Status::Available) == Status::Available, "Zero progress is available.");
-    Require(SatoriProgressStatus(1048576, 983040, Status::Available) == Status::Available, "First or repeated progress.");
-    Require(SatoriProgressStatus(983039, 983040, Status::Available) == Status::CounterRollback, "Returned claim rollback.");
-    Require(SatoriProgressStatus(1048576, 983040, Status::AccountingRebased) == Status::AccountingRebased,
-        "A rebase must be unavailable even when the counter increased.");
-    Require(SatoriProgressStatus(1048576, 983040, Status::CounterRollback) == Status::CounterRollback,
-        "Regrowing past a rolled-back baseline must not erase the discontinuity.");
-    Require(SatoriProgressAfterClaim(INT64_MAX - 16, 16, Status::Available) == Status::Available, "No signed overflow at boundary.");
-    Require(SatoriProgressAfterClaim(INT64_MAX - 16, 17, Status::Available) == Status::CounterOverflow, "Signed claim overflow.");
-    Require(SatoriProgressAfterClaim(SIZE_MAX, 0, Status::Available) == Status::CounterOverflow,
-        "A negative allocation counter converted to size_t is unavailable.");
-    Require(SatoriProgressStatus(0, SIZE_MAX, Status::Available) == Status::CounterOverflow,
-        "A negative marking baseline is not an ordinary rollback.");
-    Require(SatoriProgressStatus(0, SIZE_MAX, Status::CounterOverflow) == Status::CounterOverflow,
-        "Overflow must not become an ordinary rollback.");
-    Require(SatoriProgressAfterClaim(100, 8, Status::CounterOverflow) == Status::CounterOverflow, "Overflow persists.");
-    for (uint32_t status = 0; status <= 3; status++)
-    {
-        TestRegion region(SatoriLocalCollectionOutcome::Completed, SatoriLocalCollectionTrigger::DyadicLimit, true, 42);
-        region.nextResult.progressStatus = static_cast<Status>(status);
-        if (status == 0)
-        {
-            region.nextResult.allocationBytesBaseline = region.nextResult.allocationBytes;
-            region.nextResult.usableBefore = region.nextResult.usableAfter = 0;
-        }
-        Require(SatoriCollectAndRetry(&region, 1048576, 81920, region.expectedTrigger),
-            "Validity reporting must not change the allocation result.");
-    }
-
-    return 15;
+    TestRegion region(SatoriLocalCollectionOutcome::Completed, SatoriLocalCollectionTrigger::WindowLimit, true, 42, initiallyEnabled);
+    region.toggleDuringCollection = true;
+    Require(SatoriCollectAndRetry(&region, 1048576, 24576, region.expectedTrigger), "Enablement changed allocation behavior.");
+    Require(region.enableChecks == 1, "Enablement must be captured at entry.");
+    Require(region.samplingRequests == (initiallyEnabled ? 1 : 0), "Sampling must use entry enablement.");
+    Require(region.reports == (initiallyEnabled ? 1 : 0), "Mid-attempt enablement must not fabricate samples.");
+    Require(region.emissions == 0, "Disabling the listener must suppress emission.");
 }
 
 #ifdef SATORI_LOCAL_COLLECTION_TEST_LIBRARY
@@ -189,28 +190,33 @@ int main()
 #endif
 {
     int cases = 0;
-    for (uint32_t outcome = 0; outcome <= 3; outcome++)
+    for (uint32_t enabled = 0; enabled <= 1; enabled++)
     {
-        for (uint32_t trigger = 0; trigger <= 1; trigger++)
+        for (uint32_t outcome = 0; outcome <= 3; outcome++)
         {
-            bool marked = outcome >= 2;
-            for (uint32_t succeeds = 0; succeeds <= 1; succeeds++)
+            for (uint32_t trigger = 0; trigger <= 1; trigger++)
             {
-                CheckAttempt(static_cast<SatoriLocalCollectionOutcome>(outcome), static_cast<SatoriLocalCollectionTrigger>(trigger), succeeds != 0, marked ? 42 : 0);
-                cases++;
-            }
-            if (marked)
-            {
-                CheckAttempt(static_cast<SatoriLocalCollectionOutcome>(outcome), static_cast<SatoriLocalCollectionTrigger>(trigger), true, 0);
-                cases++;
+                for (uint32_t succeeds = 0; succeeds <= 1; succeeds++)
+                {
+                    CheckAttempt(static_cast<SatoriLocalCollectionOutcome>(outcome),
+                        static_cast<SatoriLocalCollectionTrigger>(trigger), succeeds != 0, outcome >= 2 ? 42u : 0u, enabled != 0);
+                    cases++;
+                }
+                if (outcome >= 2)
+                {
+                    CheckAttempt(static_cast<SatoriLocalCollectionOutcome>(outcome),
+                        static_cast<SatoriLocalCollectionTrigger>(trigger), true, 0, enabled != 0);
+                    cases++;
+                }
             }
         }
+        CheckTwoCalls(SatoriLocalCollectionOutcome::InsufficientProgress, enabled != 0);
+        CheckTwoCalls(SatoriLocalCollectionOutcome::Completed, enabled != 0);
+        cases += 2;
     }
-
-    CheckTwoCalls(SatoriLocalCollectionOutcome::InsufficientProgress);
-    CheckTwoCalls(SatoriLocalCollectionOutcome::Completed);
+    CheckEnablementChange(false);
+    CheckEnablementChange(true);
     cases += 2;
-    printf("PASS: %d deterministic outcome/retry cases\n", cases);
-    printf("PASS: %d allocation-progress validity cases\n", CheckProgress());
+    printf("PASS: %d deterministic outcome/retry/enablement cases\n", cases);
     return 0;
 }

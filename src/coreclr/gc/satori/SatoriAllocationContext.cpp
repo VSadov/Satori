@@ -62,7 +62,6 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
 
         size_t unused = this->alloc_limit - this->alloc_ptr;
         this->alloc_bytes -= unused;
-        region->ObserveAllocationReturn(this->alloc_bytes);
         this->alloc_limit = this->alloc_ptr = nullptr;
 
         if (region->IsAllocating())

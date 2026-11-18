@@ -223,19 +223,14 @@ void GCToCLREventSink::FireGCFitBucketInfo(uint16_t bucketKind, size_t size, uin
     FireEtwGCFitBucketInfo(GetClrInstanceId(), bucketKind, size, count, valuesLen, values);
 }
 
-void GCToCLREventSink::FireGCThreadLocalCollection(uint32_t count, bool collected, uint64_t occupancyBefore, uint64_t occupancyAfter, double durationNs, uint64_t escapedBytesBefore, uint64_t escapedBytesAfter)
+void GCToCLREventSink::FireGCThreadLocalCollection(uint32_t count, uint32_t outcome, uint32_t trigger, uint32_t retry,
+    bool trackingProductive, uint64_t regionId, uint64_t requestedBytes, uint64_t allocationProgress,
+    uint64_t usableBefore, uint64_t usableAfter, uint64_t occupancyBefore, uint64_t occupancyAfter,
+    uint64_t escapedBytesBefore, uint64_t escapedBytesAfter, double durationNs)
 {
-    FireEtwGCThreadLocalCollection(GetClrInstanceId(), count, collected, occupancyBefore, occupancyAfter, durationNs, escapedBytesBefore, escapedBytesAfter);
-}
-
-void GCToCLREventSink::FireGCThreadLocalCollectionOutcome(uint64_t threadTag, uint64_t regionId, bool hasCollectionIndex,
-    uint32_t collectionIndex, uint64_t requestedBytes, uint32_t trigger, uint32_t outcome, uint32_t retry,
-    uint64_t allocationBytes, uint64_t allocationBytesBaseline, uint32_t progressStatus,
-    uint64_t usableBefore, uint64_t usableAfter)
-{
-    FireEtwGCThreadLocalCollectionOutcome(GetClrInstanceId(), threadTag, regionId, hasCollectionIndex,
-        collectionIndex, requestedBytes, trigger, outcome, retry,
-        allocationBytes, allocationBytesBaseline, progressStatus, usableBefore, usableAfter);
+    FireEtwGCThreadLocalCollection(GetClrInstanceId(), count, outcome, trigger, retry, trackingProductive,
+        regionId, requestedBytes, allocationProgress, usableBefore, usableAfter,
+        occupancyBefore, occupancyAfter, escapedBytesBefore, escapedBytesAfter, durationNs);
 }
 
 void GCToCLREventSink::FirePinPlugAtGCTime(uint8_t* plugStart, uint8_t* plugEnd, uint8_t* gapBeforeSize)
