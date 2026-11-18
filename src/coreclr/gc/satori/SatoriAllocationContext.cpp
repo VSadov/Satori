@@ -52,7 +52,7 @@ SatoriObject* SatoriAllocationContext::FinishAllocFromShared()
     return freeObj;
 }
 
-void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
+void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach, SatoriTrackingReason reason)
 {
     SatoriRegion* region = RegularRegion();
     if (region != nullptr)
@@ -73,13 +73,13 @@ void SatoriAllocationContext::Deactivate(SatoriRecycler* recycler, bool detach)
         if (detach ||
             (region->SweepsSinceLastAllocation() > 2 && region->IsReuseCandidate()))
         {
-            region->DetachFromAlocatingOwnerRelease();
+            region->DetachFromAlocatingOwnerRelease(reason);
         }
         // TUNING: force try sharing heuristic
         else if (region->SweepsSinceLastAllocation() > 3)
         {
             // allocation rate seems low, perhaps should use the shared region.
-            region->DetachFromAlocatingOwnerRelease();
+            region->DetachFromAlocatingOwnerRelease(reason);
         }
 
         recycler->AddEphemeralRegion(region);

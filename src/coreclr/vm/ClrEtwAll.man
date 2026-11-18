@@ -146,6 +146,8 @@
                             <opcode name="GCLOHCompact" message="$(string.RuntimePublisher.GCLOHCompactOpcodeMessage)" symbol="CLR_GC_GCLOHCOMPACT_OPCODE" value="208"> </opcode>
                             <opcode name="GCFitBucketInfo" message="$(string.RuntimePublisher.GCFitBucketInfoOpcodeMessage)" symbol="CLR_GC_GCFITBUCKETINFO_OPCODE" value="209"> </opcode>
                             <!-- Satori. Placed away from the upstream GC opcodes, which grow from 200. -->
+                            <opcode name="GCTrackingCheckpoint" message="$(string.RuntimePublisher.GCTrackingCheckpointOpcodeMessage)" symbol="CLR_GC_TRACKINGCHECKPOINT_OPCODE" value="236"> </opcode>
+                            <opcode name="GCTrackingLifecycle" message="$(string.RuntimePublisher.GCTrackingLifecycleOpcodeMessage)" symbol="CLR_GC_TRACKINGLIFECYCLE_OPCODE" value="237"> </opcode>
                             <opcode name="GCThreadLocalCollection" message="$(string.RuntimePublisher.GCThreadLocalCollectionOpcodeMessage)" symbol="CLR_GC_THREADLOCALCOLLECTION_OPCODE" value="239"> </opcode>
                         </opcodes>
                     </task>
@@ -1466,6 +1468,44 @@
                                 <Count> %4 </Count>
                             </GCFitBucketInfo>
                         </UserData>
+                    </template>
+
+                    <template tid="GCTrackingCheckpoint">
+                        <data name="ClrInstanceID" inType="win:UInt16" />
+                        <data name="ThreadTag" inType="win:UInt64" />
+                        <data name="RegionID" inType="win:UInt64" />
+                        <data name="Lifetime" inType="win:UInt64" />
+                        <data name="EpochBegin" inType="win:UInt64" />
+                        <data name="EpochEnd" inType="win:UInt64" />
+                        <data name="Sequence" inType="win:UInt64" />
+                        <data name="Segment" inType="win:UInt32" />
+                        <data name="Kind" inType="win:UInt32" />
+                        <data name="Flags" inType="win:UInt32" />
+                        <data name="HasCollectionIndex" inType="win:Boolean" />
+                        <data name="CollectionIndex" inType="win:UInt32" />
+                        <data name="EscapeFnCalls" inType="win:UInt32" />
+                        <data name="EscapeRecursivelyCalls" inType="win:UInt32" />
+                        <data name="NewlyEscapedObjects" inType="win:UInt32" />
+                        <data name="SeedObjects" inType="win:UInt32" />
+                    </template>
+
+                    <template tid="GCTrackingLifecycle">
+                        <data name="ClrInstanceID" inType="win:UInt16" />
+                        <data name="ThreadTag" inType="win:UInt64" />
+                        <data name="RegionID" inType="win:UInt64" />
+                        <data name="Lifetime" inType="win:UInt64" />
+                        <data name="RelatedLifetime" inType="win:UInt64" />
+                        <data name="Epoch" inType="win:UInt64" />
+                        <data name="Sequence" inType="win:UInt64" />
+                        <data name="Kind" inType="win:UInt32" />
+                        <data name="Reason" inType="win:UInt32" />
+                        <data name="Flags" inType="win:UInt32" />
+                        <data name="BackoffBefore" inType="win:UInt32" />
+                        <data name="BackoffAfter" inType="win:UInt32" />
+                        <data name="SkipBefore" inType="win:UInt32" />
+                        <data name="SkipAfter" inType="win:UInt32" />
+                        <data name="Attempted" inType="win:Boolean" />
+                        <data name="Productive" inType="win:Boolean" />
                     </template>
 
                     <template tid="GCThreadLocalCollection">
@@ -4240,6 +4280,13 @@
                            keywords ="GCKeyword"  opcode="GCFitBucketInfo"
                            task="GarbageCollection"
                            symbol="GCFitBucketInfo" message="$(string.RuntimePublisher.GCFitBucketInfoEventMessage)"/>
+
+                    <event value="236" version="0" level="win:Verbose" template="GCTrackingCheckpoint"
+                           keywords="GCKeyword" opcode="GCTrackingCheckpoint" task="GarbageCollection"
+                           symbol="GCTrackingCheckpoint" message="$(string.RuntimePublisher.GCTrackingCheckpointEventMessage)"/>
+                    <event value="237" version="0" level="win:Verbose" template="GCTrackingLifecycle"
+                           keywords="GCKeyword" opcode="GCTrackingLifecycle" task="GarbageCollection"
+                           symbol="GCTrackingLifecycle" message="$(string.RuntimePublisher.GCTrackingLifecycleEventMessage)"/>
 
                     <!-- Satori: a collection of a thread-local region by its allocating thread. It does not stop other threads,
                          is frequent and is closer to an allocation tick than to a GC, thus it is not reported as GCStart/GCEnd
@@ -8630,6 +8677,8 @@
                 <string id="RuntimePublisher.GCGlobalHeap_V4EventMessage" value="FinalYoungestDesired=%1;%nNumHeaps=%2;%nCondemnedGeneration=%3;%nGen0ReductionCountD=%4;%nReason=%5;%nGlobalMechanisms=%6;%nClrInstanceID=%7;%nPauseMode=%8;%nMemoryPressure=%9;%nCondemnReasons0=%10;%nCondemnReasons1=%11;%nCount=%12"/>
                 <string id="RuntimePublisher.GCLOHCompactEventMessage" value="ClrInstanceID=%1;%nCount=%2" />
                 <string id="RuntimePublisher.GCFitBucketInfoEventMessage" value="ClrInstanceID=%1;%nBucketKind=%2;%nTotalSize=%3;%nCount=%4" />
+                <string id="RuntimePublisher.GCTrackingCheckpointEventMessage" value="ClrInstanceID=%1;%nThreadTag=%2;%nRegionID=%3;%nLifetime=%4;%nEpochBegin=%5;%nEpochEnd=%6;%nSequence=%7;%nSegment=%8;%nKind=%9;%nFlags=%10;%nHasCollectionIndex=%11;%nCollectionIndex=%12;%nEscapeFnCalls=%13;%nEscapeRecursivelyCalls=%14;%nNewlyEscapedObjects=%15;%nSeedObjects=%16" />
+                <string id="RuntimePublisher.GCTrackingLifecycleEventMessage" value="ClrInstanceID=%1;%nThreadTag=%2;%nRegionID=%3;%nLifetime=%4;%nRelatedLifetime=%5;%nEpoch=%6;%nSequence=%7;%nKind=%8;%nReason=%9;%nFlags=%10;%nBackoffBefore=%11;%nBackoffAfter=%12;%nSkipBefore=%13;%nSkipAfter=%14;%nAttempted=%15;%nProductive=%16" />
                 <string id="RuntimePublisher.GCThreadLocalCollectionEventMessage" value="ClrInstanceID=%1;%nCount=%2;%nCollected=%3;%nOccupancyBefore=%4;%nOccupancyAfter=%5;%nDurationNs=%6;%nEscapedBytesBefore=%7;%nEscapedBytesAfter=%8" />
                 <string id="RuntimePublisher.FinalizeObjectEventMessage" value="TypeID=%1;%nObjectID=%2;%nClrInstanceID=%3" />
                 <string id="RuntimePublisher.GCTriggeredEventMessage" value="Reason=%1" />
@@ -9362,6 +9411,8 @@
                 <string id="RuntimePublisher.GCPerHeapHistoryOpcodeMessage" value="PerHeapHistory" />
                 <string id="RuntimePublisher.GCLOHCompactOpcodeMessage" value="GCLOHCompact" />
                 <string id="RuntimePublisher.GCFitBucketInfoOpcodeMessage" value="GCFitBucketInfo" />
+                <string id="RuntimePublisher.GCTrackingCheckpointOpcodeMessage" value="GCTrackingCheckpoint" />
+                <string id="RuntimePublisher.GCTrackingLifecycleOpcodeMessage" value="GCTrackingLifecycle" />
                 <string id="RuntimePublisher.GCThreadLocalCollectionOpcodeMessage" value="GCThreadLocalCollection" />
                 <string id="RuntimePublisher.GCGlobalHeapHistoryOpcodeMessage" value="GlobalHeapHistory" />
                 <string id="RuntimePublisher.GenAwareBeginOpcodeMessage" value="GenAwareBegin" />

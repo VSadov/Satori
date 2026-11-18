@@ -1086,7 +1086,7 @@ tryAgain:
                 if (!region->ThreadLocalCollect(context->alloc_bytes, /* atTlgcLimit */ true))
                 {
                     SatoriRegion::OnEscapeTrackingEnded();
-                    region->StopEscapeTracking();
+                    region->StopEscapeTracking(region->CollectionTrackingStopReason());
                 }
             }
 
@@ -1113,7 +1113,7 @@ tryAgain:
                 else
                 {
                     SatoriRegion::OnEscapeTrackingEnded(/* outOfSpace */ true);
-                    region->StopEscapeTracking();
+                    region->StopEscapeTracking(region->CollectionTrackingStopReason());
                 }
             }
 
@@ -1141,7 +1141,7 @@ tryAgain:
                 SatoriRegion::OnEscapeTrackingEnded(/* outOfSpace */ true);
             }
 
-            region->DetachFromAlocatingOwnerRelease();
+            region->DetachFromAlocatingOwnerRelease(SatoriTrackingReason::AllocationExhausted);
             m_heap->Recycler()->AddEphemeralRegion(region);
 
             // could not allocate, start over with trying to get a region
@@ -1175,7 +1175,7 @@ tryAgain:
             switch (region->ReusableFor())
             {
             case SatoriRegion::ReuseLevel::Gen0:
-                if (!SatoriRegion::ShouldStartEscapeTracking())
+                if (!region->ShouldStartEscapeTracking())
                 {
                     region->SetGenerationRelease(1);
                     break;
@@ -1184,7 +1184,7 @@ tryAgain:
                 region->EscapeAll();
                 goto fallthrough;
             case SatoriRegion::ReuseLevel::None:
-                if (!SatoriRegion::ShouldStartEscapeTracking())
+                if (!region->ShouldStartEscapeTracking())
                 {
                     region->SetGenerationRelease(1);
                     break;

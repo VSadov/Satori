@@ -228,6 +228,33 @@ void GCToCLREventSink::FireGCThreadLocalCollection(uint32_t count, bool collecte
     FireEtwGCThreadLocalCollection(GetClrInstanceId(), count, collected, occupancyBefore, occupancyAfter, durationNs, escapedBytesBefore, escapedBytesAfter);
 }
 
+void GCToCLREventSink::FireGCTrackingLifecycle(uint64_t threadTag, uint64_t regionID, uint64_t lifetime, uint64_t relatedLifetime,
+    uint64_t epoch, uint64_t sequence, uint32_t kind, uint32_t reason, uint32_t flags,
+    uint32_t backoffBefore, uint32_t backoffAfter, uint32_t skipBefore, uint32_t skipAfter,
+    bool attempted, bool productive)
+{
+    FireEtwGCTrackingLifecycle(GetClrInstanceId(), threadTag, regionID, lifetime, relatedLifetime, epoch,
+        sequence, kind, reason, flags, backoffBefore, backoffAfter, skipBefore, skipAfter, attempted, productive);
+}
+
+void GCToCLREventSink::FireGCTrackingCheckpoint(uint64_t threadTag, uint64_t regionID, uint64_t lifetime,
+    uint64_t epochBegin, uint64_t epochEnd, uint64_t sequence, uint32_t segment, uint32_t kind, uint32_t flags,
+    bool hasCollectionIndex, uint32_t collectionIndex, uint32_t escapeFnCalls, uint32_t escapeRecursivelyCalls,
+    uint32_t newlyEscapedObjects, uint32_t seedObjects)
+{
+    FireEtwGCTrackingCheckpoint(GetClrInstanceId(), threadTag, regionID, lifetime, epochBegin, epochEnd, sequence,
+        segment, kind, flags, hasCollectionIndex, collectionIndex, escapeFnCalls, escapeRecursivelyCalls, newlyEscapedObjects, seedObjects);
+}
+
+bool GCToCLREventSink::IsGCTrackingEnabled()
+{
+#ifdef FEATURE_EVENT_TRACE
+    return EventEnabledGCTrackingLifecycle() || EventEnabledGCTrackingCheckpoint();
+#else
+    return false;
+#endif // FEATURE_EVENT_TRACE
+}
+
 void GCToCLREventSink::FirePinPlugAtGCTime(uint8_t* plugStart, uint8_t* plugEnd, uint8_t* gapBeforeSize)
 {
     FireEtwPinPlugAtGCTime(plugStart, plugEnd, gapBeforeSize, GetClrInstanceId());
