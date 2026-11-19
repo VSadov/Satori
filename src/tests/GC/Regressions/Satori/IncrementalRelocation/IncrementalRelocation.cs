@@ -58,7 +58,8 @@ public static class IncrementalRelocation
                 }
 
                 GCMemoryInfo info = GC.GetGCMemoryInfo(GCKind.FullBlocking);
-                if (info.Generation == 2 && info.Compacted)
+                bool compacted = info.Generation == 2 && info.Compacted;
+                if (compacted)
                 {
                     compactingGCs++;
                 }
@@ -66,6 +67,13 @@ public static class IncrementalRelocation
                 if (!Verify())
                 {
                     return 1;
+                }
+
+                // one relocation usually takes all the sparse regions, a new sparse set gives the next one something to move.
+                if (compacted && compactingGCs < RequiredCompactingGCs)
+                {
+                    ReleaseSurvivors();
+                    MakeSparseGen2();
                 }
             }
         }
