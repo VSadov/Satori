@@ -5981,7 +5981,7 @@ static const size_t INCR_MIN_HARD_REFS = 64 * 1024;
 // When the fixed part of the pause alone does not fit the budget, we relocate only this often, to see if that changed.
 static const int INCR_NO_ROOM_PROBE_INTERVAL = 16;
 
-// Relocations smaller than this say little about the pause per unit.
+// Relocations smaller than this say little about the pause per unit, other than that it is not higher.
 static const size_t INCR_MIN_CALIBRATION_UNITS = 100 * 1000;
 
 static size_t IncrRelocationCost(size_t objCount, size_t bytes, size_t refs)
@@ -5998,14 +5998,15 @@ static size_t IncrRelocationGain(size_t bytes)
 // Costlier than thought is followed quickly, since that could make pauses longer than the budget, cheaper - slowly.
 static void IncrCalibrate(double& value, int& samples, double sample)
 {
+    // outliers, like a helper that was not scheduled for a while, move the value only so much.
+    // that includes the first sample, which is clamped against the initial value.
+    sample = min(max(sample, value / 4), value * 4);
     if (samples == 0)
     {
         value = sample;
     }
     else
     {
-        // outliers, like a helper that was not scheduled for a while, move the value only so much.
-        sample = min(max(sample, value / 4), value * 4);
         double weight = sample > value ? INCR_CALIBRATION_WEIGHT_UP : INCR_CALIBRATION_WEIGHT_DOWN;
         value += (sample - value) * weight;
     }
@@ -6775,10 +6776,16 @@ void SatoriRecycler::CalibrateIncrementalRelocation()
 
     // The fixed part is updating roots, which we measure. What else was on the pause is per unit.
     IncrCalibrate(m_incrFixedUs, m_incrFixedSamples, max(rootsUs, 1.0));
-    if (m_incrPlannedUnits >= INCR_MIN_CALIBRATION_UNITS)
+    if (m_incrPlannedUnits > 0)
     {
-        double usPerUnit = max(measuredUs - rootsUs, 0.0) / (double)m_incrPlannedUnits;
-        IncrCalibrate(m_incrUsPerUnit, m_incrUnitSamples, max(usPerUnit, INCR_INITIAL_US_PER_UNIT / 1024));
+        // A small relocation spreads per-GC overhead over few units, so it overstates the pause per unit.
+        // It is still a bound, so it may lower the value. Otherwise a value that is too high would keep
+        // the budget small and never be corrected.
+        double usPerUnit = max(max(measuredUs - rootsUs, 0.0) / (double)m_incrPlannedUnits, INCR_INITIAL_US_PER_UNIT / 1024);
+        if (m_incrPlannedUnits >= INCR_MIN_CALIBRATION_UNITS || usPerUnit < m_incrUsPerUnit)
+        {
+            IncrCalibrate(m_incrUsPerUnit, m_incrUnitSamples, usPerUnit);
+        }
     }
 }
 
