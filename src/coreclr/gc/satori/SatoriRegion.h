@@ -265,7 +265,9 @@ public:
     bool& DoNotSweep();
     bool& IsPreSwept();
     bool& IsRelocated();
+    uint8_t& RelocationCandidateIndex();
     bool& AcceptedPromotedObjects();
+    bool& AcceptedRelocatedFinalizables();
     bool& IndividuallyPromoted();
 
     uint32_t SweepsSinceLastAllocation();
@@ -362,6 +364,12 @@ private:
             //     while allocating in shared regions, would cause false sharing here)
 
             // the following fields change rarely or not at all.
+
+            // Non-zero on regions selected for incremental relocation, while references to them are being recorded.
+            // The value is 1 + the index in the recycler's list of candidates.
+            // Read by the marker for every reference, so it shares the cache line with the generation.
+            // Written only when candidates are selected and when recording ends.
+            uint8_t m_relocationCandidateIndex;
             size_t m_end;
             SatoriPage* m_containingPage;
 
@@ -457,6 +465,7 @@ private:
             bool m_isRelocated;
 
             bool m_acceptedPromotedObjects;
+            bool m_acceptedRelocatedFinalizables;
             bool m_individuallyPromoted;
             bool m_hasUnmarkedDemotedObjects;
             // A GC took the region while it stayed attached to an allocating owner.
