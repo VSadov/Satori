@@ -275,6 +275,7 @@ LEAF_END RhpCheckedAssignRef, _TEXT
 //   rdi - dest address 
 //   rsi - object
 //
+        .balign 64
 LEAF_ENTRY RhpAssignRef, _TEXT
 
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
@@ -314,17 +315,22 @@ LEAF_ENTRY RhpAssignRef, _TEXT
         jnz     LOCAL_LABEL(RecordEscape)               // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
-        mov     rax, rdi
-        and     rax, 0x1FFFFF
-        shr     rax, 3
-        bt      qword ptr [rdx], rax
-        jb      LOCAL_LABEL(RecordEscape)               // target is exposed. record an escape.
+        mov     eax, edi
+        and     eax, 0x1FFFFF           // offset in the region
+        shr     eax, 9                  // the bitmap qword with the bit for the target (a bit per 8 bytes)
+        mov     rax, qword ptr [rdx + rax * 8]
+        mov     r9, rdi
+        shr     r9, 3                   // bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      LOCAL_LABEL(RecordEscape)               // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign):
 ALTERNATE_ENTRY RhpAssignRefAVLocationNotHeap
         mov     [rdi], rsi              // src is external/null, or the assignment is completely threadlocal
         ret
 
+    // Not executed. Places the block below within one cache line (RhpAssignRef starts on a cache line).
+        .fill ((64 - ((. - C_FUNC(RhpAssignRef)) % 64)) % 64), 1, 0xCC
     LOCAL_LABEL(AssignAndMarkCards):
 ALTERNATE_ENTRY RhpAssignRefAVLocation
         mov     [rdi], rsi
@@ -334,27 +340,29 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         mov     r11, [C_VAR(g_write_watch_table)]
 
         // check the barrier state. this must be done after the assignment (in program order)
-        // if state == 2 we do not set or dirty cards.
+        // if src and dst are in the same region, cards are needed only while concurrent
+        xor     rsi, rdi
+        shr     rsi, 21
+        jnz     LOCAL_LABEL(CrossRegion)
+        cmp     r11, 1
+        je      LOCAL_LABEL(MarkCards)
+        ret
+
+    LOCAL_LABEL(CrossRegion):
+    // if state == 2 we do not set or dirty cards.
         cmp     r11, 2
-        jne     LOCAL_LABEL(DoCards)
+        je      LOCAL_LABEL(Exit)
+
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2), or while concurrent
+        cmp     dword ptr [rdx + 16], 2
+        jl      LOCAL_LABEL(MarkCards)
+        test    r11, r11
+        jnz     LOCAL_LABEL(MarkCards)
     LOCAL_LABEL(Exit):
         ret
 
-    LOCAL_LABEL(DoCards):
-    // if src and dst are in the same region, cards are not needed, unless concurrent
-        xor     rsi, rdi
-        shr     rsi, 21
-        jz      LOCAL_LABEL(CheckConcurrent)            // same region, just check if barrier is not concurrent
-
-    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
-        cmp     dword ptr [rdx + 16], 2
-        jl      LOCAL_LABEL(MarkCards)
-
-    LOCAL_LABEL(CheckConcurrent):
-    // if not concurrent, exit
-        cmp     r11, 0
-        je      LOCAL_LABEL(Exit)
-
+    // Not executed. Places the card marking below within one cache line.
+        .fill ((64 - ((. - C_FUNC(RhpAssignRef)) % 64)) % 64), 1, 0xCC
     LOCAL_LABEL(MarkCards):
         mov     r9 , [C_VAR(g_card_table)]     // fetch the page map
         mov     rdx, rdi
@@ -367,13 +375,15 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         lea     r8,  [rax + r8 * 2 + 0x80] // group offset
 
      // check if concurrent marking is in progress
-        cmp     r11, 0
-        jne     LOCAL_LABEL(DirtyCard)
+        test    r11, r11
+        jnz     LOCAL_LABEL(DirtyCard)
 
      // SETTING CARD
      LOCAL_LABEL(SetCard):
         cmp     byte ptr [rax + rdx], 0
-        jne     LOCAL_LABEL(Exit)
+        je      LOCAL_LABEL(DoSetCard)
+        ret
+     LOCAL_LABEL(DoSetCard):
         mov     byte ptr [rax + rdx], 1
      LOCAL_LABEL(SetGroup):
         cmp     byte ptr [r8], 0
@@ -382,7 +392,8 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
      LOCAL_LABEL(SetPage):
         cmp     byte ptr [rax], 0
         jne     LOCAL_LABEL(CardSet)
-        mov     byte ptr [rax], 1
+        // DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     byte ptr [rax], 4
 
      LOCAL_LABEL(CardSet):
      // check if concurrent marking is still not in progress
@@ -395,7 +406,9 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
         mov     byte ptr [rax + rdx], 4
      LOCAL_LABEL(DirtyGroup):
         cmp     byte ptr [r8], 4
-        je      LOCAL_LABEL(Exit)
+        jne     LOCAL_LABEL(DoDirtyGroup)
+        ret
+     LOCAL_LABEL(DoDirtyGroup):
         mov     byte ptr [r8], 4
      LOCAL_LABEL(DirtyPage):
         cmp     byte ptr [rax], 4
@@ -407,12 +420,14 @@ ALTERNATE_ENTRY RhpAssignRefAVLocation
     LOCAL_LABEL(RecordEscape):
 
         // 4) check if the source is escaped
-        mov     rax, rsi
-        add     rax, 8                             // escape bit is MT + 1
-        and     rax, 0x1FFFFF
-        shr     rax, 3
-        bt      qword ptr [rdx], rax
-        jb      LOCAL_LABEL(AssignAndMarkCards)         // source is already escaped.
+        lea     eax, [rsi + 8]                // escape bit is MT + 1
+        and     eax, 0x1FFFFF                 // offset in the region
+        shr     eax, 9                        // the bitmap qword with the bit (a bit per 8 bytes)
+        mov     rax, qword ptr [rdx + rax * 8]
+        lea     r9, [rsi + 8]
+        shr     r9, 3                         // bt takes the bit index modulo 64
+        bt      rax, r9
+        jc      LOCAL_LABEL(AssignAndMarkCards)         // source is already escaped.
 
         // Align rsp
         mov  r9, rsp
@@ -485,11 +500,14 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         jnz     LOCAL_LABEL(RecordEscape_CmpXchg)       // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
-        mov     r11, rdi
-        and     r11, 0x1FFFFF
-        shr     r11, 3
-        bt      qword ptr [rdx], r11
-        jb      LOCAL_LABEL(RecordEscape_CmpXchg)       // target is exposed. record an escape.
+        mov     r11d, edi
+        and     r11d, 0x1FFFFF          // offset in the region
+        shr     r11d, 9                 // the bitmap qword with the bit for the target (a bit per 8 bytes)
+        mov     r11, qword ptr [rdx + r11 * 8]
+        mov     r9, rdi
+        shr     r9, 3                   // bt takes the bit index modulo 64
+        bt      r11, r9
+        jc      LOCAL_LABEL(RecordEscape_CmpXchg)       // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign_CmpXchg):
         lock cmpxchg    [rdi], rsi     // dst not in heap, src is external/null, or the assignment is completely threadlocal
@@ -504,26 +522,25 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         mov     r10, [C_VAR(g_write_watch_table)]
 
         // check the barrier state. this must be done after the assignment (in program order)
-        // if state == 2 we do not set or dirty cards.
-        cmp     r10, 2
-        jne     LOCAL_LABEL(DoCards_CmpXchg)
-    LOCAL_LABEL(Exit_CmpXchg):
-        ret
-
-    LOCAL_LABEL(DoCards_CmpXchg):
-    // if src and dst are in the same region, cards are not needed, unless concurrent
+        // if src and dst are in the same region, cards are needed only while concurrent
         xor     rsi, rdi
         shr     rsi, 21
-        jz      LOCAL_LABEL(CheckConcurrent_CmpXchg)    // same region, just check if barrier is not concurrent
+        jnz     LOCAL_LABEL(CrossRegion_CmpXchg)
+        cmp     r10, 1
+        je      LOCAL_LABEL(MarkCards_CmpXchg)
+        ret
 
-    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
+    LOCAL_LABEL(CrossRegion_CmpXchg):
+    // if state == 2 we do not set or dirty cards.
+        cmp     r10, 2
+        je      LOCAL_LABEL(Exit_CmpXchg)
+
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2), or while concurrent
         cmp     dword ptr [rdx + 16], 2
         jl      LOCAL_LABEL(MarkCards_CmpXchg)
-
-    LOCAL_LABEL(CheckConcurrent_CmpXchg):
-    // if not concurrent, exit
-        cmp     r10, 0
-        jne     LOCAL_LABEL(MarkCards_CmpXchg)
+        test    r10, r10
+        jnz     LOCAL_LABEL(MarkCards_CmpXchg)
+    LOCAL_LABEL(Exit_CmpXchg):
         ret
 
     LOCAL_LABEL(MarkCards_CmpXchg):
@@ -539,13 +556,15 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
         lea     rsi, [r11 + rsi * 2 + 0x80] // group offset
 
      // check if concurrent marking is in progress
-        cmp     r10, 0
-        jne     LOCAL_LABEL(DirtyCard_CmpXchg)
+        test    r10, r10
+        jnz     LOCAL_LABEL(DirtyCard_CmpXchg)
 
     // SETTING CARD FOR rdi
      LOCAL_LABEL(SetCard_CmpXchg):
         cmp     byte ptr [r11 + rdx], 0
-        jne     LOCAL_LABEL(Exit_CmpXchg)
+        je      LOCAL_LABEL(DoSetCard_CmpXchg)
+        ret
+     LOCAL_LABEL(DoSetCard_CmpXchg):
         mov     byte ptr [r11 + rdx], 1
      LOCAL_LABEL(SetGroup_CmpXchg):
         cmp     byte ptr [rsi], 0
@@ -554,7 +573,8 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
      LOCAL_LABEL(SetPage_CmpXchg):
         cmp     byte ptr [r11], 0
         jne     LOCAL_LABEL(CardSet_CmpXchg)
-        mov     byte ptr [r11], 1
+        // DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     byte ptr [r11], 4
 
      LOCAL_LABEL(CardSet_CmpXchg):
      // check if concurrent marking is still not in progress
@@ -565,11 +585,13 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
     // DIRTYING CARD FOR rdi
      LOCAL_LABEL(DirtyCard_CmpXchg):
         cmp     byte ptr [r11 + rdx], 4
-        je      LOCAL_LABEL(Exit_CmpXchg)
+        je      LOCAL_LABEL(DirtyGroup_CmpXchg)
         mov     byte ptr [r11 + rdx], 4
      LOCAL_LABEL(DirtyGroup_CmpXchg):
         cmp     byte ptr [rsi], 4
-        je      LOCAL_LABEL(Exit_CmpXchg)
+        jne     LOCAL_LABEL(DoDirtyGroup_CmpXchg)
+        ret
+     LOCAL_LABEL(DoDirtyGroup_CmpXchg):
         mov     byte ptr [rsi], 4
      LOCAL_LABEL(DirtyPage_CmpXchg):
         cmp     byte ptr [r11], 4
@@ -581,12 +603,14 @@ LEAF_ENTRY RhpCheckedLockCmpXchg, _TEXT
     LOCAL_LABEL(RecordEscape_CmpXchg):
 
         // 4) check if the source is escaped
-        mov     r11, rsi
-        add     r11, 8                             // escape bit is MT + 1
-        and     r11, 0x1FFFFF
-        shr     r11, 3
-        bt      qword ptr [rdx], r11
-        jb      LOCAL_LABEL(AssignAndMarkCards_CmpXchg) // source is already escaped.
+        lea     r11d, [rsi + 8]               // escape bit is MT + 1
+        and     r11d, 0x1FFFFF                // offset in the region
+        shr     r11d, 9                       // the bitmap qword with the bit (a bit per 8 bytes)
+        mov     r11, qword ptr [rdx + r11 * 8]
+        lea     r9, [rsi + 8]
+        shr     r9, 3                         // bt takes the bit index modulo 64
+        bt      r11, r9
+        jc      LOCAL_LABEL(AssignAndMarkCards_CmpXchg) // source is already escaped.
 
         // Align rsp
         mov  r9, rsp
@@ -653,11 +677,14 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         jnz     LOCAL_LABEL(RecordEscape_Xchg)          // cross region assignment. definitely escaping
 
     // 3) check if the target is exposed
-        mov     r11, rdi
-        and     r11, 0x1FFFFF
-        shr     r11, 3
-        bt      qword ptr [rdx], r11
-        jb      LOCAL_LABEL(RecordEscape_Xchg)          // target is exposed. record an escape.
+        mov     r11d, edi
+        and     r11d, 0x1FFFFF          // offset in the region
+        shr     r11d, 9                 // the bitmap qword with the bit for the target (a bit per 8 bytes)
+        mov     r11, qword ptr [rdx + r11 * 8]
+        mov     r9, rdi
+        shr     r9, 3                   // bt takes the bit index modulo 64
+        bt      r11, r9
+        jc      LOCAL_LABEL(RecordEscape_Xchg)          // target is exposed. record an escape.
 
     LOCAL_LABEL(JustAssign_Xchg):
         xchg    [rdi], rax              // dst not in heap, src is external/null, or the assignment is completely threadlocal
@@ -671,26 +698,25 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         mov     r10, [C_VAR(g_write_watch_table)]
 
         // check the barrier state. this must be done after the assignment (in program order)
-        // if state == 2 we do not set or dirty cards.
-        cmp     r10, 2
-        jne     LOCAL_LABEL(DoCards_Xchg)
-    LOCAL_LABEL(Exit_Xchg):
-        ret
-
-    LOCAL_LABEL(DoCards_Xchg):
-    // if src and dst are in the same region, cards are not needed, unless concurrent
+        // if src and dst are in the same region, cards are needed only while concurrent
         xor     rsi, rdi
         shr     rsi, 21
-        jz      LOCAL_LABEL(CheckConcurrent_Xchg)       // same region, just check if barrier is not concurrent
+        jnz     LOCAL_LABEL(CrossRegion_Xchg)
+        cmp     r10, 1
+        je      LOCAL_LABEL(MarkCards_Xchg)
+        ret
 
-    // dst is in another region - cards are needed if src is ephemeral (gen < 2)
+    LOCAL_LABEL(CrossRegion_Xchg):
+    // if state == 2 we do not set or dirty cards.
+        cmp     r10, 2
+        je      LOCAL_LABEL(Exit_Xchg)
+
+    // dst is in another region - cards are needed if src is ephemeral (gen < 2), or while concurrent
         cmp     dword ptr [rdx + 16], 2
         jl      LOCAL_LABEL(MarkCards_Xchg)
-
-    LOCAL_LABEL(CheckConcurrent_Xchg):
-    // if not concurrent, exit
-        cmp     r10, 0
-        jne     LOCAL_LABEL(MarkCards_Xchg)
+        test    r10, r10
+        jnz     LOCAL_LABEL(MarkCards_Xchg)
+    LOCAL_LABEL(Exit_Xchg):
         ret
 
     LOCAL_LABEL(MarkCards_Xchg):
@@ -706,13 +732,15 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
         lea     rsi, [r11 + rsi * 2 + 0x80] // group offset
 
      // check if concurrent marking is in progress
-        cmp     r10, 0
-        jne     LOCAL_LABEL(DirtyCard_Xchg)
+        test    r10, r10
+        jnz     LOCAL_LABEL(DirtyCard_Xchg)
 
     // SETTING CARD FOR rdi
      LOCAL_LABEL(SetCard_Xchg):
         cmp     byte ptr [r11 + rdx], 0
-        jne     LOCAL_LABEL(Exit_Xchg)
+        je      LOCAL_LABEL(DoSetCard_Xchg)
+        ret
+     LOCAL_LABEL(DoSetCard_Xchg):
         mov     byte ptr [r11 + rdx], 1
      LOCAL_LABEL(SetGroup_Xchg):
         cmp     byte ptr [rsi], 0
@@ -721,7 +749,8 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
      LOCAL_LABEL(SetPage_Xchg):
         cmp     byte ptr [r11], 0
         jne     LOCAL_LABEL(CardSet_Xchg)
-        mov     byte ptr [r11], 1
+        // DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     byte ptr [r11], 4
 
      LOCAL_LABEL(CardSet_Xchg):
      // check if concurrent marking is still not in progress
@@ -732,11 +761,13 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
     // DIRTYING CARD FOR rdi
      LOCAL_LABEL(DirtyCard_Xchg):
         cmp     byte ptr [r11 + rdx], 4
-        je      LOCAL_LABEL(Exit_Xchg)
+        je      LOCAL_LABEL(DirtyGroup_Xchg)
         mov     byte ptr [r11 + rdx], 4
      LOCAL_LABEL(DirtyGroup_Xchg):
         cmp     byte ptr [rsi], 4
-        je      LOCAL_LABEL(Exit_Xchg)
+        jne     LOCAL_LABEL(DoDirtyGroup_Xchg)
+        ret
+     LOCAL_LABEL(DoDirtyGroup_Xchg):
         mov     byte ptr [rsi], 4
      LOCAL_LABEL(DirtyPage_Xchg):
         cmp     byte ptr [r11], 4
@@ -748,12 +779,14 @@ LEAF_ENTRY RhpCheckedXchg, _TEXT
     LOCAL_LABEL(RecordEscape_Xchg):
 
         // 4) check if the source is escaped
-        mov     r11, rsi
-        add     r11, 8                             // escape bit is MT + 1
-        and     r11, 0x1FFFFF
-        shr     r11, 3
-        bt      qword ptr [rdx], r11
-        jb      LOCAL_LABEL(AssignAndMarkCards_Xchg)    // source is already escaped.
+        lea     r11d, [rsi + 8]               // escape bit is MT + 1
+        and     r11d, 0x1FFFFF                // offset in the region
+        shr     r11d, 9                       // the bitmap qword with the bit (a bit per 8 bytes)
+        mov     r11, qword ptr [rdx + r11 * 8]
+        lea     r9, [rsi + 8]
+        shr     r9, 3                         // bt takes the bit index modulo 64
+        bt      r11, r9
+        jc      LOCAL_LABEL(AssignAndMarkCards_Xchg)    // source is already escaped.
 
         // Align rsp
         mov  r9, rsp

@@ -1053,6 +1053,15 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         assert(args->lowest_address != nullptr);
         assert(args->highest_address != nullptr);
 
+#ifdef FEATURE_SATORI_GC
+        // The Satori barriers embed the card table and the card bundle table,
+        // which must not change after the write barrier is initialized.
+        assert(args->card_table == g_card_table);
+#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
+        assert(args->card_bundle_table == g_card_bundle_table);
+#endif
+#endif // FEATURE_SATORI_GC
+
         // We are sensitive to the order of writes here (more comments on this further in the method)
         // In particular g_card_table must be written before writing the heap bounds.
         // For platforms with weak memory ordering we will issue fences, for x64/x86 we are ok
@@ -1250,6 +1259,7 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
     case WriteBarrierOp::StartConcurrentMarkingSatori:
         g_write_watch_table = args->write_watch_table;
         g_sw_ww_enabled_for_gc_heap = true;
+        // switches to a concurrent barrier, but only when the runtime is suspended
         stompWBCompleteActions |= ::SwitchToWriteWatchBarrier(is_runtime_suspended);
         if (!is_runtime_suspended)
         {
@@ -1258,14 +1268,15 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
 
         }
 
-        return;
+        break;
 
     case WriteBarrierOp::StopConcurrentMarkingSatori:
         assert(args->is_runtime_suspended && "the runtime must be suspended here!");
         g_write_watch_table = args->write_watch_table;
+        g_satori_barrier_state_is_stable = args->satori_barrier_state_is_stable;
         g_sw_ww_enabled_for_gc_heap = false;
         stompWBCompleteActions |= ::SwitchToNonWriteWatchBarrier(true);
-        return;
+        break;
 #endif
 
     default:

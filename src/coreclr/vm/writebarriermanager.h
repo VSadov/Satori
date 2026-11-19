@@ -32,7 +32,12 @@ public:
         WRITE_BARRIER_BYTE_REGIONS64,
         WRITE_BARRIER_BIT_REGIONS64,
 #ifdef FEATURE_SATORI_GC
+        WRITE_BARRIER_SATORI_DYNAMIC,
+        WRITE_BARRIER_SATORI_DYNAMIC2,
         WRITE_BARRIER_SATORI,
+        WRITE_BARRIER_SATORI2,
+        WRITE_BARRIER_SATORI_CONCURRENT,
+        WRITE_BARRIER_SATORI_CONCURRENT2,
 #endif // FEATURE_SATORI_GC
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
         WRITE_BARRIER_WRITE_WATCH_PREGROW64,
@@ -64,6 +69,10 @@ private:
     int    ChangeWriteBarrierTo(WriteBarrierType newWriteBarrier, bool isRuntimeSuspended);
     bool   NeedDifferentWriteBarrier(bool bReqUpperBoundsCheck, bool bUseBitwiseWriteBarrier, WriteBarrierType* pNewWriteBarrierType);
 
+#ifdef FEATURE_SATORI_GC
+    int    UpdateSatoriBarrierValues();
+#endif // FEATURE_SATORI_GC
+
 
 #if defined(WRITE_BARRIER_VARS_INLINE)
     PBYTE  CalculatePatchLocation(LPVOID base, LPVOID label, int offset);
@@ -82,6 +91,13 @@ private:
     PBYTE   m_pRegionToGenTableImmediate;   //         |          |     | WRITE_WATCH | REGION
     PBYTE   m_pRegionShrDest;               //         |          |     | WRITE_WATCH | REGION
     PBYTE   m_pRegionShrSrc;                //         |          |     | WRITE_WATCH | RETION
+
+#ifdef FEATURE_SATORI_GC
+    // Satori patches the page map (m_pCardTableImmediate, SATORI2 does not use it), the address of the barrier state
+    // (m_pWriteWatchTableImmediate, only the DYNAMIC barriers read the state) and the page byte map in the barrier
+    // (m_pCardBundleTableImmediate) and in JIT_CheckedWriteBarrier, which is never replaced.
+    PBYTE   m_pCheckedCardBundleTableImmediate;
+#endif // FEATURE_SATORI_GC
 
 #if defined(TARGET_ARM64)
     PBYTE   m_lowestAddress;

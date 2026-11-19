@@ -202,23 +202,31 @@ LEAF_END JIT_PatchedCodeLast, _TEXT
 
 else  ;FEATURE_SATORI_GC     ##########################################################################
 
-EXTERN g_card_table:QWORD
-EXTERN g_card_bundle_table:QWORD
-EXTERN g_write_watch_table:QWORD
-
-ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
-EXTERN  g_sw_ww_enabled_for_gc_heap:BYTE
-endif
+; The Satori barriers run from the copy of the patched code region (see GetWriteBarrierCodeLocation), so they
+; cannot refer to globals RIP-relatively. Instead they embed the values that do not change after the GC
+; initializes the write barrier - the page byte map (g_card_bundle_table), the page map (g_card_table) and the
+; address of g_write_watch_table, which holds the barrier state - as constants that WriteBarrierManager patches.
+; JIT_WriteBarrier is a buffer for one of the barriers in JitHelpers_FastWriteBarriers.asm.
+;
+; Regarding patchable constants:
+; - 64-bit constants have to be loaded into a register
+; - The constants have to be aligned to 8 bytes so that they can be patched easily
+; - The alignment is by construction: there is only fixed-size code between an alignment directive and a constant
+;
+; The region and the barriers in it start on cache line boundaries, so that the barriers are cache line aligned
+; also where the region is copied, which keeps their offsets from the region start.
 
 ; Mark start of the code region that we patch at runtime
-LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
+LEAF_ENTRY_ALIGN64 JIT_PatchedCodeStart
         ret
-LEAF_END JIT_PatchedCodeStart, _TEXT
+LEAF_END_ALIGN64 JIT_PatchedCodeStart
 
 ; void JIT_CheckedWriteBarrier(Object** dst, Object* src)
-LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
+LEAF_ENTRY_ALIGN64 JIT_CheckedWriteBarrier
     ; See if dst is in GCHeap
-        mov     rax, [g_card_bundle_table] ; fetch the page byte map
+        NOP_6_BYTE ; padding for alignment of constant
+PATCH_LABEL JIT_CheckedWriteBarrier_Patch_Label_CardBundleTable
+        mov     rax, 0F0F0F0F0F0F0F0F0h    ; the page byte map
         mov     r8,  rcx
         shr     r8,  30                    ; dst page index
         cmp     byte ptr [rax + r8], 0
@@ -228,7 +236,7 @@ LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
         ; See comment above about possible AV
         mov     [rcx], rdx
         ret
-LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
+LEAF_END_MARKED_ALIGN64 JIT_CheckedWriteBarrier
 
 ALTERNATE_ENTRY macro Name
 
@@ -236,179 +244,31 @@ Name label proc
 PUBLIC Name
         endm
 
+; void JIT_WriteBarrier(Object** dst, Object* src)
 ;
-;   rcx - dest address 
+; Space for one of the Satori barriers (see JIT_WriteBarrier_SATORI_DYNAMIC in JitHelpers_FastWriteBarriers.asm), which
+; WriteBarrierManager copies here when the GC initializes the write barrier and when the GC switches barriers.
+; The barriers have the same code ahead of CheckedEntry, so JIT_CheckedWriteBarrier can jump there in any of them.
+;
+;   rcx - dest address
 ;   rdx - object
 ;
-LEAF_ENTRY JIT_WriteBarrier, _TEXT
+LEAF_ENTRY_ALIGN64 JIT_WriteBarrier
 
 ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
-    ; check if src is in heap
-        mov     rax, [g_card_bundle_table] ; fetch the page byte map
-    ALTERNATE_ENTRY CheckedEntry
-        mov     r8,  rdx
-        shr     r8,  30                    ; src page index
-        cmp     byte ptr [rax + r8], 0
-        je      JustAssign                 ; src not in heap
-else
-    ALTERNATE_ENTRY CheckedEntry
+        NOP_6_BYTE
+        mov     rax, 0F0F0F0F0F0F0F0F0h
 endif
+    ALTERNATE_ENTRY CheckedEntry
 
-    ; check for escaping assignment
-    ; 1) check if we own the source region
-        mov     r8, rdx
-        and     r8, 0FFFFFFFFFFE00000h  ; source region
-
-ifndef FEATURE_SATORI_EXTERNAL_OBJECTS
-        jz      JustAssign              ; assigning null
-endif
-
-        mov     rax,  gs:[30h]          ; thread tag, TEB on NT
-        cmp     qword ptr [r8], rax     
-        jne     AssignAndMarkCards      ; not local to this thread
-
-    ; 2) check if the src and dst are from the same region
-        mov     rax, rcx
-        and     rax, 0FFFFFFFFFFE00000h ; target aligned to region
-        cmp     rax, r8
-        jne     RecordEscape            ; cross region assignment. definitely escaping
-
-    ; 3) check if the target is exposed
-        mov     rax, rcx
-        and     rax, 01FFFFFh
-        shr     rax, 3
-        bt      qword ptr [r8], rax
-        jb      RecordEscape            ; target is exposed. record an escape.
-
-    JustAssign:
-        mov     [rcx], rdx              ; src is external/null, or the assignment is completely threadlocal
-        ret
-
-    AssignAndMarkCards:
-        mov     [rcx], rdx
-
-    ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
-    ;         needs to suspend EE, not sure if skipping mode check would worth that much.
-        mov     r11, qword ptr [g_write_watch_table]
-
-    ; check the barrier state. this must be done after the assignment (in program order)
-    ; if state == 2 we do not set or dirty cards.
-        cmp     r11, 2h
-        jne     DoCards
-    Exit:
-        ret
-
-    DoCards:
-    ; if src and dst are in the same region, cards are not needed, unless concurrent
-        xor     rdx, rcx
-        shr     rdx, 21
-        jz      CheckConcurrent         ; same region, just check if barrier is not concurrent
-
-    ; dst is in another region - cards are needed if src is ephemeral (gen < 2)
-        cmp     dword ptr [r8 + 16], 2
-        jl      MarkCards
-
-    CheckConcurrent:
-        cmp     r11, 0h
-        je      Exit                    ; if not concurrent, exit
-
-    MarkCards:
-    ; fetch card location for rcx
-        mov     r9 , [g_card_table]     ; fetch the page map
-        mov     r8,  rcx
-        shr     rcx, 30
-        mov     rax, qword ptr [r9 + rcx * 8] ; page
-        sub     r8, rax   ; offset in page
-        mov     rdx,r8
-        shr     r8, 9     ; card offset
-        shr     rdx, 20   ; group index
-        lea     rdx, [rax + rdx * 2 + 80h] ; group offset
-
-    ; check if concurrent marking is in progress
-        cmp     r11, 0h
-        jne     DirtyCard
-
-    ; SETTING CARD FOR RCX
-     SetCard:
-        cmp     byte ptr [rax + r8], 0
-        jne     Exit
-        mov     byte ptr [rax + r8], 1
-     SetGroup:
-        cmp     byte ptr [rdx], 0
-        jne     CardSet
-        mov     byte ptr [rdx], 1
-     SetPage:
-        cmp     byte ptr [rax], 0
-        jne     CardSet
-        mov     byte ptr [rax], 1
-
-     CardSet:
-    ; check if concurrent marking is still not in progress
-        cmp     qword ptr [g_write_watch_table], 0h
-        jne     DirtyCard
-        ret
-
-    ; DIRTYING CARD FOR RCX
-     DirtyCard:
-        mov     byte ptr [rax + r8], 4
-     DirtyGroup:
-        cmp     byte ptr [rdx], 4
-        je      Exit
-        mov     byte ptr [rdx], 4
-     DirtyPage:
-        cmp     byte ptr [rax], 4
-        je      Exit
-        mov     byte ptr [rax], 4
-        ret
-
-    ; this is expected to be rare.
-    RecordEscape:
-
-        ; 4) check if the source is escaped
-        mov     rax, rdx
-        add     rax, 8                        ; escape bit is MT + 1
-        and     rax, 01FFFFFh
-        shr     rax, 3
-        bt      qword ptr [r8], rax
-        jb      AssignAndMarkCards            ; source is already escaped.
-
-        ; Align rsp
-        mov  r9, rsp
-        and  rsp, -16
-
-        ; save rsp, rcx, rdx, r8
-        push r9
-        push rcx
-        push rdx
-        push r8
-
-        ; also save xmm0, in case it is used for stack clearing.
-        ; Hopefully EscapeFn cannot corrupt other xmm regs, since there is no float math or vectorizable code in there.
-        sub     rsp, 16
-        movdqa  [rsp], xmm0
-
-        ; shadow space
-        sub  rsp, 20h
-
-        ; void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion* region)
-        call    qword ptr [r8 + 8]
-
-        add     rsp, 20h
-
-        movdqa  xmm0, [rsp]
-        add     rsp, 16
-
-        pop     r8
-        pop     rdx
-        pop     rcx
-        pop     rsp
-        jmp     AssignAndMarkCards
-LEAF_END_MARKED JIT_WriteBarrier, _TEXT
+        ; make sure this is bigger than any of the barriers
+        db      1F0h dup (0CCh)
+LEAF_END_MARKED_ALIGN64 JIT_WriteBarrier
 
 ; Mark start of the code region that we patch at runtime
-LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
+LEAF_ENTRY_ALIGN64 JIT_PatchedCodeLast
         ret
-LEAF_END JIT_PatchedCodeLast, _TEXT
+LEAF_END_ALIGN64 JIT_PatchedCodeLast
 
 endif  ; FEATURE_SATORI_GC
 

@@ -5397,8 +5397,8 @@ inline BOOL IsWriteBarrierCopyEnabled()
 #ifdef DACCESS_COMPILE
     return FALSE;
 #else // DACCESS_COMPILE
-#if FEATURE_SATORI_GC
-    // TODO: Satori barriers currently do not require relocation or writeable code.
+#if defined(FEATURE_SATORI_GC) && !defined(TARGET_AMD64) && !defined(TARGET_ARM64)
+    // Satori barriers that can be patched are implemented only for AMD64 and ARM64.
     return FALSE;
 #else
     return g_pConfig->IsWriteBarrierCopyEnabled();

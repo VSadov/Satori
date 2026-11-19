@@ -369,6 +369,9 @@ NoBarrierXchg
 
 #else  ;;FEATURE_SATORI_GC   ######################################################
 
+    ;; like TEXTAREA, but with 64 byte alignment so that RhpAssignRefArm64 can be aligned to cache lines
+    AREA    _TEXT,ALIGN=6,CODE,READONLY
+
 ;; JIT_CheckedWriteBarrier(Object** dst, Object* src)
 ;;
 ;; Write barrier for writes to objects that may reside
@@ -414,7 +417,7 @@ NotInHeap
 ;;   x15  : trashed
 ;;   x16  : trashed (ip0)
 ;;   x17  : trashed (ip1)
-    LEAF_ENTRY RhpAssignRefArm64, _TEXT
+    LEAF_ENTRY RhpAssignRefArm64, _TEXT, 6
     ;; check for escaping assignment
     ;; 1) check if we own the source region
 #ifdef FEATURE_SATORI_EXTERNAL_OBJECTS
@@ -453,6 +456,8 @@ JustAssign
         str      x15, [x14]
         ret      lr
 
+    ;; Not executed. Places the block below within one cache line (RhpAssignRefArm64 starts on a cache line).
+        ALIGN 64
 AssignAndMarkCards
     ALTERNATE_ENTRY RhpAssignRefAVLocation
         stlr    x15, [x14]
@@ -460,27 +465,27 @@ AssignAndMarkCards
     ; TUNING: barriers in different modes could be separate pieces of code, but barrier switch 
     ;         needs to suspend EE, not sure if skipping mode check would worth that much.
         PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
-    ; check the barrier state. this must be done after the assignment (in program order
-    ; if state == 2 we do not set or dirty cards.
-        tbz     x17, #1, DoCards
+    ; check the barrier state. this must be done after the assignment (in program order)
+    ; if src and dst are in the same region, cards are needed only while concurrent (state == 1)
+        and     x12, x14, #0xFFFFFFFFFFE00000   ; target aligned to region
+        cmp     x12, x16
+        bne     CrossRegion
+        tbnz    x17, #0, MarkCards
+        ret     lr
 
+CrossRegion
+    ; if state == 2 we do not set or dirty cards.
+        tbnz    x17, #1, ExitNoCards
+
+    ; dst is in another region - cards are needed if src is ephemeral (gen < 2), or while concurrent
+        ldr     w12, [x16, 16]                  ; source region + 16 -> generation
+        tbz     x12, #1, MarkCards
+        cbnz    x17, MarkCards
 ExitNoCards
         ret     lr
 
-DoCards
-    ; if src and dst are in the same region, cards are not needed, unless concurrent
-        and     x12, x14, #0xFFFFFFFFFFE00000   ; target aligned to region
-        cmp     x12, x16
-        beq     CheckConcurrent    ; same region, just check if barrier is not concurrent
-
-    ; dst is in another region - cards are needed if src is ephemeral (gen < 2)
-        ldr     w12, [x16, 16]                  ; source region + 16 -> generation
-        tbz     x12, #1, MarkCards
-
-CheckConcurrent
-    ; if not concurrent, exit
-        cbz     x17, ExitNoCards
-
+    ;; Not executed. Places the card marking below within one cache line.
+        ALIGN 64
 MarkCards
     ; only x12, x15, x16 and x17 may be trashed here, so we keep the card offset in x12,
     ; the group address in x15, the page in x16, and reuse x17 for both the loaded byte
@@ -501,7 +506,9 @@ MarkCards
     ; SETTING CARD FOR X14
 SetCard
         ldrb    w17, [x16, x12]
-        cbnz    w17, Exit
+        cbz     w17, DoSetCard
+        ret     lr
+DoSetCard
         mov     w17, #1
         strb    w17, [x16, x12]
 SetGroup
@@ -512,7 +519,8 @@ SetGroup
 SetPage
         ldrb    w17, [x16]
         cbnz    w17, CardSet
-        mov     w17, #1
+        ; DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     w17, #4
         strb    w17, [x16]
 
 CardSet
@@ -532,7 +540,9 @@ DirtyCard
         stlrb   w17, [x12]
 DirtyGroup
         ldrb    w12, [x15, #0x80]
-        tbnz    w12, #2, Exit
+        tbz     w12, #2, DoDirtyGroup
+        ret     lr
+DoDirtyGroup
         strb    w17, [x15, #0x80]
 DirtyPage
         ldrb    w12, [x16]
@@ -671,23 +681,24 @@ ExchangeCompleteCmpXchg
     ;         needs to suspend EE, not sure if skipping mode check would worth that much.
         PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
 
-    ; check the barrier state. this must be done after the assignment (in program order
-    ; if state == 2 we do not set or dirty cards.
-        tbnz    x17, #1, ExitCmpXchg
-
-DoCardsCmpXchg
-    ; if src and dst are in the same region, cards are not needed, unless concurrent
+    ; check the barrier state. this must be done after the assignment (in program order)
+    ; if src and dst are in the same region, cards are needed only while concurrent (state == 1)
         and     x12, x14, #0xFFFFFFFFFFE00000   ; target aligned to region
         cmp     x12, x16
-        beq     CheckConcurrentCmpXchg    ; same region, just check if barrier is not concurrent
+        bne     CrossRegionCmpXchg
+        tbnz    x17, #0, MarkCardsCmpXchg
+        ret     lr
 
-    ; dst is in another region - cards are needed if src is ephemeral (gen < 2)
+CrossRegionCmpXchg
+    ; if state == 2 we do not set or dirty cards.
+        tbnz    x17, #1, ExitNoCardsCmpXchg
+
+    ; dst is in another region - cards are needed if src is ephemeral (gen < 2), or while concurrent
         ldr     w12, [x16, 16]                  ; source region + 16 -> generation
         tbz     x12, #1, MarkCardsCmpXchg
-
-CheckConcurrentCmpXchg
-    ; if not concurrent, exit
-        cbz     x17, ExitCmpXchg
+        cbnz    x17, MarkCardsCmpXchg
+ExitNoCardsCmpXchg
+        ret     lr
 
 MarkCardsCmpXchg
     ; x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
@@ -708,7 +719,9 @@ MarkCardsCmpXchg
     ; SETTING CARD FOR X14
 SetCardCmpXchg
         ldrb    w3, [x16, x2]
-        cbnz    w3, ExitCmpXchg
+        cbz     w3, DoSetCardCmpXchg
+        ret     lr
+DoSetCardCmpXchg
         mov     w17, #1
         strb    w17, [x16, x2]
 SetGroupCmpXchg
@@ -718,6 +731,8 @@ SetGroupCmpXchg
 SetPageCmpXchg
         ldrb    w3, [x16]
         cbnz    w3, CardSetCmpXchg
+        ; DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     w17, #4
         strb    w17, [x16]
 
 CardSetCmpXchg
@@ -736,7 +751,9 @@ DirtyCardCmpXchg
         stlrb   w17, [x2]
 DirtyGroupCmpXchg
         ldrb    w3, [x15, #0x80]
-        tbnz    w3, #2, ExitCmpXchg
+        tbz     w3, #2, DoDirtyGroupCmpXchg
+        ret     lr
+DoDirtyGroupCmpXchg
         strb    w17, [x15, #0x80]
 DirtyPageCmpXchg
         ldrb    w3, [x16]
@@ -864,23 +881,24 @@ ExchangeCompleteXchg
     ;         needs to suspend EE, not sure if skipping mode check would worth that much.
         PREPARE_EXTERNAL_VAR_INDIRECT g_write_watch_table, x17
 
-    ; check the barrier state. this must be done after the assignment (in program order
-    ; if state == 2 we do not set or dirty cards.
-        tbnz    x17, #1, ExitXchg
-
-DoCardsXchg
-    ; if src and dst are in the same region, cards are not needed, unless concurrent
+    ; check the barrier state. this must be done after the assignment (in program order)
+    ; if src and dst are in the same region, cards are needed only while concurrent (state == 1)
         and     x12, x14, #0xFFFFFFFFFFE00000   ; target aligned to region
         cmp     x12, x16
-        beq     CheckConcurrentXchg    ; same region, just check if barrier is not concurrent
+        bne     CrossRegionXchg
+        tbnz    x17, #0, MarkCardsXchg
+        ret     lr
 
-    ; dst is in another region - cards are needed if src is ephemeral (gen < 2)
+CrossRegionXchg
+    ; if state == 2 we do not set or dirty cards.
+        tbnz    x17, #1, ExitNoCardsXchg
+
+    ; dst is in another region - cards are needed if src is ephemeral (gen < 2), or while concurrent
         ldr     w12, [x16, 16]                  ; source region + 16 -> generation
         tbz     x12, #1, MarkCardsXchg
-
-CheckConcurrentXchg
-    ; if not concurrent, exit
-        cbz     x17, ExitXchg
+        cbnz    x17, MarkCardsXchg
+ExitNoCardsXchg
+        ret     lr
 
 MarkCardsXchg
     ; x2/x3 are ordinary volatile registers in this helper (standard ABI) and are dead
@@ -901,7 +919,9 @@ MarkCardsXchg
     ; SETTING CARD FOR X14
 SetCardXchg
         ldrb    w3, [x16, x2]
-        cbnz    w3, ExitXchg
+        cbz     w3, DoSetCardXchg
+        ret     lr
+DoSetCardXchg
         mov     w17, #1
         strb    w17, [x16, x2]
 SetGroupXchg
@@ -911,6 +931,8 @@ SetGroupXchg
 SetPageXchg
         ldrb    w3, [x16]
         cbnz    w3, CardSetXchg
+        ; DIRTY on purpose: a racing REMEMBERED store could overwrite another thread's DIRTY.
+        mov     w17, #4
         strb    w17, [x16]
 
 CardSetXchg
@@ -929,7 +951,9 @@ DirtyCardXchg
         stlrb   w17, [x2]
 DirtyGroupXchg
         ldrb    w3, [x15, #0x80]
-        tbnz    w3, #2, ExitXchg
+        tbz     w3, #2, DoDirtyGroupXchg
+        ret     lr
+DoDirtyGroupXchg
         strb    w17, [x15, #0x80]
 DirtyPageXchg
         ldrb    w3, [x16]
