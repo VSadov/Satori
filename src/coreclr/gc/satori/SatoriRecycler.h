@@ -526,6 +526,18 @@ private:
     IncrSummaryShard* m_incrSummary;
     int m_incrSummaryShardCount;
 
+    // Gen1 regions that could be sources, by shard as above. Rebuilt by every GC. (see IncrSummarizeGen1Region)
+    struct DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY) IncrSourceShard
+    {
+        volatile int m_lock;
+        int m_sourceCount;
+        // what the eligible regions would free, as in IncrSummaryShard
+        size_t m_eligibleGain;
+        SatoriIncrEntry m_sources[INCR_MAX_REGIONS];
+    };
+
+    IncrSourceShard* m_incrGen1Summary;
+
 private:
     size_t Gen1RegionCount();
     size_t Gen2RegionCount();
@@ -653,9 +665,11 @@ private:
     void UpdateGcCounters(int64_t blockingStart);
 
     void SelectIncrementalRelocationCandidates();
-    static void IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, SatoriIncrRegionInfo& info);
+    static void IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, bool gen1, SatoriIncrRegionInfo& info);
     void IncrSummarizeRegion(SatoriRegion* region);
+    void IncrSummarizeGen1Region(SatoriRegion* region);
     void IncrSummaryReset();
+    void IncrGen1SummaryReset();
     bool PlanIncrementalRelocation(bool canRelocateRegularly);
     void CalibrateIncrementalRelocation();
     void PublishRecordedRefs(SatoriWorkChunk*& chunk);

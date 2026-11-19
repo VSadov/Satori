@@ -806,7 +806,7 @@ bool SatoriRegion::Sweep()
     this->m_hasFinalizables = hasFinalizables;
     this->DoNotSweep() = true;
     this->m_hasPinnedObjects = hasUnmovable;
-    this->m_pinnedByMark = false;
+    this->NotePinnedForNextMark();
     this->m_individuallyPromoted = false;
     this->m_maxParseableEnd = objLimit;
 
@@ -885,6 +885,18 @@ inline void SatoriRegion::SetPinnedByMark()
     {
         m_pinnedByMark = true;
     }
+}
+
+inline bool SatoriRegion::WasPinnedByMark()
+{
+    return m_wasPinnedByMark;
+}
+
+// Sweeping clears the marking state. Remember if marking found the region pinned.
+inline void SatoriRegion::NotePinnedForNextMark()
+{
+    m_wasPinnedByMark |= m_pinnedByMark;
+    m_pinnedByMark = false;
 }
 
 // The region cannot be moved by the GC in progress. Meaningful after marking.

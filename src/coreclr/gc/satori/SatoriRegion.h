@@ -261,6 +261,8 @@ public:
     void SetHasPinnedObjects();
     bool IsPinnedByMark();
     void SetPinnedByMark();
+    bool WasPinnedByMark();
+    void NotePinnedForNextMark();
     bool IsUnmovable();
     bool& DoNotSweep();
     bool& IsPreSwept();
@@ -475,6 +477,9 @@ private:
             bool m_hasMarksSet;
             // Marking found an object in the region pinned by a root. Sweeping clears it.
             bool m_pinnedByMark;
+            // Sticky m_pinnedByMark: some marking found the region pinned since it was blank.
+            // Incremental relocation takes this as a sign that the region is likely pinned again.
+            bool m_wasPinnedByMark;
 
             size_t m_freeListCapacities[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];

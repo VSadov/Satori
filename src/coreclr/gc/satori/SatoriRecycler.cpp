@@ -242,18 +242,22 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_incrRootsStartTicks = 0;
     m_incrRootsDoneTicks = 0;
     m_incrSummary = nullptr;
+    m_incrGen1Summary = nullptr;
     m_incrSummaryShardCount = 0;
     if (SatoriUtil::IsIncrementalRelocation())
     {
         // committed memory is zeroed, which is the initial state
+        // The Gen1 summary follows the Gen2 one, in the same reservation.
         int shardCount = min(INCR_MAX_SUMMARY_SHARDS, max(1, (int)GCToEEInterface::GetCurrentProcessCpuCount()));
-        size_t size = ALIGN_UP(sizeof(IncrSummaryShard) * shardCount, SatoriUtil::CommitGranularity());
+        size_t gen2Size = sizeof(IncrSummaryShard) * shardCount;
+        size_t size = ALIGN_UP(gen2Size + sizeof(IncrSourceShard) * shardCount, SatoriUtil::CommitGranularity());
         void* summary = GCToOSInterface::VirtualReserve(nullptr, size);
         if (summary != nullptr)
         {
             if (GCToOSInterface::VirtualCommit(summary, size))
             {
                 m_incrSummary = (IncrSummaryShard*)summary;
+                m_incrGen1Summary = (IncrSourceShard*)((size_t)summary + gen2Size);
                 m_incrSummaryShardCount = shardCount;
             }
             else
@@ -4540,6 +4544,10 @@ void SatoriRecycler::Plan()
     // gen1 is always rebuilt, clear counters
     m_occupancyAcc[1] = 0;
     m_estimatedEphemeralReclaim = 0;
+    if (m_incrGen1Summary != nullptr)
+    {
+        IncrGen1SummaryReset();
+    }
 
     if (m_promoteAllRegions)
     {
@@ -5546,6 +5554,11 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
         }
         else
         {
+            if (m_incrGen1Summary != nullptr)
+            {
+                IncrSummarizeGen1Region(curRegion);
+            }
+
             PushToEphemeralQueues(curRegion);
         }
     }
@@ -6000,8 +6013,10 @@ static void IncrCalibrate(double& value, int& samples, double sample)
     samples++;
 }
 
-// Evaluates a Gen2 region for selection, as it enters the tenured queues (see IncrSummarizeRegion).
-void SatoriRecycler::IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, SatoriIncrRegionInfo& info)
+// Evaluates a region for selection, as it enters the tenured queues, or the ephemeral queues for Gen1 regions.
+// (see IncrSummarizeRegion) Gen1 regions are only sources, since they are rebuilt by every GC.
+// They may be demoted - a Gen2 GC marks the demoted objects and frees the trackers before planning.
+void SatoriRecycler::IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, bool gen1, SatoriIncrRegionInfo& info)
 {
     info.m_occupancy = region->Occupancy();
     info.m_inSpace = false;
@@ -6016,10 +6031,9 @@ void SatoriRecycler::IncrEvaluateRegion(SatoriRegion* region, double refsPerObj,
     }
 
     info.m_inSpace = true;
-    if (region->IsDemoted() ||
+    if ((!gen1 && (region->IsDemoted() || region->HasUnmarkedDemotedObjects())) ||
         region->IsAttachedToAllocatingOwner() ||
         region->IsPinnedByMark() ||
-        region->HasUnmarkedDemotedObjects() ||
         region->SweepsSinceLastAllocation() == 0)
     {
         return;
@@ -6037,8 +6051,11 @@ void SatoriRecycler::IncrEvaluateRegion(SatoriRegion* region, double refsPerObj,
 
     // As in ReclaimSizeIfRelocated, we do not want to move much.
     // A region that could take its own objects in one of its free spans is a better target than a source.
+    // Pinned object heap objects keep a region in place. A region that was pinned by marking is likely to be pinned again.
     if (occupancy <= Satori::REGION_SIZE_GRANULARITY / 2 &&
-        bucket < SatoriUtil::BucketForAlloc(occupancy))
+        bucket < SatoriUtil::BucketForAlloc(occupancy) &&
+        !region->HasPinnedObjects() &&
+        !region->WasPinnedByMark())
     {
         size_t gain = IncrRelocationGain(occupancy);
         size_t cost = IncrRelocationCost(objCount, occupancy, (size_t)(objCount * refsPerObj));
@@ -6050,7 +6067,7 @@ void SatoriRecycler::IncrEvaluateRegion(SatoriRegion* region, double refsPerObj,
         info.m_source.m_occupancy = (uint32_t)occupancy;
     }
 
-    info.m_isTarget = bucket >= INCR_MIN_TARGET_BUCKET;
+    info.m_isTarget = !gen1 && bucket >= INCR_MIN_TARGET_BUCKET;
 }
 
 static void IncrSpinLockEnter(volatile int* lock)
@@ -6104,7 +6121,7 @@ void SatoriRecycler::IncrSummarizeRegion(SatoriRegion* region)
     _ASSERTE(region->Generation() == 2);
 
     SatoriIncrRegionInfo info;
-    IncrEvaluateRegion(region, m_incrRefsPerObj, info);
+    IncrEvaluateRegion(region, m_incrRefsPerObj, /* gen1 */ false, info);
     bool isLarge = !info.m_inSpace;
     if (isLarge || info.m_isSource || info.m_isTarget)
     {
@@ -6132,6 +6149,36 @@ void SatoriRecycler::IncrSummarizeRegion(SatoriRegion* region)
         }
 
         IncrSpinLockLeave(&shard.m_lock);
+    }
+}
+
+// Called for every Gen1 region that a GC puts into the ephemeral queues, when incremental relocation is enabled.
+// (not the reusable ones, which allocators may take at any time)
+// The ephemeral queues are rebuilt by every GC, and so is this summary. Until then, the regions stay in the queues.
+// Thus a Gen2 GC that starts after a GC finds them there and may select them as sources. Being Gen1, they are promoted by the Gen2 GC.
+void SatoriRecycler::IncrSummarizeGen1Region(SatoriRegion* region)
+{
+    _ASSERTE(region->Generation() == 1);
+
+    SatoriIncrRegionInfo info;
+    IncrEvaluateRegion(region, m_incrRefsPerObj, /* gen1 */ true, info);
+    if (info.m_isSource)
+    {
+        IncrSourceShard& shard = m_incrGen1Summary[IncrSummaryShardIndex(m_incrSummaryShardCount)];
+        IncrSpinLockEnter(&shard.m_lock);
+        shard.m_eligibleGain += info.m_gain;
+        IncrHeapInsertSmallest(shard.m_sources, shard.m_sourceCount, INCR_MAX_REGIONS, info.m_source);
+        IncrSpinLockLeave(&shard.m_lock);
+    }
+}
+
+// Starts the Gen1 summary over. Called by every GC, while EE is stopped and before any Gen1 region is put back into the queues.
+void SatoriRecycler::IncrGen1SummaryReset()
+{
+    for (int s = 0; s < m_incrSummaryShardCount; s++)
+    {
+        m_incrGen1Summary[s].m_sourceCount = 0;
+        m_incrGen1Summary[s].m_eligibleGain = 0;
     }
 }
 
@@ -6217,6 +6264,25 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
         IncrSpinLockLeave(&shard.m_lock);
     }
 
+    // Gen1 regions are only sources. (see IncrSummarizeGen1Region)
+    for (int s = 0; s < m_incrSummaryShardCount; s++)
+    {
+        IncrSourceShard& shard = m_incrGen1Summary[s];
+        if (VolatileLoadWithoutBarrier(&shard.m_sourceCount) == 0)
+        {
+            continue;
+        }
+
+        IncrSpinLockEnter(&shard.m_lock);
+        for (int i = 0; i < shard.m_sourceCount; i++)
+        {
+            IncrHeapInsertSmallest(sources, sourceCount, INCR_MAX_REGIONS, shard.m_sources[i]);
+        }
+
+        eligibleGain += shard.m_eligibleGain;
+        IncrSpinLockLeave(&shard.m_lock);
+    }
+
     // the best sources first
     IncrHeapSort(sources, sourceCount);
 
@@ -6244,7 +6310,10 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     }
 
     // Gen2 occupancy and regions are known from the accumulators and the queues, see IncrSummaryShard.
-    size_t gen2Space = (Gen2RegionCount() - largeRegions) * Satori::REGION_SIZE_GRANULARITY;
+    // The counts are read separately from the summary, while large regions may be added. When they disagree, Gen2 space is taken as 0.
+    // Gen1 regions count as well, since Gen1 sources are in the backlog and the Gen2 GC promotes them.
+    size_t gen2Regions = Gen2RegionCount();
+    size_t gen2Space = ((gen2Regions > largeRegions ? gen2Regions - largeRegions : 0) + Gen1RegionCount()) * Satori::REGION_SIZE_GRANULARITY;
     size_t gen2Occupancy = m_occupancyAcc[2] + m_gen2AddedSinceLastCollection;
 
     // The budget is the pause that incremental relocation may add. Outside of low latency mode, it may grow with the heap,
@@ -6316,7 +6385,7 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
 
     for (int i = 0; i < m_incrSourceCount; i++)
     {
-        _ASSERTE(m_incrSources[i]->Generation() == 2);
+        _ASSERTE(m_incrSources[i]->Generation() >= 1);
         _ASSERTE((size_t)m_incrSources[i]->ObjCount() == m_incrSourceObjs[i]);
         m_incrSourceRefs[i] = 0;
         m_incrSources[i]->RelocationCandidateIndex() = (uint8_t)(i + 1);
@@ -6523,7 +6592,8 @@ void SatoriRecycler::FreeRecordedRefs()
 // Keeps the candidates that are still relocatable and, now that we know how many references to them need updating,
 // fit the budget. These become the only relocation sources.
 // When Gen2 could be relocated regularly as well, that is preferred if incremental relocation does not keep up,
-// that is when too much reclaimable space would remain in sparse regions. Then nothing is planned and false is returned.
+// that is when too much reclaimable space would remain in sparse regions, or if compaction was requested.
+// Then nothing is planned and false is returned.
 bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
 {
     _ASSERTE(m_incrSelectionDone);
@@ -6611,8 +6681,10 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
     // Incremental relocation keeps up if not too much reclaimable space remains in sparse Gen2 regions.
     // Otherwise, if we can, we relocate regularly.
     size_t backlog = m_incrEligibleGain > keepTotalGain ? m_incrEligibleGain - keepTotalGain : 0;
+    // Incremental relocation does not do what a request to compact asks for, so regular relocation does that when it can.
+    bool forcedCompaction = m_forceCompact || SatoriUtil::IsForceCompact();
     if (canRelocateRegularly &&
-        backlog * 100 > m_incrGen2Space * SatoriUtil::IncrRelocBacklogPercent())
+        (forcedCompaction || backlog * 100 > m_incrGen2Space * SatoriUtil::IncrRelocBacklogPercent()))
     {
         FreeRecordedRefs();
         m_incrSourceCount = 0;
@@ -6645,10 +6717,16 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
     int relocatingCount = 0;
     for (int i = 0; i < keepCount; i++)
     {
-        // the candidate is in a tenured queue. must be taken out, to not be treated as staying.
-        if (m_tenuredRegions->TryRemove(keep[i]))
+        // The candidate is in a tenured queue, or in an ephemeral one if it is Gen1. It must be taken out, to not be treated as staying.
+        // A Gen2 GC frees demoted trackers while marking, so none should still be demoted here, but such regions cannot relocate.
+        SatoriRegion* region = keep[i];
+        if (!region->IsDemoted() &&
+            (m_tenuredRegions->TryRemove(region) ||
+             m_tenuredFinalizationTrackingRegions->TryRemove(region) ||
+             m_ephemeralRegions->TryRemove(region) ||
+             m_ephemeralFinalizationTrackingRegions->TryRemove(region)))
         {
-            m_relocatingRegions->Push(keep[i]);
+            m_relocatingRegions->Push(region);
             m_incrKeep[keepIndex[i] + 1] = true;
             relocatingCount++;
         }
@@ -6658,7 +6736,8 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
     {
         for (int i = 0; i < m_incrTargetCount; i++)
         {
-            if (m_tenuredRegions->TryRemove(m_incrTargets[i]))
+            if (m_tenuredRegions->TryRemove(m_incrTargets[i]) ||
+                m_tenuredFinalizationTrackingRegions->TryRemove(m_incrTargets[i]))
             {
                 AddRelocationTarget(m_incrTargets[i]);
             }

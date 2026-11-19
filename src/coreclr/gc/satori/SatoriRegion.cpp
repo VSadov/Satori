@@ -375,6 +375,7 @@ void SatoriRegion::MakeBlank()
     m_isRelocated = false;
     m_relocationCandidateIndex = 0;
     m_pinnedByMark = false;
+    m_wasPinnedByMark = false;
     _ASSERTE(!m_acceptedPromotedObjects);
     _ASSERTE(!m_acceptedRelocatedFinalizables);
     _ASSERTE(!m_individuallyPromoted);
@@ -3905,7 +3906,7 @@ void SatoriRegion::FinishSweepForPreSwept()
     HasMarksSet() = false;
 #endif
     // PreSweep has computed m_hasPinnedObjects already.
-    m_pinnedByMark = false;
+    NotePinnedForNextMark();
     HasUnmarkedDemotedObjects() = IsDemoted();
     IsPreSwept() = false;
     DoNotSweep() = true;
