@@ -365,6 +365,7 @@ void SatoriRegion::MakeBlank()
     m_doNotSweep = false;
     m_isPreSwept = false;
     m_isRelocated = false;
+    m_pinnedByMark = false;
     _ASSERTE(!m_acceptedPromotedObjects);
     _ASSERTE(!m_individuallyPromoted);
     _ASSERTE(!m_hasUnmarkedDemotedObjects);
@@ -3543,7 +3544,7 @@ void SatoriRegion::UpdatePointers()
 
 void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
 {
-    _ASSERTE(!other->HasPinnedObjects());
+    _ASSERTE(!other->IsUnmovable());
     m_hasFinalizables |= other->m_hasFinalizables;
     SatoriWorkChunk* otherFinalizables = other->m_finalizableTrackers;
     if (otherFinalizables)
@@ -3622,7 +3623,9 @@ bool SatoriRegion::IsPromotionCandidate()
 // this is used to estimate goodness of overall and individual relocations.
 size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeFullGC)
 {
-    if (IsLarge() || HasPinnedObjects())
+    // Demoted regions are movable in a full GC, which frees their trackers, so this does not use IsUnmovable().
+    // Planning checks IsUnmovable() first.
+    if (IsLarge() || HasPinnedObjects() || IsPinnedByMark())
         return 0;        // can't relocate
 
     if (IsDemoted() && !assumeFullGC)
@@ -3811,6 +3814,9 @@ void SatoriRegion::PreSweep()
     size_t occupancy = 0;
     int32_t objCount = 0;
     bool hasFinalizables = false;
+    // only a region that may have pinned objects needs to look for them
+    bool checkUnmovable = m_hasPinnedObjects;
+    bool hasUnmovable = false;
     SatoriObject* o = FirstObject();
     SweepPrefetcher prefetcher;
     SweepPrefetchStart(prefetcher, o);
@@ -3842,6 +3848,12 @@ void SatoriRegion::PreSweep()
             hasFinalizables = true;
         }
 
+        if (checkUnmovable && o->IsUnmovable())
+        {
+            hasUnmovable = true;
+            checkUnmovable = false;
+        }
+
         objCount++; 
         occupancy += size;
         o = (SatoriObject*)(o->Start() + size);
@@ -3850,6 +3862,8 @@ void SatoriRegion::PreSweep()
     _ASSERTE(o->Start() == objLimit || End() > objLimit);
 
     this->m_hasFinalizables = hasFinalizables;
+    // planning that follows sees exactly whether live pinned objects keep the region in place.
+    this->m_hasPinnedObjects = hasUnmovable;
     this->m_maxParseableEnd = objLimit;
     SetOccupancy(occupancy, objCount);
     this->IsPreSwept() = true;
@@ -3880,7 +3894,8 @@ void SatoriRegion::FinishSweepForPreSwept()
 #if _DEBUG
     HasMarksSet() = false;
 #endif
-    HasPinnedObjects() = false;
+    // PreSweep has computed m_hasPinnedObjects already.
+    m_pinnedByMark = false;
     HasUnmarkedDemotedObjects() = IsDemoted();
     IsPreSwept() = false;
     DoNotSweep() = true;

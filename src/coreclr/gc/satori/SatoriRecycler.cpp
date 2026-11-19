@@ -467,7 +467,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
     if (region->IsEscapeTracking())
     {
         _ASSERTE(IsBlockingPhase());
-        _ASSERTE(!region->HasPinnedObjects());
+        _ASSERTE(!region->IsPinnedByMark());
         if (region->IsDemoted())
         {
             // A demoted region reused for gen0. Its demoted objects will be marked as roots
@@ -1981,13 +1981,7 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, Sa
     {
         // handle mark overflow by dirtying the cards
         o->DirtyCardsForContent();
-
-        // since this o will not be popped from the work queue,
-        // check for unmovable here
-        if (o->IsUnmovable())
-        {
-            o->ContainingRegion()->SetHasPinnedObjects();
-        }
+        _ASSERTE(!o->IsUnmovable() || o->ContainingRegion()->HasPinnedObjects());
     }
 }
 
@@ -2042,7 +2036,7 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
 
         if (flags & GC_CALL_PINNED)
         {
-            o->ContainingRegion()->SetHasPinnedObjects();
+            o->ContainingRegion()->SetPinnedByMark();
         }
     }
 };
@@ -2182,7 +2176,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
 
         if (flags & GC_CALL_PINNED)
         {
-            o->ContainingRegion()->SetHasPinnedObjects();
+            o->ContainingRegion()->SetPinnedByMark();
         }
     }
 };
@@ -2383,8 +2377,8 @@ void SatoriRecycler::MarkDemoted(SatoriRegion* curRegion, MarkContext* markConte
 
     if (m_condemnedGeneration == 1)
     {
+        // the region stays in place. (see SatoriRegion::IsUnmovable)
         _ASSERTE(!curRegion->MaybeEscapeTrackingAcquire());
-        curRegion->HasPinnedObjects() = true;
 
         SatoriWorkChunk* gen2Objects = curRegion->DemotedObjects();
         while (gen2Objects)
@@ -2582,9 +2576,9 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         {
             pushToChunk(child);
         }
-        else if (child->IsUnmovable())
+        else
         {
-            child->ContainingRegion()->SetHasPinnedObjects();
+            _ASSERTE(!child->IsUnmovable() || child->ContainingRegion()->HasPinnedObjects());
         }
     };
 
@@ -2674,10 +2668,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
                 srcChunk->PrefetchNext(MARK_PREFETCH_DISTANCE);
 
                 _ASSERTE(o->IsMarkedAtomic());
-                if (o->IsUnmovable())
-                {
-                    o->ContainingRegion()->SetHasPinnedObjects();
-                }
+                _ASSERTE(!o->IsUnmovable() || o->ContainingRegion()->HasPinnedObjects());
 
                 // do not get engaged with big objects, reschedule them as child ranges.
                 size_t size = o->Size();
@@ -2851,9 +2842,9 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         {
             pushToChunk(child);
         }
-        else if (child->IsUnmovable())
+        else
         {
-            child->ContainingRegion()->SetHasPinnedObjects();
+            _ASSERTE(!child->IsUnmovable() || child->ContainingRegion()->HasPinnedObjects());
         }
     };
 
@@ -2919,10 +2910,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
                 srcChunk->PrefetchNext(MARK_PREFETCH_DISTANCE);
 
                 _ASSERTE(o->IsMarkedAtomic());
-                if (o->IsUnmovable())
-                {
-                    o->ContainingRegion()->SetHasPinnedObjects();
-                }
+                _ASSERTE(!o->IsUnmovable() || o->ContainingRegion()->HasPinnedObjects());
 
                 // do not get engaged with big objects, reschedule them as child ranges.
                 size_t size = o->Size();
@@ -4292,7 +4280,7 @@ void SatoriRecycler::FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool hasM
     // The rest is a fairly relatively cheap wiping of metadata fields.
     // Thus we do not defer freeing - once we know a region is empty, we free it.
 
-    _ASSERTE(!curRegion->HasPinnedObjects());
+    _ASSERTE(!curRegion->IsPinnedByMark());
 
     // NOTE: MakeBlank will assert that nothing is marked.
     if (hasMarks)
@@ -4499,7 +4487,7 @@ void SatoriRecycler::PlanRegions(SatoriShardedRegionQueue* regions)
             // select relocation candidates and relocation targets according to sizes.
             else
             {
-                size_t reclaim = curRegion->ReclaimSizeIfRelocated(m_promoteAllRegions);
+                size_t reclaim = curRegion->IsUnmovable() ? 0 : curRegion->ReclaimSizeIfRelocated(m_promoteAllRegions);
                 if (reclaim)
                 {
                     // we use m_estimatedEphemeralReclaim to accumulate current estimate
@@ -4541,7 +4529,7 @@ void SatoriRecycler::AddRelocationTarget(SatoriRegion* region)
     {
         _ASSERTE(maxFreeBucket < Satori::FREELIST_COUNT);
         // within the same bucket, we'd prefer to fill up pinned ones first
-        if (region->HasPinnedObjects())
+        if (region->IsUnmovable())
         {
             m_relocationTargets[maxFreeBucket]->Push(region);
         }
@@ -4557,7 +4545,7 @@ SatoriRegion* SatoriRecycler::GetOrAddRelocationTarget(SatoriRegion* region, siz
     int maxFreeBucket = region->GetMaxFreeBucket();
     _ASSERTE(maxFreeBucket >= 0);
     _ASSERTE(maxFreeBucket < Satori::FREELIST_COUNT);
-    _ASSERTE(!region->HasPinnedObjects());
+    _ASSERTE(!region->IsUnmovable());
 
     SatoriRegion* result = m_relocationTargets[maxFreeBucket]->PopOrPush(region);
     if (result)

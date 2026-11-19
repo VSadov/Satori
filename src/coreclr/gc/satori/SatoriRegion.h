@@ -257,8 +257,11 @@ public:
     int32_t ObjCount();
     size_t DemotedOccupancy();
 
-    bool& HasPinnedObjects();
+    bool HasPinnedObjects();
     void SetHasPinnedObjects();
+    bool IsPinnedByMark();
+    void SetPinnedByMark();
+    bool IsUnmovable();
     bool& DoNotSweep();
     bool& IsPreSwept();
     bool& IsRelocated();
@@ -444,6 +447,8 @@ private:
 
             int32_t m_unfinishedAllocationCount;
 
+            // The region may contain pinned object heap objects. Allocating one sets this.
+            // Sweeping recomputes it from the objects that survived, so it is exact after sweeping.
             bool m_hasPinnedObjects;
             bool m_hasFinalizables;
             bool m_hasPendingFinalizables;
@@ -459,6 +464,8 @@ private:
             bool m_usableBaselineStale;
             // TODO: VS can fold with m_doNotSweep?
             bool m_hasMarksSet;
+            // Marking found an object in the region pinned by a root. Sweeping clears it.
+            bool m_pinnedByMark;
 
             size_t m_freeListCapacities[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];
