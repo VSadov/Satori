@@ -128,6 +128,7 @@ public:
     }
 #endif
 
+    SatoriWorkChunk* TakeAll();
     void PushChain(SatoriWorkChunk* first, SatoriWorkChunk* last);
 
 private:

@@ -192,6 +192,14 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     static_assert(offsetof(SatoriRegion, m_freeListTails) + sizeof(SatoriRegion::m_freeListTails) <= BITMAP_START * sizeof(size_t),
         "SatoriRegion header does not fit in the unused part of the mark bitmap.");
 
+    // What the marker reads for every reference is on the first line of the header.
+    static_assert(offsetof(SatoriRegion, m_generation) < Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_relocationCandidateIndex) < Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_reusableFor) < Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_staleEscapeMarks) < Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_gen2Objects) < Satori::CACHE_LINE_GRANULARITY,
+        "Fields read by the marker for every reference are expected to be on the first cache line of the header.");
+
     static_assert(Satori::FREELIST_COUNT <= sizeof(SatoriRegion::m_nonEmptyFreeLists) * 8,
         "m_nonEmptyFreeLists has a bit for every free list.");
 
@@ -365,7 +373,9 @@ void SatoriRegion::MakeBlank()
     m_doNotSweep = false;
     m_isPreSwept = false;
     m_isRelocated = false;
+    m_relocationCandidateIndex = 0;
     _ASSERTE(!m_acceptedPromotedObjects);
+    _ASSERTE(!m_acceptedRelocatedFinalizables);
     _ASSERTE(!m_individuallyPromoted);
     _ASSERTE(!m_hasUnmarkedDemotedObjects);
 
