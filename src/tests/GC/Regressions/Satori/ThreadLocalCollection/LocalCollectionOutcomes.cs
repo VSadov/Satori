@@ -6,7 +6,7 @@ using Xunit;
 
 public static class LocalCollectionOutcomes
 {
-    [DllImport("SatoriLocalCollectionOutcomesNative", CallingConvention = CallingConvention.Cdecl)]
+    [DllImport("ThreadLocalCollectionOutcomesNative", CallingConvention = CallingConvention.Cdecl)]
     private static extern int RunLocalCollectionOutcomes();
 
     [Fact]

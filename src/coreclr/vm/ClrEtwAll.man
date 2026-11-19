@@ -491,17 +491,17 @@
                         <map value="0x0" message="$(string.RuntimePublisher.GCBucket.FLItemMapMessage)"/>
                         <map value="0x1" message="$(string.RuntimePublisher.GCBucket.PlugMessage)"/>
                     </valueMap>
-                    <valueMap name="SatoriLocalCollectionTriggerMap">
+                    <valueMap name="ThreadLocalCollectionTriggerMap">
                         <map value="0x0" message="$(string.RuntimePublisher.Satori.WindowLimit)"/>
                         <map value="0x1" message="$(string.RuntimePublisher.Satori.ExhaustedSpan)"/>
                     </valueMap>
-                    <valueMap name="SatoriLocalCollectionOutcomeMap">
+                    <valueMap name="ThreadLocalCollectionOutcomeMap">
                         <map value="0x0" message="$(string.RuntimePublisher.Satori.EscapedLimit)"/>
                         <map value="0x1" message="$(string.RuntimePublisher.Satori.InsufficientProgress)"/>
                         <map value="0x2" message="$(string.RuntimePublisher.Satori.SurvivalAbort)"/>
                         <map value="0x3" message="$(string.RuntimePublisher.Satori.Completed)"/>
                     </valueMap>
-                    <valueMap name="SatoriLocalCollectionRetryMap">
+                    <valueMap name="ThreadLocalCollectionRetryMap">
                         <map value="0x0" message="$(string.RuntimePublisher.Satori.NotAttempted)"/>
                         <map value="0x1" message="$(string.RuntimePublisher.Satori.Succeeded)"/>
                         <map value="0x2" message="$(string.RuntimePublisher.Satori.Failed)"/>
@@ -1494,9 +1494,9 @@
                     <template tid="GCThreadLocalCollection">
                         <data name="ClrInstanceID" inType="win:UInt16" />
                         <data name="Count" inType="win:UInt32" />
-                        <data name="Outcome" inType="win:UInt32" map="SatoriLocalCollectionOutcomeMap" />
-                        <data name="Trigger" inType="win:UInt32" map="SatoriLocalCollectionTriggerMap" />
-                        <data name="Retry" inType="win:UInt32" map="SatoriLocalCollectionRetryMap" />
+                        <data name="Outcome" inType="win:UInt32" map="ThreadLocalCollectionOutcomeMap" />
+                        <data name="Trigger" inType="win:UInt32" map="ThreadLocalCollectionTriggerMap" />
+                        <data name="Retry" inType="win:UInt32" map="ThreadLocalCollectionRetryMap" />
                         <data name="TrackingProductive" inType="win:Boolean" />
                         <data name="RegionID" inType="win:UInt64" />
                         <data name="RequestedBytes" inType="win:UInt64" />

@@ -55,7 +55,7 @@ const int SatoriRegion::MAX_LARGE_OBJ_SIZE = Satori::REGION_SIZE_GRANULARITY - S
 
 // Prefetch queue for traversals of thread-local object graphs (marking and escaping).
 // On Roslyn, lengths 4 and 8 performed the same, 16 and 32 were worse.
-typedef SatoriPrefetchQueue<8> SatoriLocalPrefetchQueue;
+typedef SatoriPrefetchQueue<8> ThreadLocalPrefetchQueue;
 
 // Root slots recorded while marking a thread-local region, so that updating pointers
 // can fix them up directly instead of walking the stack a second time.
@@ -63,7 +63,7 @@ typedef SatoriPrefetchQueue<8> SatoriLocalPrefetchQueue;
 // A stack walk for relocation reports the same slots as the stack walk for marking, minus pinned slots
 // (pinned objects do not move) and minus some reports made only when marking, which pass addresses
 // of the stack walker's locals (those point to handle-held, thus escaped and unmovable objects).
-struct SatoriLocalRootCache
+struct ThreadLocalRootCache
 {
     static const int CAPACITY = 4096 / (2 * sizeof(size_t));
 
@@ -97,9 +97,9 @@ struct SatoriLocalRootCache
     }
 };
 
-struct SatoriLocalScanContext : ScanContext
+struct ThreadLocalScanContext : ScanContext
 {
-    SatoriLocalRootCache* rootCache;
+    ThreadLocalRootCache* rootCache;
     uint32_t stackSlots;
     size_t pointerBytes;
 };
@@ -109,7 +109,7 @@ struct SatoriLocalScanContext : ScanContext
 // Compaction can skip such a run at once instead of looking at the objects. The list is ascending.
 // When it is full, planning stops recording. Compaction then walks the runs that are not in the list
 // like any other objects that do not move, which is slower, but gives the same result.
-struct SatoriLocalStayRuns
+struct ThreadLocalStayRuns
 {
     static const int CAPACITY = 16;
 
@@ -1241,7 +1241,7 @@ SatoriObject* SatoriRegion::FindMarkedObjectFrom(size_t location, size_t limit, 
 template <bool isConservative>
 void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
 {
-    ((SatoriLocalScanContext*)sc)->stackSlots++;
+    ((ThreadLocalScanContext*)sc)->stackSlots++;
     SatoriRegion* region = (SatoriRegion*)sc->_unused1;
     size_t location = (size_t)*ppObject;
 
@@ -1265,7 +1265,7 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
     // pinned objects do not move, the relocation walk does not report pinned slots.
     if (!(flags & GC_CALL_PINNED))
     {
-        ((SatoriLocalScanContext*)sc)->rootCache->Record(ppObject, o);
+        ((ThreadLocalScanContext*)sc)->rootCache->Record(ppObject, o);
     }
 
     if (!region->IsMarked(o))
@@ -1274,7 +1274,7 @@ void SatoriRegion::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t fla
         size_t size = region->AddSurvivorLocal(o);
         if (region->PushToMarkStackIfHasPointers(o))
         {
-            ((SatoriLocalScanContext*)sc)->pointerBytes += size;
+            ((ThreadLocalScanContext*)sc)->pointerBytes += size;
         }
     }
 
@@ -1380,7 +1380,7 @@ void SatoriRegion::EscapeRecursively(SatoriObject* o)
 NOINLINE void SatoriRegion::EscapeReachable(SatoriObject* o)
 {
     // now recursively mark all the objects reachable from escaped object.
-    SatoriLocalPrefetchQueue queue;
+    ThreadLocalPrefetchQueue queue;
     while (true)
     {
         _ASSERTE(IsEscaped(o));
@@ -1729,8 +1729,8 @@ void SatoriRegion::EscapeFn(SatoriObject** dst, SatoriObject* src, SatoriRegion*
     }
 }
 
-SatoriLocalCollectionOutcome SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit,
-    SatoriLocalCollectionData* data)
+ThreadLocalCollectionOutcome SatoriRegion::ThreadLocalCollect(size_t allocBytes, bool atTlgcLimit,
+    ThreadLocalCollectionData* data)
 {
     if (data != nullptr)
     {
@@ -1743,7 +1743,7 @@ SatoriLocalCollectionOutcome SatoriRegion::ThreadLocalCollect(size_t allocBytes,
     }
     if (m_escapedSize > Satori::MAX_ESCAPE_SIZE)
     {
-        return SatoriLocalCollectionOutcome::EscapedLimit;
+        return ThreadLocalCollectionOutcome::EscapedLimit;
     }
 
     size_t minProgress = atTlgcLimit ? 2 * SatoriUtil::MinZeroInitSize() : Satori::REGION_SIZE_GRANULARITY / 4;
@@ -1752,7 +1752,7 @@ SatoriLocalCollectionOutcome SatoriRegion::ThreadLocalCollect(size_t allocBytes,
         // this is too soon. last collection did not buy us as much as we wanted
         // either due to fragmentation or unfortunate allocation pattern in this thread.
         // we will not collect this region, lest it keeps coming back.
-        return SatoriLocalCollectionOutcome::InsufficientProgress;
+        return ThreadLocalCollectionOutcome::InsufficientProgress;
     }
 
     m_allocBytesAtCollect = allocBytes;
@@ -1763,11 +1763,11 @@ SatoriLocalCollectionOutcome SatoriRegion::ThreadLocalCollect(size_t allocBytes,
     size_t occupancyBefore = m_occupancy;
 
     // NB: not initializing the entries, only the count.
-    SatoriLocalRootCache rootCache;
+    ThreadLocalRootCache rootCache;
     rootCache.count = 0;
 
     // Filled in by planning, used by compaction. Like for the root cache, only the count is initialized.
-    SatoriLocalStayRuns stayRuns;
+    ThreadLocalStayRuns stayRuns;
     stayRuns.count = 0;
 
     // Storage for m_localBitmap, only the part that can have objects is initialized, see ThreadLocalMark.
@@ -1822,11 +1822,11 @@ SatoriLocalCollectionOutcome SatoriRegion::ThreadLocalCollect(size_t allocBytes,
         data->escapedBytesAfter = m_escapedSize;
     }
 
-    return shouldCollect ? SatoriLocalCollectionOutcome::Completed : SatoriLocalCollectionOutcome::SurvivalAbort;
+    return shouldCollect ? ThreadLocalCollectionOutcome::Completed : ThreadLocalCollectionOutcome::SurvivalAbort;
 }
 
-void SatoriRegion::ReportThreadLocalCollection(const SatoriLocalCollectionData& data, size_t requestedBytes,
-    SatoriLocalCollectionTrigger trigger, SatoriLocalCollectionOutcome outcome, SatoriLocalCollectionRetry retry)
+void SatoriRegion::ReportThreadLocalCollection(const ThreadLocalCollectionData& data, size_t requestedBytes,
+    ThreadLocalCollectionTrigger trigger, ThreadLocalCollectionOutcome outcome, ThreadLocalCollectionRetry retry)
 {
     FIRE_EVENT(GCThreadLocalCollection, data.collectionIndex,
         static_cast<uint32_t>(outcome), static_cast<uint32_t>(trigger), static_cast<uint32_t>(retry),
@@ -1842,7 +1842,7 @@ void SatoriRegion::ReportThreadLocalCollection(const SatoriLocalCollectionData& 
 // so marking does not stall on every discovered object. See SatoriPrefetchQueue.
 void SatoriRegion::ThreadLocalPropagateMarks(size_t maxSurv, size_t maxCount, size_t maxPointerBytes, size_t& pointerBytes)
 {
-    SatoriLocalPrefetchQueue queue;
+    ThreadLocalPrefetchQueue queue;
     while (m_occupancy < maxSurv && (size_t)m_objCount < maxCount && pointerBytes < maxPointerBytes)
     {
         SatoriObject* o = PopFromMarkStack();
@@ -1892,7 +1892,7 @@ void SatoriRegion::ThreadLocalPropagateMarks(size_t maxSurv, size_t maxCount, si
     //     that is ok - they are marked, but not linked into the mark stack.
 }
 
-bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache, size_t* localStorage)
+bool SatoriRegion::ThreadLocalMark(ThreadLocalRootCache* rootCache, size_t* localStorage)
 {
     Verify();
 
@@ -1972,7 +1972,7 @@ bool SatoriRegion::ThreadLocalMark(SatoriLocalRootCache* rootCache, size_t* loca
     m_localBitmap = localStorage;
 
     // mark roots for the current stack
-    SatoriLocalScanContext sc;
+    ThreadLocalScanContext sc;
     sc.promotion = TRUE;
     sc._unused1 = this;
     sc.rootCache = rootCache;
@@ -2085,7 +2085,7 @@ void SatoriRegion::VerifyLocalBitmap()
 }
 #endif
 
-size_t SatoriRegion::ThreadLocalPlan(SatoriLocalStayRuns* stayRuns)
+size_t SatoriRegion::ThreadLocalPlan(ThreadLocalStayRuns* stayRuns)
 {
     // object can be in 3 states here:
     //  - Free:
@@ -2381,18 +2381,18 @@ void SatoriRegion::UpdateFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
 };
 
 #ifdef _DEBUG
-struct SatoriLocalRootCacheVerifyContext : ScanContext
+struct ThreadLocalRootCacheVerifyContext : ScanContext
 {
-    SatoriLocalRootCache* rootCache;
+    ThreadLocalRootCache* rootCache;
     bool failed;
-    bool found[SatoriLocalRootCache::CAPACITY];
+    bool found[ThreadLocalRootCache::CAPACITY];
 };
 
 // Checks that a relocation walk reports exactly the slots recorded while marking.
 template <bool isConservative>
 static void VerifyLocalRootCacheFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t flags)
 {
-    SatoriLocalRootCacheVerifyContext* ctx = (SatoriLocalRootCacheVerifyContext*)sc;
+    ThreadLocalRootCacheVerifyContext* ctx = (ThreadLocalRootCacheVerifyContext*)sc;
     SatoriRegion* region = (SatoriRegion*)sc->_unused1;
     size_t location = (size_t)*ppObject;
 
@@ -2417,7 +2417,7 @@ static void VerifyLocalRootCacheFn(PTR_PTR_Object ppObject, ScanContext* sc, uin
         return;
     }
 
-    SatoriLocalRootCache* rootCache = ctx->rootCache;
+    ThreadLocalRootCache* rootCache = ctx->rootCache;
     for (int i = 0; i < rootCache->count; i++)
     {
         if (rootCache->slots[i] == ppObject)
@@ -2435,9 +2435,9 @@ static void VerifyLocalRootCacheFn(PTR_PTR_Object ppObject, ScanContext* sc, uin
     ctx->failed = true;
 }
 
-static bool VerifyLocalRootCache(SatoriRegion* region, SatoriLocalRootCache* rootCache)
+static bool VerifyLocalRootCache(SatoriRegion* region, ThreadLocalRootCache* rootCache)
 {
-    SatoriLocalRootCacheVerifyContext ctx;
+    ThreadLocalRootCacheVerifyContext ctx;
     ctx.promotion = FALSE;
     ctx._unused1 = region;
     ctx.rootCache = rootCache;
@@ -2461,7 +2461,7 @@ static bool VerifyLocalRootCache(SatoriRegion* region, SatoriLocalRootCache* roo
 }
 #endif // _DEBUG
 
-void SatoriRegion::ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache)
+void SatoriRegion::ThreadLocalUpdatePointers(ThreadLocalRootCache* rootCache)
 {
     // update stack roots
     bool useCache = rootCache->IsUsable();
@@ -2585,7 +2585,7 @@ void SatoriRegion::ThreadLocalUpdatePointers(SatoriLocalRootCache* rootCache)
     }
 }
 
-void SatoriRegion::ThreadLocalCompact(size_t denseEnd, SatoriLocalStayRuns* stayRuns)
+void SatoriRegion::ThreadLocalCompact(size_t denseEnd, ThreadLocalStayRuns* stayRuns)
 {
     SatoriObject* s1;
     SatoriObject* s2 = FirstObject();

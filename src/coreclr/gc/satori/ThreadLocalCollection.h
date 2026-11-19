@@ -1,14 +1,14 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-#ifndef __SATORI_LOCAL_COLLECTION_H__
-#define __SATORI_LOCAL_COLLECTION_H__
+#ifndef __THREAD_LOCAL_COLLECTION_H__
+#define __THREAD_LOCAL_COLLECTION_H__
 
 #include <stddef.h>
 #include <stdint.h>
 #include <minipal/utils.h>
 
-enum class SatoriLocalCollectionOutcome : uint32_t
+enum class ThreadLocalCollectionOutcome : uint32_t
 {
     EscapedLimit = 0,
     InsufficientProgress = 1,
@@ -16,20 +16,20 @@ enum class SatoriLocalCollectionOutcome : uint32_t
     Completed = 3,
 };
 
-enum class SatoriLocalCollectionTrigger : uint32_t
+enum class ThreadLocalCollectionTrigger : uint32_t
 {
     WindowLimit = 0,
     ExhaustedSpan = 1,
 };
 
-enum class SatoriLocalCollectionRetry : uint32_t
+enum class ThreadLocalCollectionRetry : uint32_t
 {
     NotAttempted = 0,
     Succeeded = 1,
     Failed = 2,
 };
 
-struct SatoriLocalCollectionData
+struct ThreadLocalCollectionData
 {
     uint64_t allocationProgress;
     uint64_t usableBefore;
@@ -45,26 +45,26 @@ struct SatoriLocalCollectionData
 // Limit-triggered rejections still retry allocation; exhausted-span rejections do not.
 // Keep inline to avoid adding a frame to stack-depth-based collection windows.
 template <typename TRegion>
-FORCEINLINE bool SatoriCollectAndRetry(TRegion* region, size_t allocBytes, size_t requestedBytes, SatoriLocalCollectionTrigger trigger)
+FORCEINLINE bool ThreadLocalCollectAndRetry(TRegion* region, size_t allocBytes, size_t requestedBytes, ThreadLocalCollectionTrigger trigger)
 {
-    bool atTlgcLimit = trigger == SatoriLocalCollectionTrigger::WindowLimit;
+    bool atTlgcLimit = trigger == ThreadLocalCollectionTrigger::WindowLimit;
     bool eventEnabled = TRegion::ThreadLocalCollectionEventEnabled();
-    SatoriLocalCollectionData data;
-    SatoriLocalCollectionOutcome outcome = region->ThreadLocalCollect(allocBytes, atTlgcLimit,
+    ThreadLocalCollectionData data;
+    ThreadLocalCollectionOutcome outcome = region->ThreadLocalCollect(allocBytes, atTlgcLimit,
         eventEnabled ? &data : nullptr);
-    bool collected = outcome == SatoriLocalCollectionOutcome::Completed;
+    bool collected = outcome == ThreadLocalCollectionOutcome::Completed;
     if (!collected)
     {
         TRegion::OnEscapeTrackingEnded(/* outOfSpace */ !atTlgcLimit);
         region->StopEscapeTracking();
     }
 
-    SatoriLocalCollectionRetry retry = SatoriLocalCollectionRetry::NotAttempted;
+    ThreadLocalCollectionRetry retry = ThreadLocalCollectionRetry::NotAttempted;
     bool allocated = false;
     if (atTlgcLimit || collected)
     {
         allocated = region->StartAllocating(requestedBytes, allocBytes);
-        retry = allocated ? SatoriLocalCollectionRetry::Succeeded : SatoriLocalCollectionRetry::Failed;
+        retry = allocated ? ThreadLocalCollectionRetry::Succeeded : ThreadLocalCollectionRetry::Failed;
     }
 
     if (eventEnabled)
@@ -74,4 +74,4 @@ FORCEINLINE bool SatoriCollectAndRetry(TRegion* region, size_t allocBytes, size_
     return allocated;
 }
 
-#endif // __SATORI_LOCAL_COLLECTION_H__
+#endif // __THREAD_LOCAL_COLLECTION_H__

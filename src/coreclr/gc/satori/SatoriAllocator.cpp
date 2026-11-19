@@ -850,7 +850,7 @@ tryAgain:
             bool allocated;
             if (collectAtTlgcLimit)
             {
-                allocated = SatoriCollectAndRetry(region, context->alloc_bytes, size, SatoriLocalCollectionTrigger::WindowLimit);
+                allocated = ThreadLocalCollectAndRetry(region, context->alloc_bytes, size, ThreadLocalCollectionTrigger::WindowLimit);
             }
             else
             {
@@ -866,7 +866,7 @@ tryAgain:
             if (region->IsEscapeTracking())
             {
                 // try performing thread local collection and see if we have enough space after that.
-                if (SatoriCollectAndRetry(region, context->alloc_bytes, size, SatoriLocalCollectionTrigger::ExhaustedSpan))
+                if (ThreadLocalCollectAndRetry(region, context->alloc_bytes, size, ThreadLocalCollectionTrigger::ExhaustedSpan))
                 {
                     // we have enough free space in the region to continue
                     context->alloc_ptr = context->alloc_limit = (uint8_t*)region->GetAllocStart();
