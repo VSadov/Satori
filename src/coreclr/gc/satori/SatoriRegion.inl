@@ -893,9 +893,11 @@ inline bool SatoriRegion::WasPinnedByMark()
 }
 
 // Sweeping clears the marking state. Remember if marking found the region pinned.
+// Every marked region is swept before its generation is marked again,
+// so this keeps the result of the most recent marking of the region.
 inline void SatoriRegion::NotePinnedForNextMark()
 {
-    m_wasPinnedByMark |= m_pinnedByMark;
+    m_wasPinnedByMark = m_pinnedByMark;
     m_pinnedByMark = false;
 }
 

@@ -477,7 +477,8 @@ private:
             bool m_hasMarksSet;
             // Marking found an object in the region pinned by a root. Sweeping clears it.
             bool m_pinnedByMark;
-            // Sticky m_pinnedByMark: some marking found the region pinned since it was blank.
+            // m_pinnedByMark as of the most recent marking of the region. Survives sweeping.
+            // Handles often pin an object for its lifetime, while stack pins are brief.
             // Incremental relocation takes this as a sign that the region is likely pinned again.
             bool m_wasPinnedByMark;
 
