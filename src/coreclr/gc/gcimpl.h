@@ -338,6 +338,8 @@ public:
 
     // Inherited via IGCHeapInternal
     virtual void BulkMoveWithWriteBarrier(void* dst, const void* src, size_t byteCount);
+
+    virtual uintptr_t* GetPendingBridgeHandles(size_t* count);
 };
 
 #endif  // GCIMPL_H_
