@@ -94,17 +94,25 @@ static const size_t INCR_LOCATION_MASK = ((size_t)1 << INCR_INDEX_SHIFT) - 1;
 // The cost model of incremental relocation.
 // A candidate costs units for its objects (copying, updating the copy), its bytes and for the recorded references
 // to it (updating). A unit is roughly a nanosecond of single thread time, but that does not need to be precise,
-// since the pause per unit and the fixed part of the pause (updating roots) are calibrated as we go.
+// since the pause per unit and the fixed part of the pause (updating roots, overhead) are calibrated as we go.
 static const size_t INCR_UNITS_PER_OBJ = 40;
 static const size_t INCR_UNITS_PER_REF = 40;
 static const size_t INCR_BYTES_PER_UNIT = 8;
 // the model before anything is measured. conservative, as if we had 4 threads.
-static const double INCR_INITIAL_FIXED_US = 300;
+static const double INCR_INITIAL_ROOTS_US = 200;
+static const double INCR_INITIAL_OVERHEAD_US = 100;
 static const double INCR_INITIAL_US_PER_UNIT = 0.001 / 4;
 static const double INCR_INITIAL_REFS_PER_OBJ = 2;
 // weight of a new sample in the calibrated values
 static const double INCR_CALIBRATION_WEIGHT_UP = 1.0 / 2;
 static const double INCR_CALIBRATION_WEIGHT_DOWN = 1.0 / 8;
+// The fit of the overhead and the pause per unit. Older samples decay, so it follows changes within ~20 relocations.
+// The initial model weighs as one sample, which keeps the fit stable when relocations are all about the same size.
+// Pauses longer than predicted weigh more, since that could make pauses longer than the budget.
+static const double INCR_FIT_DECAY = 0.95;
+static const double INCR_FIT_PRIOR_WEIGHT = 1;
+static const double INCR_FIT_WEIGHT_UP = 2;
+static const double INCR_FIT_UNITS_SCALE = 1000000;
 
 // Records locations of references to incremental relocation candidates.
 // The marker sees every reference from a live object at least once after the reference was last written
@@ -231,11 +239,17 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_incrGen2Space = 0;
     m_incrUnitsBudget = 0;
     m_incrPlannedUnits = 0;
-    m_incrFixedUs = INCR_INITIAL_FIXED_US;
+    m_incrRootsUs = INCR_INITIAL_ROOTS_US;
+    m_incrOverheadUs = INCR_INITIAL_OVERHEAD_US;
+    m_incrFixedUs = m_incrRootsUs + m_incrOverheadUs;
     m_incrUsPerUnit = INCR_INITIAL_US_PER_UNIT;
+    m_incrFitW = 0;
+    m_incrFitX = 0;
+    m_incrFitY = 0;
+    m_incrFitXX = 0;
+    m_incrFitXY = 0;
     m_incrRefsPerObj = INCR_INITIAL_REFS_PER_OBJ;
-    m_incrFixedSamples = 0;
-    m_incrUnitSamples = 0;
+    m_incrRootsSamples = 0;
     m_incrRefsSamples = 0;
     m_incrNoRoomCount = 0;
     m_incrMeasuredTicks = 0;
@@ -5981,9 +5995,6 @@ static const size_t INCR_MIN_HARD_REFS = 64 * 1024;
 // When the fixed part of the pause alone does not fit the budget, we relocate only this often, to see if that changed.
 static const int INCR_NO_ROOM_PROBE_INTERVAL = 16;
 
-// Relocations smaller than this say little about the pause per unit, other than that it is not higher.
-static const size_t INCR_MIN_CALIBRATION_UNITS = 100 * 1000;
-
 static size_t IncrRelocationCost(size_t objCount, size_t bytes, size_t refs)
 {
     return objCount * INCR_UNITS_PER_OBJ + refs * INCR_UNITS_PER_REF + bytes / INCR_BYTES_PER_UNIT;
@@ -6774,19 +6785,41 @@ void SatoriRecycler::CalibrateIncrementalRelocation()
     double measuredUs = (double)m_incrMeasuredTicks * usPerTick;
     double rootsUs = (double)(m_incrRootsDoneTicks - m_incrRootsStartTicks) * usPerTick;
 
-    // The fixed part is updating roots, which we measure. What else was on the pause is per unit.
-    IncrCalibrate(m_incrFixedUs, m_incrFixedSamples, max(rootsUs, 1.0));
-    if (m_incrPlannedUnits > 0)
+    // The roots part is measured. The rest is the overhead of a relocation plus what is per unit, fitted as a line.
+    IncrCalibrate(m_incrRootsUs, m_incrRootsSamples, max(rootsUs, 1.0));
+
+    double x = (double)m_incrPlannedUnits / INCR_FIT_UNITS_SCALE;
+    double slope = m_incrUsPerUnit * INCR_FIT_UNITS_SCALE;
+    double predicted = m_incrOverheadUs + slope * x;
+    // outliers, like a helper that was not scheduled for a while, move the fit only so much.
+    double y = min(max(max(measuredUs - rootsUs, 0.0), predicted / 4), predicted * 4);
+    double w = y > predicted ? INCR_FIT_WEIGHT_UP : 1;
+
+    m_incrFitW = m_incrFitW * INCR_FIT_DECAY + w;
+    m_incrFitX = m_incrFitX * INCR_FIT_DECAY + w * x;
+    m_incrFitY = m_incrFitY * INCR_FIT_DECAY + w * y;
+    m_incrFitXX = m_incrFitXX * INCR_FIT_DECAY + w * x * x;
+    m_incrFitXY = m_incrFitXY * INCR_FIT_DECAY + w * x * y;
+
+    // least squares, pulled towards the initial model
+    double initialSlope = INCR_INITIAL_US_PER_UNIT * INCR_FIT_UNITS_SCALE;
+    double a11 = m_incrFitW + INCR_FIT_PRIOR_WEIGHT;
+    double a12 = m_incrFitX;
+    double a22 = m_incrFitXX + INCR_FIT_PRIOR_WEIGHT;
+    double b1 = m_incrFitY + INCR_FIT_PRIOR_WEIGHT * INCR_INITIAL_OVERHEAD_US;
+    double b2 = m_incrFitXY + INCR_FIT_PRIOR_WEIGHT * initialSlope;
+    double det = a11 * a22 - a12 * a12;
+    double overhead = (b1 * a22 - a12 * b2) / det;
+    slope = (a11 * b2 - a12 * b1) / det;
+    if (overhead < 0)
     {
-        // A small relocation spreads per-GC overhead over few units, so it overstates the pause per unit.
-        // It is still a bound, so it may lower the value. Otherwise a value that is too high would keep
-        // the budget small and never be corrected.
-        double usPerUnit = max(max(measuredUs - rootsUs, 0.0) / (double)m_incrPlannedUnits, INCR_INITIAL_US_PER_UNIT / 1024);
-        if (m_incrPlannedUnits >= INCR_MIN_CALIBRATION_UNITS || usPerUnit < m_incrUsPerUnit)
-        {
-            IncrCalibrate(m_incrUsPerUnit, m_incrUnitSamples, usPerUnit);
-        }
+        overhead = 0;
+        slope = b2 / a22;
     }
+
+    m_incrOverheadUs = overhead;
+    m_incrUsPerUnit = max(slope, initialSlope / 1024) / INCR_FIT_UNITS_SCALE;
+    m_incrFixedUs = m_incrRootsUs + m_incrOverheadUs;
 }
 
 // Updates what was recorded (or is otherwise known) to need updating after an incremental relocation.

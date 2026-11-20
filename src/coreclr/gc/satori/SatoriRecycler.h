@@ -476,13 +476,21 @@ private:
     size_t m_incrPlannedUnits;
 
     // The cost model, calibrated as we go: pause = fixed + perUnit * units.
-    // The fixed part is mostly updating roots. Units are estimated from objects, bytes and references.
+    // The fixed part is updating roots, which is measured, and the overhead of a relocation, which is not
+    // separable from the part per unit, so the two are fitted together. Units are estimated from objects, bytes and references.
     double m_incrFixedUs;
+    double m_incrRootsUs;
+    double m_incrOverheadUs;
     double m_incrUsPerUnit;
+    // decaying sums of the fit of the pause without roots (y, in microseconds) to units (x, in millions)
+    double m_incrFitW;
+    double m_incrFitX;
+    double m_incrFitY;
+    double m_incrFitXX;
+    double m_incrFitXY;
     // references to candidates that are recorded, per object in candidates
     double m_incrRefsPerObj;
-    int m_incrFixedSamples;
-    int m_incrUnitSamples;
+    int m_incrRootsSamples;
     int m_incrRefsSamples;
     // when the fixed part alone would not fit the budget, we relocate only occasionally, to see if that changed.
     int m_incrNoRoomCount;
