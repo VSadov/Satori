@@ -6333,7 +6333,7 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     // since the alternative - regular relocation - costs in proportion to the heap.
     // In low latency mode the budget is only a limit. We relocate only as much as brings the backlog
     // down to what is tolerated (see PlanIncrementalRelocation), and nothing when the backlog is already there.
-    double budgetUs = (double)SatoriUtil::IncrRelocBudgetUs(IsLowLatencyMode());
+    double budgetUs = (double)SatoriUtil::IncrRelocBudgetUs();
     size_t neededGain = SIZE_MAX;
     if (!IsLowLatencyMode())
     {
