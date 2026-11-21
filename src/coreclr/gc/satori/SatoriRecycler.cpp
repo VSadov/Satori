@@ -6213,6 +6213,7 @@ void SatoriRecycler::IncrSummaryReset()
 // Called when the barrier is about to become concurrent for a gen2 GC, before any marking.
 // All deferred sweeping is done by now, so the summary of gen2 regions, made as they entered the tenured queues, is complete.
 // Selects sparse gen2 regions as relocation candidates, and gen2 regions with large free spans as targets.
+// In low latency mode only as many candidates are selected as needed to bring the backlog down to what is tolerated.
 // Only the summary is looked at, not the regions, thus the cost does not grow with the heap. It is done concurrently.
 // Also measures the backlog of sparse regions, for planning to decide if incremental relocation keeps up.
 void SatoriRecycler::SelectIncrementalRelocationCandidates()
@@ -6330,10 +6331,18 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
 
     // The budget is the pause that incremental relocation may add. Outside of low latency mode, it may grow with the heap,
     // since the alternative - regular relocation - costs in proportion to the heap.
-    double budgetUs = (double)SatoriUtil::IncrRelocBudgetUs();
+    // In low latency mode the budget is only a limit. We relocate only as much as brings the backlog
+    // down to what is tolerated (see PlanIncrementalRelocation), and nothing when the backlog is already there.
+    double budgetUs = (double)SatoriUtil::IncrRelocBudgetUs(IsLowLatencyMode());
+    size_t neededGain = SIZE_MAX;
     if (!IsLowLatencyMode())
     {
         budgetUs = max(budgetUs, (double)SatoriUtil::IncrRelocBudgetPerGBUs() * gen2Occupancy / (1024.0 * 1024 * 1024));
+    }
+    else
+    {
+        size_t toleratedBacklog = gen2Space * SatoriUtil::IncrRelocBacklogPercent() / 100;
+        neededGain = eligibleGain > toleratedBacklog ? eligibleGain - toleratedBacklog : 0;
     }
 
     // What the budget leaves after the fixed part of the pause, in cost units.
@@ -6354,10 +6363,11 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
         unitsBudget = (size_t)((budgetUs - m_incrFixedUs) / m_incrUsPerUnit);
     }
 
-    // sources, best first, as long as the budget allows
+    // sources, best first, as long as the budget allows and more is needed
     size_t unitsLeft = unitsBudget;
     size_t selectedUnits = 0;
-    for (int i = 0; i < sourceCount && m_incrSourceCount < maxSources; i++)
+    size_t selectedGain = 0;
+    for (int i = 0; i < sourceCount && m_incrSourceCount < maxSources && selectedGain < neededGain; i++)
     {
         SatoriRegion* region = sources[i].m_region;
         size_t objCount = sources[i].m_objCount;
@@ -6371,6 +6381,7 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
 
         unitsLeft -= cost;
         selectedUnits += cost;
+        selectedGain += IncrRelocationGain(occupancy);
         m_incrSelectedObjs += objCount;
         m_incrSourceObjs[m_incrSourceCount] = objCount;
         m_incrSourceBytes[m_incrSourceCount] = occupancy;

@@ -752,10 +752,11 @@ public:
 
     // DOTNET_gcIncrRelocBudget
     // The pause, in microseconds, that incremental relocation may add to a Gen2 GC.
-    static size_t IncrRelocBudgetUs()
+    // In low latency mode it is only a limit, see IncrRelocBacklogPercent, so the default is higher there.
+    static size_t IncrRelocBudgetUs(bool lowLatency)
     {
         int64_t n = GCConfig::GetIncrRelocBudget();
-        return n < 0 ? 1000 : (size_t)n;
+        return n < 0 ? (lowLatency ? 4000 : 1000) : (size_t)n;
     }
 
     // DOTNET_gcIncrRelocBudgetPerGB
@@ -779,6 +780,8 @@ public:
     // DOTNET_gcIncrRelocBacklog
     // When a Gen2 GC can also relocate regularly, it does that instead of incremental relocation
     // if more than this percentage of Gen2 space would remain reclaimable in sparse regions.
+    // In low latency mode, where there is no regular relocation, incremental relocation relocates
+    // only as much as brings the reclaimable space down to this.
     static size_t IncrRelocBacklogPercent()
     {
         int64_t n = GCConfig::GetIncrRelocBacklog();
