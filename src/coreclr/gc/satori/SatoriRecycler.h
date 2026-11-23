@@ -648,6 +648,7 @@ private:
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);
+    void RelocateRegionSplit(SatoriRegion* relocationSource, size_t maxBytesToCopy);
     void FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool hasMarks);
     void FreeRelocatedRegionsWorker();
 

@@ -4948,7 +4948,13 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         existingRegionOnly = false;
     }
 
-    SatoriRegion* relocationTarget = TryGetRelocationTarget(maxBytesToCopy, existingRegionOnly);
+    // In gen2 a source that no existing span fits as a whole is spread over existing spans
+    // before it takes a fresh region. (see RelocateRegionSplit)
+    bool split = m_condemnedGeneration == 2 &&
+        !m_isIncrementalRelocation &&
+        !existingRegionOnly;
+
+    SatoriRegion* relocationTarget = TryGetRelocationTarget(maxBytesToCopy, existingRegionOnly || split);
 
     if (!relocationTarget)
     {
@@ -4963,6 +4969,11 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
             {
                 return;
             }
+        }
+        else if (split)
+        {
+            RelocateRegionSplit(relocationSource, maxBytesToCopy);
+            return;
         }
         else
         {
@@ -5080,6 +5091,335 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         {
             m_relocatedRegions->Push(relocationSource);
         }
+    }
+    else
+    {
+        // relocationSource happened to be empty
+        FreeLogicallyEmptyRegion(relocationSource, /* hasMarks */ false);
+    }
+}
+
+// A gen2 relocation source that no existing span fits as a whole is spread over existing spans, the largest first,
+// and only what they cannot take goes to one more target, a fresh region if need be.
+// Only gen2, where no target is a promotion target, and only regular relocation, where the copies need no tracking.
+// The trackers of finalizable objects must stay in the region of their objects,
+// so all objects of types with finalizers go together to one target, which takes the trackers of the source.
+// The targets stay with this thread until the source is done. If there is no region for the rest of the source,
+// what was copied is put back and the source stays, as when there is no target for it at all.
+void SatoriRecycler::RelocateRegionSplit(SatoriRegion* relocationSource, size_t maxBytesToCopy)
+{
+    _ASSERTE(m_condemnedGeneration == 2);
+    _ASSERTE(!m_isIncrementalRelocation);
+
+    const int MAX_TARGETS = 64;
+    SatoriRegion* targets[MAX_TARGETS];
+    int32_t targetObjects[MAX_TARGETS];
+    int targetCount = 0;
+
+    // the last of the span targets, while it has an allocation span
+    SatoriRegion* target = nullptr;
+    int targetIndex = -1;
+    bool needToCopyMarks = false;
+    // once the rest of the source has a target, the objects go there one after another
+    bool inRest = false;
+    size_t restDst = 0;
+
+    auto addTarget = [&](SatoriRegion* region) -> int
+    {
+        _ASSERTE(targetCount < MAX_TARGETS);
+        _ASSERTE(region->Generation() <= m_condemnedGeneration);
+        targets[targetCount] = region;
+        targetObjects[targetCount] = 0;
+        return targetCount++;
+    };
+
+    // allocates the object in the largest span of the region, if that certainly fits it
+    auto allocInLargestSpan = [&](SatoriRegion* region, size_t size) -> size_t
+    {
+        int32_t bucket = region->GetMaxFreeBucket();
+        if (bucket < SatoriUtil::BucketForAlloc(size))
+        {
+            return 0;
+        }
+
+        size_t allocStart = region->StartAllocating((size_t)1 << (bucket + Satori::MIN_FREELIST_CAPACITY_BITS));
+        _ASSERTE(allocStart);
+        size_t dst = region->Allocate(size, /*zeroInitialize*/ false);
+        if (!dst)
+        {
+            // could not commit
+            region->StopAllocating();
+        }
+
+        return dst;
+    };
+
+    // finds an existing span for an object that the current span cannot take
+    auto allocInNextSpan = [&](size_t size) -> size_t
+    {
+        if (target)
+        {
+            target->StopAllocating();
+            size_t dst = allocInLargestSpan(target, size);
+            if (dst)
+            {
+                return dst;
+            }
+
+            target = nullptr;
+        }
+
+        int32_t minBucket = SatoriUtil::BucketForAlloc(size);
+        // keep a slot for the rest of the source
+        while (targetCount < MAX_TARGETS - 1)
+        {
+            SatoriRegion* region = nullptr;
+            for (int32_t bucket = Satori::FREELIST_COUNT - 1; bucket >= minBucket && !region; bucket--)
+            {
+                region = m_relocationTargets[bucket]->TryPop();
+            }
+
+            if (!region)
+            {
+                break;
+            }
+
+            int index = addTarget(region);
+            size_t dst = allocInLargestSpan(region, size);
+            if (dst)
+            {
+                target = region;
+                targetIndex = index;
+                needToCopyMarks = !region->DoNotSweep();
+                _ASSERTE(region->HasMarksSet() == needToCopyMarks);
+                return dst;
+            }
+        }
+
+        return (size_t)0;
+    };
+
+    size_t objLimit = relocationSource->Start() + Satori::REGION_SIZE_GRANULARITY;
+
+    // The objects of types with finalizers go to their own target, which then takes the trackers of the source.
+    // We get it first, so that without it the source can just stay.
+    // NB: when no such object is alive, the finalization scan has left no trackers in the source.
+    bool withFinalizables = relocationSource->HasFinalizables();
+    SatoriRegion* finTarget = nullptr;
+    int finIndex = -1;
+    bool finNeedsMarks = false;
+    size_t finBytes = 0;
+    size_t finCopied = 0;
+    size_t finDst = 0;
+    if (withFinalizables)
+    {
+        SatoriObject* f = relocationSource->FirstObject();
+        do
+        {
+            f = relocationSource->SkipUnmarked(f);
+            if (f->Start() >= objLimit)
+            {
+                break;
+            }
+
+            size_t size = f->Size();
+            if (f->RawGetMethodTable()->HasFinalizer())
+            {
+                finBytes += size;
+            }
+
+            f = (SatoriObject*)(f->Start() + size);
+        } while (f->Start() < objLimit);
+
+        if (finBytes > 0)
+        {
+            finTarget = TryGetRelocationTarget(finBytes, /*existingRegionOnly*/ false);
+            if (finTarget)
+            {
+                finDst = finTarget->Allocate(finBytes, /*zeroInitialize*/ false);
+                if (!finDst)
+                {
+                    finTarget->StopAllocating();
+                    AddRelocationTarget(finTarget);
+                    finTarget = nullptr;
+                }
+            }
+
+            if (!finTarget)
+            {
+                // as when there is no target for the source
+                AddRelocationTarget(relocationSource);
+                return;
+            }
+
+            finIndex = addTarget(finTarget);
+            finNeedsMarks = !finTarget->DoNotSweep();
+            _ASSERTE(finTarget->HasMarksSet() == finNeedsMarks);
+        }
+    }
+
+    int32_t objectsRelocated = 0;
+    size_t copied = 0;
+    bool failed = false;
+    SatoriObject* o = relocationSource->FirstObject();
+    SatoriRegion::SweepPrefetcher prefetcher;
+    relocationSource->SweepPrefetchStart(prefetcher, o);
+    do
+    {
+        o = relocationSource->SkipUnmarked(o);
+        if (o->Start() >= objLimit)
+        {
+            _ASSERTE(o->Start() == objLimit);
+            break;
+        }
+
+        // marking is done and we have the region to ourselves
+        _ASSERTE(o->IsMarked());
+        _ASSERTE(!o->IsFree());
+        _ASSERTE(!o->IsUnmovable());
+        relocationSource->SweepPrefetchAdvance(prefetcher, o);
+
+        size_t size = o->Size();
+        size_t dst;
+        SatoriRegion* dstRegion;
+        int dstIndex;
+        bool dstNeedsMarks;
+        if (finTarget && o->RawGetMethodTable()->HasFinalizer())
+        {
+            dst = finDst;
+            finDst += size;
+            finCopied += size;
+            _ASSERTE(finCopied <= finBytes);
+            dstRegion = finTarget;
+            dstIndex = finIndex;
+            dstNeedsMarks = finNeedsMarks;
+        }
+        else
+        {
+            if (inRest)
+            {
+                dst = restDst;
+                restDst += size;
+            }
+            else
+            {
+                dst = target ? target->Allocate(size, /*zeroInitialize*/ false) : 0;
+                if (!dst)
+                {
+                    dst = allocInNextSpan(size);
+                }
+
+                if (!dst)
+                {
+                    // The existing spans ran out. The rest goes to one target that fits all of it, a fresh region if need be.
+                    // The finalizable objects that are left have their target already.
+                    _ASSERTE(!target);
+                    _ASSERTE(copied + (finBytes - finCopied) + size <= maxBytesToCopy);
+                    size_t restSize = maxBytesToCopy - copied - (finBytes - finCopied);
+                    SatoriRegion* restTarget = TryGetRelocationTarget(restSize, /*existingRegionOnly*/ false);
+                    if (restTarget)
+                    {
+                        dst = restTarget->Allocate(restSize, /*zeroInitialize*/ false);
+                        if (!dst)
+                        {
+                            restTarget->StopAllocating();
+                            AddRelocationTarget(restTarget);
+                        }
+                    }
+
+                    if (!dst)
+                    {
+                        failed = true;
+                        break;
+                    }
+
+                    targetIndex = addTarget(restTarget);
+                    target = restTarget;
+                    needToCopyMarks = !restTarget->DoNotSweep();
+                    _ASSERTE(restTarget->HasMarksSet() == needToCopyMarks);
+                    inRest = true;
+                    restDst = dst + size;
+                }
+            }
+
+            dstRegion = target;
+            dstIndex = targetIndex;
+            dstNeedsMarks = needToCopyMarks;
+        }
+
+        memcpy((void*)(dst - sizeof(size_t)), (void*)(o->Start() - sizeof(size_t)), size);
+        // record the new location of the object by storing it in the syncblock space.
+        *((size_t*)o - 1) = dst;
+        if (dstNeedsMarks)
+        {
+            ((SatoriObject*)dst)->SetMarked();
+        }
+
+        dstRegion->SetIndicesForObject((SatoriObject*)dst, dst + size);
+        targetObjects[dstIndex]++;
+        copied += size;
+        objectsRelocated++;
+        o = (SatoriObject*)(o->Start() + size);
+    } while (o->Start() < objLimit);
+
+    // we have new marks, but have not swept at this point, so could use less.
+    _ASSERTE(copied <= maxBytesToCopy);
+    if (target)
+    {
+        _ASSERTE(!failed);
+        inRest ? target->StopAllocating(restDst) : target->StopAllocating();
+    }
+
+    if (finTarget)
+    {
+        _ASSERTE(failed || finCopied == finBytes);
+        finTarget->StopAllocating(finDst);
+        if (!failed)
+        {
+            // all the tracked objects are in this target now
+            finTarget->TakeFinalizerInfoFrom(relocationSource);
+        }
+    }
+
+    if (failed)
+    {
+        // Put back the headers that the forwarding addresses took. The copies become garbage that sweeping reclaims,
+        // except in the regions that are not swept. There they stay until the next gen2, like any unreachable object.
+        SatoriObject* u = relocationSource->FirstObject();
+        for (int32_t i = 0; i < objectsRelocated; i++)
+        {
+            u = relocationSource->SkipUnmarked(u);
+            SatoriObject* copy = (SatoriObject*)*((size_t*)u - 1);
+            *((size_t*)u - 1) = *((size_t*)copy - 1);
+            // in gen2 the targets that are swept are the marked ones (see the asserts above)
+            if (!copy->ContainingRegion()->DoNotSweep())
+            {
+                copy->ClearMarked();
+            }
+
+            u = (SatoriObject*)(u->Start() + u->Size());
+        }
+    }
+
+    for (int i = 0; i < targetCount; i++)
+    {
+        SatoriRegion* t = targets[i];
+        // just update the obj count, if target is not marked this will be correct
+        // otherwise sweep will update anyways.
+        t->SetOccupancy(t->Occupancy(), t->ObjCount() + targetObjects[i]);
+        AddRelocationTarget(t);
+    }
+
+    if (failed)
+    {
+        // we could not get a region. we must be low on available memory.
+        // we can still try using the source region as a target for other relocations.
+        AddRelocationTarget(relocationSource);
+    }
+    else if (objectsRelocated > 0)
+    {
+        relocationSource->IsRelocated() = true;
+        m_relocatedRegions->Push(relocationSource);
     }
     else
     {
