@@ -413,9 +413,7 @@ private:
 
     // ---- incremental relocation ----
     //
-    // It is used in low latency mode, or when regular relocation is disabled, where it is the only relocation.
-    // Otherwise it is preferred to regular relocation, which is used when incremental does not keep up,
-    // that is when too much reclaimable space remains in sparse Gen2 regions.
+    // It is used only in low latency mode, which does not relocate regularly, since that costs in proportion to the heap.
     //
     // Before the concurrent marking of a gen2 GC starts, a few sparse regions are selected as relocation
     // sources (candidates), and a few regions with large free spans as targets.
@@ -467,10 +465,6 @@ private:
     size_t m_incrSourceObjs[INCR_MAX_REGIONS];
     size_t m_incrSourceBytes[INCR_MAX_REGIONS];
     size_t m_incrSelectedObjs;
-    // Sparse Gen2 regions are the backlog. This is what they could free if relocated,
-    // and the Gen2 space (without large regions) that they are a part of.
-    size_t m_incrEligibleGain;
-    size_t m_incrGen2Space;
     // the budget of the current GC in cost units, and what the kept candidates are estimated to cost.
     size_t m_incrUnitsBudget;
     size_t m_incrPlannedUnits;
@@ -679,7 +673,8 @@ private:
     void IncrSummarizeGen1Region(SatoriRegion* region);
     void IncrSummaryReset();
     void IncrGen1SummaryReset();
-    bool PlanIncrementalRelocation(bool canRelocateRegularly);
+    void PlanIncrementalRelocation();
+    void CancelIncrementalRelocation();
     void CalibrateIncrementalRelocation();
     void PublishRecordedRefs(SatoriWorkChunk*& chunk);
     void PushRecordedChunk(SatoriWorkChunk* chunk);

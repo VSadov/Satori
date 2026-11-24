@@ -235,8 +235,6 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_incrCopyRangeClaim = 0;
     m_incrSelectionDone = false;
     m_incrSelectedObjs = 0;
-    m_incrEligibleGain = 0;
-    m_incrGen2Space = 0;
     m_incrUnitsBudget = 0;
     m_incrPlannedUnits = 0;
     m_incrRootsUs = INCR_INITIAL_ROOTS_US;
@@ -4615,10 +4613,10 @@ void SatoriRecycler::Plan()
     if (m_isRelocating == false)
     {
         // This is the case when we do not do regular relocation (low latency mode or gcRelocatingGen2=0).
-        // We may still relocate incrementally, if that was prepared for before marking.
+        // We may still relocate incrementally, if candidates were selected before marking. (only in low latency mode)
         if (m_incrSelectionDone)
         {
-            PlanIncrementalRelocation(/* canRelocateRegularly */ false);
+            PlanIncrementalRelocation();
         }
         else
         {
@@ -4628,12 +4626,10 @@ void SatoriRecycler::Plan()
         return;
     }
 
-    // We could relocate incrementally as well. That costs what we relocate, not what the heap size is,
-    // so it is preferred, unless it does not keep up.
-    if (m_incrSelectionDone &&
-        PlanIncrementalRelocation(/* canRelocateRegularly */ true))
+    // Candidates were selected in low latency mode, but the mode has changed since. We relocate regularly then.
+    if (m_incrSelectionDone)
     {
-        return;
+        CancelIncrementalRelocation();
     }
 
     if (estimatedReclaim < desiredReclaim)
@@ -6553,9 +6549,8 @@ void SatoriRecycler::IncrSummaryReset()
 // Called when the barrier is about to become concurrent for a gen2 GC, before any marking.
 // All deferred sweeping is done by now, so the summary of gen2 regions, made as they entered the tenured queues, is complete.
 // Selects sparse gen2 regions as relocation candidates, and gen2 regions with large free spans as targets.
-// In low latency mode only as many candidates are selected as needed to bring the backlog down to what is tolerated.
+// Only in low latency mode, where only as many candidates are selected as needed to bring the backlog down to what is tolerated.
 // Only the summary is looked at, not the regions, thus the cost does not grow with the heap. It is done concurrently.
-// Also measures the backlog of sparse regions, for planning to decide if incremental relocation keeps up.
 void SatoriRecycler::SelectIncrementalRelocationCandidates()
 {
     _ASSERTE(!m_incrRecording);
@@ -6564,9 +6559,14 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     m_incrSelectedObjs = 0;
     m_incrSelectionDone = false;
 
-    // the summary exists only when incremental relocation is enabled
+    // the summary exists only when incremental relocation is enabled.
+    // Only low latency mode relocates incrementally, since it does not relocate regularly.
+    // (NB: the latency mode can change, so the summary is kept up in all modes)
+    // Forced compaction relocates regularly, even in low latency mode.
     if (m_condemnedGeneration != 2 ||
-        m_incrSummary == nullptr)
+        m_incrSummary == nullptr ||
+        !IsLowLatencyMode() ||
+        m_forceCompact)
     {
         return;
     }
@@ -6579,7 +6579,7 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     m_incrCopyRangeClaim = 0;
 
     IncrEntry sources[INCR_MAX_REGIONS];
-    IncrEntry targets[INCR_MAX_REGIONS * 2];
+    SatoriRegion* targets[INCR_MAX_REGIONS * 2];
     int sourceCount = 0;
     int targetCount = 0;
     size_t eligibleGain = 0;
@@ -6654,36 +6654,24 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
             int n = min(shard.m_targetCounts[b], INCR_MAX_REGIONS * 2 - targetCount);
             for (int i = 0; i < n; i++)
             {
-                IncrEntry target = { shard.m_targets[b][i], (size_t)(Satori::FREELIST_COUNT - (b + INCR_MIN_TARGET_BUCKET)), 0, 0 };
-                targets[targetCount++] = target;
+                targets[targetCount++] = shard.m_targets[b][i];
             }
 
             IncrSpinLockLeave(&shard.m_lock);
         }
     }
 
-    // Gen2 occupancy and regions are known from the accumulators and the queues, see IncrSummaryShard.
+    // Gen2 regions are known from the queues, see IncrSummaryShard.
     // The counts are read separately from the summary, while large regions may be added. When they disagree, Gen2 space is taken as 0.
     // Gen1 regions count as well, since Gen1 sources are in the backlog and the Gen2 GC promotes them.
     size_t gen2Regions = Gen2RegionCount();
     size_t gen2Space = ((gen2Regions > largeRegions ? gen2Regions - largeRegions : 0) + Gen1RegionCount()) * Satori::REGION_SIZE_GRANULARITY;
-    size_t gen2Occupancy = m_occupancyAcc[2] + m_gen2AddedSinceLastCollection;
 
-    // The budget is the pause that incremental relocation may add. Outside of low latency mode, it may grow with the heap,
-    // since the alternative - regular relocation - costs in proportion to the heap.
-    // In low latency mode the budget is only a limit. We relocate only as much as brings the backlog
-    // down to what is tolerated (see PlanIncrementalRelocation), and nothing when the backlog is already there.
+    // We relocate only as much as brings the backlog down to what is tolerated, and nothing when the backlog is already there.
+    // The budget, which is the pause that incremental relocation may add, is only a limit.
+    size_t toleratedBacklog = gen2Space * SatoriUtil::IncrRelocBacklogPercent() / 100;
+    size_t neededGain = eligibleGain > toleratedBacklog ? eligibleGain - toleratedBacklog : 0;
     double budgetUs = (double)SatoriUtil::IncrRelocBudgetUs();
-    size_t neededGain = SIZE_MAX;
-    if (!IsLowLatencyMode())
-    {
-        budgetUs = max(budgetUs, (double)SatoriUtil::IncrRelocBudgetPerGBUs() * gen2Occupancy / (1024.0 * 1024 * 1024));
-    }
-    else
-    {
-        size_t toleratedBacklog = gen2Space * SatoriUtil::IncrRelocBacklogPercent() / 100;
-        neededGain = eligibleGain > toleratedBacklog ? eligibleGain - toleratedBacklog : 0;
-    }
 
     // What the budget leaves after the fixed part of the pause, in cost units.
     int maxSources = INCR_MAX_REGIONS;
@@ -6692,7 +6680,7 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     if (noRoom)
     {
         // Once in a while relocate the best candidate anyway, to see if the fixed part is still that large.
-        if (sourceCount > 0 && ++m_incrNoRoomCount % INCR_NO_ROOM_PROBE_INTERVAL == 0)
+        if (sourceCount > 0 && neededGain > 0 && ++m_incrNoRoomCount % INCR_NO_ROOM_PROBE_INTERVAL == 0)
         {
             maxSources = 1;
             unitsBudget = SIZE_MAX;
@@ -6743,8 +6731,6 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
 
     m_incrMaxRecordedRefs = maxRecordedRefs;
     m_incrUnitsBudget = unitsBudget;
-    m_incrEligibleGain = eligibleGain;
-    m_incrGen2Space = gen2Space;
 
     for (int i = 0; i < m_incrSourceCount; i++)
     {
@@ -6792,7 +6778,7 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
 
     for (int i = 0; i < targetCount && m_incrTargetCount < INCR_MAX_REGIONS && m_incrSourceCount > 0; i++)
     {
-        SatoriRegion* region = targets[i].m_region;
+        SatoriRegion* region = targets[i];
         if (!isSource(region))
         {
             _ASSERTE(region->RelocationCandidateIndex() == 0);
@@ -6951,13 +6937,28 @@ void SatoriRecycler::FreeRecordedRefs()
     m_incrRecordedRefs = 0;
 }
 
+// Candidates were selected in low latency mode, but the mode has changed since and this GC relocates regularly,
+// which does not know about them.
+void SatoriRecycler::CancelIncrementalRelocation()
+{
+    _ASSERTE(m_incrSelectionDone);
+
+    m_incrRecording = false;
+    for (int i = 0; i < m_incrSourceCount; i++)
+    {
+        m_incrSources[i]->RelocationCandidateIndex() = 0;
+    }
+
+    FreeRecordedRefs();
+    m_incrSourceCount = 0;
+    m_incrTargetCount = 0;
+    m_incrSelectionDone = false;
+}
+
 // This is in place of PlanRegions, and is called when marking is done.
 // Keeps the candidates that are still relocatable and, now that we know how many references to them need updating,
 // fit the budget. These become the only relocation sources.
-// When Gen2 could be relocated regularly as well, that is preferred if incremental relocation does not keep up,
-// that is when too much reclaimable space would remain in sparse regions, or if compaction was requested.
-// Then nothing is planned and false is returned.
-bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
+void SatoriRecycler::PlanIncrementalRelocation()
 {
     _ASSERTE(m_incrSelectionDone);
     _ASSERTE(m_condemnedGeneration == 2);
@@ -6992,7 +6993,6 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
     size_t keepCost[INCR_MAX_REGIONS];
     size_t keepGain[INCR_MAX_REGIONS];
     size_t keepTotalCost = 0;
-    size_t keepTotalGain = 0;
     int keepCount = 0;
 
     for (int i = 0; i < m_incrSourceCount; i++)
@@ -7015,7 +7015,6 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
         keepCost[keepCount] = IncrRelocationCost(m_incrSourceObjs[i], m_incrSourceBytes[i], (size_t)m_incrSourceRefs[i]);
         keepGain[keepCount] = IncrRelocationGain(m_incrSourceBytes[i]);
         keepTotalCost += keepCost[keepCount];
-        keepTotalGain += keepGain[keepCount];
         keepCount++;
     }
 
@@ -7033,27 +7032,11 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
         }
 
         keepTotalCost -= keepCost[worst];
-        keepTotalGain -= keepGain[worst];
         keepCount--;
         keep[worst] = keep[keepCount];
         keepIndex[worst] = keepIndex[keepCount];
         keepCost[worst] = keepCost[keepCount];
         keepGain[worst] = keepGain[keepCount];
-    }
-
-    // Incremental relocation keeps up if not too much reclaimable space remains in sparse Gen2 regions.
-    // Otherwise, if we can, we relocate regularly.
-    size_t backlog = m_incrEligibleGain > keepTotalGain ? m_incrEligibleGain - keepTotalGain : 0;
-    // Incremental relocation does not do what a request to compact asks for, so regular relocation does that when it can.
-    bool forcedCompaction = m_forceCompact || SatoriUtil::IsForceCompact();
-    if (canRelocateRegularly &&
-        (forcedCompaction || backlog * 100 > m_incrGen2Space * SatoriUtil::IncrRelocBacklogPercent()))
-    {
-        FreeRecordedRefs();
-        m_incrSourceCount = 0;
-        m_incrTargetCount = 0;
-        m_incrSelectionDone = false;
-        return false;
     }
 
     // Largest first, since these are harder to fit. PlanRegions does that too.
@@ -7080,14 +7063,11 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
     int relocatingCount = 0;
     for (int i = 0; i < keepCount; i++)
     {
-        // The candidate is in a tenured queue, or in an ephemeral one if it is Gen1. It must be taken out, to not be treated as staying.
-        // A Gen2 GC frees demoted trackers while marking, so none should still be demoted here, but such regions cannot relocate.
+        // The candidate is in the tenured queue, or in the ephemeral one if it is Gen1. It must be taken out, to not be treated as staying.
+        // (finalization tracking queues are empty when planning a Gen2 GC, see Plan)
         SatoriRegion* region = keep[i];
-        if (!region->IsDemoted() &&
-            (m_tenuredRegions->TryRemove(region) ||
-             m_tenuredFinalizationTrackingRegions->TryRemove(region) ||
-             m_ephemeralRegions->TryRemove(region) ||
-             m_ephemeralFinalizationTrackingRegions->TryRemove(region)))
+        if (m_tenuredRegions->TryRemove(region) ||
+            m_ephemeralRegions->TryRemove(region))
         {
             m_relocatingRegions->Push(region);
             m_incrKeep[keepIndex[i] + 1] = true;
@@ -7099,8 +7079,7 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
     {
         for (int i = 0; i < m_incrTargetCount; i++)
         {
-            if (m_tenuredRegions->TryRemove(m_incrTargets[i]) ||
-                m_tenuredFinalizationTrackingRegions->TryRemove(m_incrTargets[i]))
+            if (m_tenuredRegions->TryRemove(m_incrTargets[i]))
             {
                 AddRelocationTarget(m_incrTargets[i]);
             }
@@ -7126,7 +7105,6 @@ bool SatoriRecycler::PlanIncrementalRelocation(bool canRelocateRegularly)
     m_incrSourceCount = 0;
     m_incrTargetCount = 0;
     m_incrSelectionDone = false;
-    return true;
 }
 
 // Learns from what incremental relocation actually cost. Called when it is done.
