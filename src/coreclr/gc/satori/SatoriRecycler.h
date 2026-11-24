@@ -431,6 +431,7 @@ private:
         size_t m_end;
     };
 
+    template <bool recording>
     class RefRecorder;
 
     // true from selection until planning. The marker records references to candidates while it is true.
@@ -587,16 +588,24 @@ private:
 
     void PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o);
     void DrainMarkQueues(SatoriWorkChunk* srcChunk = nullptr);
+    template <bool recording>
+    void DrainMarkQueuesCore(SatoriWorkChunk* srcChunk);
     void MarkOwnStackAndDrainQueues();
     void MarkOwnStackOrDrainQueuesConcurrent(int64_t deadline);
     bool MarkDemotedAndDrainQueuesConcurrent(int64_t deadline);
     bool MarkDemotedInReusableConcurrent(int64_t deadline);
     void PushOrReturnWorkChunk(SatoriWorkChunk * srcChunk);
     bool DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk = nullptr, int64_t deadline = 0);
+    template <bool recording>
+    bool DrainMarkQueuesConcurrentCore(SatoriWorkChunk* srcChunk, int64_t deadline);
 
     bool HasDirtyCards();
     bool CleanCardsConcurrent(int64_t deadline);
+    template <bool recording>
+    bool CleanCardsConcurrentCore(int64_t deadline);
     void CleanCards();
+    template <bool recording>
+    void CleanCardsCore();
     bool MarkHandles(int64_t deadline = 0);
     void ShortWeakPtrScan();
     void ShortWeakPtrScanWorker();

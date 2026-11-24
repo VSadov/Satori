@@ -118,11 +118,14 @@ static const double INCR_FIT_UNITS_SCALE = 1000000;
 // The marker sees every reference from a live object at least once after the reference was last written
 // (written references dirty cards and are seen again when cards are cleaned), thus everything that
 // needs updating after the candidates are relocated is recorded by the time marking is done.
+// The marking loops are instantiated with and without recording, so that a GC that does not record
+// does not pay for recording per reference. Without recording, this compiles to nothing.
+template <bool recording>
 class SatoriRecycler::RefRecorder
 {
 public:
     RefRecorder(SatoriRecycler* recycler) :
-        m_recycler(recycler), m_chunk(nullptr), m_enabled(recycler->m_incrRecording)
+        m_recycler(recycler), m_chunk(nullptr), m_enabled(recording && recycler->m_incrRecording)
     {
         if (m_enabled)
         {
@@ -132,12 +135,12 @@ public:
 
     ~RefRecorder()
     {
-        if (m_chunk)
+        if (recording && m_chunk)
         {
             m_recycler->PublishRecordedRefs(m_chunk);
         }
 
-        if (m_enabled)
+        if (recording && m_enabled)
         {
             m_recycler->AddRecordedRefCounts(m_counts);
         }
@@ -147,7 +150,7 @@ public:
     // ref is the location of the reference and childRegion is the region of the referenced object.
     FORCEINLINE void Record(SatoriObject** ref, SatoriRegion* childRegion)
     {
-        if (m_enabled)
+        if (recording && m_enabled)
         {
             uint8_t candidateIndex = childRegion->RelocationCandidateIndex();
             if (candidateIndex != 0)
@@ -171,7 +174,8 @@ private:
     SatoriRecycler* m_recycler;
     SatoriWorkChunk* m_chunk;
     bool m_enabled;
-    int32_t m_counts[INCR_MAX_REGIONS];
+    // only recording needs the counts. (and the object is zeroed when constructed, with MSVC /sdl)
+    int32_t m_counts[recording ? INCR_MAX_REGIONS : 1];
 };
 
 void SatoriRecycler::Initialize(SatoriHeap* heap)
@@ -2703,7 +2707,8 @@ void SatoriRecycler::PushOrReturnWorkChunk(SatoriWorkChunk * chunk)
 // (1 -> 16 made concurrent marking ~15% cheaper per object on a large heap)
 static const int MARK_PREFETCH_DISTANCE = 16;
 
-bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_t deadline)
+template <bool recording>
+bool SatoriRecycler::DrainMarkQueuesConcurrentCore(SatoriWorkChunk* srcChunk, int64_t deadline)
 {
     _ASSERTE(deadline > 0);
 
@@ -2725,7 +2730,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
     SatoriPrefetchQueue<8> childQueue;
 
     // records references to incremental relocation candidates. publishes the rest on any exit.
-    RefRecorder recorder(this);
+    RefRecorder<recording> recorder(this);
 
     // does not change during a GC. a local copy is not reloaded from the recycler for every reference.
     const int condemnedGeneration = m_condemnedGeneration;
@@ -2909,6 +2914,14 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
     return false;
 }
 
+// selects the marking loop once per call, so that only a recording GC pays for recording per reference.
+bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_t deadline)
+{
+    return m_incrRecording ?
+        DrainMarkQueuesConcurrentCore<true>(srcChunk, deadline) :
+        DrainMarkQueuesConcurrentCore<false>(srcChunk, deadline);
+}
+
 SatoriWorkChunk* SatoriRecycler::TakeObjectRange(SatoriWorkChunk* chunk, SatoriObject*& o, size_t& start, size_t& end, size_t scanSize)
 {
     chunk->GetRange(o, start, end);
@@ -2980,7 +2993,8 @@ bool SatoriRecycler::ScheduleUpdateAsChildRanges(SatoriObject* o)
     return true;
 }
 
-void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
+template <bool recording>
+void SatoriRecycler::DrainMarkQueuesCore(SatoriWorkChunk* srcChunk)
 {
     if (!srcChunk)
     {
@@ -2999,7 +3013,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
     SatoriPrefetchQueue<8> childQueue;
 
     // records references to incremental relocation candidates
-    RefRecorder recorder(this);
+    RefRecorder<recording> recorder(this);
 
     // does not change during a GC. a local copy is not reloaded from the recycler for every reference.
     const int condemnedGeneration = m_condemnedGeneration;
@@ -3137,6 +3151,13 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         _ASSERTE(dstChunk->Count() == 0);
         m_heap->Allocator()->ReturnWorkChunk(dstChunk);
     }
+}
+
+void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
+{
+    m_incrRecording ?
+        DrainMarkQueuesCore<true>(srcChunk) :
+        DrainMarkQueuesCore<false>(srcChunk);
 }
 
 // Just a number that is likely be different for different threads making the same call.
@@ -3394,13 +3415,14 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
     return revisit;
 }
 
-bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
+template <bool recording>
+bool SatoriRecycler::CleanCardsConcurrentCore(int64_t deadline)
 {
     SatoriWorkChunk* dstChunk = nullptr;
     bool revisit = false;
 
     // records references to incremental relocation candidates. publishes the rest on any exit.
-    RefRecorder recorder(this);
+    RefRecorder<recording> recorder(this);
 
     // does not change during a GC. a local copy is not reloaded from the recycler for every reference.
     const int condemnedGeneration = m_condemnedGeneration;
@@ -3662,6 +3684,13 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
     return revisit;
 }
 
+bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
+{
+    return m_incrRecording ?
+        CleanCardsConcurrentCore<true>(deadline) :
+        CleanCardsConcurrentCore<false>(deadline);
+}
+
 void SatoriRecycler::MarkThroughCards()
 {
     SatoriWorkChunk* dstChunk = nullptr;
@@ -3820,12 +3849,13 @@ bool SatoriRecycler::HasDirtyCards()
 }
 
 // cleaning is not concurrent, but could be parallel
-void SatoriRecycler::CleanCards()
+template <bool recording>
+void SatoriRecycler::CleanCardsCore()
 {
     SatoriWorkChunk* dstChunk = nullptr;
 
     // records references to incremental relocation candidates
-    RefRecorder recorder(this);
+    RefRecorder<recording> recorder(this);
 
     // does not change during a GC. a local copy is not reloaded from the recycler for every reference.
     const int condemnedGeneration = m_condemnedGeneration;
@@ -3941,14 +3971,16 @@ void SatoriRecycler::CleanCards()
                                         [&](SatoriObject** ref)
                                         {
                                             SatoriObject* child = *ref;
-                                            if (child && !child->IsExternal())
+                                            // same region and older than condemned: nothing to mark or record. (first, as it reads no memory)
+                                            // (a candidate is condemned, so the region of such a child is not a candidate)
+                                            if (child &&
+                                                !(considerAllMarked && child->SameRegion(region)) &&
+                                                !child->IsExternal())
                                             {
                                                 // this must happen for every reference, not just for the first visit of the child.
                                                 recorder.Record(ref, child->ContainingRegion());
 
-                                                // same region and older than condemned: nothing to mark. (first, as it reads no memory)
-                                                if (!(considerAllMarked && child->SameRegion(region)) &&
-                                                    !child->IsMarkedOrOlderThan(condemnedGeneration))
+                                                if (!child->IsMarkedOrOlderThan(condemnedGeneration))
                                                 {
                                                     child->SetMarkedAtomic();
                                                     if (!dstChunk || !dstChunk->TryPush(child))
@@ -3977,6 +4009,13 @@ void SatoriRecycler::CleanCards()
     {
         m_workList->Push(dstChunk);
     }
+}
+
+void SatoriRecycler::CleanCards()
+{
+    m_incrRecording ?
+        CleanCardsCore<true>() :
+        CleanCardsCore<false>();
 }
 
 void SatoriRecycler::UpdatePointersThroughCards()
