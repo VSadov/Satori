@@ -499,8 +499,8 @@ private:
     size_t m_incrRootsStartTicks;
     volatile size_t m_incrRootsDoneTicks;
 
-    // A target needs a free span that could take some of the relocated objects.
-    static const int INCR_MIN_TARGET_BUCKET = 6;
+    // A target needs a free span that could take some of the relocated objects. (128K+, the top 4 buckets)
+    static const int INCR_MIN_TARGET_BUCKET = Satori::FREELIST_COUNT - 4;
     static const int INCR_TARGET_BUCKETS = Satori::FREELIST_COUNT - INCR_MIN_TARGET_BUCKET;
 
     // A summary of what selection needs to know about Gen2 regions, made as they enter the tenured queues,

@@ -212,8 +212,10 @@ namespace Satori
     static const int LARGE_OBJECT_THRESHOLD = 32 * 1024;
 
     // freelist bucket contais items that fit at least 1 << (i + min_bits)
-    // min freelist capacity is 4K+
-    static const int MIN_FREELIST_CAPACITY_BITS = 11;
+    // min freelist capacity is 512.
+    // NB: allocation contexts refill from such small spans too. A refill sets up a frame for the helper call,
+    //     but using the small spans keeps the working set lower.
+    static const int MIN_FREELIST_CAPACITY_BITS = 9;
     static const size_t MIN_FREELIST_CAPACITY = 1 << MIN_FREELIST_CAPACITY_BITS;
     static const int FREELIST_COUNT = Satori::REGION_BITS - MIN_FREELIST_CAPACITY_BITS;
 

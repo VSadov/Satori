@@ -482,7 +482,8 @@ private:
             // Incremental relocation takes this as a sign that the region is likely pinned again.
             bool m_wasPinnedByMark;
 
-            size_t m_freeListCapacities[Satori::FREELIST_COUNT];
+            // The free space of a region fits in uint32_t. (it is smaller than size_t, so that all the buckets fit in the header)
+            uint32_t m_freeListCapacities[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeListTails[Satori::FREELIST_COUNT];
         };
