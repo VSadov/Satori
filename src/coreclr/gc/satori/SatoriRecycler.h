@@ -51,8 +51,6 @@ struct SatoriIncrEntry
 struct SatoriIncrRegionInfo
 {
     size_t m_occupancy;
-    // not large, counts toward Gen2 space
-    bool m_inSpace;
     bool m_isSource;
     bool m_isTarget;
     int m_bucket;

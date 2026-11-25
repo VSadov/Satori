@@ -251,7 +251,6 @@ static void IncrCalibrate(double& value, int& samples, double sample)
 void SatoriRecycler::IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, bool gen1, SatoriIncrRegionInfo& info)
 {
     info.m_occupancy = region->Occupancy();
-    info.m_inSpace = false;
     info.m_isSource = false;
     info.m_isTarget = false;
     info.m_bucket = -1;
@@ -262,7 +261,6 @@ void SatoriRecycler::IncrEvaluateRegion(SatoriRegion* region, double refsPerObj,
         return;
     }
 
-    info.m_inSpace = true;
     if ((!gen1 && (region->IsDemoted() || region->HasUnmarkedDemotedObjects())) ||
         region->IsAttachedToAllocatingOwner() ||
         region->IsPinnedByMark() ||
@@ -354,7 +352,7 @@ void SatoriRecycler::IncrSummarizeRegion(SatoriRegion* region)
 
     SatoriIncrRegionInfo info;
     IncrEvaluateRegion(region, m_incrRefsPerObj, /* gen1 */ false, info);
-    bool isLarge = !info.m_inSpace;
+    bool isLarge = region->IsLarge();
     if (isLarge || info.m_isSource || info.m_isTarget)
     {
         IncrSummaryShard& shard = m_incrSummary[IncrSummaryShardIndex(m_incrSummaryShardCount)];
