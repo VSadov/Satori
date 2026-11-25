@@ -42,11 +42,11 @@ void SatoriObject::Initialize()
     s_emptyObjectMt = GCToEEInterface::GetFreeObjectMethodTable();
 }
 
-void SatoriObject::EscapeCheckOnHandleCreation()
+bool SatoriObject::EscapeCheckOnHandleCreation()
 {
     if (IsExternal())
     {
-        return;
+        return true;
     }
 
     SatoriRegion* region = ContainingRegion();
@@ -56,7 +56,10 @@ void SatoriObject::EscapeCheckOnHandleCreation()
 
         // make sure the object is published after we are done marking escapes
         VolatileStoreBarrier();
+        return false;
     }
+
+    return region->Generation() >= 2;
 }
 
 SatoriObject* SatoriObject::FormatAsFree(size_t location, size_t size, size_t zeroedEnd)

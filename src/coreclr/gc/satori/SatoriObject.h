@@ -106,7 +106,8 @@ public:
     bool HasEphemeralCollectibleAllocator();
     void DirtyCardsForContent();
 
-    void EscapeCheckOnHandleCreation();
+    // Escapes the object if the current thread tracks it. Returns true if the object is in gen2 or older.
+    bool EscapeCheckOnHandleCreation();
 
     bool IsFinalizationSuppressed();
     void SuppressFinalization();

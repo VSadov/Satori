@@ -4385,7 +4385,8 @@ void SatoriRecycler::DependentHandlesRescanWorker()
 void SatoriRecycler::PromoteHandlesAndFreeRelocatedRegions()
 {
     // NB: we may promote some objects in gen1 gc, but it is ok if handles stay young.
-    //     promote handles only after en-masse promotion.
+    //     promote handles only after en-masse promotion. Then every survivor is in gen2, or demoted and
+    //     marked as a root by gen1 GCs, so the young handles can go straight to gen2.
     if (m_promoteAllRegions)
     {
         SatoriHandlePartitioner::StartNextScan();

@@ -948,7 +948,8 @@ PTR_TableSegment CALLBACK xxxAsyncSegmentIterator(PTR_HandleTable pTable, TableS
 /*
  * GetConvertedGeneration
  *
- * Get the generation of an object, where a frozen object is regarded as max_generation
+ * Get the generation of an object, where a frozen object is regarded as max_generation.
+ * With Satori, objects reachable through handles are regarded as at least generation 1.
  *
  */
 int GetConvertedGeneration(_UNCHECKED_OBJECTREF obj);

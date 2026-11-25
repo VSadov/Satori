@@ -30,9 +30,18 @@ DWORD g_dwHandles = 0;
 #endif // ENABLE_PERF_COUNTERS || FEATURE_EVENT_TRACE
 
 #ifndef DACCESS_COMPILE
+#if FEATURE_SATORI_GC
+// Handle targets are escaped, so thread-local GC cannot collect them
+// and a clump never needs to be younger than generation 1.
+#define GEN_MIN_AGE 1
+#endif
+
 int GetConvertedGeneration(_UNCHECKED_OBJECTREF obj)
 {
     int generation = g_theGCHeap->WhichGeneration(obj);
+#if FEATURE_SATORI_GC
+    generation = max(GEN_MIN_AGE, generation);
+#endif
     return generation == INT_MAX ? max_generation : generation;
 }
 #endif //DACCESS_COMPILE
@@ -559,6 +568,7 @@ void HndLogSetEvent(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
  * HndWriteBarrierWorker
  *
  * Resets the generation number for the handle's clump to zero.
+ * With Satori a clump is young or old, and a clump that was never used takes the age of the first object stored in it.
  *
  */
 void HndWriteBarrierWorker(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
@@ -566,7 +576,7 @@ void HndWriteBarrierWorker(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
     _ASSERTE (value != NULL);
 
 #if FEATURE_SATORI_GC
-    ((SatoriObject*)value)->EscapeCheckOnHandleCreation();
+    bool isOld = ((SatoriObject*)value)->EscapeCheckOnHandleCreation();
 #endif
 
     // find the write barrier for this handle
@@ -591,6 +601,38 @@ void HndWriteBarrierWorker(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
     // race condition where we can lose an update (see the comment below for the race condition).
     volatile uint8_t * pClumpAge = barrier + offset;
 
+#if FEATURE_SATORI_GC
+    // A clump is young (generation 1), old, or was never used. Gen1 GCs scan only the young clumps.
+    uint8_t clumpAge = *pClumpAge;
+    if (clumpAge <= GEN_MIN_AGE)
+    {
+        return;
+    }
+
+    if (isOld)
+    {
+#ifdef FEATURE_ASYNC_PINNED_HANDLES
+        // async pinned handles effectively assign multiple objects and conservatively forced to be young
+        if (HandleFetchType(handle) != HNDTYPE_ASYNCPINNED)
+#endif
+        {
+            // Satori ages handles only when all survivors are promoted. If handles to old objects
+            // made their new clumps young, the clumps would be scanned by every GC until then.
+            // So a clump that was never used takes the age of the first object stored in it.
+            // If another store takes it first, the clump is young or old, which is right either way.
+            if (clumpAge == 0xFF)
+            {
+                Interlocked::CompareExchange(pClumpAge, (uint8_t)max_generation, (uint8_t)0xFF);
+            }
+
+            return;
+        }
+    }
+
+    // HndWriteBarrier is not under any synchronization, but no clump needs to be younger
+    // than this, so racing stores cannot leave the clump too old.
+    *pClumpAge = (uint8_t)GEN_MIN_AGE;
+#else // FEATURE_SATORI_GC
     // if this age is smaller than age of the clump, update the clump age
     if (*pClumpAge != 0) // Perf optimization: if clumpAge is 0, nothing more to do
     {
@@ -624,6 +666,7 @@ void HndWriteBarrierWorker(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
             *pClumpAge = (uint8_t)0;
         }
     }
+#endif // FEATURE_SATORI_GC
 }
 #endif // DACCESS_COMPILE
 
