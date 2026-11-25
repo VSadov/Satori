@@ -424,6 +424,11 @@ private:
     // candidates are identified by indices 1..INCR_MAX_REGIONS, which must fit in a byte
     static const int INCR_MAX_REGIONS = 255;
 
+    // The index of the candidate is kept in the top byte of a recorded location (heap addresses use far fewer than 56 bits).
+    // This lets us skip, without reading the location, references to candidates that end up not relocated.
+    static const int INCR_INDEX_SHIFT = 56;
+    static const size_t INCR_LOCATION_MASK = ((size_t)1 << INCR_INDEX_SHIFT) - 1;
+
     struct IncrCopyRange
     {
         SatoriRegion* m_region;
@@ -676,6 +681,7 @@ private:
 
     void UpdateGcCounters(int64_t blockingStart);
 
+    void InitializeIncrementalRelocation();
     void SelectIncrementalRelocationCandidates();
     static void IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, bool gen1, SatoriIncrRegionInfo& info);
     void IncrSummarizeRegion(SatoriRegion* region);
