@@ -748,14 +748,15 @@ public:
 
     // DOTNET_gcIncrReloc
     // Only low latency mode relocates incrementally. (see SelectIncrementalRelocationCandidates)
+    // Incremental relocation relocates in Gen2, so it is also off when Gen2 does not relocate.
     static bool IsIncrementalRelocation()
     {
-        return (GCConfig::GetIncrReloc());
+        return GCConfig::GetIncrReloc() && IsRelocatingInGen2();
     }
 
     // DOTNET_gcIncrRelocBudget
     // The pause, in microseconds, that incremental relocation may add to a Gen2 GC.
-    // It is only a limit, see IncrRelocBacklogPercent.
+    // It is only a limit, see IncrRelocBacklogPercent. 0 - nothing is relocated incrementally.
     static size_t IncrRelocBudgetUs()
     {
         int64_t n = GCConfig::GetIncrRelocBudget();
@@ -764,7 +765,7 @@ public:
 
     // DOTNET_gcIncrRelocRefs
     // The number of recorded references to relocation candidates after which recording is given up.
-    // 0 - derived from the budget.
+    // 0 - derived from the budget. (configured as -1 or 0)
     static size_t IncrRelocRefs()
     {
         int64_t n = GCConfig::GetIncrRelocRefs();

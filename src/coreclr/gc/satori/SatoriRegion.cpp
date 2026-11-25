@@ -373,7 +373,8 @@ void SatoriRegion::MakeBlank()
     m_doNotSweep = false;
     m_isPreSwept = false;
     m_isRelocated = false;
-    m_relocationCandidateIndex = 0;
+    // planning or cancelling untags every candidate before any region is freed.
+    _ASSERTE(m_relocationCandidateIndex == 0);
     m_pinnedByMark = false;
     m_wasPinnedByMark = false;
     _ASSERTE(!m_acceptedPromotedObjects);

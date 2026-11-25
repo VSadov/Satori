@@ -98,6 +98,8 @@ static const size_t INCR_LOCATION_MASK = ((size_t)1 << INCR_INDEX_SHIFT) - 1;
 static const size_t INCR_UNITS_PER_OBJ = 40;
 static const size_t INCR_UNITS_PER_REF = 40;
 static const size_t INCR_BYTES_PER_UNIT = 8;
+// A recorded reference to a candidate that is not relocated is only looked at, not updated.
+static const size_t INCR_UNITS_PER_SKIPPED_REF = 2;
 // the model before anything is measured. conservative, as if we had 4 threads.
 static const double INCR_INITIAL_ROOTS_US = 200;
 static const double INCR_INITIAL_OVERHEAD_US = 100;
@@ -155,9 +157,12 @@ public:
             uint8_t candidateIndex = childRegion->RelocationCandidateIndex();
             if (candidateIndex != 0)
             {
-                // the location of the fake reference to the collectible allocator is not in the heap.
-                if (SatoriHeap::IsInHeap((size_t)ref))
+                // References from within the candidate are updated in the copies. (candidates are not large regions)
+                // The location of the fake reference to the collectible allocator is not in the heap.
+                if (((size_t)ref & ~(Satori::REGION_SIZE_GRANULARITY - 1)) != (size_t)childRegion &&
+                    SatoriHeap::IsInHeap((size_t)ref))
                 {
+                    _ASSERTE(((size_t)ref >> INCR_INDEX_SHIFT) == 0);
                     m_counts[candidateIndex - 1]++;
                     SatoriObject* entry = (SatoriObject*)((size_t)ref | ((size_t)candidateIndex << INCR_INDEX_SHIFT));
                     if (!m_chunk || !m_chunk->TryPush(entry))
@@ -243,7 +248,6 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_incrPlannedUnits = 0;
     m_incrRootsUs = INCR_INITIAL_ROOTS_US;
     m_incrOverheadUs = INCR_INITIAL_OVERHEAD_US;
-    m_incrFixedUs = m_incrRootsUs + m_incrOverheadUs;
     m_incrUsPerUnit = INCR_INITIAL_US_PER_UNIT;
     m_incrFitW = 0;
     m_incrFitX = 0;
@@ -260,25 +264,20 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_incrSummary = nullptr;
     m_incrGen1Summary = nullptr;
     m_incrSummaryShardCount = 0;
+    m_incrSummaryReservation = nullptr;
+    m_incrSummaryReservedShards = 0;
     if (SatoriUtil::IsIncrementalRelocation())
     {
-        // committed memory is zeroed, which is the initial state
+        // Only reserved for now. The summary is committed when low latency mode is first seen. (see IncrStartSummarizing)
         // The Gen1 summary follows the Gen2 one, in the same reservation.
         int shardCount = min(INCR_MAX_SUMMARY_SHARDS, max(1, (int)GCToEEInterface::GetCurrentProcessCpuCount()));
-        size_t gen2Size = sizeof(IncrSummaryShard) * shardCount;
-        size_t size = ALIGN_UP(gen2Size + sizeof(IncrSourceShard) * shardCount, SatoriUtil::CommitGranularity());
-        void* summary = GCToOSInterface::VirtualReserve(nullptr, size);
-        if (summary != nullptr)
+        m_incrSummaryReservation = GCToOSInterface::VirtualReserve(nullptr, IncrSummarySize(shardCount));
+        if (m_incrSummaryReservation != nullptr)
         {
-            if (GCToOSInterface::VirtualCommit(summary, size))
+            m_incrSummaryReservedShards = shardCount;
+            if (SatoriUtil::IsLowLatencyMode())
             {
-                m_incrSummary = (IncrSummaryShard*)summary;
-                m_incrGen1Summary = (IncrSourceShard*)((size_t)summary + gen2Size);
-                m_incrSummaryShardCount = shardCount;
-            }
-            else
-            {
-                GCToOSInterface::VirtualRelease(summary, size);
+                IncrStartSummarizing();
             }
         }
     }
@@ -4595,6 +4594,11 @@ void SatoriRecycler::Plan()
     // gen1 is always rebuilt, clear counters
     m_occupancyAcc[1] = 0;
     m_estimatedEphemeralReclaim = 0;
+    if (m_incrSummary == nullptr && m_incrSummaryReservation != nullptr && IsLowLatencyMode())
+    {
+        IncrStartSummarizing();
+    }
+
     if (m_incrGen1Summary != nullptr)
     {
         IncrGen1SummaryReset();
@@ -4978,7 +4982,13 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
             liveObj = (SatoriObject*)(liveObj->Start() + size);
         } while (liveObj->Start() < objLimit);
 
-        // nothing may be alive, but we still need a span to go through the motions.
+        if (liveBytes == 0)
+        {
+            // nothing to copy and no live references to it to update.
+            FreeLogicallyEmptyRegion(relocationSource, /* hasMarks */ false);
+            return;
+        }
+
         maxBytesToCopy = max(liveBytes, (size_t)Satori::MIN_FREELIST_CAPACITY);
         existingRegionOnly = false;
     }
@@ -4990,6 +5000,12 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         !existingRegionOnly;
 
     SatoriRegion* relocationTarget = TryGetRelocationTarget(maxBytesToCopy, existingRegionOnly || split);
+    if (!relocationTarget && split && !RelocateRegionSplit(relocationSource, maxBytesToCopy))
+    {
+        // the objects of types with finalizers did not fit an existing span. All of the source goes to one region.
+        relocationTarget = TryGetRelocationTarget(maxBytesToCopy, /*existingRegionOnly*/ false);
+        split = false;
+    }
 
     if (!relocationTarget)
     {
@@ -5007,7 +5023,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         }
         else if (split)
         {
-            RelocateRegionSplit(relocationSource, maxBytesToCopy);
+            // RelocateRegionSplit took care of the source.
             return;
         }
         else
@@ -5138,10 +5154,12 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
 // and only what they cannot take goes to one more target, a fresh region if need be.
 // Only gen2, where no target is a promotion target, and only regular relocation, where the copies need no tracking.
 // The trackers of finalizable objects must stay in the region of their objects,
-// so all objects of types with finalizers go together to one target, which takes the trackers of the source.
+// so all objects of types with finalizers go together to one existing span, and that target takes the trackers of the source.
+// Thus a source takes at most one fresh region, for the rest.
+// Returns false, with nothing done, when no existing span takes the objects of types with finalizers.
 // The targets stay with this thread until the source is done. If there is no region for the rest of the source,
 // what was copied is put back and the source stays, as when there is no target for it at all.
-void SatoriRecycler::RelocateRegionSplit(SatoriRegion* relocationSource, size_t maxBytesToCopy)
+bool SatoriRecycler::RelocateRegionSplit(SatoriRegion* relocationSource, size_t maxBytesToCopy)
 {
     _ASSERTE(m_condemnedGeneration == 2);
     _ASSERTE(!m_isIncrementalRelocation);
@@ -5268,7 +5286,7 @@ void SatoriRecycler::RelocateRegionSplit(SatoriRegion* relocationSource, size_t 
 
         if (finBytes > 0)
         {
-            finTarget = TryGetRelocationTarget(finBytes, /*existingRegionOnly*/ false);
+            finTarget = TryGetRelocationTarget(finBytes, /*existingRegionOnly*/ true);
             if (finTarget)
             {
                 finDst = finTarget->Allocate(finBytes, /*zeroInitialize*/ false);
@@ -5282,9 +5300,7 @@ void SatoriRecycler::RelocateRegionSplit(SatoriRegion* relocationSource, size_t 
 
             if (!finTarget)
             {
-                // as when there is no target for the source
-                AddRelocationTarget(relocationSource);
-                return;
+                return false;
             }
 
             finIndex = addTarget(finTarget);
@@ -5461,6 +5477,8 @@ void SatoriRecycler::RelocateRegionSplit(SatoriRegion* relocationSource, size_t 
         // relocationSource happened to be empty
         FreeLogicallyEmptyRegion(relocationSource, /* hasMarks */ false);
     }
+
+    return true;
 }
 
 NOINLINE
@@ -6367,7 +6385,7 @@ static void IncrHeapSort(IncrEntry* heap, int count)
 static const size_t INCR_HARD_REFS_FACTOR = 4;
 static const size_t INCR_MIN_HARD_REFS = 64 * 1024;
 
-// When the fixed part of the pause alone does not fit the budget, we relocate only this often, to see if that changed.
+// When nothing fits the budget, we relocate only this often, to see if that changed.
 static const int INCR_NO_ROOM_PROBE_INTERVAL = 16;
 
 static size_t IncrRelocationCost(size_t objCount, size_t bytes, size_t refs)
@@ -6559,6 +6577,33 @@ void SatoriRecycler::IncrSummarizeGen1Region(SatoriRegion* region)
     }
 }
 
+size_t SatoriRecycler::IncrSummarySize(int shardCount)
+{
+    return ALIGN_UP((sizeof(IncrSummaryShard) + sizeof(IncrSourceShard)) * shardCount, SatoriUtil::CommitGranularity());
+}
+
+// The summary is committed only when low latency mode is first seen, at startup or by a GC, while EE is stopped.
+// From then on it is kept up in all modes, since the latency mode can change back.
+// Regions that entered the queues before that are not in the summary until Gen2 is rebuilt. That only makes fewer
+// sources and targets known, and counts less backlog, thus relocation does less, not more.
+// If the commit fails, the next GC tries again.
+void SatoriRecycler::IncrStartSummarizing()
+{
+    _ASSERTE(m_incrSummary == nullptr);
+    _ASSERTE(m_incrSummaryReservation != nullptr);
+
+    int shardCount = m_incrSummaryReservedShards;
+    if (!GCToOSInterface::VirtualCommit(m_incrSummaryReservation, IncrSummarySize(shardCount)))
+    {
+        return;
+    }
+
+    // committed memory is zeroed, which is the initial state
+    m_incrSummaryShardCount = shardCount;
+    m_incrGen1Summary = (IncrSourceShard*)((size_t)m_incrSummaryReservation + sizeof(IncrSummaryShard) * shardCount);
+    m_incrSummary = (IncrSummaryShard*)m_incrSummaryReservation;
+}
+
 // Starts the Gen1 summary over. Called by every GC, while EE is stopped and before any Gen1 region is put back into the queues.
 void SatoriRecycler::IncrGen1SummaryReset()
 {
@@ -6598,9 +6643,9 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     m_incrSelectedObjs = 0;
     m_incrSelectionDone = false;
 
-    // the summary exists only when incremental relocation is enabled.
+    // the summary exists only when incremental relocation is enabled, from the first time low latency mode is seen.
     // Only low latency mode relocates incrementally, since it does not relocate regularly.
-    // (NB: the latency mode can change, so the summary is kept up in all modes)
+    // (NB: the latency mode can change, so once started, the summary is kept up in all modes)
     // Forced compaction relocates regularly, even in low latency mode.
     if (m_condemnedGeneration != 2 ||
         m_incrSummary == nullptr ||
@@ -6713,33 +6758,29 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
     double budgetUs = (double)SatoriUtil::IncrRelocBudgetUs();
 
     // What the budget leaves after the fixed part of the pause, in cost units.
-    int maxSources = INCR_MAX_REGIONS;
-    size_t unitsBudget = 0;
-    bool noRoom = budgetUs <= m_incrFixedUs;
-    if (noRoom)
+    double fixedUs = m_incrRootsUs + m_incrOverheadUs;
+    size_t unitsBudget = budgetUs > fixedUs ?
+        (size_t)((budgetUs - fixedUs) / m_incrUsPerUnit) :
+        0;
+
+    auto select = [&](int i)
     {
-        // Once in a while relocate the best candidate anyway, to see if the fixed part is still that large.
-        if (sourceCount > 0 && neededGain > 0 && ++m_incrNoRoomCount % INCR_NO_ROOM_PROBE_INTERVAL == 0)
-        {
-            maxSources = 1;
-            unitsBudget = SIZE_MAX;
-        }
-    }
-    else
-    {
-        unitsBudget = (size_t)((budgetUs - m_incrFixedUs) / m_incrUsPerUnit);
-    }
+        size_t objCount = sources[i].m_objCount;
+        size_t occupancy = sources[i].m_occupancy;
+        m_incrSelectedObjs += objCount;
+        m_incrSourceObjs[m_incrSourceCount] = objCount;
+        m_incrSourceBytes[m_incrSourceCount] = occupancy;
+        m_incrSources[m_incrSourceCount++] = sources[i].m_region;
+        return IncrRelocationGain(occupancy);
+    };
 
     // sources, best first, as long as the budget allows and more is needed
     size_t unitsLeft = unitsBudget;
-    size_t selectedUnits = 0;
     size_t selectedGain = 0;
-    for (int i = 0; i < sourceCount && m_incrSourceCount < maxSources && selectedGain < neededGain; i++)
+    for (int i = 0; i < sourceCount && selectedGain < neededGain; i++)
     {
-        SatoriRegion* region = sources[i].m_region;
         size_t objCount = sources[i].m_objCount;
-        size_t occupancy = sources[i].m_occupancy;
-        size_t cost = IncrRelocationCost(objCount, occupancy, (size_t)(objCount * refsPerObj));
+        size_t cost = IncrRelocationCost(objCount, sources[i].m_occupancy, (size_t)(objCount * refsPerObj));
         if (cost > unitsLeft)
         {
             // maybe a cheaper one will fit
@@ -6747,18 +6788,34 @@ void SatoriRecycler::SelectIncrementalRelocationCandidates()
         }
 
         unitsLeft -= cost;
-        selectedUnits += cost;
-        selectedGain += IncrRelocationGain(occupancy);
-        m_incrSelectedObjs += objCount;
-        m_incrSourceObjs[m_incrSourceCount] = objCount;
-        m_incrSourceBytes[m_incrSourceCount] = occupancy;
-        m_incrSources[m_incrSourceCount++] = region;
+        selectedGain += select(i);
     }
 
-    // a probe may use a bit more than expected, but not much more.
-    if (unitsBudget == SIZE_MAX)
+    // Nothing fits the budget, which could be the model being off, since it learns only from relocations.
+    // Once in a while relocate the cheapest candidate anyway, to see if that is still so.
+    // A budget of 0 means no added pause, thus no probes either.
+    if (m_incrSourceCount == 0 &&
+        sourceCount > 0 &&
+        neededGain > 0 &&
+        budgetUs > 0 &&
+        ++m_incrNoRoomCount % INCR_NO_ROOM_PROBE_INTERVAL == 0)
     {
-        unitsBudget = selectedUnits * 2;
+        int cheapest = 0;
+        size_t cheapestCost = SIZE_MAX;
+        for (int i = 0; i < sourceCount; i++)
+        {
+            size_t objCount = sources[i].m_objCount;
+            size_t cost = IncrRelocationCost(objCount, sources[i].m_occupancy, (size_t)(objCount * refsPerObj));
+            if (cost < cheapestCost)
+            {
+                cheapest = i;
+                cheapestCost = cost;
+            }
+        }
+
+        select(cheapest);
+        // a probe may use a bit more than expected, but not much more.
+        unitsBudget = cheapestCost * 2;
     }
 
     // Recording is abandoned when there are far more references than the budget allows updating.
@@ -7031,8 +7088,11 @@ void SatoriRecycler::PlanIncrementalRelocation()
     int keepIndex[INCR_MAX_REGIONS];
     size_t keepCost[INCR_MAX_REGIONS];
     size_t keepGain[INCR_MAX_REGIONS];
+    size_t keepRefs[INCR_MAX_REGIONS];
     size_t keepTotalCost = 0;
     int keepCount = 0;
+    // recorded references to the candidates that are not relocated. Updating still goes through these.
+    size_t skippedRefs = 0;
 
     for (int i = 0; i < m_incrSourceCount; i++)
     {
@@ -7043,23 +7103,28 @@ void SatoriRecycler::PlanIncrementalRelocation()
             continue;
         }
 
+        size_t refs = (size_t)m_incrSourceRefs[i];
+
         // pinned candidates are not movable. we found that while marking stacks, which could not be known earlier.
         if (region->IsUnmovable())
         {
+            skippedRefs += refs;
             continue;
         }
 
         keep[keepCount] = region;
         keepIndex[keepCount] = i;
-        keepCost[keepCount] = IncrRelocationCost(m_incrSourceObjs[i], m_incrSourceBytes[i], (size_t)m_incrSourceRefs[i]);
+        keepCost[keepCount] = IncrRelocationCost(m_incrSourceObjs[i], m_incrSourceBytes[i], refs);
         keepGain[keepCount] = IncrRelocationGain(m_incrSourceBytes[i]);
+        keepRefs[keepCount] = refs;
         keepTotalCost += keepCost[keepCount];
         keepCount++;
     }
 
     // Keep what fits the budget. The least efficient candidates (by cost per gain) are dropped first,
     // these are often the ones referenced from too many places.
-    while (keepTotalCost > m_incrUnitsBudget && keepCount > 0)
+    // If going through the references to the dropped ones alone does not fit, nothing is relocated.
+    while (keepTotalCost + skippedRefs * INCR_UNITS_PER_SKIPPED_REF > m_incrUnitsBudget && keepCount > 0)
     {
         int worst = 0;
         for (int i = 1; i < keepCount; i++)
@@ -7071,11 +7136,13 @@ void SatoriRecycler::PlanIncrementalRelocation()
         }
 
         keepTotalCost -= keepCost[worst];
+        skippedRefs += keepRefs[worst];
         keepCount--;
         keep[worst] = keep[keepCount];
         keepIndex[worst] = keepIndex[keepCount];
         keepCost[worst] = keepCost[keepCount];
         keepGain[worst] = keepGain[keepCount];
+        keepRefs[worst] = keepRefs[keepCount];
     }
 
     // Largest first, since these are harder to fit. PlanRegions does that too.
@@ -7105,12 +7172,18 @@ void SatoriRecycler::PlanIncrementalRelocation()
         // The candidate is in the tenured queue, or in the ephemeral one if it is Gen1. It must be taken out, to not be treated as staying.
         // (finalization tracking queues are empty when planning a Gen2 GC, see Plan)
         SatoriRegion* region = keep[i];
+        int index = keepIndex[i];
         if (m_tenuredRegions->TryRemove(region) ||
             m_ephemeralRegions->TryRemove(region))
         {
             m_relocatingRegions->Push(region);
-            m_incrKeep[keepIndex[i] + 1] = true;
+            m_incrKeep[index + 1] = true;
             relocatingCount++;
+        }
+        else
+        {
+            keepTotalCost -= IncrRelocationCost(m_incrSourceObjs[index], m_incrSourceBytes[index], (size_t)m_incrSourceRefs[index]);
+            skippedRefs += (size_t)m_incrSourceRefs[index];
         }
     }
 
@@ -7132,8 +7205,10 @@ void SatoriRecycler::PlanIncrementalRelocation()
     m_isIncrementalRelocation = m_isRelocating;
     if (m_isRelocating)
     {
-        // what we expect this to cost, and the start of measuring what it actually costs.
-        m_incrPlannedUnits = keepTotalCost;
+        // What we expect this to cost, and the start of measuring what it actually costs.
+        // The estimate is from the same quantities as in selection (occupancy and object count as of the last sweep),
+        // so that the calibration learns what selection needs to predict.
+        m_incrPlannedUnits = keepTotalCost + skippedRefs * INCR_UNITS_PER_SKIPPED_REF;
         m_incrMeasuredTicks = minipal_hires_ticks() - startTicks;
     }
     else
@@ -7187,7 +7262,6 @@ void SatoriRecycler::CalibrateIncrementalRelocation()
 
     m_incrOverheadUs = overhead;
     m_incrUsPerUnit = max(slope, initialSlope / 1024) / INCR_FIT_UNITS_SCALE;
-    m_incrFixedUs = m_incrRootsUs + m_incrOverheadUs;
 }
 
 // Updates what was recorded (or is otherwise known) to need updating after an incremental relocation.
@@ -7234,7 +7308,11 @@ void SatoriRecycler::UpdateRecordedRefsWorker()
             size_t count = chunk->Count();
             for (size_t i = 0; i < count; i++)
             {
-                SatoriUtil::Prefetch((void*)((size_t)chunk->Item(min(i + 8, count - 1)) & INCR_LOCATION_MASK));
+                size_t ahead = (size_t)chunk->Item(min(i + 8, count - 1));
+                if (m_incrKeep[ahead >> INCR_INDEX_SHIFT])
+                {
+                    SatoriUtil::Prefetch((void*)(ahead & INCR_LOCATION_MASK));
+                }
 
                 // references to candidates that we did not relocate need no update
                 // (and we do not even want to read these locations)

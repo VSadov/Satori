@@ -879,11 +879,17 @@ inline bool SatoriRegion::IsPinnedByMark()
 
 // Markers call this for every pinned root they see, possibly on many threads at once.
 // Store only if not set yet, same as above.
+// A pinned region is not relocated, so if it is a relocation candidate, references to it need not be recorded.
+// (a marker that does not see that yet just records a few more, which planning skips)
 inline void SatoriRegion::SetPinnedByMark()
 {
     if (!m_pinnedByMark)
     {
         m_pinnedByMark = true;
+        if (m_relocationCandidateIndex != 0)
+        {
+            m_relocationCandidateIndex = 0;
+        }
     }
 }
 

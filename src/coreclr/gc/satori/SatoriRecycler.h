@@ -473,7 +473,6 @@ private:
     // The cost model, calibrated as we go: pause = fixed + perUnit * units.
     // The fixed part is updating roots, which is measured, and the overhead of a relocation, which is not
     // separable from the part per unit, so the two are fitted together. Units are estimated from objects, bytes and references.
-    double m_incrFixedUs;
     double m_incrRootsUs;
     double m_incrOverheadUs;
     double m_incrUsPerUnit;
@@ -487,7 +486,7 @@ private:
     double m_incrRefsPerObj;
     int m_incrRootsSamples;
     int m_incrRefsSamples;
-    // when the fixed part alone would not fit the budget, we relocate only occasionally, to see if that changed.
+    // when nothing fits the budget, we relocate only occasionally, to see if that changed.
     int m_incrNoRoomCount;
     // measured parts of the current incremental relocation
     int64_t m_incrMeasuredTicks;
@@ -525,9 +524,13 @@ private:
         SatoriRegion* m_targets[INCR_TARGET_BUCKETS][INCR_SHARD_TARGETS];
     };
 
-    // one shard per processor (up to INCR_MAX_SUMMARY_SHARDS), or null when incremental relocation is not enabled
+    // one shard per processor (up to INCR_MAX_SUMMARY_SHARDS), or null until low latency mode is first seen
+    // or when incremental relocation is not enabled. (see IncrStartSummarizing)
     IncrSummaryShard* m_incrSummary;
     int m_incrSummaryShardCount;
+    // reserved at startup for the summaries, if incremental relocation is enabled
+    void* m_incrSummaryReservation;
+    int m_incrSummaryReservedShards;
 
     // Gen1 regions that could be sources, by shard as above. Rebuilt by every GC. (see IncrSummarizeGen1Region)
     struct DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY) IncrSourceShard
@@ -651,7 +654,7 @@ private:
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);
-    void RelocateRegionSplit(SatoriRegion* relocationSource, size_t maxBytesToCopy);
+    bool RelocateRegionSplit(SatoriRegion* relocationSource, size_t maxBytesToCopy);
     void FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool hasMarks);
     void FreeRelocatedRegionsWorker();
 
@@ -680,6 +683,8 @@ private:
     static void IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, bool gen1, SatoriIncrRegionInfo& info);
     void IncrSummarizeRegion(SatoriRegion* region);
     void IncrSummarizeGen1Region(SatoriRegion* region);
+    static size_t IncrSummarySize(int shardCount);
+    void IncrStartSummarizing();
     void IncrSummaryReset();
     void IncrGen1SummaryReset();
     void PlanIncrementalRelocation();
