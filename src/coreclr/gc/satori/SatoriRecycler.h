@@ -528,9 +528,6 @@ private:
     // or when incremental relocation is not enabled. (see IncrStartSummarizing)
     IncrSummaryShard* m_incrSummary;
     int m_incrSummaryShardCount;
-    // reserved at startup for the summaries, if incremental relocation is enabled
-    void* m_incrSummaryReservation;
-    int m_incrSummaryReservedShards;
 
     // Gen1 regions that could be sources, by shard as above. Rebuilt by every GC. (see IncrSummarizeGen1Region)
     struct DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY) IncrSourceShard
@@ -683,7 +680,6 @@ private:
     static void IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, bool gen1, SatoriIncrRegionInfo& info);
     void IncrSummarizeRegion(SatoriRegion* region);
     void IncrSummarizeGen1Region(SatoriRegion* region);
-    static size_t IncrSummarySize(int shardCount);
     void IncrStartSummarizing();
     void IncrSummaryReset();
     void IncrGen1SummaryReset();

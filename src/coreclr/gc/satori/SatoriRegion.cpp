@@ -787,7 +787,8 @@ size_t SatoriRegion::MinCommitSize(size_t regionSize)
 
 // Decommits what the region has committed above the address, rounded up to the commit granularity,
 // but not what every region keeps committed. (see MinCommitSize)
-// The finalization queue does that with its region: a run can come committed beyond the array that the queue needs.
+// The finalization queue and the incremental relocation summary do that with their regions: a claimed region can come
+// committed beyond what they need.
 bool SatoriRegion::TryDecommitAbove(size_t address)
 {
     _ASSERTE(address >= (size_t)&m_syncBlock && address <= End());

@@ -264,22 +264,10 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_incrSummary = nullptr;
     m_incrGen1Summary = nullptr;
     m_incrSummaryShardCount = 0;
-    m_incrSummaryReservation = nullptr;
-    m_incrSummaryReservedShards = 0;
-    if (SatoriUtil::IsIncrementalRelocation())
+    // The summary is allocated when low latency mode is first seen. (see IncrStartSummarizing)
+    if (SatoriUtil::IsIncrementalRelocation() && SatoriUtil::IsLowLatencyMode())
     {
-        // Only reserved for now. The summary is committed when low latency mode is first seen. (see IncrStartSummarizing)
-        // The Gen1 summary follows the Gen2 one, in the same reservation.
-        int shardCount = min(INCR_MAX_SUMMARY_SHARDS, max(1, (int)GCToEEInterface::GetCurrentProcessCpuCount()));
-        m_incrSummaryReservation = GCToOSInterface::VirtualReserve(nullptr, IncrSummarySize(shardCount));
-        if (m_incrSummaryReservation != nullptr)
-        {
-            m_incrSummaryReservedShards = shardCount;
-            if (SatoriUtil::IsLowLatencyMode())
-            {
-                IncrStartSummarizing();
-            }
-        }
+        IncrStartSummarizing();
     }
 
     m_gcState = GC_STATE_NONE;
@@ -2294,7 +2282,8 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         }
 
         // In the conservative mode the ref may be stale, and point into a region that is not in use: in the cache,
-        // holding work chunks or the finalization queue, or not given out yet. Such a region has generation -1 and nothing to mark.
+        // holding work chunks, the finalization queue or the incremental relocation summary, or not given out yet.
+        // Such a region has generation -1 and nothing to mark.
         // The region that we have found stays what it is while we mark: regions are not split, and in the conservative mode
         // no region is freed into the free granules while a thread scans a stack (see SatoriAllocator::FreeToBitmap).
         // A region that is put to use gets its generation last, with a release (see SetGenerationRelease).
@@ -4594,7 +4583,7 @@ void SatoriRecycler::Plan()
     // gen1 is always rebuilt, clear counters
     m_occupancyAcc[1] = 0;
     m_estimatedEphemeralReclaim = 0;
-    if (m_incrSummary == nullptr && m_incrSummaryReservation != nullptr && IsLowLatencyMode())
+    if (m_incrSummary == nullptr && SatoriUtil::IsIncrementalRelocation() && IsLowLatencyMode())
     {
         IncrStartSummarizing();
     }
@@ -6577,31 +6566,41 @@ void SatoriRecycler::IncrSummarizeGen1Region(SatoriRegion* region)
     }
 }
 
-size_t SatoriRecycler::IncrSummarySize(int shardCount)
-{
-    return ALIGN_UP((sizeof(IncrSummaryShard) + sizeof(IncrSourceShard)) * shardCount, SatoriUtil::CommitGranularity());
-}
-
-// The summary is committed only when low latency mode is first seen, at startup or by a GC, while EE is stopped.
+// The summary is allocated only when low latency mode is first seen, at startup or by a GC, while EE is stopped.
 // From then on it is kept up in all modes, since the latency mode can change back.
 // Regions that entered the queues before that are not in the summary until Gen2 is rebuilt. That only makes fewer
 // sources and targets known, and counts less backlog, thus relocation does less, not more.
-// If the commit fails, the next GC tries again.
+// If there is no memory for it, the next GC tries again.
 void SatoriRecycler::IncrStartSummarizing()
 {
     _ASSERTE(m_incrSummary == nullptr);
-    _ASSERTE(m_incrSummaryReservation != nullptr);
 
-    int shardCount = m_incrSummaryReservedShards;
-    if (!GCToOSInterface::VirtualCommit(m_incrSummaryReservation, IncrSummarySize(shardCount)))
+    // The Gen1 summary follows the Gen2 one.
+    int shardCount = min(INCR_MAX_SUMMARY_SHARDS, max(1, (int)GCToEEInterface::GetCurrentProcessCpuCount()));
+    size_t summarySize = (sizeof(IncrSummaryShard) + sizeof(IncrSourceShard)) * shardCount;
+    // The shards are aligned to cache lines, and an allocation in a region is not: it starts after the sync block of an object.
+    size_t allocSize = summarySize + Satori::CACHE_LINE_GRANULARITY;
+
+    // The summary lives as long as the process, so, like the finalization queue, it is in a region at the highest free granules of a page.
+    // The claim commits what we need before it publishes the region, and gives the granules back if it cannot.
+    SatoriRegion* region = m_heap->Allocator()->GetRegionLongLived(
+        SatoriRegion::RegionSizeForAlloc(allocSize), SatoriRegion::CommitSizeForAlloc(allocSize));
+    if (region == nullptr)
     {
         return;
     }
 
-    // committed memory is zeroed, which is the initial state
+    // Nothing is left to commit, so this cannot fail. Zeroed is the initial state.
+    size_t chunk = region->Allocate(allocSize, /*zeroInitialize*/ true);
+    _ASSERTE(chunk != 0);
+    size_t summary = ALIGN_UP(chunk, Satori::CACHE_LINE_GRANULARITY);
+
+    // The region could come committed beyond what we need.
+    region->TryDecommitAbove(summary + summarySize);
+
     m_incrSummaryShardCount = shardCount;
-    m_incrGen1Summary = (IncrSourceShard*)((size_t)m_incrSummaryReservation + sizeof(IncrSummaryShard) * shardCount);
-    m_incrSummary = (IncrSummaryShard*)m_incrSummaryReservation;
+    m_incrGen1Summary = (IncrSourceShard*)(summary + sizeof(IncrSummaryShard) * shardCount);
+    m_incrSummary = (IncrSummaryShard*)summary;
 }
 
 // Starts the Gen1 summary over. Called by every GC, while EE is stopped and before any Gen1 region is put back into the queues.

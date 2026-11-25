@@ -1216,8 +1216,9 @@ SatoriRegion* SatoriPage::FormatClaimed(size_t first, size_t count, size_t commi
     }
 #endif
 
-    // What the caller asked for: the memory of a huge object, or of the array of the finalization queue. It is committed below
-    // with the gaps, before the region is published, so a commit that fails gives the granules back before anything can see the region.
+    // What the caller asked for: the memory of a huge object, of the array of the finalization queue, or of the incremental
+    // relocation summary. It is committed below with the gaps, before the region is published, so a commit that fails gives
+    // the granules back before anything can see the region.
     committed = max(committed, start + commitSize);
 
     // Fill the gaps in the commit, the object that needed the run would commit them anyway.
