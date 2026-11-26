@@ -85,6 +85,7 @@ set(COMMON_RUNTIME_SOURCES
     ${GC_DIR}/satori/SatoriRegionQueue.cpp
     ${GC_DIR}/satori/SatoriAllocator.cpp
     ${GC_DIR}/satori/SatoriRecycler.cpp
+    ${GC_DIR}/satori/SatoriIncrementalRelocation.cpp
     ${GC_DIR}/satori/SatoriTrimmer.cpp
     ${GC_DIR}/satori/SatoriFinalizationQueue.cpp
     ${GC_DIR}/satori/SatoriAllocationContext.cpp

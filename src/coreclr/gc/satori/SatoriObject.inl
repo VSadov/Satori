@@ -159,6 +159,11 @@ inline void SatoriObject::SetMarkedAtomic()
     return ContainingRegion()->SetMarkedAtomic(this);
 }
 
+inline void SatoriObject::ClearMarked()
+{
+    ContainingRegion()->ClearMarked(this);
+}
+
 inline bool SatoriObject::IsFinalizationSuppressed()
 {
     return GetHeader()->GetBits() & BIT_SBLK_FINALIZER_RUN;

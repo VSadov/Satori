@@ -82,6 +82,73 @@ void ToggleWriteBarrier(int barrierState, bool eeSuspended)
     GCToEEInterface::StompWriteBarrier(&args);
 }
 
+// Records locations of references to incremental relocation candidates.
+// The marker sees every reference from a live object at least once after the reference was last written
+// (written references dirty cards and are seen again when cards are cleaned), thus everything that
+// needs updating after the candidates are relocated is recorded by the time marking is done.
+// The marking loops are instantiated with and without recording, so that a GC that does not record
+// does not pay for recording per reference. Without recording, this compiles to nothing.
+template <bool recording>
+class SatoriRecycler::RefRecorder
+{
+public:
+    RefRecorder(SatoriRecycler* recycler) :
+        m_recycler(recycler), m_chunk(nullptr), m_enabled(recording && recycler->m_incrRecording)
+    {
+        if (m_enabled)
+        {
+            memset(m_counts, 0, sizeof(m_counts[0]) * recycler->m_incrSourceCount);
+        }
+    }
+
+    ~RefRecorder()
+    {
+        if (recording && m_chunk)
+        {
+            m_recycler->PublishRecordedRefs(m_chunk);
+        }
+
+        if (recording && m_enabled)
+        {
+            m_recycler->AddRecordedRefCounts(m_counts);
+        }
+    }
+
+    // Must be called for every reference, not just for the first visit of the child.
+    // ref is the location of the reference and childRegion is the region of the referenced object.
+    FORCEINLINE void Record(SatoriObject** ref, SatoriRegion* childRegion)
+    {
+        if (recording && m_enabled)
+        {
+            uint8_t candidateIndex = childRegion->RelocationCandidateIndex();
+            if (candidateIndex != 0)
+            {
+                // References from within the candidate are updated in the copies. (candidates are not large regions)
+                // The location of the fake reference to the collectible allocator is not in the heap.
+                if (((size_t)ref & ~(Satori::REGION_SIZE_GRANULARITY - 1)) != (size_t)childRegion &&
+                    SatoriHeap::IsInHeap((size_t)ref))
+                {
+                    _ASSERTE(((size_t)ref >> INCR_INDEX_SHIFT) == 0);
+                    m_counts[candidateIndex - 1]++;
+                    SatoriObject* entry = (SatoriObject*)((size_t)ref | ((size_t)candidateIndex << INCR_INDEX_SHIFT));
+                    if (!m_chunk || !m_chunk->TryPush(entry))
+                    {
+                        // if recording was given up, there is nothing more to do here.
+                        m_enabled = m_recycler->RecordRelocationRefSlow(m_chunk, entry);
+                    }
+                }
+            }
+        }
+    }
+
+private:
+    SatoriRecycler* m_recycler;
+    SatoriWorkChunk* m_chunk;
+    bool m_enabled;
+    // only recording needs the counts. (and the object is zeroed when constructed, with MSVC /sdl)
+    int32_t m_counts[recording ? INCR_MAX_REGIONS : 1];
+};
+
 void SatoriRecycler::Initialize(SatoriHeap* heap)
 {
     m_workerGate = new (nothrow) SatoriGate();
@@ -127,6 +194,8 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_reusableRegionsAlternate = SatoriShardedRegionQueue::AllocAlignedForProcessors(QueueKind::RecyclerReusable, 4);
 
     m_workList = SatoriShardedWorkList::AllocAlignedForProcessors(4);
+    InitializeIncrementalRelocation();
+
     m_gcState = GC_STATE_NONE;
     // The first GC is a full GC (see m_nextGcIsFullGc), thus cards are not needed until then.
     m_barrierState = BARRIER_STATE_SKIPPING_CARDS;
@@ -431,6 +500,11 @@ void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
         Interlocked::ExchangeAdd64(&m_estimatedTenuredReclaim, estimatedReclaim);
     }
 
+    if (m_incrSummary != nullptr)
+    {
+        IncrSummarizeRegion(region);
+    }
+
     if (region->HasFinalizables())
     {
         m_tenuredFinalizationTrackingRegions->Push(region);
@@ -467,7 +541,7 @@ void SatoriRecycler::AddEphemeralRegion(SatoriRegion* region)
     if (region->IsEscapeTracking())
     {
         _ASSERTE(IsBlockingPhase());
-        _ASSERTE(!region->HasPinnedObjects());
+        _ASSERTE(!region->IsPinnedByMark());
         if (region->IsDemoted())
         {
             // A demoted region reused for gen0. Its demoted objects will be marked as roots
@@ -727,6 +801,10 @@ bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
         if (origBarrierState != BARRIER_STATE_SWITCHING &&
             Interlocked::CompareExchange(&m_barrierState, BARRIER_STATE_SWITCHING, origBarrierState) == origBarrierState)
         {
+            // No marking may start before the barrier is concurrent, so this is the place to select
+            // incremental relocation candidates - before anything could be marked or recorded.
+            SelectIncrementalRelocationCandidates();
+
             ToggleWriteBarrier(BARRIER_STATE_CONCURRENT, /* eeSuspended */ false);
             // the toggle above is a fence, so the switch is published to everyone by now.
             VolatileStore((int*)&m_barrierState, BARRIER_STATE_CONCURRENT);
@@ -1625,11 +1703,14 @@ void SatoriRecycler::BlockingCollectImpl()
 
     // assume that we will relocate. we will rethink later.
     m_isRelocating = m_condemnedGeneration == 2 ? SatoriUtil::IsRelocatingInGen2() : SatoriUtil::IsRelocatingInGen1();
+    m_isIncrementalRelocation = false;
 
     // low latency mode does not relocate, unless asked to compact.
     // same as in the stock GC, where induced GCs are not restricted by low latency mode.
     if (IsLowLatencyMode() && !m_forceCompact)
     {
+        // Regular relocation costs are proportional to the heap size and are not acceptable in low latency mode.
+        // We may still relocate incrementally. See PlanIncrementalRelocation.
         m_isRelocating = false;
     }
 
@@ -1981,13 +2062,7 @@ void SatoriRecycler::PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, Sa
     {
         // handle mark overflow by dirtying the cards
         o->DirtyCardsForContent();
-
-        // since this o will not be popped from the work queue,
-        // check for unmovable here
-        if (o->IsUnmovable())
-        {
-            o->ContainingRegion()->SetHasPinnedObjects();
-        }
+        _ASSERTE(!o->IsUnmovable() || o->ContainingRegion()->HasPinnedObjects());
     }
 }
 
@@ -2042,7 +2117,7 @@ void SatoriRecycler::MarkFn(PTR_PTR_Object ppObject, ScanContext* sc, uint32_t f
 
         if (flags & GC_CALL_PINNED)
         {
-            o->ContainingRegion()->SetHasPinnedObjects();
+            o->ContainingRegion()->SetPinnedByMark();
         }
     }
 };
@@ -2133,7 +2208,8 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
         }
 
         // In the conservative mode the ref may be stale, and point into a region that is not in use: in the cache,
-        // holding work chunks or the finalization queue, or not given out yet. Such a region has generation -1 and nothing to mark.
+        // holding work chunks, the finalization queue or the incremental relocation summary, or not given out yet.
+        // Such a region has generation -1 and nothing to mark.
         // The region that we have found stays what it is while we mark: regions are not split, and in the conservative mode
         // no region is freed into the free granules while a thread scans a stack (see SatoriAllocator::FreeToBitmap).
         // A region that is put to use gets its generation last, with a release (see SetGenerationRelease).
@@ -2182,7 +2258,7 @@ void SatoriRecycler::MarkFnConcurrent(PTR_PTR_Object ppObject, ScanContext* sc, 
 
         if (flags & GC_CALL_PINNED)
         {
-            o->ContainingRegion()->SetHasPinnedObjects();
+            o->ContainingRegion()->SetPinnedByMark();
         }
     }
 };
@@ -2383,8 +2459,8 @@ void SatoriRecycler::MarkDemoted(SatoriRegion* curRegion, MarkContext* markConte
 
     if (m_condemnedGeneration == 1)
     {
+        // the region stays in place. (see SatoriRegion::IsUnmovable)
         _ASSERTE(!curRegion->MaybeEscapeTrackingAcquire());
-        curRegion->HasPinnedObjects() = true;
 
         SatoriWorkChunk* gen2Objects = curRegion->DemotedObjects();
         while (gen2Objects)
@@ -2545,7 +2621,8 @@ void SatoriRecycler::PushOrReturnWorkChunk(SatoriWorkChunk * chunk)
 // (1 -> 16 made concurrent marking ~15% cheaper per object on a large heap)
 static const int MARK_PREFETCH_DISTANCE = 16;
 
-bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_t deadline)
+template <bool recording>
+bool SatoriRecycler::DrainMarkQueuesConcurrentCore(SatoriWorkChunk* srcChunk, int64_t deadline)
 {
     _ASSERTE(deadline > 0);
 
@@ -2566,6 +2643,10 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
     // Children without references are done at that point, only the rest go to dstChunk to be scanned.
     SatoriPrefetchQueue<8> childQueue;
 
+    // records references to incremental relocation candidates. publishes the rest on any exit.
+    RefRecorder<recording> recorder(this);
+
+    // does not change during a GC. a local copy is not reloaded from the recycler for every reference.
     const int condemnedGeneration = m_condemnedGeneration;
 
     auto pushToChunk = [&](SatoriObject* child)
@@ -2582,9 +2663,9 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         {
             pushToChunk(child);
         }
-        else if (child->IsUnmovable())
+        else
         {
-            child->ContainingRegion()->SetHasPinnedObjects();
+            _ASSERTE(!child->IsUnmovable() || child->ContainingRegion()->HasPinnedObjects());
         }
     };
 
@@ -2594,6 +2675,10 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         if (child && !child->IsExternal())
         {
             SatoriRegion* childRegion = child->ContainingRegion();
+
+            // this must happen for every reference, not just for the first visit of the child.
+            recorder.Record(ref, childRegion);
+
             if (!childRegion->MaybeEscapeTrackingAcquire())
             {
                 if (!child->IsMarkedOrOlderThan(condemnedGeneration))
@@ -2674,10 +2759,7 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
                 srcChunk->PrefetchNext(MARK_PREFETCH_DISTANCE);
 
                 _ASSERTE(o->IsMarkedAtomic());
-                if (o->IsUnmovable())
-                {
-                    o->ContainingRegion()->SetHasPinnedObjects();
-                }
+                _ASSERTE(!o->IsUnmovable() || o->ContainingRegion()->HasPinnedObjects());
 
                 // do not get engaged with big objects, reschedule them as child ranges.
                 size_t size = o->Size();
@@ -2744,6 +2826,14 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
     }
 
     return false;
+}
+
+// selects the marking loop once per call, so that only a recording GC pays for recording per reference.
+bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_t deadline)
+{
+    return m_incrRecording ?
+        DrainMarkQueuesConcurrentCore<true>(srcChunk, deadline) :
+        DrainMarkQueuesConcurrentCore<false>(srcChunk, deadline);
 }
 
 SatoriWorkChunk* SatoriRecycler::TakeObjectRange(SatoriWorkChunk* chunk, SatoriObject*& o, size_t& start, size_t& end, size_t scanSize)
@@ -2817,7 +2907,8 @@ bool SatoriRecycler::ScheduleUpdateAsChildRanges(SatoriObject* o)
     return true;
 }
 
-void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
+template <bool recording>
+void SatoriRecycler::DrainMarkQueuesCore(SatoriWorkChunk* srcChunk)
 {
     if (!srcChunk)
     {
@@ -2835,6 +2926,10 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
     // Children without references are done at that point, only the rest go to dstChunk to be scanned.
     SatoriPrefetchQueue<8> childQueue;
 
+    // records references to incremental relocation candidates
+    RefRecorder<recording> recorder(this);
+
+    // does not change during a GC. a local copy is not reloaded from the recycler for every reference.
     const int condemnedGeneration = m_condemnedGeneration;
 
     auto pushToChunk = [&](SatoriObject* child)
@@ -2851,23 +2946,27 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         {
             pushToChunk(child);
         }
-        else if (child->IsUnmovable())
+        else
         {
-            child->ContainingRegion()->SetHasPinnedObjects();
+            _ASSERTE(!child->IsUnmovable() || child->ContainingRegion()->HasPinnedObjects());
         }
     };
 
     auto markChildFn = [&](SatoriObject** ref)
     {
         SatoriObject* child = *ref;
-        if (child &&
-            !child->IsExternal() &&
-            !child->IsMarkedOrOlderThan(condemnedGeneration))
+        if (child && !child->IsExternal())
         {
-            child->SetMarkedAtomic();
-            if (SatoriObject* oldest = childQueue.Push(child))
+            // this must happen for every reference, not just for the first visit of the child.
+            recorder.Record(ref, child->ContainingRegion());
+
+            if (!child->IsMarkedOrOlderThan(condemnedGeneration))
             {
-                processChild(oldest);
+                child->SetMarkedAtomic();
+                if (SatoriObject* oldest = childQueue.Push(child))
+                {
+                    processChild(oldest);
+                }
             }
         }
     };
@@ -2919,10 +3018,7 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
                 srcChunk->PrefetchNext(MARK_PREFETCH_DISTANCE);
 
                 _ASSERTE(o->IsMarkedAtomic());
-                if (o->IsUnmovable())
-                {
-                    o->ContainingRegion()->SetHasPinnedObjects();
-                }
+                _ASSERTE(!o->IsUnmovable() || o->ContainingRegion()->HasPinnedObjects());
 
                 // do not get engaged with big objects, reschedule them as child ranges.
                 size_t size = o->Size();
@@ -2969,6 +3065,13 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
         _ASSERTE(dstChunk->Count() == 0);
         m_heap->Allocator()->ReturnWorkChunk(dstChunk);
     }
+}
+
+void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
+{
+    m_incrRecording ?
+        DrainMarkQueuesCore<true>(srcChunk) :
+        DrainMarkQueuesCore<false>(srcChunk);
 }
 
 // Just a number that is likely be different for different threads making the same call.
@@ -3226,10 +3329,16 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
     return revisit;
 }
 
-bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
+template <bool recording>
+bool SatoriRecycler::CleanCardsConcurrentCore(int64_t deadline)
 {
     SatoriWorkChunk* dstChunk = nullptr;
     bool revisit = false;
+
+    // records references to incremental relocation candidates. publishes the rest on any exit.
+    RefRecorder<recording> recorder(this);
+
+    // does not change during a GC. a local copy is not reloaded from the recycler for every reference.
     const int condemnedGeneration = m_condemnedGeneration;
 
     // Use Gen1 count to identify the current GC. Not Gen0 as that could be changing concurrently.
@@ -3422,6 +3531,10 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
                                                 !child->IsExternal())
                                             {
                                                 SatoriRegion* childRegion = child->ContainingRegion();
+
+                                                // this must happen for every reference, not just for the first visit of the child.
+                                                recorder.Record(ref, childRegion);
+
                                                 if (!childRegion->MaybeEscapeTrackingAcquire())
                                                 {
                                                     if (!child->IsMarkedOrOlderThan(condemnedGeneration))
@@ -3483,6 +3596,13 @@ bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
     }
 
     return revisit;
+}
+
+bool SatoriRecycler::CleanCardsConcurrent(int64_t deadline)
+{
+    return m_incrRecording ?
+        CleanCardsConcurrentCore<true>(deadline) :
+        CleanCardsConcurrentCore<false>(deadline);
 }
 
 void SatoriRecycler::MarkThroughCards()
@@ -3643,9 +3763,15 @@ bool SatoriRecycler::HasDirtyCards()
 }
 
 // cleaning is not concurrent, but could be parallel
-void SatoriRecycler::CleanCards()
+template <bool recording>
+void SatoriRecycler::CleanCardsCore()
 {
     SatoriWorkChunk* dstChunk = nullptr;
+
+    // records references to incremental relocation candidates
+    RefRecorder<recording> recorder(this);
+
+    // does not change during a GC. a local copy is not reloaded from the recycler for every reference.
     const int condemnedGeneration = m_condemnedGeneration;
 
     m_heap->ForEachPage(
@@ -3759,16 +3885,22 @@ void SatoriRecycler::CleanCards()
                                         [&](SatoriObject** ref)
                                         {
                                             SatoriObject* child = *ref;
-                                            // same region and older than condemned: nothing to mark. (first, as it reads no memory)
+                                            // same region and older than condemned: nothing to mark or record. (first, as it reads no memory)
+                                            // (a candidate is condemned, so the region of such a child is not a candidate)
                                             if (child &&
                                                 !(considerAllMarked && child->SameRegion(region)) &&
-                                                !child->IsExternal() &&
-                                                !child->IsMarkedOrOlderThan(condemnedGeneration))
+                                                !child->IsExternal())
                                             {
-                                                child->SetMarkedAtomic();
-                                                if (!dstChunk || !dstChunk->TryPush(child))
+                                                // this must happen for every reference, not just for the first visit of the child.
+                                                recorder.Record(ref, child->ContainingRegion());
+
+                                                if (!child->IsMarkedOrOlderThan(condemnedGeneration))
                                                 {
-                                                    this->PushToMarkQueuesSlow(dstChunk, child);
+                                                    child->SetMarkedAtomic();
+                                                    if (!dstChunk || !dstChunk->TryPush(child))
+                                                    {
+                                                        this->PushToMarkQueuesSlow(dstChunk, child);
+                                                    }
                                                 }
                                             }
                                         }, size, start, end, /* includeCollectibleAllocator */ true);
@@ -3791,6 +3923,13 @@ void SatoriRecycler::CleanCards()
     {
         m_workList->Push(dstChunk);
     }
+}
+
+void SatoriRecycler::CleanCards()
+{
+    m_incrRecording ?
+        CleanCardsCore<true>() :
+        CleanCardsCore<false>();
 }
 
 void SatoriRecycler::UpdatePointersThroughCards()
@@ -4292,7 +4431,7 @@ void SatoriRecycler::FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool hasM
     // The rest is a fairly relatively cheap wiping of metadata fields.
     // Thus we do not defer freeing - once we know a region is empty, we free it.
 
-    _ASSERTE(!curRegion->HasPinnedObjects());
+    _ASSERTE(!curRegion->IsPinnedByMark());
 
     // NOTE: MakeBlank will assert that nothing is marked.
     if (hasMarks)
@@ -4370,6 +4509,15 @@ void SatoriRecycler::Plan()
     // gen1 is always rebuilt, clear counters
     m_occupancyAcc[1] = 0;
     m_estimatedEphemeralReclaim = 0;
+    if (m_incrSummary == nullptr && SatoriUtil::IsIncrementalRelocation() && IsLowLatencyMode())
+    {
+        IncrStartSummarizing();
+    }
+
+    if (m_incrGen1Summary != nullptr)
+    {
+        IncrGen1SummaryReset();
+    }
 
     if (m_promoteAllRegions)
     {
@@ -4378,6 +4526,12 @@ void SatoriRecycler::Plan()
         m_occupancyAcc[2] = 0;
         m_estimatedTenuredReclaim = 0;
         m_demotedOccupancyAcc = 0;
+
+        // All tenured regions leave the queues now and the ones that stay will be pushed back.
+        if (m_incrSummary != nullptr)
+        {
+            IncrSummaryReset();
+        }
     }
 
     // If we do relocation, we are committed to do pointer updates.
@@ -4414,7 +4568,29 @@ void SatoriRecycler::Plan()
         }
     }
 
-    if (m_isRelocating == false || estimatedReclaim < desiredReclaim)
+    if (m_isRelocating == false)
+    {
+        // This is the case when we do not do regular relocation (low latency mode or gcRelocatingGen2=0).
+        // We may still relocate incrementally, if candidates were selected before marking. (only in low latency mode)
+        if (m_incrSelectionDone)
+        {
+            PlanIncrementalRelocation();
+        }
+        else
+        {
+            DenyRelocation();
+        }
+
+        return;
+    }
+
+    // Candidates were selected in low latency mode, but the mode has changed since. We relocate regularly then.
+    if (m_incrSelectionDone)
+    {
+        CancelIncrementalRelocation();
+    }
+
+    if (estimatedReclaim < desiredReclaim)
     {
         DenyRelocation();
         return;
@@ -4499,7 +4675,7 @@ void SatoriRecycler::PlanRegions(SatoriShardedRegionQueue* regions)
             // select relocation candidates and relocation targets according to sizes.
             else
             {
-                size_t reclaim = curRegion->ReclaimSizeIfRelocated(m_promoteAllRegions);
+                size_t reclaim = curRegion->IsUnmovable() ? 0 : curRegion->ReclaimSizeIfRelocated(m_promoteAllRegions);
                 if (reclaim)
                 {
                     // we use m_estimatedEphemeralReclaim to accumulate current estimate
@@ -4541,7 +4717,7 @@ void SatoriRecycler::AddRelocationTarget(SatoriRegion* region)
     {
         _ASSERTE(maxFreeBucket < Satori::FREELIST_COUNT);
         // within the same bucket, we'd prefer to fill up pinned ones first
-        if (region->HasPinnedObjects())
+        if (region->IsUnmovable())
         {
             m_relocationTargets[maxFreeBucket]->Push(region);
         }
@@ -4557,7 +4733,7 @@ SatoriRegion* SatoriRecycler::GetOrAddRelocationTarget(SatoriRegion* region, siz
     int maxFreeBucket = region->GetMaxFreeBucket();
     _ASSERTE(maxFreeBucket >= 0);
     _ASSERTE(maxFreeBucket < Satori::FREELIST_COUNT);
-    _ASSERTE(!region->HasPinnedObjects());
+    _ASSERTE(!region->IsUnmovable());
 
     SatoriRegion* result = m_relocationTargets[maxFreeBucket]->PopOrPush(region);
     if (result)
@@ -4624,7 +4800,12 @@ void SatoriRecycler::Relocate()
 {
     if (m_isRelocating)
     {
+        int64_t startTicks = m_isIncrementalRelocation ? minipal_hires_ticks() : 0;
         RunWithHelp(&SatoriRecycler::RelocateWorker);
+        if (m_isIncrementalRelocation)
+        {
+            m_incrMeasuredTicks += minipal_hires_ticks() - startTicks;
+        }
 
         // the drains above are lock-free, restore what was actually drained
         m_relocatingRegions->ResetAfterUnsafeDrain();
@@ -4694,7 +4875,52 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     // there could be more like this, do not ask for a free region.
     // We would rather make this one a target of relocations.
     bool existingRegionOnly = relocationSource->GetMaxFreeBucket() >= SatoriUtil::BucketForAlloc(maxBytesToCopy);
-    SatoriRegion* relocationTarget = TryGetRelocationTarget(maxBytesToCopy, existingRegionOnly);
+
+    if (m_isIncrementalRelocation)
+    {
+        // The occupancy is from the last sweep and includes what has died since then.
+        // We know what is alive now, and that is what we need a target for.
+        // We selected this region to be relocated, so we do not want to make it a target instead.
+        size_t objLimit = relocationSource->Start() + Satori::REGION_SIZE_GRANULARITY;
+        size_t liveBytes = 0;
+        SatoriObject* liveObj = relocationSource->FirstObject();
+        do
+        {
+            liveObj = relocationSource->SkipUnmarked(liveObj);
+            if (liveObj->Start() >= objLimit)
+            {
+                break;
+            }
+
+            size_t size = liveObj->Size();
+            liveBytes += size;
+            liveObj = (SatoriObject*)(liveObj->Start() + size);
+        } while (liveObj->Start() < objLimit);
+
+        if (liveBytes == 0)
+        {
+            // nothing to copy and no live references to it to update.
+            FreeLogicallyEmptyRegion(relocationSource, /* hasMarks */ false);
+            return;
+        }
+
+        maxBytesToCopy = max(liveBytes, (size_t)Satori::MIN_FREELIST_CAPACITY);
+        existingRegionOnly = false;
+    }
+
+    // In gen2 a source that no existing span fits as a whole is spread over existing spans
+    // before it takes a fresh region. (see RelocateRegionSplit)
+    bool split = m_condemnedGeneration == 2 &&
+        !m_isIncrementalRelocation &&
+        !existingRegionOnly;
+
+    SatoriRegion* relocationTarget = TryGetRelocationTarget(maxBytesToCopy, existingRegionOnly || split);
+    if (!relocationTarget && split && !RelocateRegionSplit(relocationSource, maxBytesToCopy))
+    {
+        // the objects of types with finalizers did not fit an existing span. All of the source goes to one region.
+        relocationTarget = TryGetRelocationTarget(maxBytesToCopy, /*existingRegionOnly*/ false);
+        split = false;
+    }
 
     if (!relocationTarget)
     {
@@ -4709,6 +4935,11 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
             {
                 return;
             }
+        }
+        else if (split)
+        {
+            // RelocateRegionSplit took care of the source.
+            return;
         }
         else
         {
@@ -4731,6 +4962,7 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     }
 
     // transfer finalization trackers only after the destination is secured
+    bool sourceHasFinalizables = relocationSource->HasFinalizables();
     relocationTarget->TakeFinalizerInfoFrom(relocationSource);
 
     // actually relocate src objects into the allocated space.
@@ -4795,6 +5027,23 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     if (objectsRelocated > 0)
     {
         relocationSource->IsRelocated() = true;
+        if (m_isIncrementalRelocation)
+        {
+            // Regular relocation updates all regions after relocating.
+            // Incremental relocation updates only the copies and the regions that got finalizer trackers.
+            if (sourceHasFinalizables)
+            {
+                relocationTarget->AcceptedRelocatedFinalizables() = true;
+            }
+
+            // These objects are the only thing in the target that needs its references updated.
+            int index = Interlocked::Increment(&m_incrCopyRangeCount) - 1;
+            _ASSERTE(index < INCR_MAX_REGIONS);
+            m_incrCopyRanges[index].m_region = relocationTarget;
+            m_incrCopyRanges[index].m_start = dstOrig;
+            m_incrCopyRanges[index].m_end = dst;
+        }
+
         if (relocationIsPromotion)
         {
             // Targets in a higher generation are added to the plan only when all regions are promoted.
@@ -4816,6 +5065,337 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
     }
 }
 
+// A gen2 relocation source that no existing span fits as a whole is spread over existing spans, the largest first,
+// and only what they cannot take goes to one more target, a fresh region if need be.
+// Only gen2, where no target is a promotion target, and only regular relocation, where the copies need no tracking.
+// The trackers of finalizable objects must stay in the region of their objects,
+// so all objects of types with finalizers go together to one existing span, and that target takes the trackers of the source.
+// Thus a source takes at most one fresh region, for the rest.
+// Returns false, with nothing done, when no existing span takes the objects of types with finalizers.
+// The targets stay with this thread until the source is done. If there is no region for the rest of the source,
+// what was copied is put back and the source stays, as when there is no target for it at all.
+bool SatoriRecycler::RelocateRegionSplit(SatoriRegion* relocationSource, size_t maxBytesToCopy)
+{
+    _ASSERTE(m_condemnedGeneration == 2);
+    _ASSERTE(!m_isIncrementalRelocation);
+
+    const int MAX_TARGETS = 64;
+    SatoriRegion* targets[MAX_TARGETS];
+    int32_t targetObjects[MAX_TARGETS];
+    int targetCount = 0;
+
+    // the last of the span targets, while it has an allocation span
+    SatoriRegion* target = nullptr;
+    int targetIndex = -1;
+    bool needToCopyMarks = false;
+    // once the rest of the source has a target, the objects go there one after another
+    bool inRest = false;
+    size_t restDst = 0;
+
+    auto addTarget = [&](SatoriRegion* region) -> int
+    {
+        _ASSERTE(targetCount < MAX_TARGETS);
+        _ASSERTE(region->Generation() <= m_condemnedGeneration);
+        targets[targetCount] = region;
+        targetObjects[targetCount] = 0;
+        return targetCount++;
+    };
+
+    // allocates the object in the largest span of the region, if that certainly fits it
+    auto allocInLargestSpan = [&](SatoriRegion* region, size_t size) -> size_t
+    {
+        int32_t bucket = region->GetMaxFreeBucket();
+        if (bucket < SatoriUtil::BucketForAlloc(size))
+        {
+            return 0;
+        }
+
+        size_t allocStart = region->StartAllocating((size_t)1 << (bucket + Satori::MIN_FREELIST_CAPACITY_BITS));
+        _ASSERTE(allocStart);
+        size_t dst = region->Allocate(size, /*zeroInitialize*/ false);
+        if (!dst)
+        {
+            // could not commit
+            region->StopAllocating();
+        }
+
+        return dst;
+    };
+
+    // finds an existing span for an object that the current span cannot take
+    auto allocInNextSpan = [&](size_t size) -> size_t
+    {
+        if (target)
+        {
+            target->StopAllocating();
+            size_t dst = allocInLargestSpan(target, size);
+            if (dst)
+            {
+                return dst;
+            }
+
+            target = nullptr;
+        }
+
+        int32_t minBucket = SatoriUtil::BucketForAlloc(size);
+        // keep a slot for the rest of the source
+        while (targetCount < MAX_TARGETS - 1)
+        {
+            SatoriRegion* region = nullptr;
+            for (int32_t bucket = Satori::FREELIST_COUNT - 1; bucket >= minBucket && !region; bucket--)
+            {
+                region = m_relocationTargets[bucket]->TryPop();
+            }
+
+            if (!region)
+            {
+                break;
+            }
+
+            int index = addTarget(region);
+            size_t dst = allocInLargestSpan(region, size);
+            if (dst)
+            {
+                target = region;
+                targetIndex = index;
+                needToCopyMarks = !region->DoNotSweep();
+                _ASSERTE(region->HasMarksSet() == needToCopyMarks);
+                return dst;
+            }
+        }
+
+        return (size_t)0;
+    };
+
+    size_t objLimit = relocationSource->Start() + Satori::REGION_SIZE_GRANULARITY;
+
+    // The objects of types with finalizers go to their own target, which then takes the trackers of the source.
+    // We get it first, so that without it the source can just stay.
+    // NB: when no such object is alive, the finalization scan has left no trackers in the source.
+    bool withFinalizables = relocationSource->HasFinalizables();
+    SatoriRegion* finTarget = nullptr;
+    int finIndex = -1;
+    bool finNeedsMarks = false;
+    size_t finBytes = 0;
+    size_t finCopied = 0;
+    size_t finDst = 0;
+    if (withFinalizables)
+    {
+        SatoriObject* f = relocationSource->FirstObject();
+        do
+        {
+            f = relocationSource->SkipUnmarked(f);
+            if (f->Start() >= objLimit)
+            {
+                break;
+            }
+
+            size_t size = f->Size();
+            if (f->RawGetMethodTable()->HasFinalizer())
+            {
+                finBytes += size;
+            }
+
+            f = (SatoriObject*)(f->Start() + size);
+        } while (f->Start() < objLimit);
+
+        if (finBytes > 0)
+        {
+            finTarget = TryGetRelocationTarget(finBytes, /*existingRegionOnly*/ true);
+            if (finTarget)
+            {
+                finDst = finTarget->Allocate(finBytes, /*zeroInitialize*/ false);
+                if (!finDst)
+                {
+                    finTarget->StopAllocating();
+                    AddRelocationTarget(finTarget);
+                    finTarget = nullptr;
+                }
+            }
+
+            if (!finTarget)
+            {
+                return false;
+            }
+
+            finIndex = addTarget(finTarget);
+            finNeedsMarks = !finTarget->DoNotSweep();
+            _ASSERTE(finTarget->HasMarksSet() == finNeedsMarks);
+        }
+    }
+
+    int32_t objectsRelocated = 0;
+    size_t copied = 0;
+    bool failed = false;
+    SatoriObject* o = relocationSource->FirstObject();
+    SatoriRegion::SweepPrefetcher prefetcher;
+    relocationSource->SweepPrefetchStart(prefetcher, o);
+    do
+    {
+        o = relocationSource->SkipUnmarked(o);
+        if (o->Start() >= objLimit)
+        {
+            _ASSERTE(o->Start() == objLimit);
+            break;
+        }
+
+        // marking is done and we have the region to ourselves
+        _ASSERTE(o->IsMarked());
+        _ASSERTE(!o->IsFree());
+        _ASSERTE(!o->IsUnmovable());
+        relocationSource->SweepPrefetchAdvance(prefetcher, o);
+
+        size_t size = o->Size();
+        size_t dst;
+        SatoriRegion* dstRegion;
+        int dstIndex;
+        bool dstNeedsMarks;
+        if (finTarget && o->RawGetMethodTable()->HasFinalizer())
+        {
+            dst = finDst;
+            finDst += size;
+            finCopied += size;
+            _ASSERTE(finCopied <= finBytes);
+            dstRegion = finTarget;
+            dstIndex = finIndex;
+            dstNeedsMarks = finNeedsMarks;
+        }
+        else
+        {
+            if (inRest)
+            {
+                dst = restDst;
+                restDst += size;
+            }
+            else
+            {
+                dst = target ? target->Allocate(size, /*zeroInitialize*/ false) : 0;
+                if (!dst)
+                {
+                    dst = allocInNextSpan(size);
+                }
+
+                if (!dst)
+                {
+                    // The existing spans ran out. The rest goes to one target that fits all of it, a fresh region if need be.
+                    // The finalizable objects that are left have their target already.
+                    _ASSERTE(!target);
+                    _ASSERTE(copied + (finBytes - finCopied) + size <= maxBytesToCopy);
+                    size_t restSize = maxBytesToCopy - copied - (finBytes - finCopied);
+                    SatoriRegion* restTarget = TryGetRelocationTarget(restSize, /*existingRegionOnly*/ false);
+                    if (restTarget)
+                    {
+                        dst = restTarget->Allocate(restSize, /*zeroInitialize*/ false);
+                        if (!dst)
+                        {
+                            restTarget->StopAllocating();
+                            AddRelocationTarget(restTarget);
+                        }
+                    }
+
+                    if (!dst)
+                    {
+                        failed = true;
+                        break;
+                    }
+
+                    targetIndex = addTarget(restTarget);
+                    target = restTarget;
+                    needToCopyMarks = !restTarget->DoNotSweep();
+                    _ASSERTE(restTarget->HasMarksSet() == needToCopyMarks);
+                    inRest = true;
+                    restDst = dst + size;
+                }
+            }
+
+            dstRegion = target;
+            dstIndex = targetIndex;
+            dstNeedsMarks = needToCopyMarks;
+        }
+
+        memcpy((void*)(dst - sizeof(size_t)), (void*)(o->Start() - sizeof(size_t)), size);
+        // record the new location of the object by storing it in the syncblock space.
+        *((size_t*)o - 1) = dst;
+        if (dstNeedsMarks)
+        {
+            ((SatoriObject*)dst)->SetMarked();
+        }
+
+        dstRegion->SetIndicesForObject((SatoriObject*)dst, dst + size);
+        targetObjects[dstIndex]++;
+        copied += size;
+        objectsRelocated++;
+        o = (SatoriObject*)(o->Start() + size);
+    } while (o->Start() < objLimit);
+
+    // we have new marks, but have not swept at this point, so could use less.
+    _ASSERTE(copied <= maxBytesToCopy);
+    if (target)
+    {
+        _ASSERTE(!failed);
+        inRest ? target->StopAllocating(restDst) : target->StopAllocating();
+    }
+
+    if (finTarget)
+    {
+        _ASSERTE(failed || finCopied == finBytes);
+        finTarget->StopAllocating(finDst);
+        if (!failed)
+        {
+            // all the tracked objects are in this target now
+            finTarget->TakeFinalizerInfoFrom(relocationSource);
+        }
+    }
+
+    if (failed)
+    {
+        // Put back the headers that the forwarding addresses took. The copies become garbage that sweeping reclaims,
+        // except in the regions that are not swept. There they stay until the next gen2, like any unreachable object.
+        SatoriObject* u = relocationSource->FirstObject();
+        for (int32_t i = 0; i < objectsRelocated; i++)
+        {
+            u = relocationSource->SkipUnmarked(u);
+            SatoriObject* copy = (SatoriObject*)*((size_t*)u - 1);
+            *((size_t*)u - 1) = *((size_t*)copy - 1);
+            // in gen2 the targets that are swept are the marked ones (see the asserts above)
+            if (!copy->ContainingRegion()->DoNotSweep())
+            {
+                copy->ClearMarked();
+            }
+
+            u = (SatoriObject*)(u->Start() + u->Size());
+        }
+    }
+
+    for (int i = 0; i < targetCount; i++)
+    {
+        SatoriRegion* t = targets[i];
+        // just update the obj count, if target is not marked this will be correct
+        // otherwise sweep will update anyways.
+        t->SetOccupancy(t->Occupancy(), t->ObjCount() + targetObjects[i]);
+        AddRelocationTarget(t);
+    }
+
+    if (failed)
+    {
+        // we could not get a region. we must be low on available memory.
+        // we can still try using the source region as a target for other relocations.
+        AddRelocationTarget(relocationSource);
+    }
+    else if (objectsRelocated > 0)
+    {
+        relocationSource->IsRelocated() = true;
+        m_relocatedRegions->Push(relocationSource);
+    }
+    else
+    {
+        // relocationSource happened to be empty
+        FreeLogicallyEmptyRegion(relocationSource, /* hasMarks */ false);
+    }
+
+    return true;
+}
+
 NOINLINE
 void SatoriRecycler::Update()
 {
@@ -4825,6 +5405,14 @@ void SatoriRecycler::Update()
 
     m_CurrentGcInfo->m_compaction = m_isRelocating;
 
+    if (m_isIncrementalRelocation && !m_isRelocating)
+    {
+        // Nothing was actually relocated, thus there is nothing to update.
+        m_isIncrementalRelocation = false;
+        FreeRecordedRefs();
+    }
+
+    int64_t updateRootsStartTicks = m_isIncrementalRelocation ? minipal_hires_ticks() : 0;
     if (m_isRelocating)
     {
         IncrementRootScanTicket();
@@ -4835,7 +5423,17 @@ void SatoriRecycler::Update()
         }
     }
 
+    m_incrRootsStartTicks = (size_t)updateRootsStartTicks;
+    m_incrRootsDoneTicks = (size_t)updateRootsStartTicks;
     RunWithHelp(&SatoriRecycler::UpdateRootsWorker);
+    if (m_isIncrementalRelocation)
+    {
+        m_incrMeasuredTicks += minipal_hires_ticks() - updateRootsStartTicks;
+
+#if _DEBUG
+        VerifyIncrementalRelocation();
+#endif
+    }
 
     // the promoted-region drain above is lock-free
     m_relocatedToHigherGenRegions->ResetAfterUnsafeDrain();
@@ -4881,7 +5479,13 @@ void SatoriRecycler::Update()
     // promoting handles must be after handles are updated (since update needs to know unpromoted generations).
     // relocated regions can be freed after live regions are updated (since update gets new locations from relocated regions).
     // we will combine these two passes here after both prerequisites are complete.
+    int64_t freeStartTicks = m_isIncrementalRelocation ? minipal_hires_ticks() : 0;
     PromoteHandlesAndFreeRelocatedRegions();
+    if (m_isIncrementalRelocation)
+    {
+        m_incrMeasuredTicks += minipal_hires_ticks() - freeStartTicks;
+        CalibrateIncrementalRelocation();
+    }
 
     if (m_promoteAllRegions)
     {
@@ -4907,12 +5511,14 @@ void SatoriRecycler::UpdateRootsWorker()
         sc._unused1 = &c;
 
         bool askedForHelp = false;
+        bool updatedRoots = false;
         SatoriHandlePartitioner::ForEachUnscannedPartition(
             [&](int p)
             {
                 // there is work for us, so maybe there is more
                 MaybeAskForHelpOnce(askedForHelp);
 
+                updatedRoots = true;
                 sc.thread_number = p;
                 GCScan::GcScanHandles(UpdateFn</*isConservative*/ false>, m_condemnedGeneration, 2, &sc);
             }
@@ -4929,21 +5535,38 @@ void SatoriRecycler::UpdateRootsWorker()
             GCToEEInterface::GcScanRoots(UpdateFn<false>, -1, -1, &sc);
         }
 
+        // the scan sets the thread that it crawls, if any.
+        updatedRoots |= sc.thread_under_crawl != nullptr;
+
         SatoriFinalizationQueue* fQueue = m_heap->FinalizationQueue();
-        if (fQueue->TryUpdateScanTicket(this->GetRootScanTicket()) &&
-            fQueue->HasItems())
+        if (fQueue->TryUpdateScanTicket(this->GetRootScanTicket()))
         {
-            fQueue->ForEachObjectRef(
-                [&](SatoriObject** ppObject)
-                {
-                    SatoriObject* o = *ppObject;
-                    SatoriObject* newLocation;
-                    if (o->IsRelocatedTo</*notExternal*/true>(&newLocation))
+            updatedRoots = true;
+            if (fQueue->HasItems())
+            {
+                fQueue->ForEachObjectRef(
+                    [&](SatoriObject** ppObject)
                     {
-                        *ppObject = newLocation;
+                        SatoriObject* o = *ppObject;
+                        SatoriObject* newLocation;
+                        if (o->IsRelocatedTo</*notExternal*/true>(&newLocation))
+                        {
+                            *ppObject = newLocation;
+                        }
                     }
-                }
-            );
+                );
+            }
+        }
+
+        if (m_isIncrementalRelocation && updatedRoots)
+        {
+            // Updating roots is the fixed part of the pause. Note when it is done, for calibration.
+            size_t now = (size_t)minipal_hires_ticks();
+            size_t done;
+            while (now > (done = m_incrRootsDoneTicks) &&
+                Interlocked::CompareExchange(&m_incrRootsDoneTicks, now, done) != done)
+            {
+            }
         }
 
         _ASSERTE(c.m_WorkChunk == nullptr);
@@ -4953,6 +5576,11 @@ void SatoriRecycler::UpdateRootsWorker()
         if (m_condemnedGeneration != 2)
         {
             UpdatePointersThroughCards();
+        }
+
+        if (m_isIncrementalRelocation)
+        {
+            UpdateRecordedRefsWorker();
         }
    }
 }
@@ -5074,21 +5702,35 @@ void SatoriRecycler::UpdateRegions(SatoriShardedRegionQueue* queue, SatoriSharde
             }
             else if (m_isRelocating)
             {
-                // this can happen when relocation adds a region.
-                if (curRegion->DoNotSweep())
+                if (m_isIncrementalRelocation)
                 {
-                    curRegion->UpdatePointers();
+                    // Incremental relocation has already updated everything that needed updating,
+                    // except for the trackers of relocated finalizable objects that were moved to this region.
+                    // The regions are swept later, as if we did not relocate.
+                    if (curRegion->AcceptedRelocatedFinalizables())
+                    {
+                        curRegion->UpdateFinalizableTrackers();
+                        curRegion->AcceptedRelocatedFinalizables() = false;
+                    }
                 }
                 else
                 {
-                    if (!curRegion->Sweep</*updatePointers*/ true>())
+                    // this can happen when relocation adds a region.
+                    if (curRegion->DoNotSweep())
                     {
-                        FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ false);
-                        continue;
+                        curRegion->UpdatePointers();
                     }
-                }
+                    else
+                    {
+                        if (!curRegion->Sweep</*updatePointers*/ true>())
+                        {
+                            FreeLogicallyEmptyRegion(curRegion, /* hasMarks */ false);
+                            continue;
+                        }
+                    }
 
-                curRegion->UpdateFinalizableTrackers();
+                    curRegion->UpdateFinalizableTrackers();
+                }
             }
 
             // recycler owns nursery regions only temporarily, we should not keep them.
@@ -5234,6 +5876,11 @@ void SatoriRecycler::KeepRegion(SatoriRegion* curRegion)
         }
         else
         {
+            if (m_incrGen1Summary != nullptr)
+            {
+                IncrSummarizeGen1Region(curRegion);
+            }
+
             PushToEphemeralQueues(curRegion);
         }
     }

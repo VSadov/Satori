@@ -35,6 +35,13 @@
 #include "SatoriRegion.inl"
 #include "SatoriPage.inl"
 
+bool SatoriShardedRegionQueue::TryRemove(SatoriRegion* item)
+{
+    // the shard checks under its lock that it still contains the item.
+    SatoriQueue<SatoriRegion>* queue = item->ContainingQueue();
+    return queue && IsShard(queue) && queue->TryRemove(item);
+}
+
 SatoriRegion* SatoriRegionQueue::TryDequeueIfHasFreeSpaceInTopBucket()
 {
     if (!m_tail)

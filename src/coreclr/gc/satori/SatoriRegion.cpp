@@ -192,6 +192,14 @@ SatoriRegion* SatoriRegion::InitializeAt(SatoriPage* containingPage, size_t addr
     static_assert(offsetof(SatoriRegion, m_freeListTails) + sizeof(SatoriRegion::m_freeListTails) <= BITMAP_START * sizeof(size_t),
         "SatoriRegion header does not fit in the unused part of the mark bitmap.");
 
+    // What the marker reads for every reference is on the first line of the header.
+    static_assert(offsetof(SatoriRegion, m_generation) < Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_relocationCandidateIndex) < Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_reusableFor) < Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_staleEscapeMarks) < Satori::CACHE_LINE_GRANULARITY &&
+        offsetof(SatoriRegion, m_gen2Objects) < Satori::CACHE_LINE_GRANULARITY,
+        "Fields read by the marker for every reference are expected to be on the first cache line of the header.");
+
     static_assert(Satori::FREELIST_COUNT <= sizeof(SatoriRegion::m_nonEmptyFreeLists) * 8,
         "m_nonEmptyFreeLists has a bit for every free list.");
 
@@ -365,7 +373,12 @@ void SatoriRegion::MakeBlank()
     m_doNotSweep = false;
     m_isPreSwept = false;
     m_isRelocated = false;
+    // planning or cancelling untags every candidate before any region is freed.
+    _ASSERTE(m_relocationCandidateIndex == 0);
+    m_pinnedByMark = false;
+    m_wasPinnedByMark = false;
     _ASSERTE(!m_acceptedPromotedObjects);
+    _ASSERTE(!m_acceptedRelocatedFinalizables);
     _ASSERTE(!m_individuallyPromoted);
     _ASSERTE(!m_hasUnmarkedDemotedObjects);
 
@@ -517,7 +530,7 @@ hasObj:
     _ASSERTE(freeObj->FreeObjCapacity() ==  freeObjSize - Satori::MIN_FREE_SIZE);
     size_t zeroedEnd = freeObj->ZeroedEnd();
 
-    m_freeListCapacities[bucket] -= (freeObjSize - Satori::MIN_FREE_SIZE);
+    m_freeListCapacities[bucket] -= (uint32_t)(freeObjSize - Satori::MIN_FREE_SIZE);
     _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
     m_allocStart = freeObj->Start();
     m_allocEnd = m_allocStart + freeObjSize;
@@ -627,7 +640,7 @@ void SatoriRegion::AddFreeSpace(SatoriObject* freeObj, size_t size)
     _ASSERTE(capacity == freeListObj->FreeObjCapacity());
     // Space found by sweeping or compacting is not known to be zeroed. (see FormatAsFree)
     _ASSERTE(freeListObj->ZeroedEnd() <= freeListObj->Start());
-    m_freeListCapacities[bucket] += capacity;
+    m_freeListCapacities[bucket] += (uint32_t)capacity;
 
     // insert at the tail
     freeListObj->m_nextInFreeList = nullptr;
@@ -665,7 +678,7 @@ void SatoriRegion::ReturnFreeSpace(SatoriObject* freeObj, size_t size)
 
     _ASSERTE(m_freeLists[bucket] != nullptr || m_freeListCapacities[bucket] == 0);
     _ASSERTE(capacity == freeListObj->FreeObjCapacity());
-    m_freeListCapacities[bucket] += capacity;
+    m_freeListCapacities[bucket] += (uint32_t)capacity;
 
     // insert at the head, since we are returning what we recently took.
     freeListObj->m_nextInFreeList = m_freeLists[bucket];
@@ -774,7 +787,8 @@ size_t SatoriRegion::MinCommitSize(size_t regionSize)
 
 // Decommits what the region has committed above the address, rounded up to the commit granularity,
 // but not what every region keeps committed. (see MinCommitSize)
-// The finalization queue does that with its region: a run can come committed beyond the array that the queue needs.
+// The finalization queue and the incremental relocation summary do that with their regions: a claimed region can come
+// committed beyond what they need.
 bool SatoriRegion::TryDecommitAbove(size_t address)
 {
     _ASSERTE(address >= (size_t)&m_syncBlock && address <= End());
@@ -3543,7 +3557,7 @@ void SatoriRegion::UpdatePointers()
 
 void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
 {
-    _ASSERTE(!other->HasPinnedObjects());
+    _ASSERTE(!other->IsUnmovable());
     m_hasFinalizables |= other->m_hasFinalizables;
     SatoriWorkChunk* otherFinalizables = other->m_finalizableTrackers;
     if (otherFinalizables)
@@ -3622,7 +3636,9 @@ bool SatoriRegion::IsPromotionCandidate()
 // this is used to estimate goodness of overall and individual relocations.
 size_t SatoriRegion::ReclaimSizeIfRelocated(bool assumeFullGC)
 {
-    if (IsLarge() || HasPinnedObjects())
+    // Demoted regions are movable in a full GC, which frees their trackers, so this does not use IsUnmovable().
+    // Planning checks IsUnmovable() first.
+    if (IsLarge() || HasPinnedObjects() || IsPinnedByMark())
         return 0;        // can't relocate
 
     if (IsDemoted() && !assumeFullGC)
@@ -3791,7 +3807,8 @@ void SatoriRegion::ClearIndex()
 void SatoriRegion::ClearFreeLists()
 {
     // clear free lists and free list tails
-    memset(m_freeListCapacities, 0, sizeof(m_freeListCapacities) + sizeof(m_freeLists) + sizeof(m_freeListTails));
+    // (by the address range, there may be padding after the capacities)
+    memset((void*)m_freeListCapacities, 0, (size_t)((uint8_t*)(m_freeListTails + Satori::FREELIST_COUNT) - (uint8_t*)m_freeListCapacities));
     m_nonEmptyFreeLists = 0;
 }
 
@@ -3811,6 +3828,9 @@ void SatoriRegion::PreSweep()
     size_t occupancy = 0;
     int32_t objCount = 0;
     bool hasFinalizables = false;
+    // only a region that may have pinned objects needs to look for them
+    bool checkUnmovable = m_hasPinnedObjects;
+    bool hasUnmovable = false;
     SatoriObject* o = FirstObject();
     SweepPrefetcher prefetcher;
     SweepPrefetchStart(prefetcher, o);
@@ -3842,6 +3862,12 @@ void SatoriRegion::PreSweep()
             hasFinalizables = true;
         }
 
+        if (checkUnmovable && o->IsUnmovable())
+        {
+            hasUnmovable = true;
+            checkUnmovable = false;
+        }
+
         objCount++; 
         occupancy += size;
         o = (SatoriObject*)(o->Start() + size);
@@ -3850,6 +3876,8 @@ void SatoriRegion::PreSweep()
     _ASSERTE(o->Start() == objLimit || End() > objLimit);
 
     this->m_hasFinalizables = hasFinalizables;
+    // planning that follows sees exactly whether live pinned objects keep the region in place.
+    this->m_hasPinnedObjects = hasUnmovable;
     this->m_maxParseableEnd = objLimit;
     SetOccupancy(occupancy, objCount);
     this->IsPreSwept() = true;
@@ -3880,7 +3908,8 @@ void SatoriRegion::FinishSweepForPreSwept()
 #if _DEBUG
     HasMarksSet() = false;
 #endif
-    HasPinnedObjects() = false;
+    // PreSweep has computed m_hasPinnedObjects already.
+    NotePinnedForNextMark();
     HasUnmarkedDemotedObjects() = IsDemoted();
     IsPreSwept() = false;
     DoNotSweep() = true;
