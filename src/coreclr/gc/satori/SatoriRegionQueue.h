@@ -267,6 +267,9 @@ public:
         }
     }
 
+    // Removes the item if it is in one of the shards.
+    bool TryRemove(SatoriRegion* item);
+
     size_t Count()
     {
         size_t count = 0;

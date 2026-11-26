@@ -38,6 +38,26 @@ class SatoriTrimmer;
 class SatoriRegion;
 class MarkContext;
 
+// A candidate for incremental relocation, with what selection needs to know about it.
+struct SatoriIncrEntry
+{
+    SatoriRegion* m_region;
+    size_t m_key;
+    uint32_t m_objCount;
+    uint32_t m_occupancy;
+};
+
+// What selection of incremental relocation candidates takes from a Gen2 region.
+struct SatoriIncrRegionInfo
+{
+    size_t m_occupancy;
+    bool m_isSource;
+    bool m_isTarget;
+    int m_bucket;
+    size_t m_gain;
+    SatoriIncrEntry m_source;
+};
+
 struct LastRecordedGcInfo
 {
     size_t m_index;
@@ -385,6 +405,141 @@ private:
 
     size_t m_startMillis;
 
+    // ---- incremental relocation ----
+    //
+    // It is used only in low latency mode, which does not relocate regularly, since that costs in proportion to the heap.
+    //
+    // Before the concurrent marking of a gen2 GC starts, a few sparse regions are selected as relocation
+    // sources (candidates), and a few regions with large free spans as targets.
+    // While marking, the locations of all references to candidates are recorded.
+    // If the candidates are still relocatable when marking is done, the blocking phase relocates only these
+    // and updates only roots, recorded locations and the copies. Everything else stays and is swept later,
+    // as if the GC did not relocate. Thus the cost is proportional to what we relocate, not to the heap size.
+    // candidates are identified by indices 1..INCR_MAX_REGIONS, which must fit in a byte
+    static const int INCR_MAX_REGIONS = 255;
+
+    // The index of the candidate is kept in the top byte of a recorded location (heap addresses use far fewer than 56 bits).
+    // This lets us skip, without reading the location, references to candidates that end up not relocated.
+    static const int INCR_INDEX_SHIFT = 56;
+    static const size_t INCR_LOCATION_MASK = ((size_t)1 << INCR_INDEX_SHIFT) - 1;
+
+    struct IncrCopyRange
+    {
+        SatoriRegion* m_region;
+        size_t m_start;
+        size_t m_end;
+    };
+
+    template <bool recording>
+    class RefRecorder;
+
+    // true from selection until planning. The marker records references to candidates while it is true.
+    volatile bool m_incrRecording;
+    bool m_isIncrementalRelocation;
+    int m_incrSourceCount;
+    int m_incrTargetCount;
+    SatoriRegion* m_incrSources[INCR_MAX_REGIONS];
+    SatoriRegion* m_incrTargets[INCR_MAX_REGIONS];
+    SatoriWorkList* m_recordedRefs;
+    volatile int64_t m_incrRecordedRefs;
+    // which candidates (by index) are relocated, the recorded locations of the others are skipped
+    bool m_incrKeep[INCR_MAX_REGIONS + 1];
+    // how many references to each candidate were recorded (with duplicates)
+    volatile int64_t m_incrSourceRefs[INCR_MAX_REGIONS];
+    // why recording was given up, 0 if not (see INCR_ABANDON_*)
+    volatile int m_incrAbandonReason;
+    size_t m_incrMaxRecordedRefs;
+    // Recorders publish what they have when they are done, and that is often just a few references.
+    // Such leftovers are merged into this chunk, so that we do not use a chunk for a few references.
+    SatoriLock m_incrSpillLock;
+    SatoriWorkChunk* m_incrSpill;
+    // the last chunk in the chain of recorded chunks
+    SatoriWorkChunk* m_incrRecordedLast;
+    IncrCopyRange m_incrCopyRanges[INCR_MAX_REGIONS];
+    volatile int m_incrCopyRangeCount;
+    volatile int m_incrCopyRangeClaim;
+
+    // Selection was done for this GC, even if nothing was selected. Planning then decides how to relocate.
+    bool m_incrSelectionDone;
+    // what the candidates were when selected
+    size_t m_incrSourceObjs[INCR_MAX_REGIONS];
+    size_t m_incrSourceBytes[INCR_MAX_REGIONS];
+    size_t m_incrSelectedObjs;
+    // the budget of the current GC in cost units, and what the kept candidates are estimated to cost.
+    size_t m_incrUnitsBudget;
+    size_t m_incrPlannedUnits;
+
+    // The cost model, calibrated as we go: pause = fixed + perUnit * units.
+    // The fixed part is updating roots, which is measured, and the overhead of a relocation, which is not
+    // separable from the part per unit, so the two are fitted together. Units are estimated from objects, bytes and references.
+    double m_incrRootsUs;
+    double m_incrOverheadUs;
+    double m_incrUsPerUnit;
+    // decaying sums of the fit of the pause without roots (y, in microseconds) to units (x, in millions)
+    double m_incrFitW;
+    double m_incrFitX;
+    double m_incrFitY;
+    double m_incrFitXX;
+    double m_incrFitXY;
+    // references to candidates that are recorded, per object in candidates
+    double m_incrRefsPerObj;
+    int m_incrRootsSamples;
+    int m_incrRefsSamples;
+    // when nothing fits the budget, we relocate only occasionally, to see if that changed.
+    int m_incrNoRoomCount;
+    // measured parts of the current incremental relocation
+    int64_t m_incrMeasuredTicks;
+    size_t m_incrRootsStartTicks;
+    volatile size_t m_incrRootsDoneTicks;
+
+    // A target needs a free span that could take some of the relocated objects. (128K+, the top 4 buckets)
+    static const int INCR_MIN_TARGET_BUCKET = Satori::FREELIST_COUNT - 4;
+    static const int INCR_TARGET_BUCKETS = Satori::FREELIST_COUNT - INCR_MIN_TARGET_BUCKET;
+
+    // A summary of what selection needs to know about Gen2 regions, made as they enter the tenured queues,
+    // so that selection does not need to walk the queues.
+    // Regions leave the tenured queues only in GCs that rebuild Gen2 (m_promoteAllRegions), and these start the summary over.
+    // Otherwise the queues only grow, and so does the summary. Thus it is what a walk of the queues would find.
+    //
+    // It is updated in bursts - as the Gen2 regions are swept after a GC, by several threads at once.
+    // A shared structure makes that a point of contention, so every processor updates a shard of its own.
+    // Selection then merges the shards. Gen2 occupancy and the number of Gen2 regions are known from the recycler's
+    // accumulators and the queues, which are reset and filled at the same points, so these are not in the summary.
+    static const int INCR_MAX_SUMMARY_SHARDS = 64;
+    static const int INCR_SHARD_TARGETS = 64;
+
+    struct DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY) IncrSummaryShard
+    {
+        // a spin lock - the critical section is a few moves in a small heap
+        volatile int m_lock;
+        // the best relocation sources, as a max-heap by key - the root is the worst one kept
+        int m_sourceCount;
+        // what the eligible regions would free (the backlog), and large regions, which do not count toward Gen2 space
+        size_t m_eligibleGain;
+        size_t m_largeRegions;
+        // relocation targets, by their largest free bucket
+        int m_targetCounts[INCR_TARGET_BUCKETS];
+        SatoriIncrEntry m_sources[INCR_MAX_REGIONS];
+        SatoriRegion* m_targets[INCR_TARGET_BUCKETS][INCR_SHARD_TARGETS];
+    };
+
+    // one shard per processor (up to INCR_MAX_SUMMARY_SHARDS), or null until low latency mode is first seen
+    // or when incremental relocation is not enabled. (see IncrStartSummarizing)
+    IncrSummaryShard* m_incrSummary;
+    int m_incrSummaryShardCount;
+
+    // Gen1 regions that could be sources, by shard as above. Rebuilt by every GC. (see IncrSummarizeGen1Region)
+    struct DECLSPEC_ALIGN(Satori::CACHE_LINE_GRANULARITY) IncrSourceShard
+    {
+        volatile int m_lock;
+        int m_sourceCount;
+        // what the eligible regions would free, as in IncrSummaryShard
+        size_t m_eligibleGain;
+        SatoriIncrEntry m_sources[INCR_MAX_REGIONS];
+    };
+
+    IncrSourceShard* m_incrGen1Summary;
+
 private:
     size_t Gen1RegionCount();
     size_t Gen2RegionCount();
@@ -432,16 +587,24 @@ private:
 
     void PushToMarkQueuesSlow(SatoriWorkChunk*& currentWorkChunk, SatoriObject* o);
     void DrainMarkQueues(SatoriWorkChunk* srcChunk = nullptr);
+    template <bool recording>
+    void DrainMarkQueuesCore(SatoriWorkChunk* srcChunk);
     void MarkOwnStackAndDrainQueues();
     void MarkOwnStackOrDrainQueuesConcurrent(int64_t deadline);
     bool MarkDemotedAndDrainQueuesConcurrent(int64_t deadline);
     bool MarkDemotedInReusableConcurrent(int64_t deadline);
     void PushOrReturnWorkChunk(SatoriWorkChunk * srcChunk);
     bool DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk = nullptr, int64_t deadline = 0);
+    template <bool recording>
+    bool DrainMarkQueuesConcurrentCore(SatoriWorkChunk* srcChunk, int64_t deadline);
 
     bool HasDirtyCards();
     bool CleanCardsConcurrent(int64_t deadline);
+    template <bool recording>
+    bool CleanCardsConcurrentCore(int64_t deadline);
     void CleanCards();
+    template <bool recording>
+    void CleanCardsCore();
     bool MarkHandles(int64_t deadline = 0);
     void ShortWeakPtrScan();
     void ShortWeakPtrScanWorker();
@@ -487,6 +650,7 @@ private:
     void Relocate();
     void RelocateWorker();
     void RelocateRegion(SatoriRegion* region);
+    bool RelocateRegionSplit(SatoriRegion* relocationSource, size_t maxBytesToCopy);
     void FreeLogicallyEmptyRegion(SatoriRegion* curRegion, bool hasMarks);
     void FreeRelocatedRegionsWorker();
 
@@ -510,6 +674,28 @@ private:
     void SweepAndReturnRegion(SatoriRegion* curRegion);
 
     void UpdateGcCounters(int64_t blockingStart);
+
+    void InitializeIncrementalRelocation();
+    void SelectIncrementalRelocationCandidates();
+    static void IncrEvaluateRegion(SatoriRegion* region, double refsPerObj, bool gen1, SatoriIncrRegionInfo& info);
+    void IncrSummarizeRegion(SatoriRegion* region);
+    void IncrSummarizeGen1Region(SatoriRegion* region);
+    void IncrStartSummarizing();
+    void IncrSummaryReset();
+    void IncrGen1SummaryReset();
+    void PlanIncrementalRelocation();
+    void CancelIncrementalRelocation();
+    void CalibrateIncrementalRelocation();
+    void PublishRecordedRefs(SatoriWorkChunk*& chunk);
+    void PushRecordedChunk(SatoriWorkChunk* chunk);
+    bool RecordRelocationRefSlow(SatoriWorkChunk*& chunk, SatoriObject* entry);
+    void AddRecordedRefCounts(const int32_t* counts);
+    void AbandonIncrementalRelocation();
+    void FreeRecordedRefs();
+    void UpdateRecordedRefsWorker();
+#if _DEBUG
+    void VerifyIncrementalRelocation();
+#endif
 
     void ASSERT_NO_WORK();
 };

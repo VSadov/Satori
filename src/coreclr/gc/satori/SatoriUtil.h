@@ -212,8 +212,10 @@ namespace Satori
     static const int LARGE_OBJECT_THRESHOLD = 32 * 1024;
 
     // freelist bucket contais items that fit at least 1 << (i + min_bits)
-    // min freelist capacity is 4K+
-    static const int MIN_FREELIST_CAPACITY_BITS = 11;
+    // min freelist capacity is 512.
+    // NB: allocation contexts refill from such small spans too. A refill sets up a frame for the helper call,
+    //     but using the small spans keeps the working set lower.
+    static const int MIN_FREELIST_CAPACITY_BITS = 9;
     static const size_t MIN_FREELIST_CAPACITY = 1 << MIN_FREELIST_CAPACITY_BITS;
     static const int FREELIST_COUNT = Satori::REGION_BITS - MIN_FREELIST_CAPACITY_BITS;
 
@@ -743,6 +745,41 @@ public:
     static bool IsLowLatencyMode()
     {
         return (GCConfig::GetLatencyMode()) >= 2;
+    }
+
+    // DOTNET_gcIncrReloc
+    // Only low latency mode relocates incrementally. (see SelectIncrementalRelocationCandidates)
+    // Incremental relocation relocates in Gen2, so it is also off when Gen2 does not relocate.
+    static bool IsIncrementalRelocation()
+    {
+        return GCConfig::GetIncrReloc() && IsRelocatingInGen2();
+    }
+
+    // DOTNET_gcIncrRelocBudget
+    // The pause, in microseconds, that incremental relocation may add to a Gen2 GC.
+    // It is only a limit, see IncrRelocBacklogPercent. 0 - nothing is relocated incrementally.
+    static size_t IncrRelocBudgetUs()
+    {
+        int64_t n = GCConfig::GetIncrRelocBudget();
+        return n < 0 ? 4000 : (size_t)n;
+    }
+
+    // DOTNET_gcIncrRelocRefs
+    // The number of recorded references to relocation candidates after which recording is given up.
+    // 0 - derived from the budget. (configured as -1 or 0)
+    static size_t IncrRelocRefs()
+    {
+        int64_t n = GCConfig::GetIncrRelocRefs();
+        return n < 0 ? 0 : (size_t)n;
+    }
+
+    // DOTNET_gcIncrRelocBacklog
+    // How much reclaimable space, in percent of Gen2 space, may remain in sparse regions.
+    // Incremental relocation relocates only as much as brings it down to this.
+    static size_t IncrRelocBacklogPercent()
+    {
+        int64_t n = GCConfig::GetIncrRelocBacklog();
+        return n < 0 ? 25 : (size_t)n;
     }
 
     static int HandlePartitionsCount()

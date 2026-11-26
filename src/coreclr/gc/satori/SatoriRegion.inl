@@ -279,7 +279,7 @@ inline void SatoriRegion::StopEscapeTracking()
 {
     if (IsEscapeTracking())
     {
-        _ASSERTE(!HasPinnedObjects());
+        _ASSERTE(!IsPinnedByMark());
         ClearMarks();
 
         // must clear ownership after clearing marks
@@ -323,7 +323,7 @@ inline bool SatoriRegion::ClearStaleEscapeMarks()
     }
 
     _ASSERTE(!IsEscapeTracking());
-    _ASSERTE(!HasPinnedObjects());
+    _ASSERTE(!IsPinnedByMark());
     ClearMarks();
 
     // must reset the flag after clearing marks
@@ -695,13 +695,14 @@ bool SatoriRegion::Sweep()
         if (!IsMarked(o))
         {
             _ASSERTE(this->NothingMarked());
-            _ASSERTE(!this->HasPinnedObjects());
+            _ASSERTE(!this->IsPinnedByMark());
 #if _DEBUG
             size_t fistObjStart = FirstObject()->Start();
             SatoriObject::FormatAsFree(fistObjStart, objLimit - fistObjStart);
             this->HasMarksSet() = false;
 #endif
             this->DoNotSweep() = true;
+            this->m_hasPinnedObjects = false;
             SetOccupancy(0, 0);
             return false;
         }
@@ -717,6 +718,9 @@ bool SatoriRegion::Sweep()
     size_t occupancy = 0;
     int32_t objCount = 0;
     bool hasFinalizables = false;
+    // only a region that may have pinned objects needs to look for them
+    bool checkUnmovable = this->m_hasPinnedObjects;
+    bool hasUnmovable = false;
     SatoriObject* o = FirstObject();
     SweepPrefetcher prefetcher;
     SweepPrefetchStart(prefetcher, o);
@@ -763,6 +767,12 @@ bool SatoriRegion::Sweep()
             hasFinalizables = true;
         }
 
+        if (checkUnmovable && o->IsUnmovable())
+        {
+            hasUnmovable = true;
+            checkUnmovable = false;
+        }
+
         objCount++; 
         occupancy += size;
         o = (SatoriObject*)(o->Start() + size);
@@ -782,7 +792,8 @@ bool SatoriRegion::Sweep()
     this->HasUnmarkedDemotedObjects() = IsDemoted();
     this->m_hasFinalizables = hasFinalizables;
     this->DoNotSweep() = true;
-    this->HasPinnedObjects() = false;
+    this->m_hasPinnedObjects = hasUnmovable;
+    this->NotePinnedForNextMark();
     this->m_individuallyPromoted = false;
     this->m_maxParseableEnd = objLimit;
 
@@ -833,12 +844,12 @@ inline int32_t SatoriRegion::ObjCount()
     return m_objCount;
 }
 
-inline bool& SatoriRegion::HasPinnedObjects()
+inline bool SatoriRegion::HasPinnedObjects()
 {
     return m_hasPinnedObjects;
 }
 
-// Markers call this for every pinned object they see, possibly on many threads at once.
+// Called for every pinned object heap allocation.
 // Store only if not set yet, so that repeated calls do not take the cache line exclusive.
 inline void SatoriRegion::SetHasPinnedObjects()
 {
@@ -846,6 +857,50 @@ inline void SatoriRegion::SetHasPinnedObjects()
     {
         m_hasPinnedObjects = true;
     }
+}
+
+inline bool SatoriRegion::IsPinnedByMark()
+{
+    return m_pinnedByMark;
+}
+
+// Markers call this for every pinned root they see, possibly on many threads at once.
+// Store only if not set yet, same as above.
+// A pinned region is not relocated, so if it is a relocation candidate, references to it need not be recorded.
+// (a marker that does not see that yet just records a few more, which planning skips)
+inline void SatoriRegion::SetPinnedByMark()
+{
+    if (!m_pinnedByMark)
+    {
+        m_pinnedByMark = true;
+        if (m_relocationCandidateIndex != 0)
+        {
+            m_relocationCandidateIndex = 0;
+        }
+    }
+}
+
+inline bool SatoriRegion::WasPinnedByMark()
+{
+    return m_wasPinnedByMark;
+}
+
+// Sweeping clears the marking state. Remember if marking found the region pinned.
+// Every marked region is swept before its generation is marked again,
+// so this keeps the result of the most recent marking of the region.
+inline void SatoriRegion::NotePinnedForNextMark()
+{
+    m_wasPinnedByMark = m_pinnedByMark;
+    m_pinnedByMark = false;
+}
+
+// The region cannot be moved by the GC in progress. Meaningful after marking.
+//  - it may have pinned object heap objects. (exact if the region is pre-swept)
+//  - marking found it pinned.
+//  - it has demoted objects. A Gen2 GC frees demoted trackers while marking, so this happens only in Gen1 GCs.
+inline bool SatoriRegion::IsUnmovable()
+{
+    return m_hasPinnedObjects || m_pinnedByMark || IsDemoted();
 }
 
 #if _DEBUG
@@ -870,9 +925,19 @@ inline bool& SatoriRegion::IsRelocated()
     return m_isRelocated;
 }
 
+inline uint8_t& SatoriRegion::RelocationCandidateIndex()
+{
+    return m_relocationCandidateIndex;
+}
+
 inline bool& SatoriRegion::AcceptedPromotedObjects()
 {
     return m_acceptedPromotedObjects;
+}
+
+inline bool& SatoriRegion::AcceptedRelocatedFinalizables()
+{
+    return m_acceptedRelocatedFinalizables;
 }
 
 inline bool& SatoriRegion::IndividuallyPromoted()
