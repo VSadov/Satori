@@ -837,6 +837,7 @@ Object* SatoriAllocator::Alloc(SatoriAllocationContext* context, size_t size, ui
         if (result != nullptr)
         {
             result->SetUnmovable();
+            result->ContainingRegion()->SetHasPinnedObjects();
         }
 
         return result;

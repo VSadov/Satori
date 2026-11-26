@@ -518,6 +518,7 @@ set(GC_SOURCES_WKS
     ../gc/satori/SatoriRegionQueue.cpp
     ../gc/satori/SatoriAllocator.cpp
     ../gc/satori/SatoriRecycler.cpp
+    ../gc/satori/SatoriIncrementalRelocation.cpp
     ../gc/satori/SatoriTrimmer.cpp
     ../gc/satori/SatoriFinalizationQueue.cpp
     ../gc/satori/SatoriAllocationContext.cpp

@@ -256,12 +256,19 @@ public:
     int32_t ObjCount();
     size_t DemotedOccupancy();
 
-    bool& HasPinnedObjects();
+    bool HasPinnedObjects();
     void SetHasPinnedObjects();
+    bool IsPinnedByMark();
+    void SetPinnedByMark();
+    bool WasPinnedByMark();
+    void NotePinnedForNextMark();
+    bool IsUnmovable();
     bool& DoNotSweep();
     bool& IsPreSwept();
     bool& IsRelocated();
+    uint8_t& RelocationCandidateIndex();
     bool& AcceptedPromotedObjects();
+    bool& AcceptedRelocatedFinalizables();
     bool& IndividuallyPromoted();
 
     uint32_t SweepsSinceLastAllocation();
@@ -354,6 +361,12 @@ private:
             //     while allocating in shared regions, would cause false sharing here)
 
             // the following fields change rarely or not at all.
+
+            // Non-zero on regions selected for incremental relocation, while references to them are being recorded.
+            // The value is 1 + the index in the recycler's list of candidates.
+            // Read by the marker for every reference, so it shares the cache line with the generation.
+            // Written only when candidates are selected and when recording ends.
+            uint8_t m_relocationCandidateIndex;
             size_t m_end;
             SatoriPage* m_containingPage;
 
@@ -439,6 +452,8 @@ private:
 
             int32_t m_unfinishedAllocationCount;
 
+            // The region may contain pinned object heap objects. Allocating one sets this.
+            // Sweeping recomputes it from the objects that survived, so it is exact after sweeping.
             bool m_hasPinnedObjects;
             bool m_hasFinalizables;
             bool m_hasPendingFinalizables;
@@ -447,6 +462,7 @@ private:
             bool m_isRelocated;
 
             bool m_acceptedPromotedObjects;
+            bool m_acceptedRelocatedFinalizables;
             bool m_individuallyPromoted;
             bool m_hasUnmarkedDemotedObjects;
             // A GC took the region while it stayed attached to an allocating owner.
@@ -454,8 +470,15 @@ private:
             bool m_usableBaselineStale;
             // TODO: VS can fold with m_doNotSweep?
             bool m_hasMarksSet;
+            // Marking found an object in the region pinned by a root. Sweeping clears it.
+            bool m_pinnedByMark;
+            // m_pinnedByMark as of the most recent marking of the region. Survives sweeping.
+            // Handles often pin an object for its lifetime, while stack pins are brief.
+            // Incremental relocation takes this as a sign that the region is likely pinned again.
+            bool m_wasPinnedByMark;
 
-            size_t m_freeListCapacities[Satori::FREELIST_COUNT];
+            // The free space of a region fits in uint32_t. (it is smaller than size_t, so that all the buckets fit in the header)
+            uint32_t m_freeListCapacities[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeLists[Satori::FREELIST_COUNT];
             SatoriFreeListObject* m_freeListTails[Satori::FREELIST_COUNT];
         };

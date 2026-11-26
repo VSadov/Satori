@@ -71,6 +71,7 @@ public:
     bool IsMarkedOrOlderThan(int generation);
     void SetMarked();
     void SetMarkedAtomic();
+    void ClearMarked();
 
     int GetMarkBitAndWord(size_t* bitmapIndex);
 

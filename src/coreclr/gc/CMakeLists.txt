@@ -33,6 +33,7 @@ set(GC_SOURCES
   satori/SatoriRegionQueue.cpp
   satori/SatoriAllocator.cpp
   satori/SatoriRecycler.cpp
+  satori/SatoriIncrementalRelocation.cpp
   satori/SatoriTrimmer.cpp
   satori/SatoriFinalizationQueue.cpp
   satori/SatoriAllocationContext.cpp
