@@ -848,7 +848,7 @@ size_t SatoriRegion::Allocate(size_t size, bool zeroInitialize)
     size_t chunkStart = AllocateDirty(size, &dirtyStart, &dirtyEnd);
     if (chunkStart && zeroInitialize && dirtyEnd > dirtyStart)
     {
-        SatoriUtil::ZeroInitForAllocation(dirtyStart, dirtyEnd);
+        memset((void*)dirtyStart, 0, dirtyEnd - dirtyStart);
     }
 
     return chunkStart;

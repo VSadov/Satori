@@ -632,32 +632,6 @@ public:
 #endif
     }
 
-    // Zeroes memory that allocations are about to use, from the start up.
-    // We zero in blocks, from the last block to the first one, so that the start is written last
-    // and is the most likely to be still in cache when used. Whatever the cache size, the part
-    // that fits stays hot, instead of losing all of it once the range does not fit.
-    // Within a block we use memset, which knows the best way to zero on the given hardware.
-    // Bigger ranges are object-sized zeroing rather than zeroing ahead. We leave them to memset,
-    // which may choose to not pollute the cache with them.
-    static void ZeroInitForAllocation(size_t start, size_t end)
-    {
-        const size_t blockSize = 4 * 1024;
-
-        _ASSERTE(start <= end);
-        if (end - start > 2 * MinZeroInitSize())
-        {
-            memset((void*)start, 0, end - start);
-            return;
-        }
-
-        while (end > start)
-        {
-            size_t blockStart = max(start, ALIGN_DOWN(end - 1, blockSize));
-            memset((void*)blockStart, 0, end - blockStart);
-            end = blockStart;
-        }
-    }
-
     // DOTNET_gcConservative
     static bool IsConservativeMode()
     {
