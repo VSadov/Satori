@@ -222,6 +222,7 @@ void SatoriRecycler::Initialize(SatoriHeap* heap)
     m_occupancy[1] = m_occupancyAcc[1] = 0;
     m_occupancy[2] = m_occupancyAcc[2] = 0;
     m_demotedOccupancyAcc = 0;
+    m_ephemeralMarkingEstimate = 0;
     m_occupancyReportingEnabled = false;
 
     m_gen1CountAtLastGen2 = 0;
@@ -624,9 +625,12 @@ bool SatoriRecycler::ShouldDoConcurrent(int generation)
 
     // A gen1 GC marks only the ephemeral generations, tenured data is not traversed.
     // Thus a large tenured generation does not make concurrent marking of gen1 worthwhile.
+    // NB: not m_occupancy[0] + m_occupancy[1], which is 0 after a GC that promoted all regions.
+    //     It stays 0 for the second gen1 GC after that too, since the first one usually defers sweeping
+    //     and its numbers are published only in the blocking stage of the next GC, after this decision.
     size_t markingEstimate = generation == 2 ?
         GetTotalOccupancy() :
-        m_occupancy[0] + m_occupancy[1];
+        m_ephemeralMarkingEstimate;
 
     if (markingEstimate < concMarkThreshold)
     {
@@ -1669,6 +1673,15 @@ void SatoriRecycler::UpdateGenerationOccupancies()
     // The value is not seen while it fills up or updated.
     m_occupancy[1] = m_occupancyAcc[1] - m_demotedOccupancyAcc;
     m_occupancy[2] = m_occupancyAcc[2] + m_demotedOccupancyAcc;
+
+    // A GC that promoted all regions leaves the ephemeral generations empty, but the gen1 GCs after it
+    // mark about as much as the ones before it did, so the marking estimate keeps the earlier number.
+    // NB: m_promoteAllRegions still describes the GC whose numbers are published here.
+    //     The next GC sets it in AdjustHeuristics, after publishing.
+    if (!m_promoteAllRegions)
+    {
+        m_ephemeralMarkingEstimate = m_occupancy[0] + m_occupancy[1];
+    }
 
     // No more reporting or accumulating untill enabled again
     m_occupancyReportingEnabled = false;

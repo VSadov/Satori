@@ -377,6 +377,8 @@ private:
     size_t m_occupancy[3];
     size_t m_occupancyAcc[3];
     size_t m_demotedOccupancyAcc;
+    // gen0 + gen1 occupancy published by the last GC that did not promote all regions (see ShouldDoConcurrent)
+    size_t m_ephemeralMarkingEstimate;
     bool m_occupancyReportingEnabled;
 
     size_t m_estimatedEphemeralReclaim;
