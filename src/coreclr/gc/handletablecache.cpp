@@ -324,6 +324,52 @@ void SyncTransferCacheHandles(OBJECTHANDLE *pDst, OBJECTHANDLE *pSrc, uint32_t u
  *
  ****************************************************************************/
 
+#if FEATURE_SATORI_GC
+/*
+ * TableFreeHandlesInOldClumps
+ *
+ * Frees the handles in the given array whose clumps are neither young nor unused,
+ * so that the table decides when to reuse them (see SegmentAllocHandlesFromYoungClumps).
+ * The handles must be prepared (zeroed). The handles that are kept are moved to the
+ * front of the array.
+ *
+ * Returns the end of the kept handles.
+ *
+ */
+static OBJECTHANDLE *TableFreeHandlesInOldClumps(HandleTable *pTable, uint32_t uType, OBJECTHANDLE *pHandleBase, OBJECTHANDLE *pHandleLast)
+{
+    LIMITED_METHOD_CONTRACT;
+
+    // move the handles in old clumps to the end of the array
+    OBJECTHANDLE *pKeptLast = pHandleLast;
+    OBJECTHANDLE *pHandle = pHandleBase;
+    while (pHandle < pKeptLast)
+    {
+        if (ClumpIsYoungOrUnused(HandleFetchClumpAge(*pHandle)))
+        {
+            pHandle++;
+        }
+        else
+        {
+            pKeptLast--;
+            OBJECTHANDLE handle = *pHandle;
+            *pHandle = *pKeptLast;
+            *pKeptLast = handle;
+        }
+    }
+
+    uint32_t uFree = (uint32_t)(pHandleLast - pKeptLast);
+    if (uFree)
+    {
+        // sort the handles so that they are freed efficiently
+        QuickSort((uintptr_t *)pKeptLast, 0, uFree - 1, CompareHandlesByFreeOrder);
+        TableFreeBulkPreparedHandles(pTable, uType, pKeptLast, uFree);
+    }
+
+    return pKeptLast;
+}
+#endif // FEATURE_SATORI_GC
+
 /*
  * TableFullRebalanceCache
  *
@@ -391,6 +437,11 @@ void TableFullRebalanceCache(HandleTable *pTable,
                                                   pCache->rgFreeBank + lMinFreeIndex,
                                                   HANDLES_PER_CACHE_BANK - (uint32_t)lMinFreeIndex);
     }
+
+#if FEATURE_SATORI_GC
+    // do not reuse handles in old clumps, the table reuses them when it chooses to
+    pHandleBase = TableFreeHandlesInOldClumps(pTable, uType, rgHandles, pHandleBase);
+#endif
 
     // compute the number of handles we have
     uint32_t uHandleCount = (uint32_t) (pHandleBase - rgHandles);
@@ -521,6 +572,12 @@ void TableQuickRebalanceCache(HandleTable *pTable,
         MODE_ANY;
     */
 
+#if FEATURE_SATORI_GC
+    // moving handles from the free bank to the reserve bank would reuse handles in old clumps,
+    // so always perform a full rebalance, which returns those handles to the table
+    TableFullRebalanceCache(pTable, pCache, uType, lMinReserveIndex, lMinFreeIndex,
+                            pExtraOutHandle, extraInHandle);
+#else
     // clamp the min free index to be non-negative
     if (lMinFreeIndex < 0)
         lMinFreeIndex = 0;
@@ -609,6 +666,7 @@ void TableQuickRebalanceCache(HandleTable *pTable,
     // NOTE: we use an interlocked exchange here to guarantee relative store order on MP
     // AT THIS POINT THE RESERVE BANK IS LIVE AND HANDLES COULD BE ALLOCATED FROM IT
     Interlocked::Exchange(&pCache->lReserveIndex, lMinReserveIndex);
+#endif // FEATURE_SATORI_GC
 }
 
 
@@ -787,7 +845,13 @@ void TableFreeSingleHandleToCache(HandleTable *pTable, uint32_t uType, OBJECTHAN
         HandleQuickSetUserData(handle, 0L);
 
     // is there room in the quick cache?
+#if FEATURE_SATORI_GC
+    // the next allocation takes this handle, so a handle in an old clump goes to the free bank,
+    // where the next rebalance returns it to the table
+    if (!pTable->rgQuickCache[uType] && ClumpIsYoungOrUnused(HandleFetchClumpAge(handle)))
+#else
     if (!pTable->rgQuickCache[uType])
+#endif
     {
         // yup - try to stuff our handle in the slot we saw
         handle = Interlocked::ExchangePointer(&pTable->rgQuickCache[uType], handle);

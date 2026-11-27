@@ -30,12 +30,6 @@ DWORD g_dwHandles = 0;
 #endif // ENABLE_PERF_COUNTERS || FEATURE_EVENT_TRACE
 
 #ifndef DACCESS_COMPILE
-#if FEATURE_SATORI_GC
-// Handle targets are escaped, so thread-local GC cannot collect them
-// and a clump never needs to be younger than generation 1.
-#define GEN_MIN_AGE 1
-#endif
-
 int GetConvertedGeneration(_UNCHECKED_OBJECTREF obj)
 {
     int generation = g_theGCHeap->WhichGeneration(obj);

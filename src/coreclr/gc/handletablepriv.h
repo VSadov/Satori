@@ -413,6 +413,14 @@ struct HandleTable
      */
     OBJECTHANDLE rgQuickCache[HANDLE_MAX_INTERNAL_TYPES];   // interlocked ops used here
 
+#if FEATURE_SATORI_GC
+    /*
+     * per-type segment where the last bulk allocation ended
+     * (bulk allocation continues from there, see TableAllocBulkHandles)
+     */
+    PTR_TableSegment rgAllocCursor[HANDLE_MAX_INTERNAL_TYPES];
+#endif
+
     /*
      * debug-only statistics
      */
@@ -499,6 +507,55 @@ __inline BOOL TypeHasUserData(HandleTable *pTable, uint32_t uType)
     // consult the type flags
     return (pTable->rgTypeFlags[uType] & HNDF_EXTRAINFO);
 }
+
+
+#if FEATURE_SATORI_GC
+/*
+ * Handle targets are escaped, so thread-local GC cannot collect them
+ * and a clump never needs to be younger than generation 1.
+ */
+#define GEN_MIN_AGE 1
+
+/*
+ * Storing a young object in a handle makes the handle's clump young, and then every
+ * gen1 GC scans all handles in the clump until a full GC ages it again. So new handles
+ * are taken from clumps that are young or were never used. An old clump is used only
+ * when it has at least this many free handles, so that the table does not keep growing
+ * just to avoid a few old handles.
+ */
+#define SATORI_OLD_CLUMP_MIN_FREE_HANDLES 4
+
+/*
+ * ClumpIsYoungOrUnused
+ *
+ * Determines whether a clump with the given age is young or was never used.
+ *
+ */
+__inline BOOL ClumpIsYoungOrUnused(uint8_t age)
+{
+    LIMITED_METHOD_CONTRACT;
+
+    return (age <= GEN_MIN_AGE) || (age == 0xFF);
+}
+
+#ifndef DACCESS_COMPILE
+/*
+ * HandleFetchClumpAge
+ *
+ * Returns the age of the clump that contains the given handle.
+ * Handle stores and GCs may change the age concurrently, so the result is only a hint.
+ *
+ */
+__inline uint8_t HandleFetchClumpAge(OBJECTHANDLE handle)
+{
+    LIMITED_METHOD_CONTRACT;
+
+    TableSegment *pSegment = (TableSegment *)((uintptr_t)handle & HANDLE_SEGMENT_ALIGN_MASK);
+    uint32_t uClump = (uint32_t)(((_UNCHECKED_OBJECTREF *)handle - pSegment->rgValue) / HANDLE_HANDLES_PER_CLUMP);
+    return VolatileLoadWithoutBarrier(&pSegment->rgGeneration[uClump]);
+}
+#endif // !DACCESS_COMPILE
+#endif // FEATURE_SATORI_GC
 
 
 /*

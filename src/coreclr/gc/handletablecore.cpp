@@ -1710,6 +1710,252 @@ uint32_t SegmentAllocHandles(TableSegment *pSegment, uint32_t uType, OBJECTHANDL
 }
 
 
+#if FEATURE_SATORI_GC
+/*
+ * ClumpHasEnoughFreeHandles
+ *
+ * Determines whether a clump with the given free mask has at least
+ * SATORI_OLD_CLUMP_MIN_FREE_HANDLES free handles.
+ *
+ */
+static BOOL ClumpHasEnoughFreeHandles(uint32_t dwClumpFree)
+{
+    LIMITED_METHOD_CONTRACT;
+
+    // clear the lowest free bit one time less than the number of free handles we need
+    for (uint32_t u = 1; u < SATORI_OLD_CLUMP_MIN_FREE_HANDLES; u++)
+        dwClumpFree &= (dwClumpFree - 1);
+
+    // if any free bits are left then there were enough
+    return (dwClumpFree != 0);
+}
+
+
+/*
+ * SegmentAllocHandlesFromYoungClumps
+ *
+ * Like SegmentAllocHandles, but from the type chain takes only the handles in clumps that are
+ * young or were never used, or that have at least SATORI_OLD_CLUMP_MIN_FREE_HANDLES free handles.
+ *
+ * Returns the number of available handles actually allocated.
+ *
+ */
+static uint32_t SegmentAllocHandlesFromYoungClumps(TableSegment *pSegment, uint32_t uType, OBJECTHANDLE *pHandleBase, uint32_t uCount)
+{
+    LIMITED_METHOD_CONTRACT;
+
+    // keep track of how many handles we have left to allocate
+    uint32_t uRemain = uCount;
+
+    // are there any free handles in the type chain?
+    if (pSegment->rgFreeCount[uType])
+    {
+        // yes - walk the chain once, starting from the hint
+        uint32_t uBlock = pSegment->rgHint[uType];
+        uint32_t uLast = uBlock;
+        _ASSERTE(uBlock != BLOCK_INVALID);
+
+        do
+        {
+            uint32_t uMask = uBlock * HANDLE_MASKS_PER_BLOCK;
+            uint32_t uMaskLast = uMask + HANDLE_MASKS_PER_BLOCK;
+            for (; uRemain && (uMask < uMaskLast); uMask++)
+            {
+                uint32_t dwFree = pSegment->rgFreeMask[uMask];
+
+                // collect the free handles in the clumps we may take handles from
+                uint32_t dwEligible = 0;
+                for (uint32_t uClump = 0; uClump < HANDLE_CLUMPS_PER_MASK; uClump++)
+                {
+                    uint32_t uShift = uClump * HANDLE_HANDLES_PER_CLUMP;
+                    uint32_t dwClumpFree = (dwFree >> uShift) & ((1u << HANDLE_HANDLES_PER_CLUMP) - 1);
+                    if (dwClumpFree &&
+                        (ClumpIsYoungOrUnused(VolatileLoadWithoutBarrier(&pSegment->rgGeneration[uMask * HANDLE_CLUMPS_PER_MASK + uClump])) ||
+                         ClumpHasEnoughFreeHandles(dwClumpFree)))
+                    {
+                        dwEligible |= (dwClumpFree << uShift);
+                    }
+                }
+
+                if (dwEligible)
+                {
+                    // allocate from the eligible handles and mark the ones we took as used
+                    uint32_t dwAvail = dwEligible;
+                    uint32_t uSatisfied = BlockAllocHandlesInMask(pSegment, uBlock, &dwAvail, uMask * HANDLE_HANDLES_PER_MASK, pHandleBase, uRemain);
+                    pSegment->rgFreeMask[uMask] = dwFree & ~(dwEligible & ~dwAvail);
+
+                    // adjust our count and array pointer
+                    uRemain     -= uSatisfied;
+                    pHandleBase += uSatisfied;
+                }
+            }
+
+            // did we get everything we needed?
+            if (!uRemain)
+            {
+                // yes - update the hint for this type chain and get out
+                pSegment->rgHint[uType] = (uint8_t)uBlock;
+                break;
+            }
+
+            // fetch the next block in the type chain
+            uBlock = pSegment->rgAllocation[uBlock];
+
+        } while (uBlock != uLast);
+
+        // update the free count by the number of handles we took
+        pSegment->rgFreeCount[uType] -= (uCount - uRemain);
+    }
+
+    // get any remaining handles by committing blocks from the free list
+    if (uRemain)
+        uRemain -= SegmentAllocHandlesFromFreeList(pSegment, uType, pHandleBase, uRemain);
+
+    // return the number of handles we got
+    return (uCount - uRemain);
+}
+
+
+/*
+ * TableAddSegment
+ *
+ * Allocates a new segment and links it into the table's segment list.
+ *
+ * Returns the new segment, or NULL if out of memory.
+ *
+ */
+static TableSegment *TableAddSegment(HandleTable *pTable)
+{
+    WRAPPER_NO_CONTRACT;
+
+    TableSegment *pNewSegment = SegmentAlloc(pTable);
+    if (!pNewSegment)
+        return NULL;
+
+    // set up the sequence number of the new segment from the last segment in the list
+    TableSegment *pLastSegment = pTable->pSegmentList;
+    while (pLastSegment->pNextSegment)
+        pLastSegment = pLastSegment->pNextSegment;
+
+    pNewSegment->bSequence = (uint8_t)(((uint32_t)pLastSegment->bSequence + 1) % 0x100);
+
+    // link the new segment into the list by the order of segment address
+    TableSegment* pWalk = pTable->pSegmentList;
+    if ((uintptr_t)pNewSegment < (uintptr_t)pWalk)
+    {
+        pNewSegment->pNextSegment = pWalk;
+        pTable->pSegmentList = pNewSegment;
+    }
+    else
+    {
+        while (pWalk)
+        {
+            if (pWalk->pNextSegment == NULL)
+            {
+                pWalk->pNextSegment = pNewSegment;
+                break;
+            }
+            else if ((uintptr_t)pWalk->pNextSegment > (uintptr_t)pNewSegment)
+            {
+                pNewSegment->pNextSegment = pWalk->pNextSegment;
+                pWalk->pNextSegment = pNewSegment;
+                break;
+            }
+            pWalk = pWalk->pNextSegment;
+        }
+    }
+
+    return pNewSegment;
+}
+
+
+/*
+ * TableAllocBulkHandlesFromYoungClumps
+ *
+ * Satori version of TableAllocBulkHandles.
+ *
+ * Takes handles in clumps that are young or were never used, or that have enough free handles
+ * (see SegmentAllocHandlesFromYoungClumps), continuing from the segment where the last allocation
+ * of this type ended. The table grows only when no segment has such handles.
+ *
+ */
+static uint32_t TableAllocBulkHandlesFromYoungClumps(HandleTable *pTable, uint32_t uType, OBJECTHANDLE *pHandleBase, uint32_t uCount)
+{
+    WRAPPER_NO_CONTRACT;
+
+    // keep track of how many handles we have left to allocate
+    uint32_t uRemain = uCount;
+
+    // visit each segment once, starting from the segment where the last allocation ended
+    TableSegment *pFirstSegment = pTable->rgAllocCursor[uType];
+    if (!pFirstSegment)
+        pFirstSegment = pTable->pSegmentList;
+
+    TableSegment *pSegment = pFirstSegment;
+    for (;;)
+    {
+        // get some handles from the current segment
+        uint32_t uSatisfied = SegmentAllocHandlesFromYoungClumps(pSegment, uType, pHandleBase, uRemain);
+
+        // adjust our count and array pointer
+        uRemain     -= uSatisfied;
+        pHandleBase += uSatisfied;
+
+        // if there are no remaining slots to be filled then we are done
+        if (!uRemain)
+            break;
+
+        // fetch the next segment, wrapping around at the end of the list
+        pSegment = pSegment->pNextSegment;
+        if (!pSegment)
+            pSegment = pTable->pSegmentList;
+
+        // stop when we are back where we started
+        if (pSegment == pFirstSegment)
+            break;
+    }
+
+    // if the existing segments did not have enough handles then add more segments
+    while (uRemain)
+    {
+        // if this fails then we fall back to the remaining free handles below
+        pSegment = TableAddSegment(pTable);
+        if (!pSegment)
+            break;
+
+        // get some handles from the new segment
+        uint32_t uSatisfied = SegmentAllocHandles(pSegment, uType, pHandleBase, uRemain);
+
+        // adjust our count and array pointer
+        uRemain     -= uSatisfied;
+        pHandleBase += uSatisfied;
+    }
+
+    // continue from here next time
+    pTable->rgAllocCursor[uType] = pSegment;
+
+    // if we ran out of memory then take any free handles
+    for (TableSegment *pWalk = pTable->pSegmentList; uRemain && pWalk; pWalk = pWalk->pNextSegment)
+    {
+        uint32_t uSatisfied = SegmentAllocHandles(pWalk, uType, pHandleBase, uRemain);
+
+        // adjust our count and array pointer
+        uRemain     -= uSatisfied;
+        pHandleBase += uSatisfied;
+    }
+
+    // compute the number of handles we actually got
+    uint32_t uAllocated = (uCount - uRemain);
+
+    // update the count of handles marked as "used"
+    pTable->dwCount += uAllocated;
+
+    // return the number of handles we actually got
+    return uAllocated;
+}
+#endif // FEATURE_SATORI_GC
+
+
 /*
  * TableAllocBulkHandles
  *
@@ -1730,6 +1976,9 @@ uint32_t TableAllocBulkHandles(HandleTable *pTable, uint32_t uType, OBJECTHANDLE
         MODE_ANY;
     */
 
+#if FEATURE_SATORI_GC
+    return TableAllocBulkHandlesFromYoungClumps(pTable, uType, pHandleBase, uCount);
+#else
     // keep track of how many handles we have left to allocate
     uint32_t uRemain = uCount;
 
@@ -1821,6 +2070,7 @@ uint32_t TableAllocBulkHandles(HandleTable *pTable, uint32_t uType, OBJECTHANDLE
 
     // return the number of handles we actually got
     return uAllocated;
+#endif // FEATURE_SATORI_GC
 }
 
 

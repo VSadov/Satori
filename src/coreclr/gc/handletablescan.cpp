@@ -1554,6 +1554,15 @@ PTR_TableSegment CALLBACK FullSegmentIterator(PTR_HandleTable pTable, PTR_TableS
                 pPrevSegment->pNextSegment = pNextNext;
             }
 
+#if FEATURE_SATORI_GC
+            // bulk allocations must not continue from this segment
+            for (uint32_t u = 0; u < HANDLE_MAX_INTERNAL_TYPES; u++)
+            {
+                if (pTable->rgAllocCursor[u] == pNextSegment)
+                    pTable->rgAllocCursor[u] = NULL;
+            }
+#endif
+
             // free this segment
             SegmentFree(pNextSegment);
         }
