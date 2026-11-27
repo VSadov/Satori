@@ -283,6 +283,10 @@ void SatoriRecycler::WorkerThreadMainLoop(void* param)
     SatoriRecycler* recycler = (SatoriRecycler*)param;
     Interlocked::Increment(&recycler->m_activeWorkers);
 
+    // workers run at a higher priority in blocking phases. The priority is switched lazily, when released into a different phase.
+    bool boosted = false;
+    int normalPriority = 0;
+
     for (;;)
     {
         Interlocked::Decrement(&recycler->m_activeWorkers);
@@ -346,6 +350,21 @@ void SatoriRecycler::WorkerThreadMainLoop(void* param)
 
     released:
         Interlocked::Increment(&recycler->m_activeWorkers);
+
+        bool blocking = recycler->IsBlockingPhase();
+        if (blocking != boosted)
+        {
+            if (blocking)
+            {
+                normalPriority = SatoriUtil::BoostCurrentThreadPriority();
+            }
+            else
+            {
+                SatoriUtil::RestoreCurrentThreadPriority(normalPriority);
+            }
+
+            boosted = blocking;
+        }
 
         auto activeWorkerFn = recycler->m_activeWorkerFn;
         if (activeWorkerFn)
@@ -1155,6 +1174,7 @@ private:
 
 void SatoriRecycler::BlockingMarkForConcurrentImpl()
 {
+    int priority = SatoriUtil::BoostCurrentThreadPriority();
     Interlocked::Increment(&m_ccStackMarkingThreadsNum);
     // check state again it could have changed if there were no marking threads
     if (m_ccStackMarkState == CC_MARK_STATE_MARKING)
@@ -1163,6 +1183,7 @@ void SatoriRecycler::BlockingMarkForConcurrentImpl()
     }
 
     Interlocked::Decrement(&m_ccStackMarkingThreadsNum);
+    SatoriUtil::RestoreCurrentThreadPriority(priority);
 }
 
 /* static */
@@ -1204,6 +1225,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
         }
 
         size_t blockingStart = minipal_hires_ticks();
+        int priority = SatoriUtil::BoostCurrentThreadPriority();
         GCToEEInterface::SuspendEE(SUSPEND_FOR_GC_PREP);
 
         // The barrier became concurrent while EE was running. EE is suspended now anyway, so let it switch to
@@ -1255,6 +1277,7 @@ void SatoriRecycler::BlockingMarkForConcurrent()
         UpdateGcCounters(blockingStart);
 
         GCToEEInterface::RestartEE(false);
+        SatoriUtil::RestoreCurrentThreadPriority(priority);
     }
 }
 
@@ -1613,6 +1636,7 @@ NOINLINE
 void SatoriRecycler::BlockingCollect1()
 {
     size_t blockingStart = minipal_hires_ticks();
+    int priority = SatoriUtil::BoostCurrentThreadPriority();
 
     // stop other threads.
     GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
@@ -1633,12 +1657,14 @@ void SatoriRecycler::BlockingCollect1()
 
     // restart VM
     GCToEEInterface::RestartEE(true);
+    SatoriUtil::RestoreCurrentThreadPriority(priority);
 }
 
 NOINLINE
 void SatoriRecycler::BlockingCollect2()
 {
     size_t blockingStart = minipal_hires_ticks();
+    int priority = SatoriUtil::BoostCurrentThreadPriority();
 
     // stop other threads.
     GCToEEInterface::SuspendEE(SUSPEND_FOR_GC);
@@ -1659,6 +1685,7 @@ void SatoriRecycler::BlockingCollect2()
 
     // restart VM
     GCToEEInterface::RestartEE(true);
+    SatoriUtil::RestoreCurrentThreadPriority(priority);
 }
 
 NOINLINE

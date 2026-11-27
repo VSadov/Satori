@@ -167,3 +167,29 @@ int64_t SatoriUtil::GetTimeStampSlow()
     return minipal_hires_ticks();
 }
 
+#ifdef TARGET_WINDOWS
+
+// A pause waits for the slowest of the threads that work in it. Like the stock server GC threads,
+// such threads should not lose their CPU to the threads of the same priority in other processes
+// and wait for a quantum to get it back.
+int SatoriUtil::BoostCurrentThreadPriority()
+{
+    int priority = GetThreadPriority(GetCurrentThread());
+    if (priority != THREAD_PRIORITY_ERROR_RETURN && priority < THREAD_PRIORITY_HIGHEST)
+    {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    }
+
+    return priority;
+}
+
+void SatoriUtil::RestoreCurrentThreadPriority(int priority)
+{
+    if (priority != THREAD_PRIORITY_ERROR_RETURN && priority < THREAD_PRIORITY_HIGHEST)
+    {
+        SetThreadPriority(GetCurrentThread(), priority);
+    }
+}
+
+#endif
+

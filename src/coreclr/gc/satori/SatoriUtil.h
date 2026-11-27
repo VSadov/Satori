@@ -328,6 +328,19 @@ public:
 #endif
     }
 
+    // Raises the priority of the current thread while it works with the EE suspended,
+    // returns the priority to pass to RestoreCurrentThreadPriority.
+    // Does nothing on other platforms. On Linux raising the priority needs privileges.
+#if TARGET_WINDOWS
+    static int BoostCurrentThreadPriority();
+
+    static void RestoreCurrentThreadPriority(int priority);
+#else
+    static int BoostCurrentThreadPriority() { return 0; }
+
+    static void RestoreCurrentThreadPriority(int) {}
+#endif
+
     // A cheap monotonically increasing timestamp, for deadline checks and similar heuristics.
     // This reads the hardware counter inline - typically just a few instructions.
     //
