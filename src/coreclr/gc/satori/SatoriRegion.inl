@@ -737,7 +737,7 @@ bool SatoriRegion::Sweep()
     SatoriObject* o = FirstObject();
     SweepPrefetcher prefetcher;
     SweepPrefetchStart(prefetcher, o);
-    SatoriRelocatedRefQueue<8> updateQueue;
+    SatoriRelocatedRefQueue<16> updateQueue;
     do
     {
         if (!CheckAndClearMarked(o))
@@ -1390,7 +1390,7 @@ void SatoriRegion::UpdatePointersInPromotedObjects()
 
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     SatoriObject* o = FirstObject();
-    SatoriRelocatedRefQueue<8> updateQueue;
+    SatoriRelocatedRefQueue<16> updateQueue;
     do
     {
         o = SkipUnmarked(o);

@@ -3509,7 +3509,7 @@ void SatoriRegion::UpdateFinalizableTrackers()
     }
 }
 
-void SatoriRegion::UpdatePointersInObject(SatoriObject* o, size_t size, SatoriRelocatedRefQueue<8>& updateQueue)
+void SatoriRegion::UpdatePointersInObject(SatoriObject* o, size_t size, SatoriRelocatedRefQueue<16>& updateQueue)
 {
     if (!o->RawGetMethodTable()->ContainsGCPointers())
     {
@@ -3542,7 +3542,7 @@ void SatoriRegion::UpdatePointers()
 {
     _ASSERTE(!HasMarksSet());
 
-    SatoriRelocatedRefQueue<8> updateQueue;
+    SatoriRelocatedRefQueue<16> updateQueue;
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     SatoriObject* o = FirstObject();
     do
@@ -3563,7 +3563,7 @@ void SatoriRegion::UpdatePointersPreSwept()
     _ASSERTE(IsPreSwept());
     _ASSERTE(HasMarksSet());
 
-    SatoriRelocatedRefQueue<8> updateQueue;
+    SatoriRelocatedRefQueue<16> updateQueue;
     size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
     SatoriObject* o = FirstObject();
     SweepPrefetcher prefetcher;

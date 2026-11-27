@@ -214,7 +214,7 @@ public:
     void UpdateFinalizableTrackers();
     void UpdatePointers();
     void UpdatePointersPreSwept();
-    void UpdatePointersInObject(SatoriObject* o, size_t size, SatoriRelocatedRefQueue<8>& updateQueue);
+    void UpdatePointersInObject(SatoriObject* o, size_t size, SatoriRelocatedRefQueue<16>& updateQueue);
     void SetCardsForObject(SatoriObject* o, size_t size);
 
     template <bool promotingAllRegions>

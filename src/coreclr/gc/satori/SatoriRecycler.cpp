@@ -4004,7 +4004,7 @@ void SatoriRecycler::UpdatePointersThroughCards()
                         int8_t* cards = page->CardsForGroup(i);
                         // where the previous walk in this group stopped, see FindObject
                         SatoriObject* hint = nullptr;
-                        SatoriRelocatedRefQueue<8> updateQueue;
+                        SatoriRelocatedRefQueue<16> updateQueue;
                         for (size_t j = 0; j < Satori::CARD_BYTES_IN_CARD_GROUP; j++)
                         {
                             // cards are often sparsely set, if j is aligned, check the entire size_t for 0
@@ -5658,7 +5658,7 @@ void SatoriRecycler::UpdatePointersInObjectRanges()
     if (srcChunk)
     {
         MaybeAskForHelp();
-        SatoriRelocatedRefQueue<8> updateQueue;
+        SatoriRelocatedRefQueue<16> updateQueue;
         do
         {
             _ASSERTE(srcChunk->IsRange());

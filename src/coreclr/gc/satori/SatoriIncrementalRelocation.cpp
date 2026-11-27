@@ -1106,7 +1106,7 @@ void SatoriRecycler::UpdateRecordedRefsWorker()
     _ASSERTE(m_isIncrementalRelocation);
 
     // The copies have references to what was in the relocated regions. There are not a lot of copies.
-    SatoriRelocatedRefQueue<8> updateQueue;
+    SatoriRelocatedRefQueue<16> updateQueue;
     int rangeCount = m_incrCopyRangeCount;
     for (;;)
     {
