@@ -965,14 +965,20 @@ bool SatoriRecycler::HelpOnceCore(bool minQuantum)
 
     if (!moreWork)
     {
-        if (m_ccStackMarkState != CC_MARK_STATE_DONE)
+        int stackMarkState = m_ccStackMarkState;
+        if (stackMarkState == CC_MARK_STATE_NONE || stackMarkState == CC_MARK_STATE_MARKING)
         {
             // Stacks are about to be marked, or are being marked. We will be needed there, so stay around.
             // Do not tell new helpers to not enter - that would keep them out of marking stacks, and cleaning
             // could not start before stacks are done anyway, since the marking thread counts as a helper.
+            //
+            // Not while EE is being suspended though. There is nothing to do until it is, and spinning here takes
+            // CPUs from the app threads that need to run to a safe point, which makes the suspension slow.
+            // The suspending thread invites helpers when stacks can be marked.
             moreWork = true;
         }
-        else if (m_concurrentCleaningState == CC_CLEAN_STATE_NOT_READY)
+        else if (stackMarkState == CC_MARK_STATE_DONE &&
+            m_concurrentCleaningState == CC_CLEAN_STATE_NOT_READY)
         {
             // did not try to clean yet, tell new helpers to not enter.
             // there will be more work soon.
