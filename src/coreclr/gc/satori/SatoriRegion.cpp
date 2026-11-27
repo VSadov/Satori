@@ -3555,6 +3555,44 @@ void SatoriRegion::UpdatePointers()
     updateQueue.Flush();
 }
 
+// PreSweep has formatted everything that is not marked as free space, so the marked objects
+// are the only ones that may have references to update. (also the copies of relocated objects, they are marked)
+// The marks let the walk skip the free space and prefetch the upcoming objects, like a sweep does.
+void SatoriRegion::UpdatePointersPreSwept()
+{
+    _ASSERTE(IsPreSwept());
+    _ASSERTE(HasMarksSet());
+
+    SatoriRelocatedRefQueue<8> updateQueue;
+    size_t objLimit = Start() + Satori::REGION_SIZE_GRANULARITY;
+    SatoriObject* o = FirstObject();
+    SweepPrefetcher prefetcher;
+    SweepPrefetchStart(prefetcher, o);
+    do
+    {
+        o = SkipUnmarked(o);
+        if (o->Start() >= objLimit)
+        {
+            _ASSERTE(o->Start() == objLimit);
+            break;
+        }
+
+        SweepPrefetchAdvance(prefetcher, o);
+        size_t size = o->Size();
+        UpdatePointersInObject(o, size, updateQueue);
+        o = (SatoriObject*)(o->Start() + size);
+    } while (o->Start() < objLimit);
+
+    updateQueue.Flush();
+
+#ifdef _DEBUG
+    for (SatoriObject* d = FirstObject(); d->Start() < objLimit; d = d->Next())
+    {
+        _ASSERTE(d->IsFree() || IsMarked(d));
+    }
+#endif
+}
+
 void SatoriRegion::TakeFinalizerInfoFrom(SatoriRegion* other)
 {
     _ASSERTE(!other->IsUnmovable());
@@ -3827,7 +3865,8 @@ void SatoriRegion::PreSweep()
 
     size_t occupancy = 0;
     int32_t objCount = 0;
-    bool hasFinalizables = false;
+    // relocation that spreads the region over several targets needs this, see RelocateRegionSplit.
+    size_t finalizableBytes = 0;
     // only a region that may have pinned objects needs to look for them
     bool checkUnmovable = m_hasPinnedObjects;
     bool hasUnmovable = false;
@@ -3857,9 +3896,10 @@ void SatoriRegion::PreSweep()
 
         size_t size = o->Size();
 
-        if (!hasFinalizables && o->RawGetMethodTable()->HasFinalizer())
+        // NB: the flags of the method table are already loaded for the size
+        if (o->RawGetMethodTable()->HasFinalizer())
         {
-            hasFinalizables = true;
+            finalizableBytes += size;
         }
 
         if (checkUnmovable && o->IsUnmovable())
@@ -3875,7 +3915,8 @@ void SatoriRegion::PreSweep()
 
     _ASSERTE(o->Start() == objLimit || End() > objLimit);
 
-    this->m_hasFinalizables = hasFinalizables;
+    this->m_hasFinalizables = finalizableBytes != 0;
+    this->m_preSweptFinalizableBytes = (uint32_t)finalizableBytes;
     // planning that follows sees exactly whether live pinned objects keep the region in place.
     this->m_hasPinnedObjects = hasUnmovable;
     this->m_maxParseableEnd = objLimit;

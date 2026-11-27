@@ -837,6 +837,12 @@ inline bool SatoriRegion::HasFinalizables()
     return m_hasFinalizables;
 }
 
+inline size_t SatoriRegion::PreSweptFinalizableBytes()
+{
+    _ASSERTE(IsPreSwept());
+    return m_preSweptFinalizableBytes;
+}
+
 inline bool& SatoriRegion::HasPendingFinalizables()
 {
     return m_hasPendingFinalizables;

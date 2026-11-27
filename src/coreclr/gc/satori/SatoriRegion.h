@@ -213,6 +213,7 @@ public:
     void IndividuallyPromote();
     void UpdateFinalizableTrackers();
     void UpdatePointers();
+    void UpdatePointersPreSwept();
     void UpdatePointersInObject(SatoriObject* o, size_t size, SatoriRelocatedRefQueue<8>& updateQueue);
     void SetCardsForObject(SatoriObject* o, size_t size);
 
@@ -249,6 +250,7 @@ public:
     bool RegisterForFinalization(SatoriObject* finalizable);
     void RegisterForFinalization(SatoriObject* finalizable, SatoriWorkChunk* tracker);
     bool HasFinalizables();
+    size_t PreSweptFinalizableBytes();
     bool& HasPendingFinalizables();
 
     void SetOccupancy(size_t occupancy, int32_t objCount);
@@ -415,6 +417,8 @@ private:
             uint32_t m_sweepsSinceLastAllocation;
             // Bit N is set when free list N is not empty.
             uint16_t m_nonEmptyFreeLists;
+            // Bytes of the live objects of types with finalizers, as PreSweep found them. Valid while the region is preswept.
+            uint32_t m_preSweptFinalizableBytes;
 
             // ===== 128  bytes boundary
             SatoriRegion* m_prev;

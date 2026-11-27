@@ -5202,23 +5202,34 @@ bool SatoriRecycler::RelocateRegionSplit(SatoriRegion* relocationSource, size_t 
     size_t finDst = 0;
     if (withFinalizables)
     {
-        SatoriObject* f = relocationSource->FirstObject();
-        do
+        if (relocationSource->IsPreSwept())
         {
-            f = relocationSource->SkipUnmarked(f);
-            if (f->Start() >= objLimit)
+            // presweep has walked the live objects already
+            finBytes = relocationSource->PreSweptFinalizableBytes();
+        }
+        else
+        {
+            SatoriObject* f = relocationSource->FirstObject();
+            SatoriRegion::SweepPrefetcher finPrefetcher;
+            relocationSource->SweepPrefetchStart(finPrefetcher, f);
+            do
             {
-                break;
-            }
+                f = relocationSource->SkipUnmarked(f);
+                if (f->Start() >= objLimit)
+                {
+                    break;
+                }
 
-            size_t size = f->Size();
-            if (f->RawGetMethodTable()->HasFinalizer())
-            {
-                finBytes += size;
-            }
+                relocationSource->SweepPrefetchAdvance(finPrefetcher, f);
+                size_t size = f->Size();
+                if (f->RawGetMethodTable()->HasFinalizer())
+                {
+                    finBytes += size;
+                }
 
-            f = (SatoriObject*)(f->Start() + size);
-        } while (f->Start() < objLimit);
+                f = (SatoriObject*)(f->Start() + size);
+            } while (f->Start() < objLimit);
+        }
 
         if (finBytes > 0)
         {
@@ -5378,13 +5389,21 @@ bool SatoriRecycler::RelocateRegionSplit(SatoriRegion* relocationSource, size_t 
             u = relocationSource->SkipUnmarked(u);
             SatoriObject* copy = (SatoriObject*)*((size_t*)u - 1);
             *((size_t*)u - 1) = *((size_t*)copy - 1);
+            size_t size = u->Size();
             // in gen2 the targets that are swept are the marked ones (see the asserts above)
-            if (!copy->ContainingRegion()->DoNotSweep())
+            SatoriRegion* copyRegion = copy->ContainingRegion();
+            if (!copyRegion->DoNotSweep())
             {
                 copy->ClearMarked();
+                // A preswept target is not swept again and its references are updated only in the marked objects,
+                // thus the copy must not stay there as an object.
+                if (copyRegion->IsPreSwept())
+                {
+                    SatoriObject::FormatAsFree(copy->Start(), size);
+                }
             }
 
-            u = (SatoriObject*)(u->Start() + u->Size());
+            u = (SatoriObject*)(u->Start() + size);
         }
     }
 
@@ -5703,9 +5722,18 @@ void SatoriRecycler::UpdateRegions(SatoriShardedRegionQueue* queue, SatoriSharde
                 curRegion->IndividuallyPromote();
             }
 
+            bool updatedPreSwept = false;
             if (curRegion->IsPreSwept())
             {
                 _ASSERTE (curRegion->Generation() <= m_condemnedGeneration);
+                if (m_isRelocating && !m_isIncrementalRelocation)
+                {
+                    // While the marks are still there, update only the marked objects.
+                    // The rest of the region is free and has no references.
+                    curRegion->UpdatePointersPreSwept();
+                    updatedPreSwept = true;
+                }
+
                 curRegion->FinishSweepForPreSwept();
             }
 
@@ -5739,7 +5767,10 @@ void SatoriRecycler::UpdateRegions(SatoriShardedRegionQueue* queue, SatoriSharde
                     // this can happen when relocation adds a region.
                     if (curRegion->DoNotSweep())
                     {
-                        curRegion->UpdatePointers();
+                        if (!updatedPreSwept)
+                        {
+                            curRegion->UpdatePointers();
+                        }
                     }
                     else
                     {
