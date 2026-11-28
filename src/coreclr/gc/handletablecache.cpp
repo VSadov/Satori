@@ -366,7 +366,7 @@ static OBJECTHANDLE *TableFreeHandlesInOldClumps(HandleTable *pTable, uint32_t u
 
         // This also runs when an allocation misses the cache, which preemptive threads may do during
         // a GC, and a synchronous GC scan walks the type chains without the table lock. So leave the
-        // blocks that become empty in their chains until the next GC scan of their segment.
+        // blocks that become empty in their chains, eligible for later scavenging.
         TableFreeBulkPreparedHandles(pTable, uType, pKeptLast, uFree, TRUE /* fDeferBlockRemoval */);
     }
 
@@ -498,7 +498,12 @@ void TableFullRebalanceCache(HandleTable *pTable,
             uint32_t uFree = uHandleCount - HANDLES_PER_CACHE_BANK;
 
             // free the handles - they are already 'prepared' (eg zeroed and sorted)
+#if FEATURE_SATORI_GC
+            // handles may be freed in preemptive mode during a GC too, see TableFreeHandlesInOldClumps
+            TableFreeBulkPreparedHandles(pTable, uType, pHandleBase, uFree, TRUE /* fDeferBlockRemoval */);
+#else
             TableFreeBulkPreparedHandles(pTable, uType, pHandleBase, uFree);
+#endif
 
             // update our array base and length
             uHandleCount -= uFree;

@@ -132,6 +132,12 @@ int CompareHandlesByFreeOrder(uintptr_t p, uintptr_t q)
 {
     LIMITED_METHOD_CONTRACT;
 
+#if FEATURE_SATORI_GC
+    // Free higher handles first. Segments are linked by address, so this is the order that their
+    // sequence numbers track, but a GC scan may renumber the segments without the table lock while
+    // handles are being sorted, and an order that changes during a sort can make QuickSort run past the array.
+    return (p > q) ? -1 : ((p < q) ? 1 : 0);
+#else
     // compute the segments for the handles
     TableSegment *pSegmentP = (TableSegment *)(p & HANDLE_SEGMENT_ALIGN_MASK);
     TableSegment *pSegmentQ = (TableSegment *)(q & HANDLE_SEGMENT_ALIGN_MASK);
@@ -164,6 +170,7 @@ int CompareHandlesByFreeOrder(uintptr_t p, uintptr_t q)
 
     // neither handle is valid
     return 0;
+#endif // FEATURE_SATORI_GC
 }
 
 
@@ -958,6 +965,13 @@ uint32_t SegmentInsertBlockFromFreeList(TableSegment *pSegment, uint32_t uType, 
 
         // allocate our user data block (we do it in this order so that free order is nicer)
         uData = SegmentInsertBlockFromFreeListWorker(pSegment, HNDTYPE_INTERNAL_DATABLOCK, FALSE);
+
+#if FEATURE_SATORI_GC
+        // if the data block could not be committed then do not take a handle block either, since
+        // removing it again below would unlink blocks from the type chain, which a GC may be scanning
+        if (uData == BLOCK_INVALID)
+            return BLOCK_INVALID;
+#endif
     }
 
     // now allocate the requested block
@@ -2329,7 +2343,7 @@ uint32_t SegmentFreeHandles(TableSegment *pSegment, uint32_t uType, OBJECTHANDLE
         // assume we no scavenging is required
         BOOL fNeedsScavenging = FALSE;
 
-        // try to remove any free blocks we may have created, unless the caller leaves that to the next GC scan
+        // try to remove any free blocks we may have created, unless the caller leaves them for later scavenging
         if (fDeferBlockRemoval)
             fNeedsScavenging = TRUE;
         else
