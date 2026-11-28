@@ -54,7 +54,8 @@ public:
 
     static int CurrentThreadPartition()
     {
-        if (!s_partitionCount)
+        // with one partition (or none yet) there is nothing to choose
+        if (s_partitionCount <= 1)
         {
             return 0;
         }
