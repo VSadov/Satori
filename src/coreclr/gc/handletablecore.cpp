@@ -1852,12 +1852,7 @@ static TableSegment *TableAddSegment(HandleTable *pTable)
     if (!pNewSegment)
         return NULL;
 
-    // set up the sequence number of the new segment from the last segment in the list
-    TableSegment *pLastSegment = pTable->pSegmentList;
-    while (pLastSegment->pNextSegment)
-        pLastSegment = pLastSegment->pNextSegment;
-
-    pNewSegment->bSequence = (uint8_t)(((uint32_t)pLastSegment->bSequence + 1) % 0x100);
+    // no sequence number is needed, since Satori orders handles by address (see CompareHandlesByFreeOrder)
 
     // link the new segment into the list by the order of segment address
     TableSegment* pWalk = pTable->pSegmentList;
@@ -2274,6 +2269,32 @@ uint32_t BlockFreeHandles(TableSegment *pSegment, uint32_t uBlock, OBJECTHANDLE 
 
 
 /*
+ * BlockIsFree
+ *
+ * Determines whether all handles in the specified block are free.
+ *
+ */
+static BOOL BlockIsFree(TableSegment *pSegment, uint32_t uBlock)
+{
+    LIMITED_METHOD_CONTRACT;
+
+#ifdef HANDLE_OPTIMIZE_FOR_64_HANDLE_BLOCKS
+    return (((uint64_t*)pSegment->rgFreeMask)[uBlock] == 0xFFFFFFFFFFFFFFFFULL);
+#else
+    uint32_t *pdwMask     = pSegment->rgFreeMask + (uBlock * HANDLE_MASKS_PER_BLOCK);
+    uint32_t *pdwMaskLast = pdwMask              + HANDLE_MASKS_PER_BLOCK;
+    for (; pdwMask < pdwMaskLast; pdwMask++)
+    {
+        if (*pdwMask != MASK_EMPTY)
+            return FALSE;
+    }
+
+    return TRUE;
+#endif
+}
+
+
+/*
  * SegmentFreeHandles
  *
  * Frees some portion of an array of handles of the specified type.
@@ -2323,7 +2344,13 @@ uint32_t SegmentFreeHandles(TableSegment *pSegment, uint32_t uType, OBJECTHANDLE
         _ASSERTE(pSegment->rgBlockType[uBlock] == uType);
 
         // free as many handles as this block owns from the front of the array
-        uint32_t uFreed = BlockFreeHandles(pSegment, uBlock, pHandleBase, uRemain, &uActualFreed, &fScanForFreeBlocks);
+        BOOL fBlockMayBeFree = FALSE;
+        uint32_t uFreed = BlockFreeHandles(pSegment, uBlock, pHandleBase, uRemain, &uActualFreed, &fBlockMayBeFree);
+
+        // only the masks that were touched are known to be free. Scavenging later takes the table lock and
+        // rebuilds the chains of the segment, so when block removal is left for later, check the whole block.
+        if (fBlockMayBeFree && (!fDeferBlockRemoval || BlockIsFree(pSegment, uBlock)))
+            fScanForFreeBlocks = TRUE;
 
         // adjust our count and array pointer
         uRemain     -= uFreed;
