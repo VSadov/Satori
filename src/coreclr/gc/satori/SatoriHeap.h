@@ -145,7 +145,7 @@ public:
         size_t start = startHint % span;
         for (size_t i = 0; i < span; i++)
         {
-            size_t mapIndex = 1 + (start + i) % span;
+            size_t mapIndex = 1 + SatoriUtil::WrapIndex(start + i, span);
             // No acquire: the entry is stored with a release, and the page is read through the pointer that this loads. (see AddLargePage)
             SatoriPage* page = m_pageMap[mapIndex];
             if (page && IsFirstMapEntryOfPage(page, mapIndex))

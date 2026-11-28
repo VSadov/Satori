@@ -251,6 +251,14 @@ public:
         return (size_t)2 << highestBit;
     }
 
+    // index % count, for an index below 2 * count, such as the sum of two indices below count.
+    // Loops that visit count items from a rotated start use this instead of a divide per item.
+    static size_t WrapIndex(size_t index, size_t count)
+    {
+        _ASSERTE(index < count * 2);
+        return index < count ? index : index - count;
+    }
+
     static int32_t BucketForAlloc(size_t allocSize)
     {
         if (allocSize <= Satori::MIN_FREELIST_CAPACITY)

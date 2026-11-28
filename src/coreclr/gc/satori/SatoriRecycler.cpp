@@ -749,20 +749,21 @@ bool IsWorkerThread()
     return GCToEEInterface::WasCurrentThreadCreatedByGC();
 }
 
+// The ticks per millisecond are positive, so shifts divide them.
 int64_t SatoriRecycler::HelpQuantumTimeStampTicks()
 {
-        return m_timeStampTicksPerMilli /
+        return m_timeStampTicksPerMilli >>
             (IsWorkerThread() ?
-                8:  // 125 usec
-                64); // 15 usec
+                3:  // 125 usec
+                6); // 15 usec
 }
 
 int64_t SatoriRecycler::HelpQuantumOsTicks()
 {
-        return m_osTicksPerMilli /
+        return m_osTicksPerMilli >>
             (IsWorkerThread() ?
-                8:  // 125 usec
-                64); // 15 usec
+                3:  // 125 usec
+                6); // 15 usec
 }
 
 bool SatoriRecycler::HelpOnceCoreInner(bool minQuantum)
@@ -3138,7 +3139,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
                 size_t groupCount = page->CardGroupCount();
 
                 // if restarting with the same page, continue with the last ii and offset
-                size_t offset = pRestart->rndOffset;
+                size_t offset = pRestart->rndOffset % groupCount;
                 size_t ii = pRestart->ii;
                 if (pRestart->page != page)
                 {
@@ -3149,7 +3150,7 @@ bool SatoriRecycler::MarkThroughCardsConcurrent(int64_t deadline)
 
                 while (ii < groupCount)
                 {
-                    size_t i = (ii + offset) % groupCount;
+                    size_t i = SatoriUtil::WrapIndex(ii + offset, groupCount);
                     ii++;
 
                     int8_t groupState = page->CardGroupState(i);
@@ -3376,7 +3377,7 @@ bool SatoriRecycler::CleanCardsConcurrentCore(int64_t deadline)
                 size_t groupCount = page->CardGroupCount();
 
                 // if restarting with the same page, continue with the last ii and offset
-                size_t offset = pRestart->rndOffset;
+                size_t offset = pRestart->rndOffset % groupCount;
                 size_t ii = pRestart->ii;
                 if (pRestart->page != page)
                 {
@@ -3387,7 +3388,7 @@ bool SatoriRecycler::CleanCardsConcurrentCore(int64_t deadline)
 
                 while (ii < groupCount)
                 {
-                    size_t i = (ii + offset) % groupCount;
+                    size_t i = SatoriUtil::WrapIndex(ii + offset, groupCount);
                     ii++;
 
                     int8_t groupState = page->CardGroupState(i);
@@ -3627,10 +3628,10 @@ void SatoriRecycler::MarkThroughCards()
 
                 size_t groupCount = page->CardGroupCount();
                 // add thread specific offset, to separate somewhat what threads read
-                size_t offset = ThreadSpecificNumber(GlobalGcIndex());
+                size_t offset = ThreadSpecificNumber(GlobalGcIndex()) % groupCount;
                 for (size_t ii = 0; ii < groupCount; ii++)
                 {
-                    size_t i = (offset + ii) % groupCount;
+                    size_t i = SatoriUtil::WrapIndex(offset + ii, groupCount);
                     int8_t groupState = page->CardGroupState(i);
                     if (groupState != Satori::CardState::BLANK)
                     {
@@ -3795,11 +3796,11 @@ void SatoriRecycler::CleanCardsCore()
 
                 size_t groupCount = page->CardGroupCount();
                 // add thread specific offset, to separate somewhat what threads read
-                size_t offset = ThreadSpecificNumber(GlobalGcIndex());
+                size_t offset = ThreadSpecificNumber(GlobalGcIndex()) % groupCount;
 
                 for (size_t ii = 0; ii < groupCount; ii++)
                 {
-                    size_t i = (offset + ii) % groupCount;
+                    size_t i = SatoriUtil::WrapIndex(offset + ii, groupCount);
                     int8_t groupState = page->CardGroupState(i);
                     if (groupState == Satori::CardState::DIRTY)
                     {
@@ -3954,10 +3955,10 @@ void SatoriRecycler::UpdatePointersThroughCards()
 
                 size_t groupCount = page->CardGroupCount();
                 // add thread specific offset, to separate somewhat what threads read
-                size_t offset = ThreadSpecificNumber(GlobalGcIndex());
+                size_t offset = ThreadSpecificNumber(GlobalGcIndex()) % groupCount;
                 for (size_t ii = 0; ii < groupCount; ii++)
                 {
-                    size_t i = (offset + ii) % groupCount;
+                    size_t i = SatoriUtil::WrapIndex(offset + ii, groupCount);
                     int8_t groupState = page->CardGroupState(i);
                     _ASSERTE(groupState < Satori::CardState::PROCESSING);
                     if (groupState == Satori::CardState::REMEMBERED)

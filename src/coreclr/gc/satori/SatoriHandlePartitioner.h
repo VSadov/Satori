@@ -70,7 +70,9 @@ public:
             value = (uint32_t)((thread * 11400714819323198485llu) >> 32);
         }
 
-        return (int)(value % (uint32_t)s_partitionCount);
+        // processor numbers are usually below the partition count already, so there is nothing to divide
+        uint32_t count = (uint32_t)s_partitionCount;
+        return (int)(value < count ? value : value % count);
     }
 
     template <typename F>
@@ -81,7 +83,7 @@ public:
             int startPartition = CurrentThreadPartition();
              for (int i = 0; i < s_partitionCount; i++)
             {
-                int partition = (i + startPartition) % s_partitionCount;
+                int partition = (int)SatoriUtil::WrapIndex((size_t)(i + startPartition), (size_t)s_partitionCount);
                 uint8_t partitionTicket = VolatileLoadWithoutBarrier(&s_scanTickets[partition]);
                 if (partitionTicket != s_currentTicket)
                 {
