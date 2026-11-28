@@ -755,15 +755,19 @@ public:
         return n < 0 ? 25 : (size_t)n;
     }
 
+    // DOTNET_GCHeapCount
+    // There is a handle table for each processor (see getNumberOfSlots) and a partition indexes them,
+    // so there cannot be more partitions than processors.
     static int HandlePartitionsCount()
     {
-        int partitionCount = (int)GCConfig::GetHeapCount();
-        if (partitionCount < 1)
+        int processorCount = (int)GCToOSInterface::GetTotalProcessorCount();
+        int64_t heapCount = GCConfig::GetHeapCount();
+        if (heapCount < 1 || heapCount > processorCount)
         {
-            partitionCount = GCToOSInterface::GetTotalProcessorCount();
+            return processorCount;
         }
 
-        return partitionCount;
+        return (int)heapCount;
     }
 
     // DOTNET_gcParallel
