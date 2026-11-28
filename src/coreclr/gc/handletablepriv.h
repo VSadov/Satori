@@ -764,8 +764,11 @@ uint32_t TableAllocBulkHandles(HandleTable *pTable, uint32_t uType, OBJECTHANDLE
  *
  * This routine is optimized for a sorted array of handles but will accept any order.
  *
+ * If fDeferBlockRemoval is set, blocks that become empty stay in their type chains
+ * until the next GC scan of their segment removes them (see SegmentResortChains).
+ *
  */
-void TableFreeBulkPreparedHandles(HandleTable *pTable, uint32_t uType, OBJECTHANDLE *pHandleBase, uint32_t uCount);
+void TableFreeBulkPreparedHandles(HandleTable *pTable, uint32_t uType, OBJECTHANDLE *pHandleBase, uint32_t uCount, BOOL fDeferBlockRemoval = FALSE);
 
 
 /*

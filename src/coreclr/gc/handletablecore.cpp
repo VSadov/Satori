@@ -1747,8 +1747,13 @@ static uint32_t SegmentAllocHandlesFromYoungClumps(TableSegment *pSegment, uint3
     // keep track of how many handles we have left to allocate
     uint32_t uRemain = uCount;
 
+    // we can take at most as many handles from the type chain as it is known to have
+    uint32_t uChainRemain = pSegment->rgFreeCount[uType];
+    if (uChainRemain > uCount)
+        uChainRemain = uCount;
+
     // are there any free handles in the type chain?
-    if (pSegment->rgFreeCount[uType])
+    if (uChainRemain)
     {
         // yes - walk the chain once, starting from the hint
         uint32_t uBlock = pSegment->rgHint[uType];
@@ -1759,7 +1764,7 @@ static uint32_t SegmentAllocHandlesFromYoungClumps(TableSegment *pSegment, uint3
         {
             uint32_t uMask = uBlock * HANDLE_MASKS_PER_BLOCK;
             uint32_t uMaskLast = uMask + HANDLE_MASKS_PER_BLOCK;
-            for (; uRemain && (uMask < uMaskLast); uMask++)
+            for (; uChainRemain && (uMask < uMaskLast); uMask++)
             {
                 uint32_t dwFree = pSegment->rgFreeMask[uMask];
 
@@ -1781,17 +1786,18 @@ static uint32_t SegmentAllocHandlesFromYoungClumps(TableSegment *pSegment, uint3
                 {
                     // allocate from the eligible handles and mark the ones we took as used
                     uint32_t dwAvail = dwEligible;
-                    uint32_t uSatisfied = BlockAllocHandlesInMask(pSegment, uBlock, &dwAvail, uMask * HANDLE_HANDLES_PER_MASK, pHandleBase, uRemain);
+                    uint32_t uSatisfied = BlockAllocHandlesInMask(pSegment, uBlock, &dwAvail, uMask * HANDLE_HANDLES_PER_MASK, pHandleBase, uChainRemain);
                     pSegment->rgFreeMask[uMask] = dwFree & ~(dwEligible & ~dwAvail);
 
-                    // adjust our count and array pointer
-                    uRemain     -= uSatisfied;
-                    pHandleBase += uSatisfied;
+                    // adjust our counts and array pointer
+                    uChainRemain -= uSatisfied;
+                    uRemain      -= uSatisfied;
+                    pHandleBase  += uSatisfied;
                 }
             }
 
-            // did we get everything we needed?
-            if (!uRemain)
+            // did we take everything we could from the chain?
+            if (!uChainRemain)
             {
                 // yes - update the hint for this type chain and get out
                 pSegment->rgHint[uType] = (uint8_t)uBlock;
@@ -1925,6 +1931,11 @@ static uint32_t TableAllocBulkHandlesFromYoungClumps(HandleTable *pTable, uint32
 
         // get some handles from the new segment
         uint32_t uSatisfied = SegmentAllocHandles(pSegment, uType, pHandleBase, uRemain);
+
+        // a new segment that supplies no handles could not commit any,
+        // so fall back to the remaining free handles below as well
+        if (!uSatisfied)
+            break;
 
         // adjust our count and array pointer
         uRemain     -= uSatisfied;
@@ -2258,7 +2269,7 @@ uint32_t BlockFreeHandles(TableSegment *pSegment, uint32_t uBlock, OBJECTHANDLE 
  * Returns the number of handles that were freed from the front of the array.
  *
  */
-uint32_t SegmentFreeHandles(TableSegment *pSegment, uint32_t uType, OBJECTHANDLE *pHandleBase, uint32_t uCount)
+uint32_t SegmentFreeHandles(TableSegment *pSegment, uint32_t uType, OBJECTHANDLE *pHandleBase, uint32_t uCount, BOOL fDeferBlockRemoval)
 {
     WRAPPER_NO_CONTRACT;
 
@@ -2318,10 +2329,13 @@ uint32_t SegmentFreeHandles(TableSegment *pSegment, uint32_t uType, OBJECTHANDLE
         // assume we no scavenging is required
         BOOL fNeedsScavenging = FALSE;
 
-        // try to remove any free blocks we may have created
-        SegmentRemoveFreeBlocks(pSegment, uType, &fNeedsScavenging);
+        // try to remove any free blocks we may have created, unless the caller leaves that to the next GC scan
+        if (fDeferBlockRemoval)
+            fNeedsScavenging = TRUE;
+        else
+            SegmentRemoveFreeBlocks(pSegment, uType, &fNeedsScavenging);
 
-        // did SegmentRemoveFreeBlocks have to skip over any free blocks?
+        // did we skip over any free blocks?
         if (fNeedsScavenging)
         {
             // yup, arrange to scavenge them later
@@ -2343,7 +2357,7 @@ uint32_t SegmentFreeHandles(TableSegment *pSegment, uint32_t uType, OBJECTHANDLE
  * This routine is optimized for a sorted array of handles but will accept any order.
  *
  */
-void TableFreeBulkPreparedHandles(HandleTable *pTable, uint32_t uType, OBJECTHANDLE *pHandleBase, uint32_t uCount)
+void TableFreeBulkPreparedHandles(HandleTable *pTable, uint32_t uType, OBJECTHANDLE *pHandleBase, uint32_t uCount, BOOL fDeferBlockRemoval)
 {
     //Update the count of handles marked as "used"
     pTable->dwCount -= uCount;
@@ -2366,7 +2380,7 @@ void TableFreeBulkPreparedHandles(HandleTable *pTable, uint32_t uType, OBJECTHAN
         _ASSERTE(pSegment->pHandleTable == pTable);
 
         // free as many handles as this segment owns from the front of the array
-        uint32_t uFreed = SegmentFreeHandles(pSegment, uType, pHandleBase, uCount);
+        uint32_t uFreed = SegmentFreeHandles(pSegment, uType, pHandleBase, uCount, fDeferBlockRemoval);
 
         // adjust our count and array pointer
         uCount      -= uFreed;

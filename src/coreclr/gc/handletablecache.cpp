@@ -363,7 +363,11 @@ static OBJECTHANDLE *TableFreeHandlesInOldClumps(HandleTable *pTable, uint32_t u
     {
         // sort the handles so that they are freed efficiently
         QuickSort((uintptr_t *)pKeptLast, 0, uFree - 1, CompareHandlesByFreeOrder);
-        TableFreeBulkPreparedHandles(pTable, uType, pKeptLast, uFree);
+
+        // This also runs when an allocation misses the cache, which preemptive threads may do during
+        // a GC, and a synchronous GC scan walks the type chains without the table lock. So leave the
+        // blocks that become empty in their chains until the next GC scan of their segment.
+        TableFreeBulkPreparedHandles(pTable, uType, pKeptLast, uFree, TRUE /* fDeferBlockRemoval */);
     }
 
     return pKeptLast;
@@ -447,7 +451,14 @@ void TableFullRebalanceCache(HandleTable *pTable,
     uint32_t uHandleCount = (uint32_t) (pHandleBase - rgHandles);
 
     // do we have enough handles for a balanced cache?
+#if FEATURE_SATORI_GC
+    // after returning the handles in old clumps, a rebalance on free may have few handles left,
+    // but refilling then could grow the table while handles are being freed, so leave the refill
+    // to the next allocation that misses the cache
+    if ((uHandleCount < REBALANCE_LOWATER_MARK) && pExtraOutHandle)
+#else
     if (uHandleCount < REBALANCE_LOWATER_MARK)
+#endif
     {
         // nope - allocate some more
         uint32_t uAlloc = HANDLES_PER_CACHE_BANK - uHandleCount;
