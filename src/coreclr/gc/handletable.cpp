@@ -26,6 +26,9 @@
 #endif
 
 #if defined(ENABLE_PERF_COUNTERS) || defined(FEATURE_EVENT_TRACE)
+// Only the regular GC reads this count (GCHeap::UpdatePostGCCounters). Satori reports no handle count and
+// does not maintain it. The updates would be contended too, since Satori GC threads free the handles of
+// eagerly finalized weak references in parallel.
 DWORD g_dwHandles = 0;
 #endif // ENABLE_PERF_COUNTERS || FEATURE_EVENT_TRACE
 
@@ -321,9 +324,9 @@ OBJECTHANDLE HndCreateHandle(HHANDLETABLE hTable, uint32_t uType, OBJECTREF obje
         HandleQuickSetUserData(handle, lExtraInfo);
     }
 
-#if defined(ENABLE_PERF_COUNTERS) || defined(FEATURE_EVENT_TRACE)
+#if (defined(ENABLE_PERF_COUNTERS) || defined(FEATURE_EVENT_TRACE)) && !defined(FEATURE_SATORI_GC)
     g_dwHandles++;
-#endif // defined(ENABLE_PERF_COUNTERS) || defined(FEATURE_EVENT_TRACE)
+#endif // (defined(ENABLE_PERF_COUNTERS) || defined(FEATURE_EVENT_TRACE)) && !defined(FEATURE_SATORI_GC)
 
     // store the reference
     HndAssignHandle(handle, object);
@@ -398,9 +401,9 @@ void HndDestroyHandle(HHANDLETABLE hTable, uint32_t uType, OBJECTHANDLE handle)
     // return the handle to the table's cache
     TableFreeSingleHandleToCache(pTable, uType, handle);
 
-#if defined(ENABLE_PERF_COUNTERS) || defined(FEATURE_EVENT_TRACE)
+#if (defined(ENABLE_PERF_COUNTERS) || defined(FEATURE_EVENT_TRACE)) && !defined(FEATURE_SATORI_GC)
     g_dwHandles--;
-#endif // defined(ENABLE_PERF_COUNTERS) || defined(FEATURE_EVENT_TRACE)
+#endif // (defined(ENABLE_PERF_COUNTERS) || defined(FEATURE_EVENT_TRACE)) && !defined(FEATURE_SATORI_GC)
 }
 
 
